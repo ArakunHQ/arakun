@@ -634,7 +634,10 @@ impl BrowserView {
                 }
                 self.download = Some(d);
             }
-            Update::Favicon(bitmap) => {
+            Update::Favicon { bitmap, page } => {
+                if let Some(b) = &bitmap {
+                    super::favicons::remember(&page, &b.bgra, b.width, b.height, cx);
+                }
                 let image = bitmap.and_then(to_render_image);
                 if let Some(old) = std::mem::replace(&mut self.favicon, image) {
                     cx.drop_image(old, None);

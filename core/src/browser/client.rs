@@ -96,7 +96,12 @@ pub enum Update {
     FileDialog(FileDialogRequest),
     Menu(MenuRequest),
     Download(DownloadStatus),
-    Favicon(Option<Bitmap>),
+    /// The page's icon, or `None` when it has none that loads. `page` is the address
+    /// it was found on, which the icon cache files it under.
+    Favicon {
+        bitmap: Option<Bitmap>,
+        page: String,
+    },
     LoadStarted,
     LoadError(String),
     Crashed(String),
@@ -147,6 +152,12 @@ pub struct TabState {
     /// DevTools commands waiting for their answer, by message id.
     calls: RefCell<HashMap<i32, oneshot::Sender<DevToolsResult>>>,
     last_call: Cell<i32>,
+    /// The icon URLs still to try for the page's icon, after the one downloading.
+    favicon_queue: RefCell<VecDeque<String>>,
+    /// The page those icons are for.
+    favicon_page: RefCell<String>,
+    /// Counts the page's icon lists: a download for an older list is ignored.
+    favicon_round: Cell<u64>,
 }
 
 pub type Tab = Rc<TabState>;
@@ -173,6 +184,9 @@ impl TabState {
             console_seq: Cell::new(0),
             calls: RefCell::new(HashMap::new()),
             last_call: Cell::new(0),
+            favicon_queue: RefCell::new(VecDeque::new()),
+            favicon_page: RefCell::new(String::new()),
+            favicon_round: Cell::new(0),
         })
     }
 
@@ -308,6 +322,33 @@ impl TabState {
 
     pub fn host(&self) -> Option<BrowserHost> {
         self.browser.borrow().as_ref().and_then(|b| b.host())
+    }
+
+    /// Starts trying the icons of a new list, dropping what was left of the last one.
+    fn start_favicons(page: &Page, host: &BrowserHost, icons: Vec<String>, page_url: String) {
+        let tab = &page.tab;
+        tab.favicon_round.set(tab.favicon_round.get() + 1);
+        *tab.favicon_queue.borrow_mut() = super::favicons::candidates(&icons, &page_url).into();
+        *tab.favicon_page.borrow_mut() = page_url;
+        Self::next_favicon(page, host);
+    }
+
+    /// Downloads the next icon to try, or says the page has none once every one failed.
+    fn next_favicon(page: &Page, host: &BrowserHost) {
+        let tab = &page.tab;
+        // No borrow may be held here: the download can answer before it returns.
+        let next = tab.favicon_queue.borrow_mut().pop_front();
+        let Some(url) = next else {
+            let page_url = tab.favicon_page.borrow().clone();
+            tab.push(Update::Favicon {
+                bitmap: None,
+                page: page_url,
+            });
+            return;
+        };
+        let size = (16.0 * tab.scale.get()).ceil() as u32;
+        let mut callback = FaviconCallbackBuilder::new(page.clone(), tab.favicon_round.get());
+        host.download_image(Some(&url.as_str().into()), 1, size, 0, Some(&mut callback));
     }
 
     fn log_console(&self, level: LogSeverity, text: String, source: String, line: i32) {
@@ -663,15 +704,16 @@ wrap_display_handler! {
         }
 
         fn on_favicon_urlchange(&self, browser: Option<&mut Browser>, icon_urls: Option<&mut CefStringList>) {
-            let first = icon_urls.and_then(|list| list.clone().into_iter().next());
-            let Some(url) = first else {
-                self.page.tab.push(Update::Favicon(None));
-                return;
-            };
-            let Some(host) = browser.and_then(|b| b.host()) else { return };
-            let size = (16.0 * self.page.tab.scale.get()).ceil() as u32;
-            let mut callback = FaviconCallbackBuilder::new(self.page.clone());
-            host.download_image(Some(&url.as_str().into()), 1, size, 0, Some(&mut callback));
+            let icons: Vec<String> = icon_urls
+                .map(|list| list.clone().into_iter().map(|u| u.to_string()).collect())
+                .unwrap_or_default();
+            let Some(browser) = browser else { return };
+            let page_url = browser
+                .main_frame()
+                .map(|f| userfree(f.url()))
+                .unwrap_or_default();
+            let Some(host) = browser.host() else { return };
+            TabState::start_favicons(&self.page, &host, icons, page_url);
         }
 
         fn on_cursor_change(
@@ -727,6 +769,7 @@ fn cursor_style(t: CursorType) -> gpui::CursorStyle {
 wrap_download_image_callback! {
     pub struct FaviconCallbackBuilder {
         page: Page,
+        round: u64,
     }
 
     impl DownloadImageCallback {
@@ -751,7 +794,20 @@ wrap_download_image_callback! {
                 (w > 0 && h > 0 && len == w as usize * h as usize * 4)
                     .then_some(Bitmap { bgra, width: w as u32, height: h as u32 })
             });
-            self.page.tab.push(Update::Favicon(bitmap));
+            let tab = &self.page.tab;
+            if tab.favicon_round.get() != self.round {
+                return;
+            }
+            if bitmap.is_some() {
+                tab.favicon_queue.borrow_mut().clear();
+                let page = tab.favicon_page.borrow().clone();
+                tab.push(Update::Favicon { bitmap, page });
+                return;
+            }
+            // This one did not draw (an SVG, a 404): try the next.
+            if let Some(host) = tab.host() {
+                TabState::next_favicon(&self.page, &host);
+            }
         }
     }
 }

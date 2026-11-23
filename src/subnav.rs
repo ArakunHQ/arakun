@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, Div, Hsla, SharedString, Window, div, px};
+use gpui::{AnyElement, App, Div, Hsla, SharedString, Window, div, px};
 
 use crate::theme;
 use crate::ui::{RADIUS, TOOLBAR_H, Tone, Type, Typography, icon, segment, segmented};
@@ -87,9 +87,10 @@ pub type Pick = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 /// bars apart. A row wider than the pane wraps, so every page stays one click
 /// away without a sideways scroll.
 pub fn bar(id: &str, lines: Vec<Line>, filters: Vec<Line>, pick: Pick) -> Div {
-    let tabs = pieces(&format!("{id}-tab"), lines, false, &pick).min_h(px(TOOLBAR_H));
-    let filters = (!filters.is_empty())
-        .then(|| pieces(&format!("{id}-filter"), filters, true, &pick).pb(crate::ui::sp(4.)));
+    let tabs = pieces(&format!("{id}-tab"), "Pages", lines, false, &pick).min_h(px(TOOLBAR_H));
+    let filters = (!filters.is_empty()).then(|| {
+        pieces(&format!("{id}-filter"), "Filters", filters, true, &pick).pb(crate::ui::sp(4.))
+    });
     div()
         .flex()
         .flex_col()
@@ -104,29 +105,49 @@ pub fn bar(id: &str, lines: Vec<Line>, filters: Vec<Line>, pick: Pick) -> Div {
         .children(filters)
 }
 
-/// One row of `bar`. `small` draws the quieter filters.
-fn pieces(id: &str, lines: Vec<Line>, small: bool, pick: &Pick) -> Div {
+/// One row of `bar`. `small` draws the quieter filters. Each run of tabs
+/// is a tab list of its own, named by the heading before it or else `name`;
+/// headings, choices and lines stay outside the lists.
+fn pieces(id: &str, name: &str, lines: Vec<Line>, small: bool, pick: &Pick) -> Div {
     let mut out = div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(crate::ui::sp(2.));
+    let mut run: Vec<AnyElement> = Vec::new();
+    let mut label = SharedString::from(name.to_string());
+    let mut lists = 0;
+    let mut flush = |out: Div, run: &mut Vec<AnyElement>, label: &SharedString| {
+        if run.is_empty() {
+            return out;
+        }
+        lists += 1;
+        out.child(tab_list(
+            SharedString::from(format!("{id}-list-{lists}")),
+            label.clone(),
+            std::mem::take(run),
+        ))
+    };
     // A heading or a gap starts a new group; the line between groups goes in
     // before its first piece, so two in a row draw one line and none leads.
     let (mut started, mut split) = (false, false);
     for (i, line) in lines.into_iter().enumerate() {
         let el_id = SharedString::from(format!("{id}-{i}"));
-        let piece = match line {
+        let (piece, is_tab) = match line {
             Line::Gap => {
                 split = true;
                 continue;
             }
             Line::Heading(text) => {
                 split = true;
-                crate::ui::overline(&text)
+                let el = crate::ui::overline(&text)
                     .flex_none()
                     .px(crate::ui::sp(6.))
-                    .into_any_element()
+                    .into_any_element();
+                // The heading names the tabs after it, so close the list before it.
+                out = flush(out, &mut run, &label);
+                label = text;
+                (el, false)
             }
             Line::Choice(choices) => {
                 let mut seg = segmented();
@@ -137,27 +158,50 @@ fn pieces(id: &str, lines: Vec<Line>, small: bool, pick: &Pick) -> Div {
                             .on_click(move |_, window, cx| pick(&key, window, cx)),
                     );
                 }
-                div()
+                let el = div()
                     .flex_none()
                     .mx(crate::ui::sp(4.))
                     .child(seg)
-                    .into_any_element()
+                    .into_any_element();
+                (el, false)
             }
             Line::Entry(e) => {
                 let pick = pick.clone();
                 let key = e.key.clone();
-                tab(el_id, e, small)
+                let el = tab(el_id, e, small)
                     .on_click(move |_, window, cx| pick(&key, window, cx))
-                    .into_any_element()
+                    .into_any_element();
+                (el, true)
             }
         };
         if started && split {
+            out = flush(out, &mut run, &label);
             out = out.child(divider());
         }
         (started, split) = (true, false);
-        out = out.child(piece);
+        if is_tab {
+            run.push(piece);
+        } else {
+            out = flush(out, &mut run, &label);
+            out = out.child(piece);
+        }
     }
-    out
+    flush(out, &mut run, &label)
+}
+
+/// Tabs that belong together, for screen readers. It wraps like the row
+/// around it, so a long run still fits a narrow pane.
+fn tab_list(id: SharedString, label: SharedString, tabs: Vec<AnyElement>) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::TabList)
+        .aria_label(label)
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .min_w_0()
+        .gap(crate::ui::sp(2.))
+        .children(tabs)
 }
 
 /// The thin upright line between two groups of tabs.
@@ -230,9 +274,20 @@ fn tab(id: SharedString, e: Entry, small: bool) -> gpui::Stateful<Div> {
                 .hover(|d| d.bg(theme::fill_hover()).text_color(theme::text()))
         })
         .child(lead)
-        .child(e.label)
+        // A long server or repository name is cut short, so one tab never
+        // outgrows a narrow pane.
+        .child(
+            div()
+                .min_w_0()
+                .max_w(px(LABEL_MAX_W))
+                .truncate()
+                .child(e.label),
+        )
         .children(count)
 }
+
+/// The widest a tab's label gets before it is cut short.
+const LABEL_MAX_W: f32 = 180.;
 
 #[cfg(test)]
 mod tests {

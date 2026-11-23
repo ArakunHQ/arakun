@@ -941,6 +941,9 @@ impl TeamsView {
                 hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
             });
             match result {
+                // A command typed over an edit ends the edit, or the next
+                // send would overwrite the message being edited.
+                Ok(()) if self.editing.is_some() => self.stop_editing(cx),
                 Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
                 Err(why) => self.hub.update(cx, |h, cx| {
                     h.error = Some(why);

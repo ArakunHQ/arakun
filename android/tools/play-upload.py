@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PACKAGE = "com.arakun.android"
+PACKAGE = "com.arakun.app"
 API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/" + PACKAGE
 UPLOAD = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/" + PACKAGE
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"

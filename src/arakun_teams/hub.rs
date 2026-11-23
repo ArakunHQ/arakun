@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
@@ -237,6 +238,10 @@ impl Net {
 
 pub struct Hub {
     teams_entity: Entity<Teams>,
+    /// The account the state below belongs to. `Teams` also notifies when
+    /// only a picture arrived; comparing this, not `net`, keeps such a
+    /// notification from restarting a device setup still under way.
+    account: Option<Account>,
     me: Option<Me>,
     net: Option<Net>,
     sealer: Option<Sealer>,
@@ -256,6 +261,19 @@ pub struct Hub {
     pub info: Option<String>,
     /// Actions under way, by a key such as `approve:<team>:<id>`.
     pub busy: HashSet<String>,
+    /// Invites sent from here in this run, by team: the login and when. The
+    /// server has no list of a team's open invites to read back.
+    pub sent: Vec<(String, String, u64)>,
+    /// Who invited this user to a team, from invites accepted in this run.
+    pub inviters: HashMap<String, String>,
+    /// Teams an admin let this user into during this run: their chat says so.
+    pub joined: HashSet<String>,
+    /// The team the last "Start a team" made, once the server named it, even
+    /// when setting it up failed after: the Team tab opens that one.
+    pub created: Option<String>,
+    /// Bumped by every "They don't". A key upload planned before it stops
+    /// before its next request, so a failed check reaches work in flight.
+    doubts: Arc<AtomicU64>,
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
@@ -299,6 +317,13 @@ fn spare_links<T: Ord>(
         .collect()
 }
 
+/// Who is signed in, and where: the server, the session and the GitHub ID.
+type Account = (String, String, u64);
+
+fn account_of((base, session, me): &(String, String, Me)) -> Account {
+    (base.clone(), session.clone(), me.github_id)
+}
+
 pub fn channel_key(team_id: &str, channel_id: &str) -> String {
     format!("{team_id}/{channel_id}")
 }
@@ -320,6 +345,7 @@ impl Hub {
             .detach();
         let mut hub = Self {
             teams_entity: teams,
+            account: None,
             me: None,
             net: None,
             sealer: None,
@@ -347,6 +373,11 @@ impl Hub {
             _poll: None,
             _tick: None,
             info: None,
+            sent: Vec::new(),
+            inviters: HashMap::new(),
+            joined: HashSet::new(),
+            created: None,
+            doubts: Arc::default(),
         };
         hub.account_changed(cx);
         hub
@@ -360,18 +391,41 @@ impl Hub {
         self.net.as_ref().map(|n| n.local.device.id())
     }
 
+    /// This device's public keys, `(sig_pub, enc_pub)`, for comparing devices.
+    pub fn public_keys(&self) -> Option<(&str, &str)> {
+        self.net
+            .as_ref()
+            .map(|n| (n.local.device.sig_pub(), n.local.device.enc_pub()))
+    }
+
+    /// The user checked this device's compare numbers with its owner.
+    pub fn verified(&self, device_id: &str) -> bool {
+        self.kept.verified(device_id)
+    }
+
+    /// The user found this device's compare numbers different.
+    pub fn mismatched(&self, device_id: &str) -> bool {
+        self.kept.mismatched(device_id)
+    }
+
+    /// Marks a device checked ("They match"), or not ("They don't").
+    pub fn set_verified(&mut self, device_id: &str, yes: bool, cx: &mut Context<Self>) {
+        if !yes {
+            self.doubts.fetch_add(1, Ordering::SeqCst);
+        }
+        // "They don't" saves even when nothing changed, so pressing it again
+        // retries a save that failed.
+        if self.kept.set_verified(device_id, yes) || !yes {
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
     /// Who is signed in changed: start over for the new account, or stop.
     fn account_changed(&mut self, cx: &mut Context<Self>) {
         let signed = self.teams_entity.read(cx).signed();
-        let same = match (&signed, &self.net, &self.me) {
-            (Some((base, session, me)), Some(net), Some(was)) => {
-                *base == net.base && *session == net.session && me.github_id == was.github_id
-            }
-            // `net` is still None while the device is loading. Signing out
-            // then must invalidate the in-flight setup as well.
-            (None, None, None) => true,
-            _ => false,
-        };
+        let account = signed.as_ref().map(account_of);
+        let same = account == self.account;
         if same {
             return;
         }
@@ -391,12 +445,17 @@ impl Hub {
         self.error = None;
         self.info = None;
         self.busy.clear();
+        self.sent.clear();
+        self.inviters.clear();
+        self.joined.clear();
+        self.created = None;
         self._poll = None;
         self._tick = None;
         self.info = None;
         self.device = DeviceState::Starting;
         self.load = Load::Loading;
         self.me = signed.as_ref().map(|(_, _, me)| me.clone());
+        self.account = account;
         cx.notify();
         let Some((base, session, me)) = signed else {
             return;
@@ -600,6 +659,7 @@ impl Hub {
             DeviceState::Failed(_) if self.net.is_none() => {
                 self.net = None;
                 self.me = None;
+                self.account = None;
                 self.account_changed(cx);
             }
             _ => self.register(cx),
@@ -703,9 +763,12 @@ impl Hub {
                     // when this changed something, not on every refresh.
                     let mut changed = false;
                     for t in &asked {
+                        // The chat says so too, but only to someone who
+                        // opens it; this reaches a user on another team.
                         if let Some(name) = hub.kept.asked().get(t) {
                             hub.info = Some(format!("You're in {name} now."));
                         }
+                        hub.joined.insert(t.clone());
                         changed |= hub.kept.forget_ask(t);
                     }
                     let gone: Vec<String> = hub
@@ -938,14 +1001,23 @@ impl Hub {
         }
         self.error = None;
         self.info = None;
+        self.created = None;
         let me = self.github_id();
         let pinned = self.kept.roots.get(&me).cloned();
+        let doubted: HashSet<String> = self.kept.mismatched_ids().cloned().collect();
         self.run(
             cx,
             move |net| {
                 let call = net.call();
                 let rows = call.devices(me)?;
                 let mine = trusted_devices(me, &rows);
+                if mine.iter().any(|d| doubted.contains(&d.device_id)) {
+                    return Err(ApiError::Status(
+                        0,
+                        "One of your devices is marked as not matching. Compare it again first."
+                            .into(),
+                    ));
+                }
                 if mine.len() != rows.len()
                     || !mine.iter().any(|d| {
                         d.device_id == net.local.device.id()
@@ -965,6 +1037,7 @@ impl Hub {
             move |hub, result, cx| match result {
                 Ok((team_id, mine)) => {
                     hub.setup.insert(team_id.clone(), crypto::ulid());
+                    hub.created = Some(team_id.clone());
                     hub.first_key(team_id, me, mine, cx)
                 }
                 Err(e) => {
@@ -982,12 +1055,24 @@ impl Hub {
         let roster = self.roster_version;
         self.applied_roster = roster;
         let key = crypto::new_team_key();
+        if mine.iter().any(|d| self.kept.mismatched(&d.device_id)) {
+            // The team exists; it gets no key until the check is cleared.
+            self.busy.remove("create-team");
+            self.error = Some(
+                "One of your devices is marked as not matching, so the team got no key.".into(),
+            );
+            self.refresh(cx);
+            return;
+        }
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team = team.clone();
                 move |net| {
                     let batch = seal_all(net, &team, &[(1, key)], &mine)?;
+                    still_trusted(&doubts, planned)?;
                     net.call().put_envelopes(&team, 0, 1, &batch)?;
                     Ok(batch)
                 }
@@ -1080,12 +1165,28 @@ impl Hub {
             return;
         };
         let busy = format!("rotate:{team_id}:{version}");
-        if !t.untrusted.is_empty() {
-            let who = t.untrusted.join(", @");
+        let doubted = doubted(&self.kept, t);
+        if !doubted.is_empty() {
+            // A failed comparison is the user's call to undo; a chain that
+            // doesn't check out is not.
+            let compared: Vec<&str> = doubted
+                .iter()
+                .filter(|l| !t.untrusted.contains(l))
+                .map(String::as_str)
+                .collect();
+            let problem = if compared.is_empty() {
+                format!(
+                    "The team needs a new key, but a device of @{} does not check out, so none was made.",
+                    doubted.join(", @")
+                )
+            } else {
+                format!(
+                    "The team needs a new key, but a device of @{} did not match when you compared it, so none was made. Compare it again, or remove them.",
+                    compared.join(", @")
+                )
+            };
             if let Some(t) = self.team.get_mut(team_id) {
-                t.problem = Some(format!(
-                    "The team needs a new key, but a device of @{who} does not check out, so none was made."
-                ));
+                t.problem = Some(problem);
             }
             return;
         }
@@ -1099,12 +1200,15 @@ impl Hub {
         let batch: Vec<_> = recipients(t)
             .map(|(m, d)| KeyDelivery::new(m, d, epoch, key))
             .collect();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
                 move |net| {
                     upload_batch(net, &team_id, batch, |envelopes| {
+                        still_trusted(&doubts, planned)?;
                         net.call()
                             .put_envelopes(&team_id, keyed_epoch, epoch, envelopes)
                     })
@@ -1159,12 +1263,15 @@ impl Hub {
             return;
         }
         let team_id = team_id.to_string();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
                 move |net| {
                     upload_batch(net, &team_id, batch, |envelopes| {
+                        still_trusted(&doubts, planned)?;
                         net.call()
                             .put_envelopes(&team_id, keyed_epoch, keyed_epoch, envelopes)
                     })
@@ -1205,14 +1312,17 @@ impl Hub {
         let team_id = team_id.to_string();
         self.run(
             cx,
-            move |net| net.call().invite(&team_id, &login).map(|()| login),
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().invite(&team_id, &login).map(|()| login)
+            },
             move |hub, result, _| {
                 hub.busy.remove(&busy);
                 match result {
                     Ok(login) => {
-                        hub.info = Some(format!(
-                            "Invited @{login}. They'll see it in their Teams tab."
-                        ))
+                        hub.sent
+                            .retain(|(t, l, _)| !(*t == team_id && l.eq_ignore_ascii_case(&login)));
+                        hub.sent.push((team_id, login, now()));
                     }
                     Err(ApiError::Status(409, _)) => {
                         hub.error =
@@ -1241,12 +1351,12 @@ impl Hub {
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
+                    // The Team tab shows the wait itself.
                     Ok(()) => {
-                        hub.info = Some(format!(
-                            "You asked to join {}. An admin approves you next.",
-                            invite.team_name
-                        ));
                         hub.kept.ask(&invite.team_id, &invite.team_name);
+                        if let Some(by) = &invite.invited_by_login {
+                            hub.inviters.insert(invite.team_id.clone(), by.clone());
+                        }
                         hub.save(cx);
                         hub.refresh(cx);
                     }
@@ -1283,7 +1393,10 @@ impl Hub {
             return;
         };
         let trusted = trusted_devices(github_id, &p.devices);
-        if trusted.len() != p.devices.len() || !pin_directory(&mut self.kept, github_id, &trusted) {
+        if trusted.len() != p.devices.len()
+            || trusted.iter().any(|d| self.kept.mismatched(&d.device_id))
+            || !pin_directory(&mut self.kept, github_id, &trusted)
+        {
             self.error = Some(format!(
                 "A device of @{} does not check out, so they can't be approved from here.",
                 p.login
@@ -1308,6 +1421,8 @@ impl Hub {
         self.info = None;
         let team_id = team_id.to_string();
         let login = p.login.clone();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         // The same snapshot the keys are sealed for, so a change since
         // answers 409 and the admin looks again.
         let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
@@ -1322,6 +1437,7 @@ impl Hub {
                     let parts = grant_parts(&keys, trusted.len());
                     let (newest, older) = parts.split_first().expect("keys is not empty");
                     let mut given = seal_all(net, &team_id, newest, &trusted)?;
+                    still_trusted(&doubts, planned)?;
                     net.call().approve(
                         &team_id,
                         github_id,
@@ -1332,10 +1448,10 @@ impl Hub {
                     )?;
                     for part in older {
                         let batch = seal_all(net, &team_id, part, &trusted)?;
-                        if let Err(e) =
+                        if let Err(e) = still_trusted(&doubts, planned).and_then(|()| {
                             net.call()
                                 .put_envelopes(&team_id, keyed_epoch, team_epoch, &batch)
-                        {
+                        }) {
                             return Ok((given, Some(e)));
                         }
                         given.extend(batch);
@@ -1924,7 +2040,7 @@ fn now() -> u64 {
 }
 
 /// The name this device registers with: the machine's.
-fn device_name() -> String {
+pub fn device_name() -> String {
     let name: String = crate::phone::host_name()
         .chars()
         .filter(|c| !c.is_control())
@@ -2140,12 +2256,26 @@ impl KeyDelivery {
     }
 }
 
+/// Members no team key may go to: a device of theirs doesn't check out, or
+/// the user compared numbers with them and found them different.
+fn doubted(kept: &Kept, t: &TeamState) -> Vec<String> {
+    let mut who = t.untrusted.clone();
+    for m in &t.detail.members {
+        let devices = t.devices.get(&m.github_id).into_iter().flatten();
+        if !who.contains(&m.login) && devices.into_iter().any(|d| kept.mismatched(&d.device_id)) {
+            who.push(m.login.clone());
+        }
+    }
+    who
+}
+
 fn next_backfill(kept: &Kept, t: &TeamState, mine: &str) -> Vec<KeyDelivery> {
     let team = &t.detail.team_id;
     let keys = kept.keys(team);
+    let doubted = doubted(kept, t);
     let mut batch = Vec::new();
     for (m, d) in recipients(t) {
-        if d.device_id == mine || d.created_at < m.joined_at {
+        if d.device_id == mine || d.created_at < m.joined_at || doubted.contains(&m.login) {
             continue;
         }
         for &(epoch, key) in &keys {
@@ -2161,6 +2291,19 @@ fn next_backfill(kept: &Kept, t: &TeamState, mine: &str) -> Vec<KeyDelivery> {
         }
     }
     batch
+}
+
+/// Fails when the user said "They don't" to a device after the upload was
+/// planned. A request already sent is not undone; the next one doesn't go.
+fn still_trusted(doubts: &AtomicU64, planned: u64) -> Result<(), ApiError> {
+    if doubts.load(Ordering::SeqCst) == planned {
+        Ok(())
+    } else {
+        Err(ApiError::Status(
+            0,
+            "A device check failed meanwhile, so key delivery stopped.".into(),
+        ))
+    }
 }
 
 fn upload_batch(
@@ -2537,6 +2680,16 @@ mod tests {
         assert!(stale_names(&t.detail, &read, 1).is_empty());
     }
 
+    #[test]
+    fn a_failed_check_stops_uploads_planned_before_it() {
+        let doubts = AtomicU64::new(0);
+        let planned = doubts.load(Ordering::SeqCst);
+        assert!(still_trusted(&doubts, planned).is_ok());
+        doubts.fetch_add(1, Ordering::SeqCst);
+        assert!(still_trusted(&doubts, planned).is_err());
+        assert!(still_trusted(&doubts, doubts.load(Ordering::SeqCst)).is_ok());
+    }
+
     fn delivery_team(devices: Vec<DeviceRow>, epoch: u64) -> TeamState {
         TeamState {
             detail: TeamDetail {
@@ -2641,6 +2794,12 @@ mod tests {
         );
         assert!(missing.iter().all(|s| s.device.device_id == new.device_id));
         assert!(next_backfill(&kept, &t, &new.device_id).is_empty());
+        // "They don't" on the Compare panel stops every key to that person.
+        kept.set_verified(&new.device_id, false);
+        assert!(next_backfill(&kept, &t, "").is_empty());
+        assert_eq!(doubted(&kept, &t), vec![t.detail.members[0].login.clone()]);
+        kept.set_verified(&new.device_id, true);
+        assert!(doubted(&kept, &t).is_empty());
         record_batch(&mut kept, "T", &missing);
         assert!(next_backfill(&kept, &t, "").is_empty());
 

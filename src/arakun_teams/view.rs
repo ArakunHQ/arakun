@@ -14,10 +14,10 @@ use gpui::{
     Window, div, px,
 };
 
-use super::{Access, Teams};
 use super::api::{InviteRow, Role};
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, TeamState};
 use super::socket;
+use super::{Access, Teams};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
@@ -423,9 +423,15 @@ impl TeamsView {
         ui::overline(title).pt(ui::sp(4.))
     }
 
-    fn list_row(id: impl Into<gpui::ElementId>, selected: bool) -> gpui::Stateful<gpui::Div> {
-        div()
-            .id(id)
+    /// A clickable row, named for screen readers and reached with Tab like the
+    /// kit's buttons, so the list works without a mouse.
+    fn list_row(
+        id: impl Into<gpui::ElementId>,
+        label: impl Into<SharedString>,
+        selected: bool,
+    ) -> gpui::Stateful<gpui::Div> {
+        ui::labelled(div().id(id), gpui::Role::Button, label)
+            .map(ui::focusable)
             .flex()
             .items_center()
             .gap(ui::sp(8.))
@@ -592,6 +598,7 @@ impl TeamsView {
             list = list.child(
                 Self::list_row(
                     ("teams-team", ix),
+                    format!("Open {name}"),
                     matches!(&self.pane, Pane::Team(t) if *t == team_id),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -637,25 +644,32 @@ impl TeamsView {
                         .is_some_and(|(t, c)| *t == team_id && *c == cid);
                     let (t2, c2) = (team_id.clone(), cid.clone());
                     list = list.child(
-                        Self::list_row(("teams-channel", ix * 1000 + cix), on)
-                            .pl(ui::sp(36.))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
-                            }))
-                            .child(ui::text(Type::Body, theme::text_faint(), "#"))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .ty(Type::Body)
-                                    .text_color(if on {
-                                        theme::content()
-                                    } else {
-                                        theme::text_muted()
-                                    })
-                                    .child(cname.unwrap_or_else(|| "locked channel".into())),
-                            ),
+                        Self::list_row(
+                            ("teams-channel", ix * 1000 + cix),
+                            match &cname {
+                                Some(n) => format!("Open #{n}"),
+                                None => "Open the locked channel".into(),
+                            },
+                            on,
+                        )
+                        .pl(ui::sp(36.))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
+                        }))
+                        .child(ui::text(Type::Body, theme::text_faint(), "#"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .ty(Type::Body)
+                                .text_color(if on {
+                                    theme::content()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .child(cname.unwrap_or_else(|| "locked channel".into())),
+                        ),
                     );
                 }
             }
@@ -951,7 +965,11 @@ impl TeamsView {
                 div().flex().flex_col().gap(ui::sp(2.)).children(
                     channels.into_iter().enumerate().map(|(i, c)| {
                         let (t2, c2) = (tid.clone(), c.id.clone());
-                        Self::list_row(("teams-team-channel", i), false)
+                        let label = match &c.name {
+                            Some(n) => format!("Open #{n}"),
+                            None => "Open the locked channel".into(),
+                        };
+                        Self::list_row(("teams-team-channel", i), label, false)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
                             }))

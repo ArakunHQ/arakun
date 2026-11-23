@@ -229,8 +229,8 @@ export interface Socket {
   send(m: unknown): void;
 }
 
-export async function openChannel(u: User, d: Device, teamId: string, channelId: string, headers: Record<string, string> = {}): Promise<Socket> {
-  const res = await api(u, "GET", `/teams/${teamId}/channels/${channelId}/ws`, { device: d, headers: { Upgrade: "websocket", ...headers } });
+export async function openChannel(u: User, d: Device, teamId: string, channelId: string, headers: Record<string, string> = {}, query = ""): Promise<Socket> {
+  const res = await api(u, "GET", `/teams/${teamId}/channels/${channelId}/ws${query}`, { device: d, headers: { Upgrade: "websocket", ...headers } });
   if (res.status !== 101 || !res.webSocket) throw new Error(`no socket: ${res.status} ${await res.text()}`);
   const ws = res.webSocket;
   const inbox = new Inbox(ws);

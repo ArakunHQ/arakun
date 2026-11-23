@@ -271,6 +271,57 @@ impl ChannelState {
     pub fn linked(&self) -> bool {
         self.link.is_some()
     }
+
+    /// A channel nothing was read of yet, with no socket.
+    fn new(team_id: &str, channel_id: &str) -> Self {
+        ChannelState {
+            team_id: team_id.to_string(),
+            channel_id: channel_id.to_string(),
+            messages: Vec::new(),
+            history: Cursor::default(),
+            link_id: 0,
+            history_round: 0,
+            reading: false,
+            needs_history: false,
+            bot_waiting: Vec::new(),
+            hidden: 0,
+            locked: Vec::new(),
+            status: socket::Status::Connecting,
+            loading: true,
+            unknown: Vec::new(),
+            outbox: BTreeMap::new(),
+            rekey: Vec::new(),
+            link: None,
+            shown: Instant::now(),
+            seen_ids: HashSet::new(),
+            here: Vec::new(),
+        }
+    }
+}
+
+/// Moves presence from the channel picked before to the one picked now: the
+/// old socket goes quiet, the new one counts. Neither hangs up.
+fn move_presence(
+    channels: &mut HashMap<String, ChannelState>,
+    from: Option<&str>,
+    to: Option<&str>,
+) {
+    if from == to {
+        return;
+    }
+    if let Some(c) = from.and_then(|k| channels.get_mut(k)) {
+        if let Some(link) = &c.link {
+            link.set_counted(false);
+        }
+        // A quiet socket hears no more lists, so this one would go stale.
+        c.here.clear();
+    }
+    if let Some(link) = to
+        .and_then(|k| channels.get(k))
+        .and_then(|c| c.link.as_ref())
+    {
+        link.set_counted(true);
+    }
 }
 
 pub struct ChannelState {
@@ -418,6 +469,11 @@ pub struct Hub {
     pub(super) peer_review: Option<Grant>,
     /// The channel the tab shows, by channel key: what arrives there is read.
     viewing: Option<String>,
+    /// The channel picked in the tab, by channel key, on screen or not. Only
+    /// its socket counts toward presence: the others (read for Decisions, or
+    /// kept open after the user moved on) are quiet, so other members do not
+    /// see this user under Here now there.
+    present: Option<String>,
     /// Unread counts of channels with no socket here, from their history.
     unread_read: HashMap<String, usize>,
     /// When those were last read.
@@ -529,6 +585,7 @@ impl Hub {
             bot: super::bot::Bots::default(),
             peer_review: None,
             viewing: None,
+            present: None,
             unread_read: HashMap::new(),
             unread_at: None,
             unread_newest: HashMap::new(),
@@ -666,6 +723,7 @@ impl Hub {
         self.joined.clear();
         self.bot.clear();
         self.viewing = None;
+        self.present = None;
         self.unread_read.clear();
         self.unread_at = None;
         self.unread_newest.clear();
@@ -2221,32 +2279,15 @@ impl Hub {
                 url: super::api::socket_url(&net.base, team_id, channel_id),
                 session: net.session.clone(),
                 device: net.local.device.id().to_string(),
+                counted: self.present.as_deref() == Some(key.as_str()),
             },
             self.events.clone(),
         );
         let in_view = key.clone();
-        let state = self.channels.entry(key).or_insert_with(|| ChannelState {
-            team_id: team_id.to_string(),
-            channel_id: channel_id.to_string(),
-            messages: Vec::new(),
-            history: Cursor::default(),
-            link_id,
-            history_round: 0,
-            reading: false,
-            needs_history: false,
-            bot_waiting: Vec::new(),
-            hidden: 0,
-            locked: Vec::new(),
-            status: socket::Status::Connecting,
-            loading: true,
-            unknown: Vec::new(),
-            outbox: BTreeMap::new(),
-            rekey: Vec::new(),
-            link: None,
-            shown: Instant::now(),
-            seen_ids: HashSet::new(),
-            here: Vec::new(),
-        });
+        let state = self
+            .channels
+            .entry(key)
+            .or_insert_with(|| ChannelState::new(team_id, channel_id));
         state.link_id = link_id;
         state.link = Some(link);
         state.shown = Instant::now();
@@ -2358,7 +2399,10 @@ impl Hub {
                         }
                     }
                 }
-                Some("presence") => {
+                // A quiet socket hears none, but an older server sends them
+                // anyway, and one sent before the socket went quiet may still
+                // arrive: only the picked channel's list is kept.
+                Some("presence") if self.present.as_deref() == Some(key) => {
                     if let Some(here) = presence(&v) {
                         let c = self.channels.get_mut(key).expect("looked up above");
                         c.here = here;
@@ -2937,6 +2981,17 @@ impl Hub {
             g.posted = Some(sent);
         }
         Ok(())
+    }
+
+    /// The channel picked in the tab, if any: only its socket counts toward
+    /// presence. The one picked before goes quiet without hanging up.
+    pub fn set_present(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if self.present == key {
+            return;
+        }
+        move_presence(&mut self.channels, self.present.as_deref(), key.as_deref());
+        self.present = key;
+        cx.notify();
     }
 
     // ---- unread ---------------------------------------------------------------
@@ -5094,6 +5149,7 @@ mod tests {
             url: super::super::api::socket_url(base, &team, &channel),
             session: n.session.clone(),
             device: n.local.device.id().to_string(),
+            counted: true,
         };
         let la = Link::open("a".into(), dial(&a), tx.clone());
         let lb = Link::open("b".into(), dial(&b), tx);
@@ -5373,6 +5429,95 @@ mod tests {
             b.call().history(&team, &channel, 0),
             Err(ApiError::Status(404, _))
         ));
+    }
+
+    #[test]
+    // tungstenite's handshake callback returns its large error type.
+    #[allow(clippy::result_large_err)]
+    fn only_the_picked_channel_counts_toward_presence() {
+        use std::net::TcpListener;
+        use tungstenite::Message;
+        // A server that answers every socket and reports, by path, how it
+        // was dialed and each `presence` frame it got.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (seen_tx, seen) = std::sync::mpsc::channel::<(String, String)>();
+        std::thread::spawn(move || {
+            for conn in listener.incoming().flatten() {
+                let seen_tx = seen_tx.clone();
+                std::thread::spawn(move || {
+                    let mut path = String::new();
+                    let Ok(mut ws) = tungstenite::accept_hdr(
+                        conn,
+                        |req: &tungstenite::handshake::server::Request, res| {
+                            path = req.uri().to_string();
+                            Ok(res)
+                        },
+                    ) else {
+                        return;
+                    };
+                    let (route, query) = path.split_once('?').unwrap_or((&path, ""));
+                    let route = route.to_string();
+                    let _ = seen_tx.send((route.clone(), format!("dial {query}")));
+                    while let Ok(m) = ws.read() {
+                        if let Message::Text(t) = m {
+                            let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                            let _ = seen_tx.send((route.clone(), format!("on {}", v["on"])));
+                        }
+                    }
+                });
+            }
+        });
+        let next = || {
+            seen.recv_timeout(Duration::from_secs(10))
+                .expect("nothing came in time")
+        };
+        let (tx, _rx) = mpsc::unbounded();
+        let mut channels = HashMap::new();
+        for (key, counted) in [("a", false), ("b", false), ("c", true)] {
+            let mut c = ChannelState::new("t", key);
+            c.link = Some(Link::open(
+                key.into(),
+                Dial {
+                    url: format!("ws://127.0.0.1:{port}/{key}"),
+                    session: "s".into(),
+                    device: "d".into(),
+                    counted,
+                },
+                tx.clone(),
+            ));
+            c.here = vec![1, 2];
+            channels.insert(key.to_string(), c);
+        }
+        let mut dials: Vec<_> = (0..3).map(|_| next()).collect();
+        dials.sort();
+        assert_eq!(
+            dials,
+            [
+                ("/a".to_string(), "dial presence=0".to_string()),
+                ("/b".into(), "dial presence=0".into()),
+                ("/c".into(), "dial ".into()),
+            ]
+        );
+        // Picking a counts it; the one picked before goes quiet and forgets
+        // who was there. Neither hangs up.
+        move_presence(&mut channels, Some("c"), Some("a"));
+        let mut got = vec![next(), next()];
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                ("/a".to_string(), "on true".to_string()),
+                ("/c".into(), "on false".into()),
+            ]
+        );
+        assert!(channels["c"].here.is_empty());
+        assert_eq!(channels["b"].here, [1, 2]);
+        // Leaving the tab's channels for a page with none: nothing counts.
+        move_presence(&mut channels, Some("a"), None);
+        assert_eq!(next(), ("/a".to_string(), "on false".to_string()));
+        move_presence(&mut channels, None, None);
+        assert!(seen.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     #[test]

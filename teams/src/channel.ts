@@ -26,6 +26,8 @@ export const TRUSTED = {
   channelId: "X-Teams-Channel-Id",
   /// The SHA-256 the sessions table keys on, never the session token itself.
   session: "X-Teams-Session-Hash",
+  /// "0" when the socket opens without counting toward presence.
+  presence: "X-Teams-Presence",
 } as const;
 
 /// Who is on a socket, kept on it across hibernation.
@@ -36,6 +38,11 @@ interface Who {
   teamId: string;
   channelId: string;
   session: string;
+  /// A socket that does not count toward presence: it is not listed, gets no
+  /// presence frames, and its opening and closing tell nobody. A client reads
+  /// channels it does not show this way. Absent on sockets from before the
+  /// field, which all count.
+  quiet?: boolean;
 }
 
 export interface Stored {
@@ -105,6 +112,12 @@ function sessionOf(ws: WebSocket): string {
   return (ws.deserializeAttachment() as Who | null)?.session ?? "";
 }
 
+/// Whether a socket counts toward presence.
+function counted(ws: WebSocket): boolean {
+  const who = ws.deserializeAttachment() as Who | null;
+  return !!who && !who.quiet;
+}
+
 export class Channel extends DurableObject<Env> {
   private sql: SqlStorage;
   /// Imported verify keys by sig_pub; lost on hibernation, which is fine.
@@ -158,6 +171,7 @@ export class Channel extends DurableObject<Env> {
       teamId: h.get(TRUSTED.teamId) ?? "",
       channelId: h.get(TRUSTED.channelId) ?? "",
       session: h.get(TRUSTED.session) ?? "",
+      quiet: h.get(TRUSTED.presence) === "0",
     };
     if (!Number.isSafeInteger(who.githubId) || who.githubId <= 0 || !who.deviceId || !who.sigPub || !who.teamId || !who.channelId || !who.session) {
       return error(500, "internal error");
@@ -181,8 +195,9 @@ export class Channel extends DurableObject<Env> {
     // The tag lets a removal find one user's sockets.
     this.ctx.acceptWebSocket(server, [`u:${who.githubId}`]);
     server.serializeAttachment(who);
-    // Everyone, the new socket included, hears who is on the channel now.
-    this.presenceSoon();
+    // Everyone, the new socket included, hears who is on the channel now. A
+    // quiet socket changes nothing anyone hears.
+    if (!who.quiet) this.presenceSoon();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -206,7 +221,7 @@ export class Channel extends DurableObject<Env> {
     this.kicks.set(githubId, (this.kicks.get(githubId) ?? 0) + 1);
     const sockets = this.ctx.getWebSockets(`u:${githubId}`);
     for (const ws of sockets) this.close(ws, CLOSE_FORBIDDEN, "removed from the team");
-    if (sockets.length > 0) this.presenceSoon();
+    if (sockets.some(counted)) this.presenceSoon();
     return sockets.length;
   }
 
@@ -227,7 +242,8 @@ export class Channel extends DurableObject<Env> {
     } catch {
       return this.refuse(ws, null, "frames are JSON text of at most 96 KiB");
     }
-    if (!isObject(frame) || frame["type"] !== "send") return this.refuse(ws, null, 'the only frame a client sends is {"type": "send"}');
+    if (isObject(frame) && frame["type"] === "presence") return this.setPresence(ws, who, frame["on"]);
+    if (!isObject(frame) || frame["type"] !== "send") return this.refuse(ws, null, 'a client sends {"type": "send"} or {"type": "presence"}');
     const raw = frame["message"];
     const rawId = isObject(raw) && typeof raw["id"] === "string" ? raw["id"].slice(0, 26) : null;
     const msg = parseMessage(raw);
@@ -369,6 +385,16 @@ export class Channel extends DurableObject<Env> {
     }
   }
 
+  /// Makes a socket count toward presence (`on`) or not, for a client that
+  /// starts or stops showing the channel. Nothing is answered: when the list
+  /// changes, the presence frame that follows goes to everyone counted.
+  private setPresence(ws: WebSocket, who: Who, on: unknown): void {
+    if (typeof on !== "boolean") return this.refuse(ws, null, "presence takes on: true or false");
+    if (!who.quiet === on) return;
+    ws.serializeAttachment({ ...who, quiet: !on });
+    this.presenceSoon();
+  }
+
   /// The sessions of the open sockets and of those being admitted.
   private sessions(): string[] {
     return [...this.ctx.getWebSockets().map(sessionOf), ...this.admitting.keys()];
@@ -393,12 +419,12 @@ export class Channel extends DurableObject<Env> {
   // The compatibility date is after 2026-04-07, so the runtime answers a
   // client's close by itself. The others hear who is left.
   override async webSocketClose(ws: WebSocket): Promise<void> {
-    await this.presence(ws);
+    if (counted(ws)) await this.presence(ws);
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.close(ws, 1011, "error");
-    await this.presence(ws);
+    if (counted(ws)) await this.presence(ws);
   }
 
   /// presence() without waiting for it, for callers that answer first.
@@ -406,16 +432,17 @@ export class Channel extends DurableObject<Env> {
     this.ctx.waitUntil(this.presence());
   }
 
-  /// Sends the GitHub IDs with a socket open on this channel, sorted, once
-  /// each, to every open socket that passes the same check as a send's
-  /// recipients. Only those are listed. `gone` is a socket that is closing and
+  /// Sends the GitHub IDs with a counted socket open on this channel, sorted,
+  /// once each, to every open counted socket that passes the same check as a
+  /// send's recipients. Only those are listed; quiet sockets are neither
+  /// listed nor told. `gone` is a socket that is closing and
   /// may still be listed. The server already knows who is connected; this
   /// only tells the members, and nothing of what they write.
   /// `retried` marks the one retry a failed run may schedule, so D1 being
   /// down does not make presence try for ever.
   private async presence(gone?: WebSocket, retried = false): Promise<void> {
     const run = ++this.presenceRuns;
-    const open = () => this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN);
+    const open = () => this.ctx.getWebSockets().filter((ws) => ws !== gone && ws.readyState === WebSocket.OPEN && counted(ws));
     const first = open()[0]?.deserializeAttachment() as Who | null | undefined;
     if (!first) return;
     let allowed: Map<string, number>;

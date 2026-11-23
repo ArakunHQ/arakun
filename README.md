@@ -668,7 +668,9 @@ after a week).
   A channel's row counts the messages from others you have not read there, up to
   "99+"; a message counts as read once its channel is on screen. On a new device the
   count starts at the newest message of each channel. Under **Here now**
-  the people who have this channel open come first, with a green dot.
+  the people who have this channel open come first, with a green dot. Channels
+  Arakun only reads, for **Decisions** or because you were there earlier, do not
+  count.
   Click the team's name for your other teams, **Start a team** and **Your devices**;
   "N invites" at the top opens invites to other teams; click the people at the top
   right for the team's page, which invites people by GitHub login and removes members.

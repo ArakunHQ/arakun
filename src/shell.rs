@@ -1278,7 +1278,7 @@ impl Shell {
 
     /// The other pane's tab, while the split shows.
     fn split_other(&self) -> Option<usize> {
-        self.strip.split_other(&self.env().path)
+        self.strip.split_other()
     }
 
     /// Makes the active tab one of the environment on screen: the tab it showed
@@ -3681,7 +3681,9 @@ impl Shell {
         if !self.has_projects() || index >= self.strip.tabs.len() {
             return false;
         }
+        // In a split, the other pane's tab is left to show.
         !self.strip.is_last_on_screen(index, &self.env().path)
+            || (index == self.strip.active_tab && self.split_other().is_some())
     }
 
     /// Closes a tab that went away by itself (its session or diff is gone, the
@@ -3714,7 +3716,11 @@ impl Shell {
                     .active()
                     .is_some_and(|t| t.env.as_deref().is_none_or(|e| e == here));
             if was_active && strays {
-                self.strip.active_tab = match self.strip.front_of(&here) {
+                self.strip.active_tab = match self
+                    .strip
+                    .front_of(&here)
+                    .or_else(|| self.strip.unsplit_to_other(&here))
+                {
                     Some(i) => i,
                     None => self.strip.add(Tab::new_session(&here)),
                 };
@@ -3916,6 +3922,8 @@ impl Shell {
         let tab = self.strip.tabs.get(index);
         match tab.map(|t| t.kind.clone()) {
             Some(TabKind::Session { id, .. }) => {
+                // The other pane's session may work in another environment.
+                let env = tab.map_or(env, |t| self.tab_env(t));
                 let live = env
                     .session_index(&id)
                     .and_then(|i| env.sessions[i].live.as_ref());

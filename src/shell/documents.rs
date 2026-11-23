@@ -608,7 +608,7 @@ impl Shell {
     ) -> AnyElement {
         let (subtitle, is_diff): (SharedString, bool) = match &tab.kind {
             TabKind::File { path } => (
-                path.strip_prefix(&self.env().path)
+                path.strip_prefix(&self.tab_env(tab).path)
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| pretty_path(path))
                     .into(),

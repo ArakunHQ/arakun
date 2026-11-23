@@ -4,8 +4,11 @@
 //!
 //! It runs on the asking member's machine, on their own Claude Code, and only
 //! reads: it has no tool that edits files or runs commands, and file reads
-//! stay inside the project. The chat is untrusted input: it reaches the model
-//! as delimited data, and the model is told it is data, not instructions.
+//! stay inside a private copy of the project without its secret-looking and
+//! git-ignored files. The chat is untrusted input: it reaches the model as
+//! delimited data, and the model is told it is data, not instructions. Since
+//! the chat can still steer the run, keys and tokens are taken out of the
+//! answer before it is posted (see [`super::bot_guard`]).
 //!
 //! The answer is strict JSON ([`Answer`]), checked before it is posted. It
 //! goes out as a `kind: "bot"` message whose `bot.answer` carries it, so other
@@ -224,6 +227,16 @@ pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, Ra
         .chain([&draft])
         .collect();
     range_of(&stored, DRAFT_ID)
+}
+
+/// What the answer says under "not checked" when the range holds messages
+/// this device could not open.
+fn unopened_note(n: usize) -> String {
+    if n == 1 {
+        "1 message in the range could not be opened on this device and was not read.".into()
+    } else {
+        format!("{n} messages in the range could not be opened on this device and were not read.")
+    }
 }
 
 // ---- the answer ------------------------------------------------------------------
@@ -658,6 +671,8 @@ pub fn review(
             "No project was open in Arakun, so no code or docs were checked.".into(),
         );
     }
+    // Whatever the chat talked the run into, no key or token is posted.
+    super::bot_guard::clean_answer(&mut answer, Some(cwd));
     Ok(Outcome {
         answer,
         parts: summaries.map_or(0, |s| s.len()),
@@ -835,7 +850,9 @@ pub(super) fn review_peer(prompt: &str, stop: &AtomicBool) -> Result<String, Str
     let dir = private_dir().map_err(|e| e.to_string())?;
     let out = run_claude(prompt, &dir, stop, peer_args(), super::coord::TURN);
     let _ = std::fs::remove_dir(&dir);
-    out
+    // The run reads no project, but the peer's request can carry a diff or
+    // a log with a key in it, and the notes go to the whole channel.
+    out.map(|s| super::bot_guard::redact(&s))
 }
 
 fn run_claude(
@@ -886,7 +903,11 @@ fn run_claude(
 fn private_dir() -> std::io::Result<PathBuf> {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let dir = std::env::temp_dir().join(format!("arakun-bot-{}", super::crypto::b64(bytes)));
+    let dir = std::env::temp_dir().join(format!(
+        "{}{}",
+        super::bot_guard::COPY_PREFIX,
+        super::crypto::b64(bytes)
+    ));
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir)?;
     #[cfg(not(unix))]
@@ -919,6 +940,9 @@ pub struct Run {
     pub ids: Vec<String>,
     /// The project it reads, as it was when the question was sent.
     pub project: Option<PathBuf>,
+    /// The answer of a review that finished and could not be posted. Try
+    /// again posts it, with no second review.
+    answer: Option<Body>,
     stop: Arc<AtomicBool>,
 }
 
@@ -1082,15 +1106,29 @@ impl Hub {
             done: 0,
             ids: Vec::new(),
             project: project.clone(),
+            answer: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         let key = channel_key(team_id, channel_id);
+        let mut unopened = 0;
         let range = match self.channels.get(&key) {
             None => Err("the channel is not open".to_string()),
             Some(c) if c.loading => {
                 Err("the channel is still being read. Try again in a moment".into())
             }
-            Some(c) => select_range(&c.messages, ask_id).map_err(|e| e.to_string()),
+            Some(c) => select_range(&c.messages, ask_id)
+                .map_err(|e| e.to_string())
+                .inspect(|range| {
+                    // The range is what this device could open. What it could
+                    // not, in between, the answer must not pass over in silence.
+                    let seq = |id: &str| c.messages.iter().find(|m| m.id == id)?.seq;
+                    if let (Some(first), Some(last)) = (
+                        seq(range.first_id()),
+                        range.lines.iter().rev().find_map(|l| seq(&l.id)),
+                    ) {
+                        unopened = c.unopened_between(first, last);
+                    }
+                }),
         };
         let (Some(me), Ok(range)) = (self.me().cloned(), range.clone()) else {
             run.state = RunState::Failed(range.err().unwrap_or_else(|| "not signed in".into()));
@@ -1118,20 +1156,29 @@ impl Hub {
             let work = cx.background_spawn({
                 let (job, stop) = (job.clone(), stop.clone());
                 async move {
-                    let (cwd, temp) = match project {
-                        Some(p) => (p, false),
-                        None => (
-                            private_dir().map_err(|e| format!("no folder to run in: {e}"))?,
-                            true,
-                        ),
-                    };
-                    let progress = move |s: Step| {
-                        let _ = tx.unbounded_send(s);
-                    };
-                    let out = review(&ClaudeCode, &job, &cwd, &stop, &progress);
-                    if temp {
-                        let _ = std::fs::remove_dir_all(&cwd);
-                    }
+                    // The run reads a copy of the project without its secrets,
+                    // never the project itself.
+                    super::bot_guard::sweep_copies();
+                    let dir = private_dir().map_err(|e| format!("no folder to run in: {e}"))?;
+                    let cwd = crate::platform::canonicalize(&dir).unwrap_or(dir);
+                    let copied = project
+                        .as_deref()
+                        .map(|p| super::bot_guard::mirror(p, &cwd, &stop))
+                        .transpose();
+                    let out = copied.and_then(|copied| {
+                        let progress = move |s: Step| {
+                            let _ = tx.unbounded_send(s);
+                        };
+                        let mut out = review(&ClaudeCode, &job, &cwd, &stop, &progress)?;
+                        if unopened > 0 {
+                            out.answer.unchecked.push(unopened_note(unopened));
+                        }
+                        if let Some(m) = copied {
+                            out.answer.unchecked.extend(m.notes());
+                        }
+                        Ok(out)
+                    });
+                    let _ = std::fs::remove_dir_all(&cwd);
                     out
                 }
             });
@@ -1162,9 +1209,13 @@ impl Hub {
                     if size > BODY_BYTES {
                         return Err("the answer is too long to post".into());
                     }
-                    if hub.send_body(&team_id, &channel_id, body, cx) {
+                    if hub.send_body(&team_id, &channel_id, body.clone(), cx) {
                         Ok(())
                     } else {
+                        // The review is done: Try again only has to post it.
+                        if let Some(r) = hub.bot_run(&ask_id, &stop) {
+                            r.answer = Some(body);
+                        }
                         Err(hub
                             .error
                             .clone()
@@ -1192,11 +1243,27 @@ impl Hub {
             .find(|r| r.ask_id == ask_id && Arc::ptr_eq(&r.stop, stop))
     }
 
-    /// Runs a failed one again.
+    /// Runs a failed one again. A review that finished and only failed to
+    /// post is posted again as it is: a second review would cost the asker
+    /// another run and could answer differently.
     pub fn retry_bot(&mut self, ask_id: &str, cx: &mut Context<Self>) {
-        if let Some(r) = self.bot.runs.iter().find(|r| r.ask_id == ask_id).cloned() {
+        let Some(r) = self.bot.runs.iter().find(|r| r.ask_id == ask_id).cloned() else {
+            return;
+        };
+        let Some(body) = r.answer else {
             self.start_bot(&r.team_id, &r.channel_id, ask_id, r.project, cx);
+            return;
+        };
+        if self.send_body(&r.team_id, &r.channel_id, body, cx) {
+            self.bot.runs.retain(|r| r.ask_id != ask_id);
+        } else if let Some(run) = self.bot.runs.iter_mut().find(|r| r.ask_id == ask_id) {
+            run.state = RunState::Failed(
+                self.error
+                    .clone()
+                    .unwrap_or_else(|| "could not post the answer".into()),
+            );
         }
+        cx.notify();
     }
 
     /// Stops a run, or drops a failed one. Nothing is posted.
@@ -1780,6 +1847,22 @@ mod tests {
     }
 
     #[test]
+    fn a_key_the_chat_asked_for_is_not_posted() {
+        let leaky = GOOD.replace(
+            "\"decision\":\"",
+            "\"decision\":\"The .env says API_TOKEN=ab12cd34ef56gh78. ",
+        );
+        let fake = Fake::new(vec![Ok(leaky)]);
+        let a = go(&fake, &job()).0.unwrap().answer;
+        assert!(
+            a.decision.contains("API_TOKEN=[redacted]"),
+            "{}",
+            a.decision
+        );
+        assert!(!a.decision.contains("ab12cd34"));
+    }
+
+    #[test]
     fn runs_claude_code_read_only() {
         let args = claude_args();
         let after = |flag: &str| {
@@ -1797,6 +1880,12 @@ mod tests {
         }
         assert!(args.contains(&"--no-session-persistence".to_string()));
         assert!(args.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn unopened_messages_are_named_in_the_answer() {
+        assert!(unopened_note(1).starts_with("1 message in the range could not be opened"));
+        assert!(unopened_note(4).starts_with("4 messages in the range could not be opened"));
     }
 
     #[test]
@@ -1827,6 +1916,7 @@ mod tests {
             done: 0,
             ids: Vec::new(),
             project: None,
+            answer: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(r.label(), "@bot is reading 23 messages…");

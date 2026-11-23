@@ -695,7 +695,12 @@ after a week).
   from that one down to yours light up, and a line over the composer says how many it
   will read. A plain `@bot`, with no reply, reads only your message. It runs on your
   own Claude Code (the `claude` CLI and its login), on your machine, read-only: it may
-  read the open project's code and docs and search the web, and nothing else. To
+  read the open project's code and docs and search the web, and nothing else. It reads
+  a private copy of the project without what git ignores and without files that look
+  like secrets (`.env*`, `*.pem`, `*.key` and other key stores, `id_*`, credential
+  files such as `.netrc` and `.npmrc`, and anything under `.ssh/`, `.gnupg/` or
+  `.aws/`), and keys, tokens and passwords in its answer are replaced with
+  `[redacted]` before it is posted. To
   answer, Claude Code sends the messages and the code it reads to its model service
   (Anthropic, or the one you set it up with), as any Claude Code session does; the
   Teams server still sees only sealed messages. What it searches the web for leaves

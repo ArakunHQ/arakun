@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod bot;
+pub mod bot_guard;
 mod coord;
 pub mod crypto;
 pub mod decisions;

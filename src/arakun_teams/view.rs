@@ -3393,10 +3393,10 @@ impl TeamsView {
             .and_then(|id| Some((*index_of.get(id.as_str())?, id)));
 
         // Keep the newest in view when it arrives and the list was at its
-        // bottom. A run of @bot counts, and so does its answer replacing it.
-        // Not when this frame jumps to a message: the scroll to the bottom
+        // bottom. A run of @bot counts, and so does its answer replacing it,
+        // and a notice of a new device. Not when this frame jumps to a message: the scroll to the bottom
         // is applied after the one to the message, and would win.
-        let seen = messages.len() * 2 + bot.runs.len();
+        let seen = messages.len() * 2 + bot.runs.len() + notices.len();
         if seen != self.seen_count {
             let max = self.scroll.max_offset().y;
             let at_bottom = -self.scroll.offset().y >= max - px(48.);
@@ -3469,7 +3469,7 @@ impl TeamsView {
                     .text_color(theme::text_subtle())
                     .child(icon("tick02", 12.).text_color(theme::success()))
                     .child(format!(
-                        "{} approved {}. You can read {team_name} from here on, and its history.",
+                        "{} approved {}. You can read {team_name} from here on, and the earlier messages this device got keys for.",
                         approved_by.as_deref().unwrap_or("An admin"),
                         crate::redact::text(&hub::device_name())
                     ))

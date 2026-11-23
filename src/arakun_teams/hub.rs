@@ -1688,6 +1688,7 @@ impl Hub {
                                     .into(),
                             );
                         }
+                        let progress = !stored.is_empty();
                         if let Some(last) = stored.last() {
                             c.history.page(last.seq);
                         }
@@ -1700,6 +1701,11 @@ impl Hub {
                             for frame in c.outbox.values() {
                                 link.send(frame.clone());
                             }
+                        } else if c.needs_history && progress {
+                            // A live message came during the read, past where
+                            // it ended: read on rather than wait for the
+                            // refresh with the outbox held back.
+                            hub.catch_up(&key, cx);
                         }
                     }
                     Err(e) => {

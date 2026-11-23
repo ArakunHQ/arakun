@@ -399,7 +399,10 @@ async fn device_flow(
                 answer
             }
             Err(e) if poll_again(&e, dropped) => {
-                dropped += 1;
+                // Only a poll without an answer counts toward the limit.
+                if matches!(e, ApiError::Network(_)) {
+                    dropped += 1;
+                }
                 continue;
             }
             Err(e) => return Err(format!("GitHub: {e}")),
@@ -435,8 +438,14 @@ const POLL_DROPS: u32 = 3;
 
 /// The user may be halfway through approving on GitHub, so a poll that got no
 /// answer is tried again at the next interval, a few times in a row at most.
+/// A 5xx is GitHub's own trouble and leaves the code valid, so it is tried
+/// again until the code expires.
 fn poll_again(e: &ApiError, dropped: u32) -> bool {
-    matches!(e, ApiError::Network(_)) && dropped < POLL_DROPS
+    match e {
+        ApiError::Network(_) => dropped < POLL_DROPS,
+        ApiError::Status(status, _) => *status >= 500,
+        _ => false,
+    }
 }
 
 /// The server's sessions are 32 random bytes in base64url.
@@ -484,8 +493,16 @@ mod tests {
         assert!(poll_again(&offline, 0));
         assert!(poll_again(&offline, POLL_DROPS - 1));
         assert!(!poll_again(&offline, POLL_DROPS));
-        assert!(!poll_again(&ApiError::Status(500, "down".into()), 0));
         assert!(!poll_again(&ApiError::Unreadable, 0));
+        assert!(!poll_again(&ApiError::Status(400, "bad".into()), 0));
+    }
+
+    #[test]
+    fn a_poll_github_answered_with_a_5xx_is_tried_again_until_expiry() {
+        let down = ApiError::Status(502, "Bad Gateway".into());
+        assert!(poll_again(&down, 0));
+        assert!(poll_again(&down, POLL_DROPS + 10));
+        assert!(poll_again(&ApiError::Status(503, String::new()), 0));
     }
 
     #[test]

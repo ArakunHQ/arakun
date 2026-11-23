@@ -530,6 +530,13 @@ impl Hub {
                     };
                     hub.poll(ENDORSE_POLL, cx, |hub, cx| hub.register(cx));
                 }
+                // A blip while the code is on show (Wi-Fi, sleep) keeps the
+                // code and the wait: the other device may approve meanwhile.
+                Err(ApiError::Network(_) | ApiError::Status(500..=599, _))
+                    if matches!(hub.device, DeviceState::Unendorsed { .. }) =>
+                {
+                    hub.poll(ENDORSE_POLL, cx, |hub, cx| hub.register(cx));
+                }
                 Err(e) => {
                     hub.load = Load::Unreachable(e.to_string());
                     hub.device = DeviceState::Failed(e.to_string());

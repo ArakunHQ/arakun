@@ -471,6 +471,10 @@ pub struct Kept {
     /// as PROTOCOL.md asks, no team key goes to their owner after a restart.
     #[serde(default)]
     mismatched: BTreeSet<String>,
+    /// Channel (`team/channel`) → the newest `seq` this device showed, for
+    /// the unread counts.
+    #[serde(default)]
+    read: BTreeMap<String, u64>,
     /// Team → a keyed epoch → the newest epoch seen skipped right after it.
     #[serde(default)]
     skipped: BTreeMap<String, BTreeMap<u64, u64>>,
@@ -701,21 +705,43 @@ impl Kept {
         add.insert(device_id.to_string()) || dropped
     }
 
+    /// The newest `seq` this device showed in a channel, if it ever showed it.
+    pub fn last_read(&self, channel: &str) -> Option<u64> {
+        self.read.get(channel).copied()
+    }
+
+    /// Moves a channel's last-read mark forward; whether it moved.
+    pub fn mark_read(&mut self, channel: &str, seq: u64) -> bool {
+        let slot = self.read.entry(channel.to_string()).or_default();
+        if seq > *slot {
+            *slot = seq;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Forgets a team this user is no longer in. True when it held anything.
     pub fn forget_team(&mut self, team_id: &str) -> bool {
         let keys = self.keys.remove(team_id).is_some();
         let grants = self.grants.remove(team_id).is_some();
+        let prefix = format!("{team_id}/");
+        let before = self.read.len();
+        self.read.retain(|k, _| !k.starts_with(&prefix));
+        let read = self.read.len() != before;
         let skipped = self.skipped.remove(team_id).is_some();
-        keys || grants || skipped
+        keys || grants || read || skipped
     }
 
     /// Keeps only these teams. True when that dropped anything.
     pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) -> bool {
-        let before = self.keys.len() + self.grants.len() + self.skipped.len();
+        let before = self.keys.len() + self.grants.len() + self.read.len() + self.skipped.len();
         self.keys.retain(|id, _| ids.contains(id.as_str()));
         self.grants.retain(|id, _| ids.contains(id.as_str()));
+        self.read
+            .retain(|k, _| k.split_once('/').is_some_and(|(t, _)| ids.contains(t)));
         self.skipped.retain(|id, _| ids.contains(id.as_str()));
-        before != self.keys.len() + self.grants.len() + self.skipped.len()
+        before != self.keys.len() + self.grants.len() + self.read.len() + self.skipped.len()
     }
 }
 
@@ -1128,6 +1154,17 @@ mod tests {
         assert_eq!(k.newest("T"), None);
         // Nothing left to forget: the caller need not write the file.
         assert!(!k.forget_team("T"));
+    }
+
+    #[test]
+    fn the_last_read_mark_only_moves_forward() {
+        let mut k = Kept::default();
+        assert_eq!(k.last_read("T/c"), None);
+        assert!(k.mark_read("T/c", 5));
+        assert!(!k.mark_read("T/c", 3));
+        assert_eq!(k.last_read("T/c"), Some(5));
+        k.forget_team("T");
+        assert_eq!(k.last_read("T/c"), None);
     }
 
     #[test]

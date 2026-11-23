@@ -41,6 +41,20 @@ pub struct Decision {
     pub verified: Vec<Verified>,
     /// Oldest first, one per member.
     pub accepted: Vec<Acceptance>,
+    /// The first time a member reversed it: it stays reversed.
+    pub reversed: Option<Reversal>,
+}
+
+/// A member taking a decision back, with why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reversal {
+    pub github_id: u64,
+    pub login: String,
+    pub at: u64,
+    /// Empty when they gave no reason.
+    pub reason: String,
+    /// The `decision_reverse` message.
+    pub message_id: String,
 }
 
 impl Decision {
@@ -69,6 +83,44 @@ pub fn accepting(m: &Msg) -> Option<&str> {
         return None;
     }
     m.body.decision.as_ref()?.get("of")?.as_str()
+}
+
+/// The bot message a `decision_reverse` reverses.
+pub fn reverses(m: &Msg) -> Option<&str> {
+    if m.body.kind != "decision_reverse" || matches!(m.delivery, Delivery::Failed(_)) {
+        return None;
+    }
+    m.body.decision.as_ref()?.get("of")?.as_str()
+}
+
+/// The oldest reversal of every bot message that has one, in the channel's
+/// order, by the bot message's ID. Like an acceptance, one counts once the
+/// server stored it. One pass, for callers that ask about each answer.
+pub fn reversals(messages: &[Msg]) -> HashMap<&str, Reversal> {
+    let mut all = HashMap::new();
+    for m in messages.iter().filter(|m| m.delivery == Delivery::Sent) {
+        if let Some(of) = reverses(m) {
+            all.entry(of).or_insert_with(|| Reversal {
+                github_id: m.github_id,
+                login: m.login.clone(),
+                at: m.at,
+                reason: m.body.text.trim().to_string(),
+                message_id: m.id.clone(),
+            });
+        }
+    }
+    all
+}
+
+/// A reversal of `bot_id` that was not sent: its message ID and why.
+pub fn refused_reversal<'a>(messages: &'a [Msg], bot_id: &str) -> Option<(&'a str, &'a str)> {
+    messages.iter().find_map(|m| {
+        let Delivery::Failed(why) = &m.delivery else {
+            return None;
+        };
+        let of = m.body.decision.as_ref()?.get("of")?.as_str()?;
+        (m.body.kind == "decision_reverse" && of == bot_id).then_some((m.id.as_str(), why.as_str()))
+    })
 }
 
 /// Who accepted each message, by the accepted message's ID, oldest first,
@@ -131,6 +183,7 @@ pub fn title_of(decision: &str) -> String {
 /// Messages are in the channel's order, as the hub keeps them.
 pub fn channel_log(channel_id: &str, messages: &[Msg]) -> Vec<Decision> {
     let mut accepted = acceptances(messages);
+    let mut reversed = reversals(messages);
     messages
         .iter()
         .filter(|m| m.delivery == Delivery::Sent)
@@ -157,6 +210,7 @@ pub fn channel_log(channel_id: &str, messages: &[Msg]) -> Vec<Decision> {
                 cites,
                 verified: answer.verified,
                 accepted,
+                reversed: reversed.remove(m.id.as_str()),
             })
         })
         .collect()
@@ -199,6 +253,7 @@ mod tests {
             login: login.into(),
             body,
             delivery: Delivery::Sent,
+            edited: None,
         }
     }
 
@@ -254,6 +309,54 @@ mod tests {
             a2,
             a3,
         ]
+    }
+
+    #[test]
+    fn a_decision_stays_reversed_by_the_first_reversal() {
+        use crate::arakun_teams::bot::reverse_body;
+        let mut ms = channel();
+        assert_eq!(channel_log("c1", &ms)[0].reversed, None);
+        ms.push(msg(
+            "r1",
+            20,
+            3,
+            "rik",
+            reverse_body("b1", " Too slow. ".into()),
+        ));
+        ms.push(msg("r2", 21, 2, "dani", reverse_body("b1", String::new())));
+        // An acceptance after it does not take it back.
+        ms.push(msg("a9", 22, 3, "rik", accept_body(&ms[2].clone())));
+        assert_eq!(reversals(&ms).len(), 1);
+        assert_eq!(reversals(&ms)["b1"].message_id, "r1");
+        let r = channel_log("c1", &ms)[0].reversed.clone().unwrap();
+        assert_eq!(
+            (r.login.as_str(), r.reason.as_str(), r.message_id.as_str()),
+            ("rik", "Too slow.", "r1")
+        );
+    }
+
+    #[test]
+    fn a_reversal_counts_once_it_is_sent() {
+        use crate::arakun_teams::bot::reverse_body;
+        let mut ms = channel();
+        ms.push(msg("r1", 20, 3, "rik", reverse_body("b1", "No.".into())));
+        ms[6].delivery = Delivery::Sending;
+        // The panel still knows one is on its way.
+        assert_eq!(reverses(&ms[6]), Some("b1"));
+        assert!(reversals(&ms).is_empty());
+        assert_eq!(channel_log("c1", &ms)[0].reversed, None);
+        assert_eq!(refused_reversal(&ms, "b1"), None);
+        ms[6].delivery = Delivery::Failed("refused".into());
+        assert_eq!(channel_log("c1", &ms)[0].reversed, None);
+        // A refused one is still there to send again.
+        assert_eq!(refused_reversal(&ms, "b1"), Some(("r1", "refused")));
+        assert_eq!(refused_reversal(&ms, "b2"), None);
+        ms[6].delivery = Delivery::Sent;
+        assert_eq!(refused_reversal(&ms, "b1"), None);
+        assert_eq!(
+            channel_log("c1", &ms)[0].reversed.as_ref().unwrap().login,
+            "rik"
+        );
     }
 
     #[test]

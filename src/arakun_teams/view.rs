@@ -206,6 +206,11 @@ pub struct TeamsView {
     drafts: Drafts,
     /// The message the composer answers.
     reply_to: Option<String>,
+    /// This user's message the composer edits.
+    editing: Option<String>,
+    /// The composer's text and reply from before the edit, put back when
+    /// it ends so an unsent message is not lost.
+    before_edit: Option<(String, Option<String>)>,
     scroll: ScrollHandle,
     /// Rows in the open channel at the last render (twice the messages,
     /// plus @bot's runs): new ones keep the list at its bottom.
@@ -227,15 +232,48 @@ pub struct TeamsView {
     pending_jump: Option<String>,
     /// The decision open in the Decisions panel, by its bot message ID.
     decision: Option<String>,
-    /// Decisions shows only the ones this user accepted or proposed.
-    decisions_mine: bool,
+    /// Which decisions the log shows.
+    decisions_filter: decisions_view::Filter,
+    /// The decision whose "Reverse it" was pressed: its reason field shows.
+    reversing: Option<String>,
+    reverse_reason: Entity<TextInput>,
     /// The channels (team, channel) Decisions opened to read the log.
     decisions_opened: HashSet<(String, String)>,
     /// The decision log last built, and what it was built from.
     decision_log: Option<decisions_view::BuiltLog>,
     decision_query: Entity<TextInput>,
+    /// The login typed to invite, as GitHub knows it.
+    lookup: Option<(String, Lookup)>,
+    _lookup: Option<Task<()>>,
+    /// Whether the shell has this tab on screen, in a window in front. The
+    /// view lives on behind another tab, and what arrives then is not read.
+    shown: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
+}
+
+/// What GitHub said about a login typed to invite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Lookup {
+    Looking,
+    /// The account, with its name when it has one.
+    Found(Option<String>),
+    Missing,
+    /// GitHub could not say (a rate limit, no network).
+    Unknown,
+}
+
+/// What the waiting page shows about one request to join.
+struct Waiting {
+    /// The team to remind, when the server knows the request.
+    remind: Option<String>,
+    name: String,
+    subtitle: &'static str,
+    approvers: Vec<String>,
+    asked_at: Option<u64>,
+    reminded_at: Option<u64>,
+    remind_after: Option<u64>,
+    reminding: bool,
 }
 
 impl EventEmitter<TeamsViewEvent> for TeamsView {}
@@ -250,6 +288,7 @@ impl TeamsView {
         let device_code = cx.new(|cx| TextInput::new("arakun-device.…", cx).mono());
         let decision_query =
             cx.new(|cx| TextInput::new("Who decided what? Search a file, a word, a person", cx));
+        let reverse_reason = cx.new(|cx| TextInput::new("Why? (optional)", cx));
         let on = |cx: &mut Context<Self>,
                   input: &Entity<TextInput>,
                   act: fn(&mut Self, InputEvent, &mut Context<Self>)| {
@@ -270,7 +309,7 @@ impl TeamsView {
             }),
             on(cx, &invite, |this, ev, cx| match ev {
                 InputEvent::Submit => this.send_invite(cx),
-                _ => cx.notify(),
+                _ => this.look_up(cx),
             }),
             on(cx, &channel_name, |this, ev, cx| match ev {
                 InputEvent::Submit => this.create_channel(cx),
@@ -290,13 +329,31 @@ impl TeamsView {
             on(cx, &composer, |this, ev, cx| match ev {
                 InputEvent::Submit => this.send(cx),
                 InputEvent::Cancel => {
-                    this.reply_to = None;
+                    if this.editing.is_some() {
+                        this.stop_editing(cx);
+                    } else {
+                        this.reply_to = None;
+                    }
                     cx.notify();
+                }
+                // Up in an empty composer edits this user's last message.
+                InputEvent::Up if this.composer.read(cx).text().is_empty() => {
+                    if let Some(id) = this.last_own_text(cx) {
+                        this.start_editing(id, cx);
+                    }
                 }
                 _ => cx.notify(),
             }),
             on(cx, &device_code, |_, _, cx| cx.notify()),
             on(cx, &decision_query, |_, _, cx| cx.notify()),
+            on(cx, &reverse_reason, |this, ev, cx| match ev {
+                InputEvent::Submit => this.reverse_picked(cx),
+                InputEvent::Cancel => {
+                    this.reversing = None;
+                    cx.notify();
+                }
+                _ => cx.notify(),
+            }),
         ];
         let owner = Self::owner(teams.read(cx));
         Self {
@@ -319,6 +376,8 @@ impl TeamsView {
                 ..Default::default()
             },
             reply_to: None,
+            editing: None,
+            before_edit: None,
             scroll: ScrollHandle::new(),
             seen_count: 0,
             flash: None,
@@ -330,10 +389,15 @@ impl TeamsView {
             unfolded: HashSet::new(),
             pending_jump: None,
             decision: None,
-            decisions_mine: false,
             decision_log: None,
+            decisions_filter: decisions_view::Filter::All,
+            reversing: None,
+            reverse_reason,
             decisions_opened: HashSet::new(),
             decision_query,
+            lookup: None,
+            _lookup: None,
+            shown: false,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -341,6 +405,25 @@ impl TeamsView {
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
+        self.hub.update(cx, |h, cx| h.refresh_unread(true, cx));
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The shell says whether this tab is on screen in a window in front.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            self.sync_viewing(cx);
+        }
+    }
+
+    /// Tells the hub which channel shows, so what arrives there is read.
+    fn sync_viewing(&self, cx: &mut Context<Self>) {
+        let key = viewed(&self.pane, self.shown);
+        self.hub.update(cx, |h, cx| h.set_viewing(key, cx));
     }
 
     /// The project @bot reads: the environment the window shows.
@@ -379,7 +462,8 @@ impl TeamsView {
         // What the last account searched for and had open in Decisions.
         self.decisions_opened.clear();
         self.decision = None;
-        self.decisions_mine = false;
+        self.decisions_filter = decisions_view::Filter::All;
+        self.reversing = None;
         for field in [
             &self.composer,
             &self.team_name,
@@ -387,6 +471,7 @@ impl TeamsView {
             &self.invite,
             &self.device_code,
             &self.decision_query,
+            &self.reverse_reason,
         ] {
             field.update(cx, |i, cx| i.set_text("", cx));
         }
@@ -451,7 +536,14 @@ impl TeamsView {
                 .filter_map(|i| i.invited_by_login.clone()),
         );
         people.extend(hub.inviters.values().cloned());
-        people.extend(hub.sent.iter().map(|(_, l, _)| l.clone()));
+        people.extend(
+            hub.waiting
+                .iter()
+                .filter_map(|w| w.invited_by_login.clone()),
+        );
+        for t in hub.team.values() {
+            people.extend(t.invites.iter().flatten().map(|i| i.login.clone()));
+        }
         if let Some(accepted) = accepted {
             self.accepting = None;
             if let Some(t) = accepted
@@ -508,6 +600,7 @@ impl TeamsView {
             self.close_decision_links(cx);
         }
         self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
+        self.sync_viewing(cx);
         cx.notify();
     }
 
@@ -537,11 +630,14 @@ impl TeamsView {
             i.set_placeholder(format!("Message {name}"), cx);
         });
         self.reply_to = None;
+        self.editing = None;
+        self.before_edit = None;
         self.seen_count = 0;
         self.flash = None;
         self.hub
             .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
         self.pane = Pane::Channel(team, channel);
+        self.sync_viewing(cx);
         // A jump to a message (from Decisions) scrolls once the list is laid
         // out; until then the list scrolls to the bottom itself.
         if self.pending_jump.is_none() {
@@ -553,7 +649,11 @@ impl TeamsView {
     /// Keeps what is typed for the channel in view. Opening a channel puts
     /// its draft in the composer, so call this wherever the pane leaves one.
     fn keep_draft(&mut self, cx: &gpui::App) {
-        let typed = self.composer.read(cx).text().to_string();
+        // An edit in progress is not a draft, but what it replaced is.
+        let typed = match &self.before_edit {
+            Some((typed, _)) if self.editing.is_some() => typed.clone(),
+            _ => self.composer.read(cx).text().to_string(),
+        };
         self.drafts.keep(&self.pane, &typed);
     }
 
@@ -583,6 +683,7 @@ impl TeamsView {
         } else {
             self.keep_draft(cx);
             self.pane = pane;
+            self.sync_viewing(cx);
         }
         // A new channel's name typed for one team does not follow to the next.
         if self.adding_channel.is_some() && self.adding_channel.as_deref() != self.selected_team() {
@@ -642,7 +743,56 @@ impl TeamsView {
             return;
         }
         self.invite.update(cx, |i, cx| i.set_text("", cx));
+        self.lookup = None;
+        self._lookup = None;
         self.hub.update(cx, |h, cx| h.invite(&team, login, cx));
+    }
+
+    /// Looks the typed login up on GitHub once typing pauses.
+    fn look_up(&mut self, cx: &mut Context<Self>) {
+        let login = self
+            .invite
+            .read(cx)
+            .text()
+            .trim()
+            .trim_start_matches('@')
+            .to_string();
+        if self.lookup.as_ref().is_some_and(|(l, _)| *l == login) {
+            return;
+        }
+        if login.is_empty() {
+            self.lookup = None;
+            self._lookup = None;
+            cx.notify();
+            return;
+        }
+        self.lookup = Some((login.clone(), Lookup::Looking));
+        self._lookup = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            let asked = login.clone();
+            let found = cx
+                .background_spawn(async move { super::api::github_user(&asked) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.lookup.as_ref().is_none_or(|(l, _)| *l != login) {
+                    return;
+                }
+                let state = match found {
+                    Ok(Some(user)) => {
+                        let shown = user.login.clone();
+                        this.teams.update(cx, |t, cx| t.want_pictures([shown], cx));
+                        Lookup::Found(user.name.filter(|n| !n.trim().is_empty()))
+                    }
+                    Ok(None) => Lookup::Missing,
+                    Err(_) => Lookup::Unknown,
+                };
+                this.lookup = Some((login, state));
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     fn create_channel(&mut self, cx: &mut Context<Self>) {
@@ -675,6 +825,59 @@ impl TeamsView {
         cx.notify();
     }
 
+    /// The open channel's messages, as held now.
+    fn open_messages<'a>(&self, cx: &'a Context<Self>) -> Option<&'a [Msg]> {
+        let Pane::Channel(t, c) = &self.pane else {
+            return None;
+        };
+        let hub = self.hub.read(cx);
+        Some(
+            hub.channels
+                .get(&hub::channel_key(t, c))?
+                .messages
+                .as_slice(),
+        )
+    }
+
+    /// This user's newest text message in the open channel that was sent.
+    fn last_own_text(&self, cx: &Context<Self>) -> Option<String> {
+        let me = self.hub.read(cx).me()?.github_id;
+        self.open_messages(cx)?
+            .iter()
+            .rev()
+            .find(|m| m.github_id == me && m.body.kind == "text" && m.delivery == Delivery::Sent)
+            .map(|m| m.id.clone())
+    }
+
+    /// Puts one of this user's messages in the composer to edit.
+    fn start_editing(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .open_messages(cx)
+            .and_then(|ms| ms.iter().find(|m| m.id == id))
+            .map(|m| m.body.text.clone())
+        else {
+            return;
+        };
+        // Switching to another edit keeps what the first one replaced.
+        if self.editing.is_none() {
+            let typed = self.composer.read(cx).text().to_string();
+            self.before_edit = Some((typed, self.reply_to.take()));
+        }
+        self.editing = Some(id);
+        self.reply_to = None;
+        self.composer.update(cx, |i, cx| i.set_text(text, cx));
+        cx.notify();
+    }
+
+    /// Ends an edit, sent or not, and puts back what the composer held.
+    fn stop_editing(&mut self, cx: &mut Context<Self>) {
+        self.editing = None;
+        let (typed, reply_to) = self.before_edit.take().unwrap_or_default();
+        self.reply_to = reply_to;
+        self.composer.update(cx, |i, cx| i.set_text(typed, cx));
+        cx.notify();
+    }
+
     fn send(&mut self, cx: &mut Context<Self>) {
         let Pane::Channel(team, channel) = self.pane.clone() else {
             return;
@@ -688,6 +891,20 @@ impl TeamsView {
             .get(&hub::channel_key(&team, &channel))
             .is_some_and(|c| matches!(c.status, socket::Status::Refused(_)));
         if text.is_empty() || refused {
+            return;
+        }
+        if let Some(id) = self.editing.clone() {
+            let unchanged = self
+                .open_messages(cx)
+                .and_then(|ms| ms.iter().find(|m| m.id == id))
+                .is_some_and(|m| m.body.text == text);
+            let sent = unchanged
+                || self
+                    .hub
+                    .update(cx, |h, cx| h.edit(&team, &channel, &id, text, cx));
+            if sent {
+                self.stop_editing(cx);
+            }
             return;
         }
         let reply_to = self.reply_to.take();
@@ -1307,12 +1524,13 @@ impl TeamsView {
     /// The invites this user got, as the invitee sees them.
     fn render_invites(&self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
-        let invites: Vec<(InviteRow, bool)> = hub
+        let invites: Vec<(InviteRow, bool, bool)> = hub
             .invites
             .iter()
             .map(|i| {
                 let busy = hub.busy.contains(&format!("accept:{}", i.invite_id));
-                (i.clone(), busy)
+                let declining = hub.busy.contains(&format!("decline:{}", i.invite_id));
+                (i.clone(), busy, declining)
             })
             .collect();
         let me = hub
@@ -1330,13 +1548,24 @@ impl TeamsView {
         if invites.is_empty() {
             page = page.child(Self::footnote("No invites are waiting."));
         }
-        for (ix, (inv, busy)) in invites.into_iter().enumerate() {
+        for (ix, (inv, busy, declining)) in invites.into_iter().enumerate() {
             let by = inv.invited_by_login.clone();
             let title = match &by {
                 Some(by) => format!("{by} invited you to {}", inv.team_name),
                 None => format!("You are invited to {}", inv.team_name),
             };
             let accept = inv.clone();
+            let decline = inv.clone();
+            let mut about = Vec::new();
+            if let Some(n) = inv.member_count {
+                about.push(format!("A team of {n}"));
+            }
+            about.push(format!("invited as {me}"));
+            about.push(ago(inv.created_at));
+            let mut about = about.join(" · ");
+            if let Some(first) = about.get(..1) {
+                about = first.to_uppercase() + &about[1..];
+            }
             page = page.child(
                 Self::card().child(
                     div()
@@ -1367,10 +1596,7 @@ impl TeamsView {
                                             ui::text(
                                                 Type::Label,
                                                 theme::text_subtle(),
-                                                format!(
-                                                    "Invited as {me} · {}",
-                                                    ago(inv.created_at)
-                                                ),
+                                                about,
                                             )
                                             .font_weight(FontWeight::NORMAL),
                                         ),
@@ -1381,21 +1607,40 @@ impl TeamsView {
                             "After you accept, an admin approves this device. Then it can read the team.",
                         ))
                         .child(
-                            div().flex().justify_end().gap(ui::sp(8.)).child(
-                                ui::button(
-                                    ("teams-accept", ix),
-                                    if busy { "Joining…" } else { "Accept" },
-                                    ButtonKind::Primary,
-                                    !busy,
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(ui::sp(8.))
+                                .child(
+                                    ui::button(
+                                        ("teams-decline", ix),
+                                        if declining { "Declining…" } else { "Decline" },
+                                        ButtonKind::Ghost,
+                                        !busy && !declining,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.hub.update(cx, |h, cx| h.decline(&decline, cx));
+                                        },
+                                    )),
                                 )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.accepting = Some((
-                                        accept.team_id.clone(),
-                                        accept.invite_id.clone(),
-                                    ));
-                                    this.hub.update(cx, |h, cx| h.accept(&accept, cx));
-                                })),
-                            ),
+                                .child(
+                                    ui::button(
+                                        ("teams-accept", ix),
+                                        if busy { "Joining…" } else { "Accept" },
+                                        ButtonKind::Primary,
+                                        !busy && !declining,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.accepting = Some((
+                                                accept.team_id.clone(),
+                                                accept.invite_id.clone(),
+                                            ));
+                                            this.hub.update(cx, |h, cx| h.accept(&accept, cx));
+                                        },
+                                    )),
+                                ),
                         ),
                 ),
             );
@@ -1403,8 +1648,6 @@ impl TeamsView {
         Self::scrolling("teams-invites-page", page)
     }
 
-    /// "Waiting for an admin to approve this device": after accepting an
-    /// invite, or a device of a member that holds no team key yet.
     /// An admin let this user in and the team is still loading, or failed
     /// to load. Not the wait: nothing is left for an admin to do.
     fn render_joining(&self, team: &str, failed: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1435,14 +1678,46 @@ impl TeamsView {
         Self::scrolling("teams-joining-page", page)
     }
 
-    fn render_waiting(
-        &self,
-        team: &str,
-        subtitle: &'static str,
-        admins: Vec<String>,
-        faces: &Faces,
-    ) -> AnyElement {
+    /// "Waiting for an admin to approve this device": after accepting an
+    /// invite, or a device of a member that holds no team key yet.
+    fn render_waiting(&self, w: Waiting, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let device = crate::redact::value(&hub::device_name());
+        let admins = w.approvers;
+        let asked = match w.asked_at {
+            Some(at) => format!("{device} · asked {}", ago(at)),
+            None => format!("{device} · asked to join"),
+        };
+        let wait_until = remind_wait(w.remind_after, w.reminded_at, now());
+        let remind = w.remind.map(|team| {
+            let who = admins
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "the admins".into());
+            let label = if w.reminding {
+                "Reminding…".to_string()
+            } else {
+                format!("Remind {who}")
+            };
+            ui::button(
+                "teams-remind",
+                label,
+                ButtonKind::Outline,
+                !w.reminding && wait_until.is_none(),
+            )
+            .on_click(
+                cx.listener(move |this, _, _, cx| this.hub.update(cx, |h, cx| h.remind(&team, cx))),
+            )
+        });
+        let remind_note = match (wait_until, w.reminded_at) {
+            (Some(at), Some(sent)) => Some(format!(
+                "Reminded {}. You can remind them again {}.",
+                ago(sent),
+                until(at)
+            )),
+            (Some(at), None) => Some(format!("You can remind them again {}.", until(at))),
+            (None, Some(at)) => Some(format!("Reminded {}.", ago(at))),
+            _ => None,
+        };
         let who: AnyElement = if admins.is_empty() {
             "An admin of the team".into_any_element()
         } else {
@@ -1468,8 +1743,8 @@ impl TeamsView {
             "teams-waiting-page",
             Self::page()
                 .child(ui::page_title(
-                    team.to_string(),
-                    Some(subtitle.into_any_element()),
+                    w.name.clone(),
+                    Some(w.subtitle.into_any_element()),
                 ))
                 .child(
                     Self::card().child(
@@ -1496,12 +1771,8 @@ impl TeamsView {
                                                 "Waiting for an admin to approve this device",
                                             ))
                                             .child(
-                                                ui::text(
-                                                    Type::Label,
-                                                    theme::text_subtle(),
-                                                    format!("{device} · asked to join"),
-                                                )
-                                                .font_weight(FontWeight::NORMAL),
+                                                ui::text(Type::Label, theme::text_subtle(), asked)
+                                                    .font_weight(FontWeight::NORMAL),
                                             ),
                                     ),
                             )
@@ -1517,10 +1788,22 @@ impl TeamsView {
                                     .child(Self::fact("Until then", "You can't read or write here"))
                                     .child(div().border_t_1().border_color(theme::border_subtle())),
                             )
-                            .child(Self::note(
-                                "square-lock02",
-                                "An admin's device holds the key. The server does not.",
-                            )),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(12.))
+                                    .child(
+                                        Self::note(
+                                            "square-lock02",
+                                            "An admin's device holds the key. The server does not.",
+                                        )
+                                        .flex_1()
+                                        .min_w_0(),
+                                    )
+                                    .children(remind),
+                            )
+                            .children(remind_note.map(Self::footnote)),
                     ),
                 ),
         )
@@ -1754,13 +2037,18 @@ impl TeamsView {
                     .collect()
             })
             .unwrap_or_default();
-        let sent: Vec<(String, u64)> = hub
-            .sent
-            .iter()
+        let sent: Vec<(String, String, u64, bool)> = t
+            .and_then(|t| t.invites.clone())
+            .unwrap_or_default()
+            .into_iter()
             .rev()
-            .filter(|(t, l, _)| t == team_id && !members.contains(&l.to_ascii_lowercase()))
-            .map(|(_, l, at)| (l.clone(), *at))
+            .filter(|i| !members.contains(&i.login.to_ascii_lowercase()))
+            .map(|i| {
+                let busy = hub.busy.contains(&format!("withdraw:{}", i.invite_id));
+                (i.invite_id, i.login, i.created_at, busy)
+            })
             .collect();
+        let tid = team_id.to_string();
         let typed = self
             .invite
             .read(cx)
@@ -1790,31 +2078,33 @@ impl TeamsView {
                     .on_click(cx.listener(|this, _, _, cx| this.send_invite(cx))),
                 ),
         );
+        let found = match self.lookup.as_ref().filter(|(l, _)| *l == typed) {
+            Some((_, Lookup::Found(Some(name)))) => format!("{name} · found on GitHub"),
+            Some((_, Lookup::Found(None))) => "Found on GitHub".to_string(),
+            Some((_, Lookup::Missing)) => "Not found on GitHub".to_string(),
+            Some((_, Lookup::Looking)) => "Looking on GitHub…".to_string(),
+            _ => "A GitHub login".to_string(),
+        };
         if !typed.is_empty() {
             card = card.child(
                 div().px(ui::sp(CARD_INSET)).pb(ui::sp(CARD_INSET)).child(
-                    Self::person_row(
-                        faces.avatar(&typed, AVATAR),
-                        typed.clone(),
-                        "A GitHub login",
-                        true,
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(ui::sp(6.))
-                            .h(px(22.))
-                            .px(ui::sp(8.))
-                            .rounded(ui::rad(ui::RADIUS_SM))
-                            .border_1()
-                            .border_color(theme::border())
-                            .ty(Type::Caption)
-                            .text_color(theme::text_muted())
-                            .child(div().size(px(5.)).rounded_full().bg(theme::text_muted()))
-                            .child("Enter to invite"),
-                    ),
+                    Self::person_row(faces.avatar(&typed, AVATAR), typed.clone(), found, true)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(ui::sp(6.))
+                                .h(px(22.))
+                                .px(ui::sp(8.))
+                                .rounded(ui::rad(ui::RADIUS_SM))
+                                .border_1()
+                                .border_color(theme::border())
+                                .ty(Type::Caption)
+                                .text_color(theme::text_muted())
+                                .child(div().size(px(5.)).rounded_full().bg(theme::text_muted()))
+                                .child("Enter to invite"),
+                        ),
                 ),
             );
         }
@@ -1829,18 +2119,26 @@ impl TeamsView {
             .child(card);
         if !sent.is_empty() {
             let mut rows = Self::rows();
-            for (login, at) in sent {
+            for (i, (invite_id, login, at, busy)) in sent.into_iter().enumerate() {
                 let note = if pending.contains(&login.to_ascii_lowercase()) {
                     format!("Invited {} · accepted, waiting for approval", ago(at))
                 } else {
                     format!("Invited {} · has not answered", ago(at))
                 };
-                rows = rows.child(Self::person_row(
-                    faces.avatar(&login, AVATAR),
-                    login,
-                    note,
-                    false,
-                ));
+                let t = tid.clone();
+                rows = rows.child(
+                    Self::person_row(faces.avatar(&login, AVATAR), login, note, false).child(
+                        ui::button(
+                            ("teams-withdraw", i),
+                            if busy { "Withdrawing…" } else { "Withdraw" },
+                            ButtonKind::Ghost,
+                            !busy,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| h.withdraw(&t, &invite_id, cx))
+                        })),
+                    ),
+                );
             }
             page = page.child(
                 div()
@@ -1886,11 +2184,19 @@ impl TeamsView {
                     Self::person_row(
                         faces.avatar(&p.login, AVATAR),
                         p.login.clone(),
-                        format!(
-                            "Accepted {} · {}",
-                            ago(p.requested_at),
-                            plural(p.devices.len(), "device", "devices")
-                        ),
+                        match p.reminded_at {
+                            Some(at) => format!(
+                                "Accepted {} · {} · reminded you {}",
+                                ago(p.requested_at),
+                                plural(p.devices.len(), "device", "devices"),
+                                ago(at)
+                            ),
+                            None => format!(
+                                "Accepted {} · {}",
+                                ago(p.requested_at),
+                                plural(p.devices.len(), "device", "devices")
+                            ),
+                        },
                         false,
                     )
                     .child(
@@ -2136,17 +2442,23 @@ impl TeamsView {
             return div().into_any_element();
         };
         let admin = t.role.is_admin() && !t.keyless;
-        let channels: Vec<(String, Option<String>)> = t
+        let channels: Vec<(String, Option<String>, Option<String>)> = t
             .channels
             .iter()
-            .map(|c| (c.id.clone(), c.name.clone()))
+            .map(|c| {
+                let unread = hub::unread_label(hub.unread(team_id, &c.id));
+                (c.id.clone(), c.name.clone(), unread)
+            })
             .collect();
+        let here = hub
+            .channels
+            .get(&hub::channel_key(team_id, channel_id))
+            .map(|c| c.here.as_slice())
+            .unwrap_or_default();
         let my_login = hub.me().map(|m| m.login.as_str());
-        let people: Vec<(String, String)> = t
-            .detail
-            .members
-            .iter()
-            .map(|m| (m.login.clone(), shown_login(&m.login, my_login)))
+        let people: Vec<(String, String, bool)> = hub::here_now(&t.detail.members, here)
+            .into_iter()
+            .map(|(m, on)| (m.login.clone(), shown_login(&m.login, my_login), on))
             .collect();
         let making = hub.busy.contains(&format!("channel:{team_id}"));
         let tid = team_id.to_string();
@@ -2172,7 +2484,7 @@ impl TeamsView {
                         ),
                     )
                 }));
-        for (i, (cid, cname)) in channels.into_iter().enumerate() {
+        for (i, (cid, cname, unread)) in channels.into_iter().enumerate() {
             let on = cid == channel_id;
             let (t2, c2) = (tid.clone(), cid.clone());
             let cname = cname.unwrap_or_else(|| "locked channel".into());
@@ -2202,6 +2514,11 @@ impl TeamsView {
                         theme::text_faint()
                     }))
                     .child(div().flex_1().min_w_0().truncate().child(cname))
+                    .children(unread.map(|n| {
+                        ui::text(Type::Caption, theme::text_subtle(), n)
+                            .flex_none()
+                            .font_family(theme::FONT_MONO)
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
                     })),
@@ -2231,8 +2548,8 @@ impl TeamsView {
         }
         list = list
             .child(div().h(px(ui::sp(8.).as_f32())))
-            .child(Self::column_title("People"));
-        for (login, shown) in people {
+            .child(Self::column_title("Here now"));
+        for (login, shown, on) in people {
             list = list.child(
                 div()
                     .flex()
@@ -2241,9 +2558,18 @@ impl TeamsView {
                     .h(px(ui::BUTTON_H))
                     .px(ui::sp(8.))
                     .ty(Type::Body)
-                    .text_color(theme::text_muted())
+                    .text_color(if on {
+                        theme::text_muted()
+                    } else {
+                        theme::text_subtle()
+                    })
                     .child(faces.avatar(&login, 20.))
-                    .child(div().flex_1().min_w_0().truncate().child(shown)),
+                    .child(div().flex_1().min_w_0().truncate().child(shown))
+                    .child(div().flex_none().size(px(6.)).rounded_full().bg(if on {
+                        theme::success().into()
+                    } else {
+                        theme::text_faint()
+                    })),
             );
         }
         div()
@@ -2360,6 +2686,7 @@ impl TeamsView {
             "bot" => Some("bot"),
             "decision" => Some("decision"),
             "decision_accept" => Some("accepted"),
+            "decision_reverse" => Some("reversed"),
             other => Some(other),
         }
         .map(|k| ui::badge(k.to_string(), Tone::Info));
@@ -2404,9 +2731,20 @@ impl TeamsView {
                 div()
                     .ty(Type::Body)
                     .text_color(text_color)
-                    .child(crate::redact::text(&m.body.text).into_owned()),
+                    .child(edited_text(
+                        &crate::redact::text(&m.body.text),
+                        m.edited.is_some(),
+                    )),
             )
             .children(delivery);
+        let editable = m.body.kind == "text"
+            && m.delivery == Delivery::Sent
+            && self
+                .hub
+                .read(cx)
+                .me()
+                .is_some_and(|me| me.github_id == m.github_id);
+        let edit_id = m.id.clone();
         div()
             .id(("teams-message", index))
             .group(group.clone())
@@ -2448,6 +2786,24 @@ impl TeamsView {
                         .border_1()
                         .border_color(theme::border())
                         .bg(theme::raised())
+                        .flex()
+                        .when(editable, |d| {
+                            d.child(
+                                ui::icon_button(
+                                    ("teams-edit", index),
+                                    "pencil-edit01",
+                                    13.,
+                                    "Edit (Up in an empty message)",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.start_editing(edit_id.clone(), cx);
+                                        let handle = this.composer.read(cx).focus_handle(cx);
+                                        window.focus(&handle, cx);
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             ui::icon_button(
                                 ("teams-reply", index),
@@ -2457,6 +2813,9 @@ impl TeamsView {
                             )
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
+                                    if this.editing.is_some() {
+                                        this.stop_editing(cx);
+                                    }
                                     this.reply_to = Some(id.clone());
                                     let handle = this.composer.read(cx).focus_handle(cx);
                                     window.focus(&handle, cx);
@@ -2469,7 +2828,8 @@ impl TeamsView {
             .into_any_element()
     }
 
-    /// "sending…", or why it was not sent and a way to send it again.
+    /// "sending…", or why it was not sent and a way to send it again. For
+    /// a sent message, the same for its newest edit, whose own row is hidden.
     fn delivery(
         &self,
         index: usize,
@@ -2477,27 +2837,31 @@ impl TeamsView {
         team_channel: (&str, &str),
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        match &m.delivery {
+        let (delivery, mid, is_edit) = match &m.delivery {
+            Delivery::Sent => {
+                let e = self.open_messages(cx).and_then(|ms| last_edit(ms, &m.id))?;
+                (e.delivery.clone(), e.id.clone(), true)
+            }
+            other => (other.clone(), m.id.clone(), false),
+        };
+        match delivery {
             Delivery::Sent => None,
             Delivery::Sending => {
                 Some(ui::text(Type::Caption, theme::text_faint(), "sending…").into_any_element())
             }
             Delivery::Failed(why) => {
-                let (t, c, mid) = (
-                    team_channel.0.to_string(),
-                    team_channel.1.to_string(),
-                    m.id.clone(),
-                );
+                let (t, c) = (team_channel.0.to_string(), team_channel.1.to_string());
+                let why = if is_edit {
+                    format!("edit not sent: {why}")
+                } else {
+                    format!("not sent: {why}")
+                };
                 Some(
                     div()
                         .flex()
                         .items_center()
                         .gap(ui::sp(6.))
-                        .child(ui::text(
-                            Type::Caption,
-                            theme::error().into(),
-                            format!("not sent: {why}"),
-                        ))
+                        .child(ui::text(Type::Caption, theme::error().into(), why))
                         .child(
                             div()
                                 .id(("teams-resend", index))
@@ -2637,6 +3001,24 @@ impl TeamsView {
                         })),
                 )
         });
+        let edit_bar = self.editing.as_ref().map(|_| {
+            Self::above_row()
+                .child(icon("pencil-edit01", 12.).text_color(theme::text_subtle()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child("Editing your message"),
+                )
+                .child(
+                    ui::icon_button("teams-edit-cancel", "cancel01", 12., "Cancel edit (Esc)")
+                        .on_click(cx.listener(|this, _, _, cx| this.stop_editing(cx))),
+                )
+        });
+        let reply_bar = edit_bar.or(reply_bar);
+        // An edit never runs @bot, so the hint would mislead.
+        let bot_hint = bot_hint.filter(|_| self.editing.is_none());
         let above = reply_bar.is_some() || bot_hint.is_some();
         let square = |id: &'static str| {
             div()
@@ -2792,6 +3174,11 @@ impl TeamsView {
         let joined = hub.joined.contains(team_id);
         let team_name = t.detail.name.clone();
         let blocked = hub.seal_blocked(team_id);
+        // It can be this user, from another device: masked like any login.
+        let approved_by = t
+            .approved_by
+            .as_deref()
+            .map(|l| shown_login(l, hub.me().map(|m| m.login.as_str())));
         // Each notice goes where its device was added among the messages.
         let added: HashMap<String, u64> = t
             .devices
@@ -2809,7 +3196,10 @@ impl TeamsView {
         let mut placed = vec![false; notices.len()];
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
-            if accept_shown_under(m, &messages, &bot.decided) {
+            // Acceptances, reversals and edits show as the line under what
+            // they change. A refused acceptance or reversal stays a row, so
+            // its error and Send again show.
+            if accept_shown_under(m, &messages, &bot.decided) || hidden_row(m) {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {
@@ -2828,7 +3218,7 @@ impl TeamsView {
                 lines.push(Line::Joined);
             }
             lines.push(Line::Message(i));
-            if bot.decided.contains_key(&m.id) {
+            if bot.decided.contains_key(&m.id) || bot.reversed.contains_key(&m.id) {
                 lines.push(Line::Decided(i));
             }
             for (r, run) in bot.runs.iter().enumerate() {
@@ -2944,7 +3334,8 @@ impl TeamsView {
                     .text_color(theme::text_subtle())
                     .child(icon("tick02", 12.).text_color(theme::success()))
                     .child(format!(
-                        "An admin approved {}. You can read {team_name} from here on, and its history.",
+                        "{} approved {}. You can read {team_name} from here on, and its history.",
+                        approved_by.as_deref().unwrap_or("An admin"),
                         crate::redact::text(&hub::device_name())
                     ))
                     .into_any_element(),
@@ -3141,7 +3532,10 @@ impl TeamsView {
         let Some(t) = hub.team.get(team_id) else {
             return div().into_any_element();
         };
-        let epoch = t.detail.epoch;
+        let epoch = match t.epoch_made.get(&t.detail.epoch) {
+            Some(at) => format!("Epoch {} · made {}", t.detail.epoch, made_on(*at)),
+            None => format!("Epoch {}", t.detail.epoch),
+        };
         let people = t.detail.members.len();
         let devices: usize = t.devices.values().map(Vec::len).sum();
         div()
@@ -3170,7 +3564,7 @@ impl TeamsView {
                 div()
                     .flex()
                     .flex_col()
-                    .child(Self::fact("Team key", format!("Epoch {epoch}")))
+                    .child(Self::fact("Team key", epoch))
                     .child(Self::fact(
                         "Held by",
                         format!(
@@ -3612,6 +4006,58 @@ impl TeamsView {
         .filter(|t| keyless(t))
         .map(|t| (t.to_string(), name_of(t), admins_of(t)));
         let inviters = hub.inviters.clone();
+        let waiting_of = |t: &str, name: String, subtitle: &'static str, admins: Vec<String>| {
+            let row = hub.waiting_for(t);
+            // The one who invited can approve; name them first.
+            let mut approvers = admins;
+            if let Some(by) = row
+                .and_then(|w| w.invited_by_login.clone())
+                .or_else(|| inviters.get(t).cloned())
+            {
+                approvers.retain(|a| !a.eq_ignore_ascii_case(&by));
+                approvers.insert(0, by);
+            }
+            Waiting {
+                remind: row.map(|w| w.team_id.clone()),
+                name,
+                subtitle,
+                approvers,
+                asked_at: row.map(|w| w.requested_at),
+                reminded_at: row.and_then(|w| w.reminded_at),
+                remind_after: hub.remind_after.get(t).copied(),
+                reminding: hub.busy.contains(&format!("remind:{t}")),
+            }
+        };
+        let waiting_page = if let Some((t, name, admins)) = waiting_on.clone() {
+            Some(waiting_of(
+                &t,
+                name,
+                "This device is new to the team. One step is left, and it is not yours.",
+                admins,
+            ))
+        } else if let Pane::Asked(t) = &self.pane {
+            let name = asked
+                .iter()
+                .find(|(a, _)| a == t)
+                .map(|(_, n)| n.clone())
+                .unwrap_or_default();
+            Some(waiting_of(
+                t,
+                name,
+                "You accepted the invite. One step is left, and it is not yours.",
+                Vec::new(),
+            ))
+        } else if no_teams && !has_invites && self.pane == Pane::None && !asked.is_empty() {
+            let (t, name) = asked[0].clone();
+            Some(waiting_of(
+                &t,
+                name,
+                "You accepted the invite. One step is left, and it is not yours.",
+                Vec::new(),
+            ))
+        } else {
+            None
+        };
         let first_team = hub.teams.first().map(|r| r.team_id.clone());
         let back_team = || {
             self.last_team
@@ -3623,14 +4069,9 @@ impl TeamsView {
         let (header_team, header_channel, body): (Option<String>, Option<String>, AnyElement) =
             match self.pane.clone() {
                 _ if waiting_on.is_some() => {
-                    let (t, name, admins) = waiting_on.expect("checked");
-                    let subtitle =
-                        "This device is new to the team. One step is left, and it is not yours.";
-                    (
-                        Some(t),
-                        None,
-                        self.render_waiting(&name, subtitle, admins, faces),
-                    )
+                    let (t, _, _) = waiting_on.expect("checked");
+                    let w = waiting_page.expect("made with waiting_on");
+                    (Some(t), None, self.render_waiting(w, faces, cx))
                 }
                 Pane::Channel(t, c) => {
                     let name = self
@@ -3662,30 +4103,16 @@ impl TeamsView {
                     let failed = unreachable.is_some();
                     (back_team(), None, self.render_joining(&name, failed, cx))
                 }
-                Pane::Asked(t) => {
-                    let name = asked
-                        .iter()
-                        .find(|(a, _)| *a == t)
-                        .map(|(_, n)| n.clone())
-                        .unwrap_or_default();
-                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
-                    let subtitle =
-                        "You accepted the invite. One step is left, and it is not yours.";
-                    (
-                        back_team(),
-                        None,
-                        self.render_waiting(&name, subtitle, who, faces),
-                    )
+                Pane::Asked(_) => {
+                    let w = waiting_page.expect("made for Pane::Asked");
+                    (back_team(), None, self.render_waiting(w, faces, cx))
                 }
                 Pane::None if no_teams && has_invites => {
                     (None, None, self.render_invites(faces, cx))
                 }
                 Pane::None if no_teams && !asked.is_empty() => {
-                    let (t, name) = asked[0].clone();
-                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
-                    let subtitle =
-                        "You accepted the invite. One step is left, and it is not yours.";
-                    (None, None, self.render_waiting(&name, subtitle, who, faces))
+                    let w = waiting_page.expect("made for this case");
+                    (None, None, self.render_waiting(w, faces, cx))
                 }
                 Pane::None if no_teams => (None, None, self.render_new_team(cx)),
                 Pane::None => (None, None, Self::centered(ui::loading("Opening the team…"))),
@@ -3757,6 +4184,9 @@ impl TeamsView {
 
 impl Render for TeamsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Drawn means shown: the unread counts of channels with no socket
+        // here follow, at most once a minute.
+        self.hub.update(cx, |h, cx| h.refresh_unread(false, cx));
         let teams = self.teams.read(cx);
         let enabled = teams.enabled();
         let access = teams.access();
@@ -4019,6 +4449,89 @@ fn ago_from(at: u64, now: u64) -> String {
     }
 }
 
+/// The channel the user reads now: the pane's, while the tab is on screen.
+fn viewed(pane: &Pane, shown: bool) -> Option<String> {
+    match pane {
+        Pane::Channel(t, c) if shown => Some(hub::channel_key(t, c)),
+        _ => None,
+    }
+}
+
+/// How long the server takes no second reminder from the same person
+/// (`REMIND_EVERY` in teams/src/teams.ts).
+const REMIND_EVERY: u64 = 60 * 60;
+
+/// Until when Remind waits, if it still does: the time the server gave when
+/// it refused one, or an hour after the last one it took, whichever is later.
+fn remind_wait(remind_after: Option<u64>, reminded_at: Option<u64>, now: u64) -> Option<u64> {
+    remind_after
+        .max(reminded_at.map(|at| at.saturating_add(REMIND_EVERY)))
+        .filter(|at| *at > now)
+}
+
+/// Whether a reversal or an edit has no row of its own: an edit never has,
+/// a reversal unless it was refused. [`accept_shown_under`] decides for an
+/// acceptance.
+fn hidden_row(m: &Msg) -> bool {
+    match m.body.kind.as_str() {
+        "decision_reverse" => !matches!(m.delivery, Delivery::Failed(_)),
+        "edit" => true,
+        _ => false,
+    }
+}
+
+/// The newest edit of a message, in the order the channel holds them.
+fn last_edit<'a>(messages: &'a [Msg], id: &str) -> Option<&'a Msg> {
+    messages
+        .iter()
+        .rev()
+        .find(|e| e.body.kind == "edit" && e.body.reply_to.as_deref() == Some(id))
+}
+
+/// A message's text, with a faint "(edited)" after it once edited.
+fn edited_text(text: &str, edited: bool) -> gpui::StyledText {
+    if !edited {
+        return gpui::StyledText::new(text.to_string());
+    }
+    let mark = "\u{a0}(edited)";
+    let full = format!("{text}{mark}");
+    let range = text.len()..full.len();
+    gpui::StyledText::new(full).with_highlights([(
+        range,
+        gpui::HighlightStyle {
+            color: Some(theme::text_faint()),
+            ..Default::default()
+        },
+    )])
+}
+
+/// How long until a time, in words: "in a moment", "in 4 minutes".
+fn until(at: u64) -> String {
+    until_from(at, now())
+}
+
+fn until_from(at: u64, now: u64) -> String {
+    let secs = at.saturating_sub(now);
+    match secs {
+        0..60 => "in a moment".into(),
+        60..120 => "in a minute".into(),
+        120..3600 => format!("in {} minutes", secs.div_ceil(60)),
+        3600..7200 => "in an hour".into(),
+        7200..86_400 => format!("in {} hours", secs / 3600),
+        86_400..172_800 => "tomorrow".into(),
+        _ => format!("in {} days", secs / 86_400),
+    }
+}
+
+/// The day a key was made: "today", "yesterday" or "Nov 12".
+fn made_on(at: u64) -> String {
+    let day = day_label(at);
+    match day.as_str() {
+        "Today" | "Yesterday" => day.to_lowercase(),
+        _ => day,
+    }
+}
+
 /// The divider over a day's messages: today, yesterday, or the date.
 fn day_label(at: u64) -> String {
     let date = |at| crate::platform::local_time(at).map(|t| (t.year, t.month, t.day));
@@ -4130,6 +4643,7 @@ mod tests {
             login: "dani".into(),
             body,
             delivery,
+            edited: None,
         };
         let mut answer_body = super::super::crypto::Body::text("", None);
         answer_body.kind = "bot".into();
@@ -4177,6 +4691,39 @@ mod tests {
         assert_eq!(TeamsView::local_project(here.clone()), Some(here));
         let there = crate::model::Remote::project_path("app");
         assert_eq!(TeamsView::local_project(there), None);
+    }
+
+    #[test]
+    fn until_reads_as_words() {
+        assert_eq!(until_from(100, 100), "in a moment");
+        assert_eq!(until_from(190, 100), "in a minute");
+        assert_eq!(until_from(100 + 250, 100), "in 5 minutes");
+        assert_eq!(until_from(100 + 3 * 3600, 100), "in 3 hours");
+        assert_eq!(until_from(50, 100), "in a moment");
+    }
+
+    #[test]
+    fn a_channel_is_viewed_only_while_the_tab_is_on_screen() {
+        let channel = Pane::Channel("t1".into(), "c1".into());
+        assert_eq!(viewed(&channel, true), Some(hub::channel_key("t1", "c1")));
+        // Behind another tab, what arrives stays unread.
+        assert_eq!(viewed(&channel, false), None);
+        assert_eq!(viewed(&Pane::Team("t1".into()), true), None);
+        assert_eq!(viewed(&Pane::None, true), None);
+    }
+
+    #[test]
+    fn remind_waits_an_hour_after_the_last_reminder() {
+        // Never reminded, never refused.
+        assert_eq!(remind_wait(None, None, 5000), None);
+        // Just reminded: the button waits before the server has to refuse.
+        assert_eq!(remind_wait(None, Some(5000), 5000), Some(8600));
+        assert_eq!(remind_wait(None, Some(5000), 8599), Some(8600));
+        assert_eq!(remind_wait(None, Some(5000), 8600), None);
+        // The server's own time wins when it is later, and ends too.
+        assert_eq!(remind_wait(Some(9000), Some(5000), 5000), Some(9000));
+        assert_eq!(remind_wait(Some(6000), Some(5000), 5000), Some(8600));
+        assert_eq!(remind_wait(Some(9000), None, 9000), None);
     }
 
     #[test]
@@ -4331,5 +4878,51 @@ mod tests {
     fn counts_say_one_or_many() {
         assert_eq!(plural(1, "device", "devices"), "1 device");
         assert_eq!(plural(3, "person", "people"), "3 people");
+    }
+
+    #[test]
+    fn the_newest_edit_is_found() {
+        let msg = |id: &str, kind: &str, reply_to: Option<&str>, delivery| {
+            let mut body = crate::arakun_teams::crypto::Body::text("x", reply_to.map(Into::into));
+            body.kind = kind.into();
+            Msg {
+                id: id.into(),
+                seq: None,
+                at: 0,
+                github_id: 1,
+                login: "rik".into(),
+                body,
+                delivery,
+                edited: None,
+            }
+        };
+        let ms = [
+            msg("a", "text", None, Delivery::Sent),
+            msg("e1", "edit", Some("a"), Delivery::Sent),
+            msg("b", "text", Some("a"), Delivery::Sent),
+            msg("e2", "edit", Some("a"), Delivery::Failed("offline".into())),
+        ];
+        let e = last_edit(&ms, "a").unwrap();
+        assert_eq!(e.id, "e2");
+        assert!(matches!(e.delivery, Delivery::Failed(_)));
+        assert!(last_edit(&ms, "b").is_none());
+        // A refused reversal keeps its row; an edit never has one.
+        // Acceptances are left to `accept_shown_under`.
+        let failed = || Delivery::Failed("refused".into());
+        for (kind, delivery, hidden) in [
+            ("text", Delivery::Sent, false),
+            ("edit", Delivery::Sent, true),
+            ("edit", failed(), true),
+            ("decision_accept", Delivery::Sending, false),
+            ("decision_reverse", Delivery::Sent, true),
+            ("decision_reverse", Delivery::Sending, true),
+            ("decision_reverse", failed(), false),
+        ] {
+            assert_eq!(
+                hidden_row(&msg("x", kind, None, delivery)),
+                hidden,
+                "{kind}"
+            );
+        }
     }
 }

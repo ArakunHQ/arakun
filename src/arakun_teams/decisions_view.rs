@@ -17,6 +17,26 @@ use super::bot_view::names;
 use super::{Faces, Pane, TeamsView, clock, day_label};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Type, Typography as _, icon};
+use gpui::Focusable as _;
+
+/// Which decisions the log shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Filter {
+    All,
+    /// The ones this user accepted or proposed.
+    Mine,
+    Reversed,
+}
+
+impl Filter {
+    fn shows(self, d: &Decision, me: u64) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Mine => d.via == me || d.accepted_by(me),
+            Filter::Reversed => d.reversed.is_some(),
+        }
+    }
+}
 
 /// A built decision log, with the team, the hub's message revision and the
 /// number of the team's open channels it was built from.
@@ -45,7 +65,7 @@ fn source_of(d: &Decision, channel: &str) -> String {
 }
 
 /// Whether a search finds the decision: in what was decided, who took part,
-/// what @bot checked, or the channel.
+/// what @bot checked, the channel, or who reversed it and why.
 fn finds(d: &Decision, channel: &str, query: &str) -> bool {
     let q = query.to_lowercase();
     let mut hay = vec![d.decision.clone(), d.via_login.clone(), channel.to_string()];
@@ -55,6 +75,9 @@ fn finds(d: &Decision, channel: &str, query: &str) -> bool {
             .iter()
             .flat_map(|v| [v.source.clone(), v.text.clone()]),
     );
+    if let Some(r) = &d.reversed {
+        hay.extend([r.login.clone(), r.reason.clone()]);
+    }
     hay.iter().any(|h| h.to_lowercase().contains(&q))
 }
 
@@ -176,6 +199,35 @@ impl TeamsView {
         });
     }
 
+    /// Reverses the decision whose reason field shows, with what was typed.
+    pub(super) fn reverse_picked(&mut self, cx: &mut Context<Self>) {
+        let (Some(bot_id), Some(team)) = (
+            self.reversing.clone(),
+            self.selected_team().map(str::to_string),
+        ) else {
+            return;
+        };
+        let Some(channel) = self
+            .hub
+            .read(cx)
+            .decision_log(&team)
+            .into_iter()
+            .find(|d| d.bot_id == bot_id)
+            .map(|d| d.channel_id)
+        else {
+            return;
+        };
+        let reason = self.reverse_reason.read(cx).text().to_string();
+        let sent = self.hub.update(cx, |h, cx| {
+            h.reverse_decision(&team, &channel, &bot_id, reason, cx)
+        });
+        if sent {
+            self.reversing = None;
+            self.reverse_reason.update(cx, |i, cx| i.set_text("", cx));
+        }
+        cx.notify();
+    }
+
     /// Opens the channel a decision came from at the first message @bot read.
     fn open_source(&mut self, d: &Decision, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let Some(team) = self.selected_team().map(str::to_string) else {
@@ -246,10 +298,10 @@ impl TeamsView {
         let note = read_note(reading, unread);
         let channel = |id: &str| channel_names.get(id).cloned().unwrap_or_default();
         let query = self.decision_query.read(cx).text().trim().to_string();
-        let mine = self.decisions_mine;
+        let filter = self.decisions_filter;
         let shown: Vec<&Decision> = log
             .iter()
-            .filter(|d| !mine || d.via == me || d.accepted_by(me))
+            .filter(|d| filter.shows(d, me))
             .filter(|d| query.is_empty() || finds(d, &channel(&d.channel_id), &query))
             .collect();
         let picked = self
@@ -258,23 +310,19 @@ impl TeamsView {
             .and_then(|id| log.iter().find(|d| d.bot_id == *id))
             .cloned();
 
-        let filters = ui::segmented()
-            .child(
-                ui::segment("teams-decisions-all", None, "All", !mine).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.decisions_mine = false;
-                        cx.notify();
-                    },
-                )),
-            )
-            .child(
-                ui::segment("teams-decisions-mine", None, "Mine", mine).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.decisions_mine = true;
-                        cx.notify();
-                    },
-                )),
-            );
+        let mut filters = ui::segmented();
+        for (id, label, f) in [
+            ("teams-decisions-all", "All", Filter::All),
+            ("teams-decisions-mine", "Mine", Filter::Mine),
+            ("teams-decisions-reversed", "Reversed", Filter::Reversed),
+        ] {
+            filters = filters.child(ui::segment(id, None, label, filter == f).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.decisions_filter = f;
+                    cx.notify();
+                }),
+            ));
+        }
         let search = div()
             .flex()
             .gap(ui::sp(8.))
@@ -298,6 +346,13 @@ impl TeamsView {
                     None,
                 )
                 .into_any_element()
+            } else if reading > 0 {
+                // What is missing may be in a channel not read yet.
+                ui::loading("Reading the team's channels…").into_any_element()
+            } else if filter == Filter::Reversed && query.is_empty() {
+                ui::text(Type::Body, theme::text_subtle(), "Nothing was reversed.")
+                    .px(ui::sp(4.))
+                    .into_any_element()
             } else {
                 ui::text(
                     Type::Body,
@@ -312,33 +367,42 @@ impl TeamsView {
             for (i, d) in shown.iter().enumerate() {
                 let on = picked.as_ref().is_some_and(|p| p.bot_id == d.bot_id);
                 let who: Vec<String> = d.accepted.iter().map(|a| a.login.clone()).collect();
-                let note = format!(
-                    "Accepted by {} · {} · {}",
-                    names(&who),
-                    short_when(d.decided_at()),
-                    source_of(d, &channel(&d.channel_id))
-                );
+                let note = match &d.reversed {
+                    Some(r) => format!(
+                        "Reversed by {} · {} · {}",
+                        r.login,
+                        short_when(r.at),
+                        source_of(d, &channel(&d.channel_id))
+                    ),
+                    None => format!(
+                        "Accepted by {} · {} · {}",
+                        names(&who),
+                        short_when(d.decided_at()),
+                        source_of(d, &channel(&d.channel_id))
+                    ),
+                };
+                let lead = if d.reversed.is_some() {
+                    icon("undo", 16.).text_color(theme::attention())
+                } else {
+                    icon("tick-double02", 16.).text_color(theme::text_muted())
+                };
                 let id = d.bot_id.clone();
                 rows = rows.child(
-                    Self::person_row(
-                        icon("tick-double02", 16.).text_color(theme::text_muted()),
-                        d.title.clone(),
-                        note,
-                        on,
-                    )
-                    .id(("teams-decision", i))
-                    .map(ui::focusable)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_hover()))
-                    .when(on, |r| r.child(Self::outline_pill("Open")))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.decision = if this.decision.as_deref() == Some(id.as_str()) {
-                            None
-                        } else {
-                            Some(id.clone())
-                        };
-                        cx.notify();
-                    })),
+                    Self::person_row(lead, d.title.clone(), note, on)
+                        .id(("teams-decision", i))
+                        .map(ui::focusable)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::fill_hover()))
+                        .when(on, |r| r.child(Self::outline_pill("Open")))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.decision = if this.decision.as_deref() == Some(id.as_str()) {
+                                None
+                            } else {
+                                Some(id.clone())
+                            };
+                            this.reversing = None;
+                            cx.notify();
+                        })),
                 );
             }
             Self::card().child(rows).into_any_element()
@@ -401,6 +465,108 @@ impl TeamsView {
             }
         }
         let (d1, d2) = (d.clone(), d.clone());
+        let reversed = d.reversed.clone();
+        let asking = self.reversing.as_deref() == Some(d.bot_id.as_str());
+        let sending = self.hub.read(cx).channels.values().any(|c| {
+            c.messages.iter().any(|m| {
+                m.delivery == hub::Delivery::Sending
+                    && super::super::decisions::reverses(m) == Some(d.bot_id.as_str())
+            })
+        });
+        // A reversal that was not sent stays here with why and a way to send
+        // it again: this panel is where it was asked for.
+        let refused = self.selected_team().and_then(|team| {
+            let c = self
+                .hub
+                .read(cx)
+                .channels
+                .get(&hub::channel_key(team, &d.channel_id))?;
+            let (id, why) = super::super::decisions::refused_reversal(&c.messages, &d.bot_id)?;
+            Some((team.to_string(), id.to_string(), why.to_string()))
+        });
+        let (reverse_button, reverse_form): (Option<AnyElement>, Option<AnyElement>) =
+            if reversed.is_some() || sending {
+                (None, None)
+            } else if let Some((team, id, why)) = refused {
+                let channel = d.channel_id.clone();
+                (
+                    Some(
+                        ui::button(
+                            "teams-reverse-resend",
+                            "Send again",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub
+                                .update(cx, |h, cx| h.resend(&team, &channel, &id, cx))
+                        }))
+                        .into_any_element(),
+                    ),
+                    Some(
+                        ui::text(
+                            Type::Caption,
+                            theme::error().into(),
+                            format!("The reversal was not sent: {why}"),
+                        )
+                        .into_any_element(),
+                    ),
+                )
+            } else if asking {
+                (None, Some(div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(8.))
+                .child(ui::overline("Reverse this decision"))
+                .child(
+                    ui::field()
+                        .child(div().flex_1().min_w_0().child(self.reverse_reason.clone())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(ui::sp(8.))
+                        .child(
+                            ui::button("teams-reverse-send", "Reverse", ButtonKind::Primary, true)
+                                .on_click(cx.listener(|this, _, _, cx| this.reverse_picked(cx))),
+                        )
+                        .child(
+                            ui::button("teams-reverse-cancel", "Cancel", ButtonKind::Ghost, true)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reversing = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(Self::footnote(
+                    "Everyone in the team sees it as reversed, here and in the channel.",
+                ))
+                .into_any_element()))
+            } else {
+                let id = d.bot_id.clone();
+                (
+                    Some(
+                        ui::button(
+                            "teams-decision-reverse",
+                            "Reverse it",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.reversing = Some(id.clone());
+                            // Whatever way the last form was left (Esc,
+                            // Cancel, another decision), its reason is not
+                            // this one's.
+                            this.reverse_reason.update(cx, |i, cx| i.set_text("", cx));
+                            let handle = this.reverse_reason.read(cx).focus_handle(cx);
+                            window.focus(&handle, cx);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    ),
+                    None,
+                )
+            };
         let checked: AnyElement = if sources.is_empty() {
             ui::text(
                 Type::Label,
@@ -498,22 +664,42 @@ impl TeamsView {
                             .child(Self::fact(
                                 "Proposed by",
                                 SharedString::from(format!("@bot, via {}", d.via_login)),
-                            )),
+                            ))
+                            .children(reversed.as_ref().map(|r| {
+                                Self::fact(
+                                    "Reversed by",
+                                    SharedString::from(format!(
+                                        "{}, {}",
+                                        r.login,
+                                        short_when(r.at)
+                                    )),
+                                )
+                            }))
+                            .children(
+                                reversed.as_ref().filter(|r| !r.reason.is_empty()).map(|r| {
+                                    Self::fact("Why", SharedString::from(r.reason.clone()))
+                                }),
+                            ),
                     )
                     .child(checked)
                     .child(
-                        div().flex().gap(ui::sp(8.)).child(
-                            ui::button(
-                                "teams-decision-open",
-                                "Open the messages",
-                                ButtonKind::Outline,
-                                true,
+                        div()
+                            .flex()
+                            .gap(ui::sp(8.))
+                            .child(
+                                ui::button(
+                                    "teams-decision-open",
+                                    "Open the messages",
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| this.open_source(&d2, window, cx),
+                                )),
                             )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| this.open_source(&d2, window, cx),
-                            )),
-                        ),
-                    ),
+                            .children(reverse_button),
+                    )
+                    .children(reverse_form),
             )
             .into_any_element()
     }
@@ -590,6 +776,7 @@ mod tests {
                 at: 11,
                 message_id: "a1".into(),
             }],
+            reversed: None,
         }
     }
 
@@ -607,6 +794,17 @@ mod tests {
             assert!(finds(&d, "protocol", q), "{q}");
         }
         assert!(!finds(&d, "protocol", "rik"));
+        // Who reversed it and why are on the row, so a search finds them.
+        let mut d = d;
+        d.reversed = Some(crate::arakun_teams::decisions::Reversal {
+            github_id: 3,
+            login: "rik".into(),
+            at: 20,
+            reason: "Too slow on a phone".into(),
+            message_id: "r1".into(),
+        });
+        assert!(finds(&d, "protocol", "RIK"));
+        assert!(finds(&d, "protocol", "too slow"));
     }
 
     #[test]

@@ -2872,8 +2872,10 @@ impl Hub {
         self.unread_at = Some(Instant::now());
         let me = self.github_id();
         let mut asks = Vec::new();
+        let mut skipped = false;
         for (team_id, t) in &self.team {
             let Some(scope) = self.roster(team_id) else {
+                skipped = true;
                 continue;
             };
             let mut channels = Vec::new();
@@ -2901,6 +2903,9 @@ impl Hub {
                 .collect();
             let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
             asks.push((team_id.clone(), scope, senders, keys, channels));
+        }
+        if skipped {
+            self.unread_soon();
         }
         if asks.is_empty() {
             return;
@@ -2956,8 +2961,12 @@ impl Hub {
                 let mut moved = false;
                 for (key, team, scope, polled) in polls {
                     // A poll for a membership that has since changed is not
-                    // this one's.
+                    // this one's, and the old count is the old membership's
+                    // too: drop it and read again for the one there is now.
                     if hub.roster(&team) != Some(scope) {
+                        hub.unread_read.remove(&key);
+                        hub.unread_newest.remove(&key);
+                        hub.unread_soon();
                         continue;
                     }
                     match polled {
@@ -2981,6 +2990,12 @@ impl Hub {
                 cx.notify();
             },
         );
+    }
+
+    /// Lets the next [`Hub::refresh_unread`] read after [`UNREAD_FOCUS`]
+    /// rather than [`UNREAD_AGAIN`], for a team whose roster was not settled.
+    fn unread_soon(&mut self) {
+        self.unread_at = Instant::now().checked_sub(UNREAD_AGAIN - UNREAD_FOCUS);
     }
 
     /// Sends a text message, replying to `reply_to` when given. One that

@@ -270,14 +270,15 @@ pub fn remember_claude_options(raw: &Value) {
     *CLAUDE.lock().unwrap() = Some(Arc::new(fresh));
 }
 
-/// Options that offer a single model: what the adapter reports while a
-/// subagent runs (its model, reasoning level and agent, one choice each). New
+/// Options that are not a whole catalog: no model to pick from, or a single
+/// one. While a subagent runs the adapter reports such updates (its model,
+/// reasoning level and agent with one choice each, or only the agent). New
 /// sessions would then offer nothing to pick, so they are not kept.
 fn narrowed(options: &[ConfigOption]) -> bool {
     options
         .iter()
         .find(|o| o.category.as_deref() == Some("model"))
-        .is_some_and(|o| o.options.len() < 2)
+        .is_none_or(|o| o.options.len() < 2)
 }
 
 /// A session's values are its own; a new one starts on the defaults: the
@@ -949,8 +950,11 @@ mod tests {
         // What a session reports while a subagent runs.
         assert!(narrowed(&config(&["opus"])));
         assert!(!narrowed(&config(&["default", "sonnet", "opus"])));
-        // Options without a model setting say nothing about the models.
-        assert!(!narrowed(&[]));
+        // An update with only the agent setting is not a catalog either.
+        assert!(narrowed(&parse_config(&json!([{
+            "id": "agent", "currentValue": "general-purpose",
+            "options": [{"value": "general-purpose", "name": "general-purpose"}],
+        }]))));
     }
 
     #[test]

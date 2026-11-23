@@ -429,7 +429,12 @@ impl TeamsView {
     /// The project @bot reads: the environment the window shows.
     pub fn set_project(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         self.hub
-            .update(cx, |h, _| h.set_bot_project(Self::local_project(dir)));
+            .update(cx, |h, cx| h.set_bot_project(Self::local_project(dir), cx));
+    }
+
+    /// No project is open any more.
+    pub fn clear_project(&mut self, cx: &mut Context<Self>) {
+        self.hub.update(cx, |h, cx| h.set_bot_project(None, cx));
     }
 
     /// A remote environment's path is an `arakun-server://` address, not a
@@ -475,6 +480,48 @@ impl TeamsView {
         ] {
             field.update(cx, |i, cx| i.set_text("", cx));
         }
+    }
+
+    /// `arakun peer-review <goal>` from an agent in this environment: runs the
+    /// review this device paired in Teams and answers with its recommendation.
+    pub fn peer_request(
+        &self,
+        project: Option<&std::path::Path>,
+        args: &[String],
+        done: futures::channel::oneshot::Sender<crate::control::Reply>,
+        cx: &mut Context<Self>,
+    ) {
+        self.hub.update(cx, |h, cx| {
+            let scope = h
+                .peer_review
+                .as_ref()
+                .filter(|g| g.live())
+                .and_then(|g| h.channels.get(&g.channel));
+            let (Some(c), Some(project), [goal]) = (scope, project, args) else {
+                let _ = done.send(crate::control::Reply::err(
+                    "Pair one review in the Teams channel for this environment first.",
+                ));
+                return;
+            };
+            if Some(project) != h.bot.project.as_deref() {
+                let _ = done.send(crate::control::Reply::err(
+                    "This environment does not own the paired review.",
+                ));
+                return;
+            }
+            let (team, channel) = (c.team_id.clone(), c.channel_id.clone());
+            match h.review_command(&team, &channel, &format!("review {goal}"), cx) {
+                Ok(()) => {
+                    h.peer_review
+                        .as_mut()
+                        .expect("request reserved a grant")
+                        .caller = Some(done)
+                }
+                Err(e) => {
+                    let _ = done.send(crate::control::Reply::err(e));
+                }
+            }
+        });
     }
 
     /// Opens the first channel once there is one and nothing else was picked,
@@ -891,6 +938,23 @@ impl TeamsView {
             .get(&hub::channel_key(&team, &channel))
             .is_some_and(|c| matches!(c.status, socket::Status::Refused(_)));
         if text.is_empty() || refused {
+            return;
+        }
+        // Before the edit branch: a command is never the new text of a message.
+        if text == "/agents" || text.starts_with("/agents ") {
+            let result = self.hub.update(cx, |hub, cx| {
+                hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
+            });
+            match result {
+                // A command typed over an edit ends the edit, or the next
+                // send would overwrite the message being edited.
+                Ok(()) if self.editing.is_some() => self.stop_editing(cx),
+                Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
+                Err(why) => self.hub.update(cx, |h, cx| {
+                    h.error = Some(why);
+                    cx.notify();
+                }),
+            }
             return;
         }
         if let Some(id) = self.editing.clone() {
@@ -2687,6 +2751,9 @@ impl TeamsView {
             "decision" => Some("decision"),
             "decision_accept" => Some("accepted"),
             "decision_reverse" => Some("reversed"),
+            "agent_review" => {
+                Some(super::coord::Event::read(&m.body).map_or("Agent review", |e| e.label()))
+            }
             other => Some(other),
         }
         .map(|k| ui::badge(k.to_string(), Tone::Info));
@@ -3168,6 +3235,20 @@ impl TeamsView {
             .unwrap_or_else(|| "locked channel".into());
         let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
         let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
+        let peer_hint = hub
+            .peer_review
+            .as_ref()
+            .filter(|g| g.channel == key && g.live())
+            .map(|g| {
+                format!(
+                    "Paired with @{} · /agents review <goal> · /agents off",
+                    t.login(g.peer)
+                )
+            })
+            .unwrap_or_else(|| {
+                "Pair agents: /agents pair @login · one Claude turn, shared text only ($0.10 limit)"
+                    .into()
+            });
         let loading = c.is_none_or(|c| c.loading);
         let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
         let keyless = t.keyless;
@@ -3428,6 +3509,13 @@ impl TeamsView {
                 },
             )
             .child(list)
+            .child(
+                div()
+                    .px(ui::sp(16.))
+                    .pt(ui::sp(4.))
+                    .pb(ui::sp(8.))
+                    .child(ui::text(Type::Caption, theme::text_subtle(), peer_hint)),
+            )
             .child(self.render_composer(
                 can_send,
                 keyless,

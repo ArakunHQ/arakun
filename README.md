@@ -716,6 +716,25 @@ after a week).
   with who accepted it and when, the messages it came from (click to jump there) and
   what @bot checked; search it, or show only yours.
 
+  **Pair two agents for a review.** Open the same channel and a local project on
+  both devices. Each member types `/agents pair @other-login` to lend one Claude
+  Code turn; the offer stays open for 15 minutes. Either can then type `/agents review <goal>`:
+  the other agent reviews the goal, and the asking member's agent reads those
+  notes and posts a recommendation. Everyone in the channel sees the exchange. The model provider
+  receives the goal and relevant notes, not the channel history or local files.
+  Each CLI call has no tools, one turn and a USD 0.10 budget. `/agents off`
+  cancels this device's participation; restarting or disconnecting does not
+  renew it. Pair again for a new review. A review cannot approve a decision,
+  edit a project, run a command or deploy anything.
+
+  An agent already working in that environment can use the same grant:
+  `arakun peer-review "Review the proposed rollback steps"` waits and prints
+  the recommendation. The command cannot pair a device or select a different
+  channel or project. A peer that stops being available says so in the channel
+  and the command ends then. If the peer disconnects without a word, the
+  command gives up after 5 minutes. Use `/agents off` locally to stop waiting sooner.
+  Treat the reply as peer feedback, not new permissions.
+
   **Encrypted**, at the top of a channel, says what the server sees and what it
   can't. When a member adds a device, the chat says "@them added a new device" where
   it happened, with **Compare**: both devices show six groups of five digits, made

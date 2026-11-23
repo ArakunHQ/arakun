@@ -1397,6 +1397,7 @@ impl Shell {
         self.projects[pi].active_env = ei;
         self.env_menu_open = false;
         self.completion = None;
+        self.sync_teams_project(cx);
         self.refresh_visible(cx);
         if self.panel_tab == PanelTab::Explorer {
             self.ensure_explorer(cx);
@@ -1828,6 +1829,7 @@ impl Shell {
         self.mark_visible_used();
         self.avoid_env_being_removed(index);
         self.active_project = index;
+        self.sync_teams_project(cx);
         self.show_env_tab(false);
         self.note_active_tab(cx);
         self.refresh_project(index, cx);
@@ -1860,6 +1862,7 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        self.sync_teams_project(cx);
         self.settle_strip(cx);
         self.unfloat_github(cx);
         // Its Servers tab went with it; a no-op while one is left elsewhere.
@@ -3496,7 +3499,19 @@ impl Shell {
         self.after_switch(window, cx);
     }
 
+    /// A paired review belongs to one environment, so every path that
+    /// changes the one on screen tells Teams, which ends a grant made in
+    /// another one. Without this it would last until the Teams tab draws.
+    fn sync_teams_project(&mut self, cx: &mut Context<Self>) {
+        let dir = self.has_projects().then(|| self.env().path.clone());
+        self.teams_view.update(cx, |v, cx| match dir {
+            Some(dir) => v.set_project(dir, cx),
+            None => v.clear_project(cx),
+        });
+    }
+
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_teams_project(cx);
         self.completion = None;
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);

@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod bot;
+mod coord;
 pub mod crypto;
 pub mod decisions;
 pub mod hub;

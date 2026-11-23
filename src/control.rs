@@ -443,6 +443,8 @@ Usage:
                              of main (they can break) or releases
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
+  arakun peer-review <goal>    use one review paired in Teams for this environment
+                             and print the team's recommendation
   arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
                              save a review as a draft for the GitHub tab (v:
                              approve, request-changes or comment; - reads stdin;
@@ -842,6 +844,8 @@ fn cli(args: Vec<String>) -> Cli {
         }
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return stopped(first, Stop::Usage),
+        "peer-review" if !rest.is_empty() => request("peer-review", vec![rest.join(" ")]),
+        "peer-review" => return stopped(first, Stop::Usage),
         "ls" => request("ls", Vec::new()),
         "show" if rest.is_empty() => request("show", Vec::new()),
         "show" => return usage("arakun show"),
@@ -945,7 +949,7 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
 /// (`arakun run du -s .`); elsewhere anywhere, as `arakun open file -s` reads.
 fn side_flag(cmd: &str, args: &[String]) -> (bool, Vec<String>) {
     let is_flag = |a: &String| matches!(a.as_str(), "-s" | "--side");
-    if matches!(cmd, "run" | "notify" | "agent" | "feedback") {
+    if matches!(cmd, "run" | "notify" | "agent" | "feedback" | "peer-review") {
         let lead = args.iter().take_while(|a| is_flag(a)).count();
         return (lead > 0, args[lead..].to_vec());
     }
@@ -1048,6 +1052,9 @@ fn run_args(rest: &[String]) -> Result<Vec<String>, Stop> {
 /// How long the client waits for an answer: `arakun page` waits for loads and
 /// clicks, each bounded on the app's side; `arakun run --ready` for its timeout.
 fn reply_wait(req: &Request) -> Duration {
+    if req.cmd == "peer-review" {
+        return Duration::from_secs(16 * 60);
+    }
     let run = (req.cmd == "run" && req.args.len() > 1).then(|| {
         req.args
             .get(3)
@@ -1465,6 +1472,7 @@ fn usage_of(cmd: &str) -> Option<&'static str> {
         "island" => ISLAND_USAGE,
         "rename" => "arakun rename <branch>",
         "notify" => "arakun notify [--] <message…>",
+        "peer-review" => "arakun peer-review <goal>",
         "ls" => "arakun ls",
         "feedback" => "arakun feedback --kind <bug|feature|ux|other> <text…|->",
         "restart" => "arakun restart",
@@ -1475,7 +1483,16 @@ fn usage_of(cmd: &str) -> Option<&'static str> {
 
 /// Commands whose arguments are only a payload, without flags of their own.
 const NO_FLAGS: &[&str] = &[
-    "browse", "palette", "open", "island", "rename", "notify", "ls", "restart", "add",
+    "browse",
+    "palette",
+    "open",
+    "island",
+    "rename",
+    "notify",
+    "peer-review",
+    "ls",
+    "restart",
+    "add",
 ];
 
 /// Why a command's arguments stop it before it runs.
@@ -1926,6 +1943,10 @@ mod tests {
         assert_eq!(
             side_flag("notify", &s(&["use", "-s"])),
             (false, s(&["use", "-s"]))
+        );
+        assert_eq!(
+            side_flag("peer-review", &s(&["check", "-s", "--side"])),
+            (false, s(&["check", "-s", "--side"]))
         );
         assert_eq!(side_flag("open", &s(&["a.rs", "-s"])), (true, s(&["a.rs"])));
         assert_eq!(side_flag("browse", &s(&["--side", "x"])), (true, s(&["x"])));

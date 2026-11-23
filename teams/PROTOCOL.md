@@ -286,12 +286,13 @@ A message on the wire:
 
 ```json
 { "kind": "text" | "bot" | "decision" | "decision_accept" | "decision_reverse"
-          | "edit",
+          | "edit" | "agent_review",
   "text": "...", "reply_to": "<message id>" | null,
   "mentions": ["bot"],
   "bot": { "range": ["<first id>", "<last id>"], "via": <github_id>,
            "cites": { "1": "<message id>", "2": "..." } } | null,
-  "decision": { "of": "<bot message id>" } | null }
+  "decision": { "of": "<bot message id>" } | null,
+  "coordination": { "step": "ready" | "request" | "notes" | "done" | "blocked", ... } | null }
 ```
 
   - `text`: the user's message, or the bot's answer.
@@ -446,8 +447,35 @@ Not in v1 either, and tracked as follow-ups:
   stolen device gets every new key, and a user who loses every device cannot
   register a new one.
 
+## Paired agent reviews
+
+`agent_review` is an encrypted body kind. Its `coordination.step` is `ready`,
+`request`, `notes`, `done`, `blocked` or `withdrawn`; `text` is readable by
+older clients.
+An enrollment binds a fresh random ticket to one local device, channel, key
+epoch and peer GitHub ID for 15 minutes. The `ready` event advertises the peer
+and ticket. A `request` names both tickets (`from`, `to`) and a fresh `job`;
+`notes` returns the same job with the tickets reversed. Check the sender from
+the verified wire signature, not from text or metadata. Only a matching live
+enrollment can run a turn, once. If both devices send a `request` before
+either sees the other's, only the one with the smaller `job` runs; the other
+device answers it and drops its own. `done`, `blocked` and `withdrawn` never
+trigger work. Cancel on disconnect, account or project change, or key rotation.
+A device that cancels an unused ticket while the channel can still carry a
+message posts `withdrawn` with that ticket; do not send a `request` to a
+withdrawn ticket, and stop waiting for `notes` from one. A device whose
+enrollment ends during its review turn answers the `request` with `blocked`.
+The 15 minutes bound how long a ticket waits to be used; an exchange that
+started in them may end after them. Each turn runs for at most 4 minutes, and a
+requester stops waiting for `notes` after 5 minutes, since a peer that lost its
+socket cannot say so. No grant survives a restart. The server does not schedule or see these steps.
+
+Members explicitly choose to send the selected text to their own Claude Code.
+The peer runner uses no tools, no project context and no MCP servers. Results
+are recommendations, not authority to run tools or accept decisions.
+
 ## Not in v1
 
-Attachments, deleting messages, direct messages, recovery keys, and the agent
-bus. They fit in the same shapes: new `kind`s and sealed blobs in R2. The signed
-membership log and device revocation are above.
+Attachments, deleting messages, direct messages, recovery keys, and general
+agent task execution. They fit in the same shapes: new `kind`s and sealed blobs
+in R2. The signed membership log and device revocation are above.

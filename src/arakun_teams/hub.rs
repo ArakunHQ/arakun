@@ -22,6 +22,7 @@ use super::api::{
     ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
     Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
+use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
 use super::store::{self, Kept, Local, Sealer};
@@ -366,6 +367,8 @@ pub struct Hub {
     pub joined: HashSet<String>,
     /// @bot's runs and what this user did with its answers, on this device.
     pub bot: super::bot::Bots,
+    /// The one paired agent review this device takes part in, if any.
+    pub(super) peer_review: Option<Grant>,
     /// The channel the tab shows, by channel key: what arrives there is read.
     viewing: Option<String>,
     /// Unread counts of channels with no socket here, from their history.
@@ -474,6 +477,7 @@ impl Hub {
             error: None,
             busy: HashSet::new(),
             bot: super::bot::Bots::default(),
+            peer_review: None,
             viewing: None,
             unread_read: HashMap::new(),
             unread_at: None,
@@ -548,9 +552,13 @@ impl Hub {
         let account = signed.as_ref().map(account_of);
         let same = account == self.account;
         if same {
+            if !self.teams_entity.read(cx).enabled() {
+                self.peer_review = None;
+            }
             return;
         }
         self.generation += 1;
+        self.peer_review = None;
         self.net = None;
         self.sealer = None;
         self.kept = Kept::default();
@@ -771,7 +779,13 @@ impl Hub {
         self._tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |hub, cx| hub.refresh(cx)).is_err() {
+                if this
+                    .update(cx, |hub, cx| {
+                        hub.expire_review();
+                        hub.refresh(cx);
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -930,6 +944,11 @@ impl Hub {
                         .cloned()
                         .collect();
                     for t in gone {
+                        if hub.peer_review.as_ref().is_some_and(|g| {
+                            hub.channels.get(&g.channel).is_some_and(|c| c.team_id == t)
+                        }) {
+                            hub.peer_review = None;
+                        }
                         if let Some(was) = hub.team.get(&t) {
                             hub.info = Some(format!("You're no longer in {}.", was.detail.name));
                         }
@@ -1148,6 +1167,16 @@ impl Hub {
             )
         });
         let rotation = read.detail.rotation_pending;
+        if self.peer_review.as_ref().is_some_and(|g| {
+            self.channels
+                .get(&g.channel)
+                .is_some_and(|c| c.team_id == team_id)
+                && (rotation
+                    || g.epoch != read.detail.epoch
+                    || !read.detail.members.iter().any(|m| m.github_id == g.peer))
+        }) {
+            self.peer_review = None;
+        }
         self.team.insert(
             team_id.to_string(),
             TeamState {
@@ -2007,13 +2036,18 @@ impl Hub {
     /// What was read stays, and `open_channel` dials again and reads what
     /// the channel missed.
     pub fn close_spare_links(&mut self, in_view: &str) {
+        // A paired review needs its channel connected until it ends.
+        let paired = self.peer_review.as_ref().map(|g| g.channel.clone());
         let open = self
             .channels
             .iter()
             .filter(|(_, c)| c.link.is_some())
             .map(|(key, c)| {
-                let busy =
-                    c.loading || c.reading || !c.outbox.is_empty() || !c.bot_waiting.is_empty();
+                let busy = c.loading
+                    || c.reading
+                    || !c.outbox.is_empty()
+                    || !c.bot_waiting.is_empty()
+                    || paired.as_deref() == Some(key.as_str());
                 (key.clone(), c.shown, busy)
             })
             .collect();
@@ -2033,7 +2067,12 @@ impl Hub {
     /// reads on from there. A channel with something still to send, or an
     /// @bot question waiting for its history, keeps its link.
     pub fn close_channel(&mut self, team_id: &str, channel_id: &str, cx: &mut Context<Self>) {
-        let Some(c) = self.channels.get_mut(&channel_key(team_id, channel_id)) else {
+        let key = channel_key(team_id, channel_id);
+        // A paired review needs its channel connected until it ends.
+        if self.peer_review.as_ref().is_some_and(|g| g.channel == key) {
+            return;
+        }
+        let Some(c) = self.channels.get_mut(&key) else {
             return;
         };
         if c.link.is_none() || !c.outbox.is_empty() || !c.bot_waiting.is_empty() {
@@ -2069,6 +2108,9 @@ impl Hub {
                 // the last list may be stale.
                 if !connected {
                     c.here.clear();
+                    if self.peer_review.as_ref().is_some_and(|g| g.channel == key) {
+                        self.peer_review = None;
+                    }
                 }
                 if refused {
                     c.link = None;
@@ -2109,6 +2151,8 @@ impl Hub {
                         self.catch_up(key, cx);
                     } else if refuse(&mut c.messages, &id, &why) {
                         c.outbox.remove(&id);
+                        self.review_refused(&id, &why);
+                        let c = self.channels.get_mut(key).expect("looked up above");
                         // Send again asks with the project open then.
                         self.bot.asked.remove(&id);
                         self.messages_rev += 1;
@@ -2205,6 +2249,7 @@ impl Hub {
         let mut unknown_seen = false;
         // This device's @bot questions the server just stored: the bot runs now.
         let mut asked = Vec::new();
+        let mut peer_mail = Vec::new();
         for s in stored {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
@@ -2242,6 +2287,16 @@ impl Hub {
                 asked.push(s.message.id.clone());
             }
             c.seen_ids.insert(s.message.id.clone());
+            if let Some(event) = PeerEvent::read(&body) {
+                peer_mail.push((
+                    gid,
+                    s.message.epoch,
+                    event,
+                    body.text.clone(),
+                    s.message.id.clone(),
+                    body.reply_to.clone(),
+                ));
+            }
             let msg = Msg {
                 id: s.message.id.clone(),
                 seq: Some(s.seq),
@@ -2270,6 +2325,135 @@ impl Hub {
         } else {
             std::mem::take(&mut c.bot_waiting)
         };
+        self.review_stored(key);
+        for (sender, epoch, event, text, id, parent) in peer_mail {
+            if event == PeerEvent::Blocked
+                && let Some(grant) = &self.peer_review
+                && grant.channel == key
+                && grant.epoch == epoch
+                && sender == grant.peer
+                && let Some(request) = self.channels[key]
+                    .messages
+                    .iter()
+                    .find(|m| Some(&m.id) == parent.as_ref() && m.github_id == self.github_id())
+                    .and_then(|m| PeerEvent::read(&m.body))
+                && grant.waiting_for(&request)
+            {
+                if let Some(grant) = self.peer_review.as_mut()
+                    && let Some(caller) = grant.caller.take()
+                {
+                    let _ = caller.send(crate::control::Reply::err(
+                        "The peer reported a blocked review. See the Teams channel.",
+                    ));
+                }
+                self.peer_review = None;
+                continue;
+            }
+            if let PeerEvent::Withdrawn { ticket } = &event {
+                // The request and the withdrawal crossed: nobody will answer.
+                if let Some(grant) = self.peer_review.as_mut()
+                    && grant.channel == key
+                    && sender == grant.peer
+                    && grant.waiting_on(ticket)
+                {
+                    if let Some(caller) = grant.caller.take() {
+                        let _ = caller.send(crate::control::Reply::err(
+                            "The peer is no longer available. Ask them to pair again.",
+                        ));
+                    }
+                    self.peer_review = None;
+                    self.error = Some(
+                        "The paired review ended: the other member is no longer available.".into(),
+                    );
+                }
+                continue;
+            }
+            if let Some(grant) = &mut self.peer_review
+                && grant.channel == key
+                && grant.epoch == epoch
+                && let Some(turn) = grant.receive(sender, event, &text)
+            {
+                let stop = grant.stop.clone();
+                let ticket = grant.ticket.clone();
+                let (team, channel) = (team_id.clone(), channel_id.clone());
+                let generation = self.generation;
+                cx.spawn(async move |this, cx| {
+                    let result = cx.background_spawn(async move { super::bot::review_peer(&turn.prompt, &stop) }).await;
+                    let _ = this.update(cx, |hub, cx| {
+                        if !hub.peer_review.as_ref().is_some_and(|g| g.ticket == ticket && g.live()) {
+                            // The grant ran out or was replaced while Claude ran. The
+                            // requester still waits for notes, so say there are none.
+                            if matches!(turn.response, PeerEvent::Notes { .. })
+                                && hub.generation == generation
+                                && hub.review_epoch(&team, &channel) == Some(epoch)
+                            {
+                                let body = PeerEvent::Blocked.body(
+                                    "This device's pairing ended before the review finished. Pair again.".into(),
+                                    Some(id),
+                                );
+                                hub.send_body(&team, &channel, body, cx);
+                            }
+                            return;
+                        }
+                        // The grant is spent: a channel that can't take the answer now
+                        // (a gap, a rotation, a lost socket) ends it, and says so.
+                        if hub.review_epoch(&team, &channel) != Some(epoch) {
+                            if let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take()) {
+                                let _ = caller.send(crate::control::Reply::err(
+                                    "The channel changed before the review could be posted. Pair again.",
+                                ));
+                            }
+                            hub.peer_review = None;
+                            hub.error = Some("The paired review ended: the channel changed before its answer could be posted.".into());
+                            cx.notify();
+                            return;
+                        }
+                        let body = match result {
+                            Ok(s) if coord::valid_text(s.trim()) => turn.response.body(s.trim().into(), Some(id)),
+                            failed => {
+                                // The channel gets a fixed text; this device learns the
+                                // cause, or pairing again only repeats it.
+                                let why = failed.err().unwrap_or_else(|| {
+                                    "Claude Code's answer was empty or longer than 4000 bytes".into()
+                                });
+                                hub.error = Some(format!("The paired review could not finish: {why}"));
+                                cx.notify();
+                                PeerEvent::Blocked.body("Could not finish this review within its limits. A member can take over.".into(), Some(id))
+                            }
+                        };
+                        let answer = if matches!(PeerEvent::read(&body), Some(PeerEvent::Done)) {
+                            crate::control::Reply::ok(body.text.clone())
+                        } else if matches!(turn.response, PeerEvent::Notes { .. }) {
+                            // A caller here asked at the same time as the peer, and the
+                            // peer's request ran (`Grant::receive`).
+                            crate::control::Reply::err(
+                                "The other member asked at the same time; their review ran instead.",
+                            )
+                        } else {
+                            crate::control::Reply::err("No recommendation was available.")
+                        };
+                        let done = matches!(PeerEvent::read(&body), Some(PeerEvent::Done));
+                        match hub.send_review_body(&team, &channel, body, cx) {
+                            // The caller hears once the server stores the
+                            // recommendation, so it never holds one the channel lacks.
+                            Some(sent) if done => {
+                                if let Some(g) = hub.peer_review.as_mut() {
+                                    g.posted = Some(sent);
+                                    g.answer = Some(answer);
+                                }
+                            }
+                            Some(_) => {
+                                if let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take()) {
+                                    let _ = caller.send(answer);
+                                }
+                                hub.peer_review = None;
+                            }
+                            None => hub.peer_review = None,
+                        }
+                    });
+                }).detach();
+            }
+        }
         for id in asked {
             let project = self
                 .bot
@@ -2292,6 +2476,222 @@ impl Hub {
             }
             self.load_team(&team_id, cx);
         }
+    }
+
+    // ---- paired agent reviews --------------------------------------------------
+
+    /// The key epoch a review in this channel runs under: only while the
+    /// channel is connected, its history has no gap and no rotation is pending.
+    fn review_epoch(&self, team: &str, channel: &str) -> Option<u64> {
+        let t = self.team.get(team)?;
+        let c = self.channels.get(&channel_key(team, channel))?;
+        (!t.detail.rotation_pending
+            && self.kept.key(team, t.detail.epoch).is_some()
+            && !c.loading
+            && !c.needs_history
+            && c.status == socket::Status::Connected)
+            .then_some(t.detail.epoch)
+    }
+
+    /// Drops this device's grant. A ticket nobody used yet is taken back in
+    /// the channel while the channel can still carry that, so the peer does
+    /// not send a request to a ticket that is gone.
+    pub(super) fn end_review(&mut self, cx: &mut Context<Self>) {
+        let Some(grant) = self.peer_review.take() else {
+            return;
+        };
+        if !grant.unspent() {
+            return;
+        }
+        let Some((team, channel)) = self
+            .channels
+            .get(&grant.channel)
+            .map(|c| (c.team_id.clone(), c.channel_id.clone()))
+        else {
+            return;
+        };
+        if self.review_epoch(&team, &channel) == Some(grant.epoch) {
+            let body = grant
+                .withdrawn()
+                .body("No longer available for the paired review.".into(), None);
+            self.send_body(&team, &channel, body, cx);
+        }
+    }
+
+    /// Ends a grant whose window ran out, or whose request got no notes in
+    /// time: the peer's grant can end where it has no way to say so.
+    fn expire_review(&mut self) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        if grant.overdue() {
+            if let Some(caller) = grant.caller.take() {
+                let _ = caller.send(crate::control::Reply::err(
+                    "The peer did not answer in time. Ask them to pair again.",
+                ));
+            }
+            self.error = Some(
+                "The paired review ended: the other member's agent did not answer in time.".into(),
+            );
+            self.peer_review = None;
+        } else if !grant.live() {
+            self.peer_review = None;
+        }
+    }
+
+    /// `send_body` for a review event, with the id it was queued under.
+    fn send_review_body(
+        &mut self,
+        team: &str,
+        channel: &str,
+        body: Body,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if !self.send_body(team, channel, body, cx) {
+            return None;
+        }
+        // `send_body` adds the message last.
+        self.channels
+            .get(&channel_key(team, channel))
+            .and_then(|c| c.messages.last())
+            .map(|m| m.id.clone())
+    }
+
+    /// The server stored this device's last review event: a recommendation
+    /// can go to the caller now.
+    fn review_stored(&mut self, key: &str) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        let stored = grant.channel == key
+            && grant.posted.as_ref().is_some_and(|id| {
+                self.channels[key]
+                    .messages
+                    .iter()
+                    .any(|m| &m.id == id && m.delivery == Delivery::Sent)
+            });
+        if !stored {
+            return;
+        }
+        grant.posted = None;
+        if let Some(answer) = grant.answer.take() {
+            if let Some(caller) = grant.caller.take() {
+                let _ = caller.send(answer);
+            }
+            self.peer_review = None;
+        }
+    }
+
+    /// The server refused this device's last review event, so the peer never
+    /// saw it: end the exchange now rather than wait out its time.
+    fn review_refused(&mut self, id: &str, why: &str) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        if grant.posted.as_deref() != Some(id) {
+            return;
+        }
+        if let Some(caller) = grant.caller.take() {
+            let _ = caller.send(crate::control::Reply::err(format!(
+                "The server refused the review message: {why}"
+            )));
+        }
+        self.error = Some(format!(
+            "The paired review ended: the server refused its message: {why}"
+        ));
+        self.peer_review = None;
+    }
+
+    pub(super) fn review_command(
+        &mut self,
+        team: &str,
+        channel: &str,
+        cmd: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if cmd == "off" {
+            self.end_review(cx);
+            cx.notify();
+            return Ok(());
+        }
+        let key = channel_key(team, channel);
+        if !self.teams_entity.read(cx).enabled() || self.bot.project.is_none() {
+            return Err("Open a local project with Teams enabled to pair an agent.".into());
+        }
+        let epoch = self
+            .review_epoch(team, channel)
+            .ok_or("Wait for a connected channel with its current key.")?;
+        let me = self.github_id();
+        let (event, text) = if let Some(login) = cmd.strip_prefix("pair @") {
+            let peer = self.team[team]
+                .detail
+                .members
+                .iter()
+                .find(|m| m.login.eq_ignore_ascii_case(login) && m.github_id != me)
+                .ok_or("Choose another current member by GitHub login.")?
+                .github_id;
+            // A ticket for someone else, or in another channel, goes away here.
+            self.end_review(cx);
+            let grant = Grant::new(key, epoch, peer);
+            let ready = grant.ready();
+            self.peer_review = Some(grant);
+            (
+                ready,
+                format!("Available for one Claude review with @{login} for 15 minutes."),
+            )
+        } else if let Some(goal) = cmd.strip_prefix("review ") {
+            let g = self
+                .peer_review
+                .as_mut()
+                .filter(|g| g.channel == key && g.epoch == epoch && g.live())
+                .ok_or("Pair this device with a member first.")?;
+            // A ready from a peer who has since left the channel names a
+            // grant that is likely gone; ask them to pair again instead.
+            if !self.channels[&key].here.contains(&g.peer) {
+                return Err("The other member is not in this channel now. Ask them to open it and pair again.".into());
+            }
+            let other = self.channels[&key]
+                .messages
+                .iter()
+                .rev()
+                .find_map(|m| {
+                    if m.github_id == g.peer
+                        && m.delivery == Delivery::Sent
+                        && now().saturating_sub(m.at) < coord::WINDOW.as_secs()
+                        && let Some(PeerEvent::Ready { peer, ticket }) = PeerEvent::read(&m.body)
+                        && peer == me
+                    {
+                        Some(ticket)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("The other member must pair a device with you in this channel first.")?;
+            if self.channels[&key].messages.iter().any(|m| {
+                m.github_id == g.peer
+                    && m.delivery == Delivery::Sent
+                    && matches!(PeerEvent::read(&m.body),
+                        Some(PeerEvent::Withdrawn { ticket }) if ticket == other)
+            }) {
+                return Err(
+                    "The other member is no longer available. Ask them to pair again.".into(),
+                );
+            }
+            let event = g
+                .request(other, goal)
+                .ok_or("This ticket is in use, or the goal is empty or longer than 4000 bytes.")?;
+            (event, goal.into())
+        } else {
+            return Err("Use /agents pair @login, /agents review <goal>, or /agents off.".into());
+        };
+        let Some(sent) = self.send_review_body(team, channel, event.body(text, None), cx) else {
+            self.peer_review = None;
+            return Err("Could not send the review event; pair again.".into());
+        };
+        if let Some(g) = self.peer_review.as_mut() {
+            g.posted = Some(sent);
+        }
+        Ok(())
     }
 
     // ---- unread ---------------------------------------------------------------
@@ -2665,7 +3065,7 @@ fn unread_poll(after: Option<u64>, newest: u64, known: Option<u64>) -> Next {
 /// Kinds that show as a message of their own, and so count as unread.
 /// Acceptances show under their answer.
 fn counts_as_unread(kind: &str) -> bool {
-    matches!(kind, "text" | "bot" | "decision")
+    matches!(kind, "text" | "bot" | "decision" | "agent_review")
 }
 
 /// An unread count as the channel list shows it.
@@ -3953,6 +4353,62 @@ mod tests {
         assert_eq!(caught, history);
         cursor.page(caught.last().unwrap().seq);
         assert!(!cursor.gap());
+
+        // The two local model outputs are fixtures; the devices, encrypted
+        // bodies, authenticated sockets and stored acknowledgements are real.
+        let mut handoff = |net: &Net, link: &Link, who: &str, body: Body| {
+            let id = send(net, link, &body);
+            loop {
+                let (recipient, stored) = heard(&id);
+                if recipient == who {
+                    assert!(crypto::verify_message(
+                        &team,
+                        &channel,
+                        &stored.message,
+                        &crypto::unb64(net.local.device.sig_pub()).unwrap()
+                    ));
+                    return crypto::open_message(&team, &channel, &stored.message, &key).unwrap();
+                }
+            }
+        };
+        let scope = channel_key(&team, &channel);
+        let mut lead = Grant::new(scope.clone(), 1, mb.github_id);
+        let mut reviewer = Grant::new(scope, 1, ma.github_id);
+        let offer = handoff(
+            &b,
+            &lb,
+            "a",
+            reviewer.ready().body("Available".into(), None),
+        );
+        let Some(PeerEvent::Ready { peer, ticket }) = PeerEvent::read(&offer) else {
+            panic!("no reviewer")
+        };
+        assert_eq!(peer, ma.github_id);
+        let goal = "Check the release plan";
+        let ask = lead.request(ticket, goal).unwrap();
+        let got = handoff(&a, &la, "b", ask.body(goal.into(), None));
+        let review = reviewer
+            .receive(ma.github_id, PeerEvent::read(&got).unwrap(), &got.text)
+            .unwrap();
+        let got = handoff(
+            &b,
+            &lb,
+            "a",
+            review.response.body("Add a rollback check".into(), None),
+        );
+        let synthesis = lead
+            .receive(mb.github_id, PeerEvent::read(&got).unwrap(), &got.text)
+            .unwrap();
+        assert!(synthesis.prompt.contains("Add a rollback check"));
+        let got = handoff(
+            &a,
+            &la,
+            "b",
+            synthesis
+                .response
+                .body("Test the rollback before release".into(), None),
+        );
+        assert_eq!(PeerEvent::read(&got), Some(PeerEvent::Done));
 
         // A second device of A, vouched for by the first from its code, as
         // approve_device does; it then registers as itself and gets the key

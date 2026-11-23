@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
-// The protocol the iOS app speaks with Arakun through the relay: the same as
-// phone/relay.js and phone/e2e.js, so the computer and the relay need nothing
-// new. Kept apart from the app so `swift test` checks it on a Mac.
+// The account client and the protocol the iOS app speaks with Arakun through
+// the relay: the same as core/src/cloud.rs, phone/relay.js and phone/e2e.js.
+// Kept apart from the app so `swift test` checks it on a Mac.
 import PackageDescription
 
 let package = Package(

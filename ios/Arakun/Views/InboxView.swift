@@ -7,7 +7,7 @@ struct InboxView: View {
     @State private var path: [String] = []
     @State private var starting = false
     @State private var query = ""
-    @State private var confirmUnpair = false
+    @State private var settings = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -15,6 +15,7 @@ struct InboxView: View {
                 LazyVStack(alignment: .leading, spacing: 28) {
                     header
                     ConnectionBanner()
+                    NoticeBanners()
                     let waiting = shown.filter { $0.status == .needsInput }
                     if !waiting.isEmpty {
                         group("Needs you", color: .amberInk, waiting, highlight: true)
@@ -47,12 +48,12 @@ struct InboxView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        if let c = model.credentials { Text("Paired through \(c.host)") }
+                        if let me = model.me { Text("Signed in as \(me.login)") }
                         Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnectNow() }
-                        // A closure, not `set: Telemetry.set`: Swift 6.3 crashes making the thunk
-                        // from a @MainActor function reference.
-                        Toggle("Send crash reports", isOn: Binding(get: { Telemetry.consent == true }, set: { Telemetry.set($0) }))
-                        Button("Unpair this phone", systemImage: "link.badge.minus", role: .destructive) { confirmUnpair = true }
+                        if model.machines.count > 1 {
+                            Button("All computers", systemImage: "desktopcomputer") { model.leaveMachine() }
+                        }
+                        Button("Settings", systemImage: "gearshape") { settings = true }
                     } label: {
                         Icon("more-horizontal", size: 22).foregroundStyle(Color.textMuted)
                     }
@@ -82,14 +83,10 @@ struct InboxView: View {
             .onChange(of: model.session?.id) { _, id in
                 // A session started from the sheet opens on its own.
                 if let id, path.last != id { path = [id] }
-                // Paired with another computer: the session on screen was the old one's.
+                // Another computer now: the session on screen was the old one's.
                 if id == nil, !path.isEmpty { path = [] }
             }
-            .confirmationDialog("Unpair this phone from \(model.host)?", isPresented: $confirmUnpair, titleVisibility: .visible) {
-                Button("Unpair", role: .destructive) { model.unpair() }
-            } message: {
-                Text("To pair it again, you need a new code from Arakun.")
-            }
+            .sheet(isPresented: $settings) { AccountView() }
             .alert("Arakun", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -101,7 +98,6 @@ struct InboxView: View {
     /// The raccoon's mood for the whole computer: what most needs you wins.
     private var mood: Mood {
         if case .computerAway = model.connection { return .sleeping }
-        if case .failed = model.connection { return .error }
         if model.connection == .connecting { return .thinking }
         if model.inbox.contains(where: { $0.status == .needsInput }) { return .waiting }
         if model.inbox.contains(where: { $0.status == .working }) { return .working }
@@ -337,18 +333,14 @@ struct ConnectionBanner: View {
 
     var body: some View {
         switch model.connection {
-        case .connected, .unpaired, .pairing:
+        case .connected, .idle:
             EmptyView()
         case .connecting:
-            line(icon: "loading03", "Connecting to your computer…", detail: nil, tone: .textMuted)
+            line(icon: "loading03", "Reaching \(model.host.isEmpty ? "your computer" : model.host) through the relay…",
+                 detail: "Arakun must be running on the computer, signed in to the same GitHub account.", tone: .textMuted)
         case .computerAway(let since):
             line(icon: "computer", "Your computer is offline.",
                  detail: since.map { "Last seen \($0.shortAgo) ago. The app reconnects when it is back." }, tone: .textMuted)
-        case .failed(let why):
-            VStack(alignment: .leading, spacing: 10) {
-                line(icon: "alert-circle", why, detail: nil, tone: .failure)
-                Button("Try again") { model.connect() }.buttonStyle(.outline)
-            }
         }
     }
 

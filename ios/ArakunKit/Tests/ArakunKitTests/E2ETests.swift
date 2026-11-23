@@ -141,26 +141,49 @@ struct BytesTests {
 }
 
 struct PairingTests {
-    @Test func readsTheRelayLink() {
-        let l = PairingLink("https://lmx5lt63vsxoyes4.arakun.dev/#p=abc123&s=s%2Fecret")
-        #expect(l?.label == "lmx5lt63vsxoyes4")
-        #expect(l?.host == "lmx5lt63vsxoyes4.arakun.dev")
-        #expect(l?.code == "abc123")
-        #expect(l?.secret == "s/ecret")
-        #expect(l?.secure == true)
-        #expect(PairingLink("http://lab.localhost:8787/#p=a&s=b")?.host == "lab.localhost:8787")
-        #expect(PairingLink("https://x.arakun.dev/") == nil)
-        #expect(PairingLink("https://x.arakun.dev/#p=a") == nil)
-        #expect(PairingLink("not a link") == nil)
+    @Test func anOldRelayLinkIsRefusedWithTheSentence() {
+        #expect(PairingText("https://lmx5lt63vsxoyes4.arakun.dev/#p=abc123&s=s%2Fecret") == .relayLink)
+        #expect(PairingText("http://lab.localhost:8787/#p=a&s=b") == .relayLink)
+        // The same words as Android and the desktop.
+        #expect(PairingText.relayLinkSentence == "Relay links are no longer used. Sign in to reach your computers.")
+    }
+
+    @Test func aLinkToTheComputersOwnPageIsDirect() {
+        let url = URL(string: "http://192.168.1.20:7681/?p=482913")!
+        #expect(PairingText(" http://192.168.1.20:7681/?p=482913\n") == .direct(url))
+        #expect(PairingText("https://studio.tail1234.ts.net/?p=1") == .direct(URL(string: "https://studio.tail1234.ts.net/?p=1")!))
+        #expect(PairingText("https://x.arakun.dev/") == .unknown)
+        #expect(PairingText("https://x.arakun.dev/#p=a") == .unknown)
+        #expect(PairingText("not a link") == .unknown)
+        #expect(PairingText("ftp://x/?p=1") == .unknown)
     }
 
     @Test func endKinds() {
-        #expect(EndKind.of(reason: "", code: 4401) == .unpaired)
-        #expect(EndKind.of(reason: "bad_code", code: 1000) == .pairing)
-        #expect(EndKind.of(reason: "wrong_secret", code: 1000) == .pairing)
+        #expect(EndKind.of(reason: "signed_out", code: 4401) == .signedOut)
+        #expect(EndKind.of(reason: "", code: 4401) == .signedOut)
         #expect(EndKind.of(reason: "bad_hello", code: 1000) == .untrusted)
         #expect(EndKind.of(reason: "limit:daily", code: 1000) == .limit)
         #expect(EndKind.of(reason: "", code: 1006) == .gone)
+        // The relay's old pairing reasons mean nothing now: try again.
+        #expect(EndKind.of(reason: "bad_ticket", code: 1000) == .gone)
+    }
+
+    @Test func eachRefusalHasTheSentenceThePhonePageSays() {
+        func sentence(_ reason: String, _ message: String? = nil) -> String? {
+            if case .refused(let r, let s) = EndKind.of(reason: reason, code: 4403, message: message, accountHost: "app.arakun.dev") {
+                #expect(r == reason)
+                return s
+            }
+            return nil
+        }
+        #expect(sentence("blocked") == "This GitHub account is blocked from the relay.")
+        #expect(sentence("not_yours") == "That computer is signed in to another GitHub account.")
+        #expect(sentence("no_machine") == "That computer is no longer on your account. Sign in again in Arakun on it.")
+        #expect(sentence("update") == "Update Arakun on the computer and sign in at app.arakun.dev.")
+        #expect(sentence("disabled", "Back at noon.") == "Back at noon.")
+        #expect(sentence("disabled") == "The relay is closed right now.")
+        #expect(sentence("unpaired") == "That computer removed this phone. Pick it again to connect.")
+        #expect(Refusal.blocked("Spam.") == "This GitHub account is blocked from the relay. Spam.")
     }
 }
 

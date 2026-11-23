@@ -3,32 +3,62 @@ import Foundation
 import Observation
 import UIKit
 
-/// Everything the app shows, and the one link to the computer behind it. The
-/// computer sends a snapshot when the link opens and changes from then on.
+/// Everything the app shows: who is signed in, the account's computers, and
+/// the one link to the computer picked. The computer sends a snapshot when the
+/// link opens and changes from then on.
 @MainActor
 @Observable
 final class AppModel {
     enum Connection: Equatable {
-        case unpaired
-        case pairing
+        /// No computer picked.
+        case idle
         case connecting
         case connected
         /// The relay is there, the computer is not (last seen `since`).
         case computerAway(since: Date?)
-        /// Stopped for good until the user acts.
-        case failed(String)
     }
 
-    private(set) var credentials: Credentials? = Keychain.load()
-    private(set) var connection: Connection = .unpaired
+    /// Where sign-in stands, while it is under way.
+    enum SignIn: Equatable {
+        /// Asking GitHub for a code.
+        case asking
+        /// The code is on screen, and the app polls GitHub until it is entered.
+        case code(DeviceCode)
+        /// GitHub said yes; the account host makes the session.
+        case finishing
+    }
+
+    /// The session, and the only way it is written: the Keychain, through it.
+    let keeper: AccountSession
+    /// The account's session, as `keeper` holds it, for the views to watch.
+    private(set) var signedIn: SessionToken?
+    private(set) var me: Me?
+    private(set) var machines: [Machine] = []
+    /// Whether the list of computers came in since sign-in.
+    private(set) var machinesLoaded = false
+    /// The operator blocked the account: there is no list.
+    private(set) var blocked = false
+    /// A sentence for the list of computers: why it is on screen, or what went wrong.
+    var accountSaid: String?
+    /// The computer picked, as the account lists it.
+    private(set) var machine: Machine?
+    /// The account's signed-in devices, for Settings.
+    private(set) var devices: [SignedInDevice] = []
+    /// Why the signed-in devices did not load.
+    private(set) var devicesError: String?
+    private(set) var signIn: SignIn?
+    /// Why the last sign-in did not work, for the sign-in screen.
+    var signInError: String?
+    /// What "Pair on this network" made of the last code or link.
+    var pairSaid: String?
+
+    private(set) var connection: Connection = .idle
     private(set) var host = ""
     private(set) var inbox: [InboxSession] = []
     private(set) var places: [Place] = []
     /// The session on screen, kept live by the computer.
     var session: LiveSession?
     var loadingOlder = false
-    /// What went wrong pairing, for the pairing screen.
-    var pairError: String?
     /// A message worth a moment on screen.
     var notice: String?
     /// A session asked for before the link was up (from a started session).
@@ -40,18 +70,30 @@ final class AppModel {
     private var link: RelayLink?
     private var retry: Duration = .milliseconds(500)
     private var retryTask: Task<Void, Never>?
+    private var signInTask: Task<Void, Never>?
+    /// Counts sign-ins, so one cancelled or replaced never touches the next.
+    private var signInAttempt = 0
 
-    init() {
+    /// The computer opened last, by label, to open again at the next launch.
+    /// Only the label: it is no secret, and the session stays in the Keychain.
+    private static let lastMachineKey = "arakun.machine"
+
+    init(store: any SessionStore = Keychain.session) {
         #if DEBUG
-        if Self.isDemo {
-            if !UserDefaults.standard.bool(forKey: "demoUnpaired") { fillDemo() } else { credentials = nil }
+        if AppModel.isDemo {
+            keeper = AccountSession(store: DemoStore())
+            fillDemo()
             return
         }
         #endif
-        if credentials != nil { connect() }
+        Keychain.forgetOldPairing()
+        keeper = AccountSession(store: store)
+        signedIn = keeper.token
+        if signedIn != nil { Task { await loadAccount(openOne: true) } }
     }
 
-    var deviceName: String { UIDevice.current.model }
+    /// What the account's list of signed-in devices calls this phone.
+    var deviceName: String { UIDevice.current.name }
 
     /// A `-demo` launch, for screenshots: it asks nothing. Always false in a release build.
     nonisolated static var isDemoLaunch: Bool {
@@ -62,78 +104,339 @@ final class AppModel {
         #endif
     }
 
-    // ---- connection --------------------------------------------------------
+    // ---- signing in -----------------------------------------------------------
 
-    func connect() {
-        guard let c = credentials else {
-            connection = .unpaired
+    /// GitHub's device flow: show the code, wait until it is entered on
+    /// GitHub, then trade GitHub's token for the account's session.
+    func startSignIn() {
+        guard signIn == nil else { return }
+        signInError = nil
+        #if DEBUG
+        if Self.isDemo {
+            signIn = .code(DeviceCode(userCode: "WDJB-MJHT", verificationURI: "https://github.com/login/device",
+                                      deviceCode: "", interval: 5, expiresIn: 900))
             return
         }
-        start(.credentials(c))
-        connection = .connecting
-    }
-
-    func pair(_ text: String) {
-        guard let p = PairingLink(text) else {
-            pairError = "That is not a pairing link. Open the Phone tab in Arakun and scan its code."
-            return
+        #endif
+        signIn = .asking
+        signInAttempt += 1
+        let attempt = signInAttempt
+        let client = keeper.client
+        let name = deviceName
+        signInTask = Task { [weak self] in
+            do {
+                let id = try await client.clientID()
+                let code = try await client.startDeviceFlow(clientID: id)
+                guard let self, self.isCurrent(attempt) else { return }
+                self.signIn = .code(code)
+                let github = try await client.waitForToken(clientID: id, code: code)
+                guard self.isCurrent(attempt) else { return }
+                self.signIn = .finishing
+                let signed = try await self.keeper.signIn(githubToken: github, name: name, kind: "ios")
+                guard self.isCurrent(attempt) else {
+                    // Cancelled while the session was made: nobody wants it.
+                    // It is forgotten here now; this task is cancelled, and a
+                    // request made in it would be too, so a task of its own
+                    // ends it on the server.
+                    if self.keeper.token == signed.session {
+                        self.keeper.forget()
+                        let client = self.keeper.client
+                        let session = signed.session
+                        Task { try? await client.logout(session: session) }
+                    }
+                    return
+                }
+                self.tookSignIn(signed)
+            } catch {
+                // A sign-in cancelled or replaced says nothing: the screen is another's now.
+                guard let self, self.isCurrent(attempt), !(error is CancellationError) else { return }
+                if let e = error as? AccountError {
+                    self.signInFailed(AppModel.sentence(e))
+                } else {
+                    self.signInFailed("Sign-in did not work. Try again.")
+                }
+            }
         }
-        pairError = nil
-        connection = .pairing
-        start(.pairing(p, deviceName: deviceName))
     }
 
-    private func start(_ mode: RelayLink.Mode) {
-        retryTask?.cancel()
-        link?.close()
-        let l = RelayLink(mode) { [weak self] event in self?.handle(event) }
-        link = l
-        l.start()
+    /// Whether sign-in `attempt` is still the one on screen.
+    private func isCurrent(_ attempt: Int) -> Bool {
+        !Task.isCancelled && signInAttempt == attempt
     }
 
-    /// Back on screen or Retry: go now instead of waiting out the backoff.
-    func reconnectNow() {
-        guard credentials != nil else { return }
-        switch connection {
-        case .connected, .pairing: return
+    func cancelSignIn() {
+        signInAttempt += 1
+        signInTask?.cancel()
+        signInTask = nil
+        signIn = nil
+    }
+
+    /// GitHub's and the host's refusals, as a sentence for the sign-in screen.
+    private nonisolated static func sentence(_ e: AccountError) -> String {
+        guard case .refused(let why) = e else { return e.message }
+        return "Sign-in did not work: \(why.hasSuffix(".") ? String(why.dropLast()) : why)."
+    }
+
+    private func signInFailed(_ why: String) {
+        signInTask = nil
+        signIn = nil
+        signInError = why
+    }
+
+    private func tookSignIn(_ s: SignedIn) {
+        signInTask = nil
+        signIn = nil
+        signedIn = keeper.token
+        me = Me(githubID: s.githubID, login: s.login)
+        Task { await loadAccount(openOne: true) }
+    }
+
+    /// Signs this phone out of the account, here and on the account host.
+    func signOut() {
+        guard let token = signedIn else { return }
+        let client = keeper.client
+        signedOut()
+        if !Self.isDemoLaunch { Task { try? await client.logout(session: token) } }
+    }
+
+    /// The session is gone (signed out here or elsewhere): only sign-in is left.
+    private func signedOut() {
+        dropMachine()
+        signInAttempt += 1
+        signInTask?.cancel()
+        signInTask = nil
+        signIn = nil
+        keeper.forget()
+        UserDefaults.standard.removeObject(forKey: Self.lastMachineKey)
+        signedIn = nil
+        me = nil
+        machines = []
+        machinesLoaded = false
+        blocked = false
+        devices = []
+        devicesError = nil
+        accountSaid = nil
+        signInError = nil
+    }
+
+    // ---- the account ----------------------------------------------------------
+
+    /// Who is signed in and their computers. `openOne` opens one at launch or
+    /// after sign-in: the only one, or the one opened last.
+    func loadAccount(openOne: Bool = false) async {
+        guard let token = signedIn, !Self.isDemoLaunch else { return }
+        // Loading again after it could not reach the host: the sentence goes.
+        if !machinesLoaded { accountSaid = nil }
+        do {
+            let me = try await keeper.call { c, t in try await c.me(session: t) }
+            guard signedIn == token else { return }
+            self.me = me
+            let list = try await keeper.call { c, t in try await c.machines(session: t) }
+            guard signedIn == token else { return }
+            took(list)
+            guard openOne, machine == nil else { return }
+            if list.count == 1 { return pick(list[0]) }
+            let last = UserDefaults.standard.string(forKey: Self.lastMachineKey)
+            if let m = list.first(where: { $0.label == last }) { pick(m) }
+        } catch {
+            accountFailed(error, token, quiet: false)
+        }
+    }
+
+    /// The list again, for its online states.
+    func refreshMachines() async {
+        guard let token = signedIn, !Self.isDemoLaunch else { return }
+        do {
+            let list = try await keeper.call { c, t in try await c.machines(session: t) }
+            guard signedIn == token else { return }
+            took(list)
+        } catch {
+            accountFailed(error, token, quiet: true)
+        }
+    }
+
+    private func took(_ list: [Machine]) {
+        machines = list
+        machinesLoaded = true
+        blocked = false
+    }
+
+    /// A 401 anywhere means signed out; a blocked account says why. Anything
+    /// else only shows when there is no list yet to show instead.
+    private func accountFailed(_ error: Error, _ token: SessionToken, quiet: Bool) {
+        guard signedIn == token else { return }
+        switch error as? AccountError {
+        case .signedOut?:
+            signedOut()
+        case .blocked(let reason)?:
+            dropMachine()
+            blocked = true
+            machines = []
+            machinesLoaded = true
+            accountSaid = Refusal.blocked(reason)
+        case .refused(let why)?:
+            if !quiet && !machinesLoaded { accountSaid = AccountError.refused(why).message }
         default:
-            retry = .milliseconds(500)
-            connect()
+            if !quiet && !machinesLoaded {
+                accountSaid = "Could not reach \(keeper.client.base.host ?? "the account host"). Check the connection and try again."
+            }
         }
     }
 
-    /// Pull to refresh. The inbox is live while connected and there is no
-    /// message that asks for it, so a fresh link brings a fresh snapshot; it
-    /// also replaces a socket that died without a word.
-    func refresh() {
-        guard credentials != nil, connection != .pairing else { return }
+    func loadDevices() async {
+        guard let token = signedIn, !Self.isDemoLaunch else { return }
+        devicesError = nil
+        do {
+            let list = try await keeper.call { c, t in try await c.sessions(session: t) }
+            guard signedIn == token else { return }
+            devices = list
+        } catch {
+            accountFailed(error, token, quiet: true)
+            guard signedIn == token else { return }
+            devicesError = (error as? AccountError)?.message ?? "Could not load the signed-in devices."
+        }
+    }
+
+    /// Signs one of the account's devices out. This one signs out here too.
+    func signOut(_ device: SignedInDevice) {
+        if device.current { return signOut() }
+        guard let token = signedIn else { return }
+        devices.removeAll { $0.id == device.id }
+        guard !Self.isDemoLaunch else { return }
+        let id = device.id
+        Task {
+            do {
+                try await keeper.call { c, t in try await c.signOutSession(session: t, id: id) }
+            } catch {
+                accountFailed(error, token, quiet: true)
+                if signedIn == token { notice = "Could not sign out \(device.name). Try again." }
+            }
+            await loadDevices()
+        }
+    }
+
+    /// Puts an operator's notice away; the account host stops listing it.
+    func dismiss(_ n: Notice) {
+        me?.notices.removeAll { $0.id == n.id }
+        guard let token = signedIn, !Self.isDemoLaunch else { return }
+        let id = n.id
+        Task {
+            do {
+                try await keeper.call { c, t in try await c.readNotice(session: t, id: id) }
+            } catch {
+                // Only a 401 matters here: it signs out. The notice comes back otherwise.
+                accountFailed(error, token, quiet: true)
+            }
+        }
+    }
+
+    // ---- pairing on this network ------------------------------------------------
+
+    /// What was scanned or pasted under "Pair on this network". A link to the
+    /// computer's own page comes back to open in the browser: that page pairs
+    /// the browser, and this app reaches computers only by signing in.
+    func pair(_ text: String) -> URL? {
+        switch PairingText(text) {
+        case .relayLink:
+            pairSaid = PairingText.relayLinkSentence
+            return nil
+        case .direct(let url):
+            pairSaid = "The computer's page opened in the browser, which pairs there. This app reaches your computers when you sign in."
+            return url
+        case .unknown:
+            pairSaid = "That is not a pairing link. Scan the code in Arakun's Phone tab."
+            return nil
+        }
+    }
+
+    /// A link another app opened. Nothing happens on its own: a link to a
+    /// computer's page comes back for the person to confirm, and anything
+    /// else only says what it is.
+    func opened(_ text: String) -> URL? {
+        let said: String
+        switch PairingText(text) {
+        case .direct(let url):
+            return url
+        case .relayLink:
+            said = PairingText.relayLinkSentence
+        case .unknown:
+            said = "That is not a pairing link. Scan the code in Arakun's Phone tab."
+        }
+        if signedIn == nil { pairSaid = said } else { notice = said }
+        return nil
+    }
+
+    // ---- the computer picked ---------------------------------------------------
+
+    /// Connects to one of the account's computers, offline ones too: the relay
+    /// says when it comes back.
+    func pick(_ m: Machine) {
+        dropMachine()
+        machine = m
+        accountSaid = nil
+        UserDefaults.standard.set(m.label, forKey: Self.lastMachineKey)
+        host = m.name
         retry = .milliseconds(500)
         connect()
     }
 
-    func unpair() {
-        guard let l = link else { return forget() }
-        Task {
-            _ = try? await l.fetch("/unpair", method: "POST")
-            // A new pairing began while this waited: leave it be.
-            guard link === l else { return }
-            forget()
-        }
+    /// Back to the list of computers, with a sentence when the relay sent us there.
+    func leaveMachine(_ said: String? = nil) {
+        dropMachine()
+        UserDefaults.standard.removeObject(forKey: Self.lastMachineKey)
+        accountSaid = said
+        Task { await refreshMachines() }
     }
 
-    private func forget() {
+    /// Lets go of the computer picked, and of all the app knew about it.
+    private func dropMachine() {
         link?.close()
         link = nil
         retryTask?.cancel()
-        credentials = nil
-        Keychain.save(nil)
+        machine = nil
+        connection = .idle
+        host = ""
         inbox = []
         places = []
         session = nil
         openWhenLinked = nil
         loadingOlder = false
         starting = false
-        connection = .unpaired
+    }
+
+    func connect() {
+        guard let token = signedIn, let m = machine else {
+            connection = .idle
+            return
+        }
+        #if DEBUG
+        if Self.isDemo {
+            connection = .connected
+            return
+        }
+        #endif
+        retryTask?.cancel()
+        link?.close()
+        connection = .connecting
+        let l = RelayLink(machine: m, base: keeper.client.base, session: token) { [weak self] event in self?.handle(event) }
+        link = l
+        l.start()
+    }
+
+    /// Back on screen or Retry: go now instead of waiting out the backoff.
+    func reconnectNow() {
+        guard machine != nil, connection != .connected else { return }
+        retry = .milliseconds(500)
+        connect()
+    }
+
+    /// Pull to refresh. The inbox is live while connected and there is no
+    /// message that asks for it, so a fresh link brings a fresh snapshot; it
+    /// also replaces a socket that died without a word.
+    func refresh() {
+        guard machine != nil else { return }
+        retry = .milliseconds(500)
+        connect()
     }
 
     /// The link went down: what was asked of it will not be answered.
@@ -148,7 +451,8 @@ final class AppModel {
     }
 
     private func lost() {
-        connection = connection == .unpaired ? .unpaired : .connecting
+        guard machine != nil else { return }
+        connection = .connecting
         retryTask?.cancel()
         let wait = retry
         retry = min(retry * 2, .seconds(8))
@@ -161,19 +465,7 @@ final class AppModel {
 
     private func handle(_ event: RelayLink.Event) {
         switch event {
-        case .open(let who, let new):
-            if let new {
-                if let old = credentials, old.label != new.label || old.host != new.host {
-                    // Another computer now: the old one's session means nothing to it.
-                    session = nil
-                    openWhenLinked = nil
-                }
-                credentials = new
-                if !Keychain.save(new) {
-                    notice = "Could not keep the pairing in the Keychain. You may need to pair again after the app restarts."
-                }
-            }
-            host = who.host.isEmpty ? host : who.host
+        case .open:
             interrupted()
             connection = .connected
             retry = .milliseconds(500)
@@ -188,33 +480,22 @@ final class AppModel {
             if !online { interrupted() }
             connection = online ? .connecting : .computerAway(since: since)
         case .closed(let kind, let detail):
-            // Pairing again while paired: the inbox stays on screen, and it
-            // shows notices, not the pairing screen's errors.
-            let replacing = connection == .pairing && credentials != nil
             link = nil
             interrupted()
             switch kind {
-            case .unpaired:
-                forget()
-                pairError = "This phone is no longer paired. Pair it again from Arakun."
-            case .pairing:
-                connection = credentials == nil ? .unpaired : .connecting
-                let why = "That link is wrong or has expired. Make a new one in Arakun."
-                if replacing { notice = why } else { pairError = why }
-                if credentials != nil { lost() }
+            case .signedOut:
+                signedOut()
+            case .refused(_, let sentence):
+                // A block's reason comes with the list, which leaving reloads.
+                leaveMachine(sentence)
             case .untrusted:
-                connection = .failed("This address does not answer with the key Arakun showed. Check the address in its Phone tab before trying again.")
+                let name = machine?.name ?? "The computer"
+                leaveMachine("\(name) did not answer with the key your account has for it. Sign in again in Arakun on that computer.")
             case .limit:
                 notice = "The relay is busy (\(detail)). Trying again in a moment."
                 lost()
             case .gone:
-                if credentials == nil {
-                    connection = .unpaired
-                    pairError = "Could not reach your computer (\(detail))."
-                } else {
-                    if replacing { notice = "Could not reach the new computer (\(detail)). Still paired with the one before." }
-                    lost()
-                }
+                lost()
             }
         }
     }
@@ -223,7 +504,7 @@ final class AppModel {
         switch msg["type"].str {
         case "inbox":
             let i = Inbox(msg)
-            host = i.host
+            host = i.host.isEmpty ? machine?.name ?? host : i.host
             inbox = i.sessions
             places = i.places
         case "session":
@@ -334,16 +615,38 @@ final class AppModel {
 }
 
 #if DEBUG
-// A computer played here, for screenshots and design work without one:
-// launch with `-demo` (and `-demoUnpaired YES` for the pairing screen).
+// An account and a computer played here, for screenshots and design work
+// without them: launch with `-demo`. `-demoUnpaired YES` shows the sign-in
+// screen, `-demoMachines YES` the list of computers.
+/// The demo keeps nothing: it must not touch a real sign-in in the Keychain.
+private struct DemoStore: SessionStore {
+    func load() -> SessionToken? { nil }
+    func save(_ token: SessionToken?) -> Bool { true }
+}
+
 extension AppModel {
     static var isDemo: Bool { ProcessInfo.processInfo.arguments.contains("-demo") }
 
     func fillDemo() {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "demoUnpaired") { return }
         let now = Date().timeIntervalSince1970
         func j(_ s: String) -> JSON { JSON.parse(Data(s.utf8))! }
-        credentials = Credentials(host: "lmx5lt63vsxoyes4.arakun.dev", label: "lmx5lt63vsxoyes4", secure: true,
-                                  id: "demo", ticket: "", token: "", name: "studio")
+        signedIn = SessionToken("demo")
+        me = Me(githubID: 1, login: "octocat", plan: "free",
+                notices: [Notice(id: "n1", text: "The relay restarts tonight at 22:00 UTC for a few minutes.")])
+        machines = [
+            Machine(label: "lmx5lt63vsxoyes4", pub: "", name: "studio", kind: "app", online: true, lastSeenAt: now),
+            Machine(label: "q3x7m2kd5tfa6wbe", pub: "", name: "build-box", kind: "server", online: false, lastSeenAt: now - 7200),
+        ]
+        machinesLoaded = true
+        devices = [
+            SignedInDevice(id: "d1", name: "Rik's iPhone", kind: "ios", createdAt: now - 86400, lastUsedAt: now, current: true),
+            SignedInDevice(id: "d2", name: "studio", kind: "app", createdAt: now - 864000, lastUsedAt: now - 60, current: false),
+            SignedInDevice(id: "d3", name: "build-box", kind: "server", createdAt: now - 864000, lastUsedAt: now - 7200, current: false),
+        ]
+        if defaults.bool(forKey: "demoMachines") { return }
+        machine = machines[0]
         connection = .connected
         let inboxJSON = """
         {"host":"studio","sessions":[
@@ -370,11 +673,11 @@ extension AppModel {
          "entries":[
           {"type":"user","text":"Pairing links fail with limit:phones. Find out why and fix it.","at":\(at),"elapsed_ms":null,"pastes":[]},
           {"type":"thought","text":"The relay spends the code before it checks the phone limit, so a refused phone can never retry."},
-          {"type":"tool","id":"t1","title":"Read relay/src/relay.ts","kind":"read","status":"completed","diffs":[],"added":0,"removed":0},
-          {"type":"tool","id":"t2","title":"rg -n admit relay/src","kind":"search","status":"completed","command":"rg -n admit relay/src","output":"relay/src/relay.ts:412:  admit(phone) {\\nrelay/src/relay.ts:498:    this.admit(p)","diffs":[],"added":0,"removed":0},
+          {"type":"tool","id":"t1","title":"Read cloud/src/relay/relay.ts","kind":"read","status":"completed","diffs":[],"added":0,"removed":0},
+          {"type":"tool","id":"t2","title":"rg -n admit cloud/src/relay","kind":"search","status":"completed","command":"rg -n admit cloud/src/relay","output":"cloud/src/relay/relay.ts:412:  admit(phone) {\\ncloud/src/relay/relay.ts:498:    this.admit(p)","diffs":[],"added":0,"removed":0},
           {"type":"agent","text":"Found it. `acceptPhone` deletes the pairing code in `admit()` **before** the limit check. When the check refuses the phone, the code is already gone, so every retry gets `no_pairing`."},
           {"type":"plan","entries":[{"content":"Check the limit before spending the code","status":"completed"},{"content":"Add a test for a refused phone that retries","status":"in_progress"},{"content":"Run the relay tests","status":"pending"}]},
-          {"type":"tool","id":"t3","title":"Edit relay/src/relay.ts","kind":"edit","status":"completed","diffs":[{"path":"relay/src/relay.ts","added":12,"removed":5}],"added":12,"removed":5}],
+          {"type":"tool","id":"t3","title":"Edit cloud/src/relay/relay.ts","kind":"edit","status":"completed","diffs":[{"path":"cloud/src/relay/relay.ts","added":12,"removed":5}],"added":12,"removed":5}],
          "permission":{"tool_call_id":"p1","title":"cargo test -p arakun relay","options":[{"id":"a","name":"Allow","kind":"allow_once"},{"id":"b","name":"Always allow","kind":"allow_always"},{"id":"c","name":"Deny","kind":"reject_once"}]}}
         """.utf8))!)
         if line?.status == .working { s.permission = nil }

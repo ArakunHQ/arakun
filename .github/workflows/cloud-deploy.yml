@@ -35,7 +35,8 @@ name: Cloud deploy
 # Worker back.
 #
 # The `production` environment holds CLOUDFLARE_API_TOKEN, a token for the
-# CoderLabs account that can edit Workers scripts and routes, read KV and edit D1; it can
+# CoderLabs account that can edit Workers scripts and routes, read KV and edit D1 (it needs D1 edit
+# permission because the deploy applies the migrations); it can
 # also require a reviewer before a deploy. Its deployment rules must let v*
 # tags and cloud-hotfix/* branches through. The settings live in
 # cloud/wrangler.toml under [env.production]. The deploy's message names the
@@ -90,8 +91,25 @@ jobs:
       - name: Check production has a database
         working-directory: .
         run: |
-          if grep -q 'database_id = "00000000-0000-0000-0000-000000000000"' <(sed -n '/^\[\[env\.production\.d1_databases\]\]/,/^\[/p' cloud/wrangler.toml); then
-            echo "::error file=cloud/wrangler.toml::The production D1 database_id is still the placeholder 00000000-0000-0000-0000-000000000000. Create the database and set its id first: see \"First production deploy\" in cloud/README.md"
+          file=cloud/wrangler.toml
+          # The database_id of the [[env.production.d1_databases]] block, with
+          # either quote style and any spacing. Empty if anything is missing.
+          id=$(awk '
+            /^[[:space:]]*\[/ { inblock = ($0 ~ /^[[:space:]]*\[\[env\.production\.d1_databases\]\][[:space:]]*(#.*)?$/) }
+            inblock && /^[[:space:]]*database_id[[:space:]]*=/ {
+              v = $0
+              sub(/^[^=]*=[[:space:]]*/, "", v)
+              sub(/[[:space:]]*(#.*)?$/, "", v)
+              gsub(/^["\x27]|["\x27]$/, "", v)
+              print v
+              exit
+            }' "$file") || id=
+          if [ -z "$id" ]; then
+            echo "::error file=$file::No database_id found under [[env.production.d1_databases]]. Create the database and set its id: see \"First production deploy\" in cloud/README.md"
+            exit 1
+          fi
+          if [ "$id" = 00000000-0000-0000-0000-000000000000 ]; then
+            echo "::error file=$file::The production D1 database_id is still the placeholder $id. Create the database and set its id first: see \"First production deploy\" in cloud/README.md"
             exit 1
           fi
 

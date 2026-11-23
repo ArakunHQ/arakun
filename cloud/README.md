@@ -142,8 +142,8 @@ Production moved from the Workers `arakun-relay` and `arakun-teams` to one Worke
    npx wrangler d1 create arakun-cloud
    ```
 
-2. Give the `CLOUDFLARE_API_TOKEN` of the `production` environment permission to edit
-   D1, since the deploy applies the migrations.
+2. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
+   grant it if it lacks it, since the deploy applies the migrations.
 3. Set the secrets on the new Worker (see Deploying, step 3):
 
    ```sh

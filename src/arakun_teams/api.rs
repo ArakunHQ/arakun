@@ -359,6 +359,10 @@ pub struct Call<'a> {
 /// A history page holds up to 200 messages of up to 64 KiB each.
 const HISTORY_LIMIT: u64 = 32 * 1024 * 1024;
 const SMALL_LIMIT: u64 = 1024 * 1024;
+/// The pending list comes in one answer with up to 20 devices per person
+/// (`MAX_DEVICES` in the Worker), so about 10 KiB a person: room for some
+/// 3,000 people waiting.
+const PENDING_LIMIT: u64 = 32 * 1024 * 1024;
 
 impl Call<'_> {
     fn send(
@@ -470,7 +474,9 @@ impl Call<'_> {
     }
 
     pub fn pending(&self, team_id: &str) -> Result<Vec<PendingRow>, ApiError> {
-        self.get(&format!("/teams/{team_id}/pending"))
+        let path = format!("/teams/{team_id}/pending");
+        let (status, body) = self.send("GET", &path, None, PENDING_LIMIT)?;
+        json(status, &body)
     }
 
     /// `devices` and `keyed_epoch` are what the admin reviewed, so a device

@@ -56,7 +56,7 @@ export function pagePolicy(host: string): string {
 
 /// The page's answer with its policy. A copy: the assets' headers cannot be
 /// changed in place.
-function withPagePolicy(res: Response, host: string): Response {
+export function withPagePolicy(res: Response, host: string): Response {
   const copy = new Response(res.body, res);
   copy.headers.set("Content-Security-Policy", pagePolicy(host));
   copy.headers.set("X-Content-Type-Options", "nosniff");

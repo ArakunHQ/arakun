@@ -8,23 +8,29 @@
 // a foreign page could send a victim's browser to the callback with the
 // attacker's code and sign the victim in as the attacker.
 
-import { cookie, GITHUB_TIMEOUT_MS, MAX_ACCESS_TOKEN, newSession, SESSION_COOKIE, SESSION_TOKEN, signInAllowed, verifyAndRevoke } from "./auth";
+import { cookie, GITHUB_TIMEOUT_MS, MAX_ACCESS_TOKEN, MAX_SESSION_DAYS, newSession, SESSION_COOKIE, SESSION_TOKEN, signInAllowed, verifyAndRevoke } from "./auth";
 import { recheckAccount } from "./machines";
-import { b64url, discard, error, hex, isObject, now, sha256, type Env } from "./util";
+import { DAY, b64url, discard, hex, isObject, sha256, type Env } from "./util";
 
-/// Not `__Host-`: that prefix needs `Path=/`, and this cookie keeps to
-/// `/auth/github` so no other request carries it. `cookie()` refuses it when
-/// it comes twice.
-const OAUTH_COOKIE = "arakun_oauth";
+/// `__Host-`, as the session cookie: a sibling host under the same domain
+/// cannot plant a state of its own and sign the browser in to its account.
+/// The prefix needs `Path=/`, so every request carries it for the ten minutes
+/// it lives.
+const OAUTH_COOKIE = "__Host-arakun_oauth";
 /// Ten minutes to get through GitHub's page.
 const OAUTH_SECONDS = 600;
 /// GitHub's codes are 20 characters; this leaves room for a change.
 const MAX_CODE = 256;
 const CALLBACK = "/auth/github/callback";
 
+/// The browser comes to both routes by itself, so every failure sends it back
+/// to the page, which says the sign-in failed: JSON would be shown as it is.
+const FAILED = "/?sign_in=failed";
+
+/// Not counted against the sign-in limit: it asks nothing of GitHub or D1.
+/// The callback counts, so one sign-in counts once.
 export async function webAuthStart(request: Request, env: Env): Promise<Response> {
-  if (!(await signInAllowed(request, env))) return error(429, "too many sign-ins, try again in a minute");
-  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return error(503, "sign-in is not set up");
+  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return redirect(FAILED);
   const state = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
@@ -33,33 +39,34 @@ export async function webAuthStart(request: Request, env: Env): Promise<Response
   url.searchParams.set("redirect_uri", `${new URL(request.url).origin}${CALLBACK}`);
   const res = new Response(null, { status: 302, headers: { Location: url.toString() } });
   // Lax, so the cookie comes back with GitHub's redirect, a top-level GET.
-  res.headers.append("Set-Cookie", `${OAUTH_COOKIE}=${state}; HttpOnly; Secure; SameSite=Lax; Path=/auth/github; Max-Age=${OAUTH_SECONDS}`);
+  res.headers.append("Set-Cookie", `${OAUTH_COOKIE}=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${OAUTH_SECONDS}`);
   return res;
 }
 
 export async function webAuthCallback(request: Request, env: Env): Promise<Response> {
   // The state cookie is single use: every outcome clears it.
   const done = (res: Response): Response => {
-    res.headers.append("Set-Cookie", `${OAUTH_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/github; Max-Age=0`);
+    res.headers.append("Set-Cookie", `${OAUTH_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
     return res;
   };
   // What the page learns on a failure is only that it failed: no answer of
   // GitHub, and nothing the request sent, goes back.
-  const failed = () => done(redirect("/?sign_in=failed"));
+  const failed = () => done(redirect(FAILED));
   try {
     return await callback(request, env, done, failed);
   } catch (e) {
     // The router would answer 500 for a throw, without the cookie cleared.
     console.error("GET /auth/github/callback:", e);
-    return done(error(500, "internal error"));
+    return failed();
   }
 }
 
 async function callback(request: Request, env: Env, done: (res: Response) => Response, failed: () => Response): Promise<Response> {
-  if (!(await signInAllowed(request, env))) return done(error(429, "too many sign-ins, try again in a minute"));
   const url = new URL(request.url);
-  if (!(await sameState(url.searchParams.get("state"), cookie(request, OAUTH_COOKIE)))) return done(error(400, "the sign-in did not start here"));
-  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return done(error(503, "sign-in is not set up"));
+  // A stale or doubled callback (the back button, a second tab) ends here.
+  if (!(await sameState(url.searchParams.get("state"), cookie(request, OAUTH_COOKIE)))) return failed();
+  if (!(await signInAllowed(request, env))) return failed();
+  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return failed();
 
   // No code when the user refused on GitHub's page.
   const code = url.searchParams.get("code");
@@ -75,8 +82,10 @@ async function callback(request: Request, env: Env, done: (res: Response) => Res
   await endReplacedSession(request, env, user.id);
   const made = await newSession(env, user, platform(request.headers.get("User-Agent") ?? ""), "phone");
   const res = redirect("/");
-  const life = Math.max(0, made.expires_at - now());
-  res.headers.append("Set-Cookie", `${SESSION_COOKIE}=${made.session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${life}`);
+  // The session's row says when it ends, and use renews it. The cookie lives
+  // as long as a session can at most, so the browser does not drop it first
+  // and leave a row behind that nobody can use.
+  res.headers.append("Set-Cookie", `${SESSION_COOKIE}=${made.session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${MAX_SESSION_DAYS * DAY}`);
   return done(res);
 }
 

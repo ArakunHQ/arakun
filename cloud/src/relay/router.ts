@@ -1,9 +1,11 @@
 // The old relay hosts, `<label>.<BASE_DOMAIN>`. Computers and devices now
 // reach the relay on the account host with a session, so an old app or an old
 // page that still comes here is only told to update. The page is still served,
-// so an old page can show why.
+// so an old page can show why, under the same policy as on the account host:
+// these hosts are the account host's siblings.
 
 import { refuseSocket } from "../machines";
+import { withPagePolicy } from "../teams-router";
 import type { Env } from "../util";
 import { isLabel } from "./label";
 
@@ -16,7 +18,7 @@ export async function oldHost(request: Request, env: Env, pathname: string): Pro
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("expected a websocket", { status: 426 });
       return refuseSocket(pathname === "/pc" ? "pc" : "ws", "update");
     default:
-      return env.ASSETS.fetch(request);
+      return withPagePolicy(await env.ASSETS.fetch(request), new URL(request.url).host);
   }
 }
 

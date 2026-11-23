@@ -63,7 +63,8 @@ export async function unreadNotices(env: Env, githubId: number): Promise<Notice[
 }
 
 /// `{ github_id?, text, url?, expires_at? }` from the operator. The text is
-/// plain, and the URL is https so a client can open it without a check.
+/// plain, and the URL is https and stored as the URL parser writes it
+/// (`https://host/...`), so a client can open it without a check.
 export async function createNotice(request: Request, env: Env): Promise<Response> {
   const body = await jsonBody(request, MAX_BODY);
   if (!isObject(body)) return error(400, "expected a JSON object");
@@ -82,7 +83,7 @@ export async function createNotice(request: Request, env: Env): Promise<Response
   }
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   await env.DB.prepare("INSERT INTO notices (id, github_id, text, url, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(id, githubId ?? null, text, url ?? null, now(), expiresAt ?? null)
+    .bind(id, githubId ?? null, text, typeof url === "string" ? new URL(url).href : null, now(), expiresAt ?? null)
     .run();
   return Response.json({ id });
 }

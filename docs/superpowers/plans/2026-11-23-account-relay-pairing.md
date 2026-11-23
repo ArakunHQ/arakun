@@ -43,7 +43,7 @@ Every task below uses these names. Do not change one without changing every side
 |---|---|---|
 | `GET /auth/config` | | `{ github_client_id }` |
 | `POST /auth/github` | `{ access_token, name?, kind? }` | `{ session, session_id, expires_at, github_id, login, flags, plan }` |
-| `GET /auth/github/start` | | `302` to GitHub with `state`; sets cookie `arakun_oauth` |
+| `GET /auth/github/start` | | `302` to GitHub with `state`; sets cookie `__Host-arakun_oauth` |
 | `GET /auth/github/callback?code&state` | | sets cookie `__Host-arakun_session`, `302 /` |
 | `GET /me` | | `{ github_id, login, flags, plan, notices: [{ id, text, url }] }` |
 | `POST /auth/logout` | | `204`; clears the cookie |
@@ -116,9 +116,9 @@ Branches: each task group is one future pull request. When a group's last task i
 
 **Files:** `cloud/src/web_auth.ts`, `cloud/src/index.ts`, `cloud/test/web_auth.test.ts`.
 
-**Interfaces:** Consumes `newSession`. Produces `GET /auth/github/start` and `GET /auth/github/callback`. Start: random `state` in the cookie `arakun_oauth` (`HttpOnly; Secure; SameSite=Lax; Max-Age=600`), `302` to `https://github.com/login/oauth/authorize?client_id&state&scope=user:email&redirect_uri=<origin>/auth/github/callback`. Callback: `state` must equal the cookie (else `400`); exchange `code` at `https://github.com/login/oauth/access_token` with the client secret; then the same verify, email and revoke steps as `signIn`; session kind `phone`, name from the `User-Agent` (`iPhone`, `iPad`, `Android`, `Mac`, `Windows`, `Linux`, else `Browser`); set `__Host-arakun_session` (`Max-Age` = the session's life); `302 /`. Both routes share `SIGN_IN_LIMIT`.
+**Interfaces:** Consumes `newSession`. Produces `GET /auth/github/start` and `GET /auth/github/callback`. Start: random `state` in the cookie `__Host-arakun_oauth` (`HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`), `302` to `https://github.com/login/oauth/authorize?client_id&state&scope=user:email&redirect_uri=<origin>/auth/github/callback`. Callback: `state` must equal the cookie (else `302 /?sign_in=failed`, as for every other failure); exchange `code` at `https://github.com/login/oauth/access_token` with the client secret; then the same verify, email and revoke steps as `signIn`; session kind `phone`, name from the `User-Agent` (`iPhone`, `iPad`, `Android`, `Mac`, `Windows`, `Linux`, else `Browser`); set `__Host-arakun_session` (`Max-Age` = 180 days, the most a session lasts); `302 /`. The callback shares `SIGN_IN_LIMIT` with `POST /auth/github`; the start is not counted.
 
-- [ ] Tests first: the happy path sets the cookie and `GET /me` with it answers the login; a wrong `state` is `400` and sets no session; a GitHub refusal of the code redirects to `/?sign_in=failed` with no session.
+- [ ] Tests first: the happy path sets the cookie and `GET /me` with it answers the login; a wrong `state` redirects to `/?sign_in=failed` and sets no session; a GitHub refusal of the code redirects to `/?sign_in=failed` with no session.
 - [ ] Fail, implement, pass. Commit: `feat(cloud): sign in from a browser with github's web flow`.
 
 ### Task 4: Machines, and admission by session

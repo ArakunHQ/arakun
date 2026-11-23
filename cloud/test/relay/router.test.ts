@@ -51,6 +51,17 @@ describe("an old host under a label", () => {
     expect(js.status).toBe(200);
   });
 
+  it("serves the page under the account host's policy, for its own host", async () => {
+    for (const path of ["/", "/app.js"]) {
+      const res = await SELF.fetch(`https://${LABEL}.arakun.dev${path}`);
+      const csp = res.headers.get("Content-Security-Policy") ?? "";
+      expect(csp, path).toContain("script-src 'self'");
+      expect(csp, path).toContain(`connect-src 'self' wss://${LABEL}.arakun.dev`);
+      expect(res.headers.get("X-Content-Type-Options"), path).toBe("nosniff");
+      expect(res.headers.get("Referrer-Policy"), path).toBe("no-referrer");
+    }
+  });
+
   it("answers /_relay with 410 and update", async () => {
     const res = await SELF.fetch(`https://${LABEL}.arakun.dev/_relay`);
     expect(res.status).toBe(410);

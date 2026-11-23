@@ -17,7 +17,7 @@ import { DAY, GITHUB_LOGIN, b64url, bearer, bodyText, discard, error, flagList, 
 const SESSION_DAYS = 90;
 /// Renewal never takes a session past this many days after its sign-in, so a
 /// stolen session ends even while it is in use.
-const MAX_SESSION_DAYS = 180;
+export const MAX_SESSION_DAYS = 180;
 /// 32 bytes in base64url, as `signIn` makes them.
 export const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /// GitHub tokens are at most 255 characters; this leaves room for a change.
@@ -57,6 +57,9 @@ export interface GitHubUser {
 /// the native apps.
 const KINDS = ["app", "server", "phone", "ios", "android"];
 const MAX_NAME = 100;
+/// How many sessions an account keeps. Sign-in is limited per client IP, not
+/// per account, so without this the list has no end.
+export const MAX_SESSIONS = 100;
 /// `__Host-`: the browser keeps it only when set `Secure`, with `Path=/` and
 /// no `Domain`, so a sibling host cannot plant one for this host.
 export const SESSION_COOKIE = "__Host-arakun_session";
@@ -140,8 +143,9 @@ export async function newSession(
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   const expiresAt = t + SESSION_DAYS * DAY;
   const db = env.DB;
+  const hash = hex(await sha256(session));
   // One batch is one transaction: no session without its user row.
-  await db.batch([
+  const results = await db.batch([
     // Fills in the login of a row an admin made before the first sign-in.
     db
       .prepare(
@@ -154,8 +158,18 @@ export async function newSession(
     db.prepare("DELETE FROM sessions WHERE github_id = ? AND expires_at <= ?").bind(user.id, t),
     db
       .prepare("INSERT INTO sessions (token_hash, id, name, kind, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(hex(await sha256(session)), id, name, kind, user.id, t, expiresAt, t),
+      .bind(hash, id, name, kind, user.id, t, expiresAt, t),
+    // Past the cap, the sessions used longest ago make room for the new one.
+    db
+      .prepare(
+        `DELETE FROM sessions WHERE github_id = ?1 AND token_hash IN (
+           SELECT token_hash FROM sessions WHERE github_id = ?1 AND token_hash != ?2
+           ORDER BY last_used_at DESC, created_at DESC, token_hash LIMIT -1 OFFSET ?3)`,
+      )
+      .bind(user.id, hash, MAX_SESSIONS - 1),
   ]);
+  // A session that made room may have sockets open: they close now.
+  if (results[3]!.meta.changes > 0) await recheckAccount(env, user.id);
   return { session, session_id: id, expires_at: expiresAt };
 }
 
@@ -240,7 +254,7 @@ export async function session(
   )
     .bind(hash, flag)
     .first<{
-      id: string;
+      id: string | null;
       name: string;
       kind: string;
       github_id: number;
@@ -273,17 +287,42 @@ export async function session(
       env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ? AND last_seen_at < ?").bind(t, row.github_id, t),
     ]);
   }
+  // A row from before sessions had ids: the migration fills them in, but a
+  // sign-in the Worker of before served between the migration and the deploy
+  // has none, nor a name.
+  let { id, name } = row;
+  if (id === null) {
+    const given = await giveId(env, hash, row.login);
+    if (!given) return null;
+    ({ id, name } = given);
+  }
   return {
     hash,
-    id: row.id,
+    id,
     githubId: row.github_id,
     login: row.login,
-    name: row.name,
+    name,
     kind: row.kind,
     plan: row.plan,
     blocked: row.blocked === 1,
     flagged: row.flagged === 1,
   };
+}
+
+/// Gives a session without an id one, and its user's login for a name, as
+/// the migration did for the rows it found. Two requests at once agree: only
+/// the first write lands, and both read what it wrote. Null when the session
+/// ended meanwhile.
+async function giveId(env: Env, hash: string, login: string): Promise<{ id: string; name: string } | null> {
+  const [, read] = await env.DB.batch<{ id: string; name: string }>([
+    env.DB.prepare("UPDATE sessions SET id = ?2, name = CASE WHEN name = '' THEN ?3 ELSE name END WHERE token_hash = ?1 AND id IS NULL").bind(
+      hash,
+      hex(crypto.getRandomValues(new Uint8Array(16))),
+      login,
+    ),
+    env.DB.prepare("SELECT id, name FROM sessions WHERE token_hash = ?").bind(hash),
+  ]);
+  return read!.results[0] ?? null;
 }
 
 /// A body over the limit. A symbol, so no token string can be mistaken for it.

@@ -66,13 +66,15 @@ that lost any of them is closed before it gets the message.
 ## How sign-in works
 
 1. The desktop app runs GitHub's OAuth device flow with the public client ID
-   `Ov23lipgmMeATCa5aTr3` and no scopes. The app holds no client secret.
+   `Ov23lipgmMeATCa5aTr3` and the scope `user:email`. The app holds no client secret.
 2. It posts the GitHub token once to `POST /auth/github`.
 3. The Worker asks GitHub's Applications API
    (`POST /applications/<client_id>/token`) whether our OAuth App issued the token and
    to whom. That call needs the app's client secret, which only the Worker has. It
-   keeps the numeric `id` and the `login`, and answers with a session token of its
-   own. It never stores the GitHub token, and stores nothing else about the user.
+   keeps the numeric `id`, the `login` and the primary verified email address
+   (`GET /user/emails`, which is what the scope is for), and answers with a session
+   token of its own. It never stores the GitHub token, and stores nothing else about
+   the user.
 
    `GET /user` would accept any of the user's GitHub tokens (the `gh` CLI's, a
    personal token, another app's), so whoever held one could sign in as them.
@@ -83,9 +85,23 @@ that lost any of them is closed before it gets the message.
    does not confirm the revoke, the sign-in fails and gives no session.
 5. The app sends `Authorization: Bearer <session>` from then on.
 
+The phone page signs in with GitHub's web flow, since a browser cannot keep a token to
+itself. `GET /auth/github/start` sends the browser to GitHub with a random `state`,
+which it also keeps in the cookie `__Host-arakun_oauth` for ten minutes.
+`GET /auth/github/callback` takes the code only when its `state` is the cookie's,
+trades it for a GitHub token with the client secret, and goes on from step 3. The
+session goes into the cookie `__Host-arakun_session` (`HttpOnly`, `Secure`,
+`SameSite=Lax`), which the page's script cannot read, and the browser lands on `/`.
+Every failure lands on `/?sign_in=failed` instead, with no session and nothing of what
+GitHub or the request said. A request that comes with the cookie and changes something
+(anything but `GET` and `HEAD`), or opens a socket, must carry an `Origin` equal to
+the Worker's own, or it answers `403`.
+
 A session lasts 90 days and is extended on use, at most once a day, but never past
-180 days after sign-in. Then the app has to sign in again. The database holds only
-the SHA-256 of the session token.
+180 days after sign-in. Then the app has to sign in again. The cookie lives for those
+180 days; the session's row decides when it ends. The database holds only the SHA-256
+of the session token. An account keeps at most 100 sessions: a sign-in past that ends
+the one used longest ago.
 
 Users are keyed by their numeric GitHub ID, which stays when they rename their account.
 Flags are set per user on the server, and every team endpoint checks the `teams`
@@ -139,8 +155,8 @@ GITHUB_CLIENT_SECRET=<the app secret>
 ## First production deploy
 
 Production moved from the Workers `arakun-relay` and `arakun-teams` to one Worker,
-`arakun-cloud`. This is also the first time the teams API is live in production (see
-the hosts above). Do these once, in this order:
+`arakun-cloud`. This is also the first time the teams API is live in production, on
+the account host. Do these once, in this order:
 
 1. Before the pull request that adds `cloud/` can merge: in the `main` ruleset, require
    "Cloud (types and tests)" in place of "Relay (types and tests)". That pull request
@@ -284,9 +300,10 @@ npx wrangler d1 create arakun-cloud-dev
 npx wrangler d1 migrations apply arakun-cloud-dev --remote
 ```
 
-Three rate limits are set in `wrangler.toml` under `[[ratelimits]]`: `POST /auth/github`
+Three rate limits are set in `wrangler.toml` under `[[ratelimits]]`: sign-in, which is
+`POST /auth/github` and the page's `GET /auth/github/callback` together
 (about 10 a minute per client IP, `namespace_id` 1001 in production, 1003 in the
-top-level Worker), the messages each device sends on channel sockets (about 60
+top-level Worker; `GET /auth/github/start` asks nothing of GitHub and is not counted), the messages each device sends on channel sockets (about 60
 every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker)
 and the invites each user makes, since each asks GitHub who has the login (about
 30 a minute, `namespace_id` 1006 in production, 1005 in the top-level Worker).
@@ -304,14 +321,6 @@ client's close by itself; `src/channel.ts` relies on that.
 One deploy of this Worker serves every computer and every device of every account,
 on any host, `workers.dev` included. Labels travel in the path, so there is one
 Worker, not one per computer.
-
-To upgrade a Worker you deployed from the old `relay/` folder, create the database as
-above (the old Worker had none), then deploy over it from `cloud/` with the command of
-step 4 and the same name. That Worker is at migration `v1` with the class `Relay`,
-which is `v1` here too, so wrangler only adds `v2` (`Channel`) and the computer's
-object keeps what it stored. A Worker deployed from the old `teams/` folder is at `v1`
-with `Channel` and cannot be deployed over: deploy under a new name and delete the
-old one.
 
 1. A Cloudflare account (the free plan caps spending) and a session:
 
@@ -362,6 +371,15 @@ old one.
    reads the client ID from `/auth/config` and signs in there.
 
 The free plan's limits apply until you set `plans` in KV (see below).
+
+If you hosted the old relay, you have one Worker per computer, each named after its
+label and deployed from the old `relay/` folder. One Worker now serves them all, so
+follow the steps above under the new name and delete the old Workers. You can also
+deploy over one of them and keep its name, with `npx wrangler deploy --name <label> --env=""`
+in step 4: it is at migration `v1` with the class `Relay`, which is `v1` here too, so
+wrangler only adds `v2` (`Channel`). A Worker deployed from the old `teams/` folder is
+at `v1` with `Channel` and cannot be deployed over: deploy under a new name and delete
+the old one.
 
 ## Relay: operating
 
@@ -418,7 +436,10 @@ A blocked account can still sign in and read `/me`; `GET /machines` answers it
 Each object checks its sockets' sessions and account in D1 every 5 minutes, and at
 once when the Worker asks after a sign-out, a block, a plan change or a forgotten
 machine. A socket whose session is gone closes with `signed_out`, a blocked
-account's with `blocked`.
+account's with `blocked`. The object also reads a device's session, its account's
+block and the machine's account itself before it gives the device a channel, as it
+does for a computer's claim, so a device that got past the Worker just before a
+sign-out or a block is refused with the same reasons.
 
 An object whose computer has not connected in 90 days empties itself (alarm). Nothing
 is lost: the machine stays in D1 and the computer claims again when it reconnects. A
@@ -497,6 +518,8 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | Request | Answer |
 | --- | --- |
 | `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it, another app issued it or it was already used to sign in, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached, fails or does not revoke the token, `503` without `GITHUB_CLIENT_SECRET`. |
+| `GET /auth/github/start` | The page's sign-in: `302` to GitHub, with the `state` in the cookie `__Host-arakun_oauth`. `302` to `/?sign_in=failed` without `GITHUB_CLIENT_SECRET`. |
+| `GET /auth/github/callback?code&state` | `302` to `/` with the session in the cookie `__Host-arakun_session`. `302` to `/?sign_in=failed` for a `state` that is not the cookie's, a refusal by GitHub, the sign-in rate limit or any other failure. Clears the state cookie either way. |
 | `GET /me` with the session | `200 {github_id, login, flags}`, or `401`. |
 | `POST /auth/logout` with the session | `204`, and the session is gone. `401` if it was not valid. |
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |

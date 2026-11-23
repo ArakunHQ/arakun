@@ -410,12 +410,64 @@ describe("named sessions", () => {
     expect((await call("DELETE", `/sessions/${theirs.session_id}`)).status).toBe(401);
   });
 
-  it("gives old sessions without an id one, and keeps ids unique", async () => {
-    await signIn(1001, "octocat");
-    await signIn(1001, "octocat", "gho_two");
-    const rows = await env.DB.prepare("SELECT COUNT(DISTINCT id) AS n FROM sessions").first<{ n: number }>();
-    expect(rows?.n).toBe(2);
+  /// A session as a Worker from before sessions had ids made it.
+  async function oldSession(token: string, githubId: number): Promise<void> {
+    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const t = nowSeconds();
+    await env.DB.prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(hash, githubId, t, t + 90 * DAY, t)
+      .run();
+  }
+
+  it("the migration gives old sessions without an id one and their login for a name, and ids stay unique", async () => {
+    const kept = await signIn(1001, "octocat");
+    await oldSession("a".repeat(43), 1001);
+    await oldSession("b".repeat(43), 1001);
+    // The migration's own statements, run again over rows as it found them.
+    await env.DB.prepare("UPDATE sessions SET name = '' WHERE id IS NULL").run();
+    const migration = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0008"))!;
+    const updates = migration.queries.filter((q) => q.includes("UPDATE sessions"));
+    expect(updates).toHaveLength(2);
+    for (const q of updates) await env.DB.prepare(q).run();
+    const rows = await env.DB.prepare("SELECT id, name FROM sessions").all<{ id: string | null; name: string }>();
+    expect(rows.results).toHaveLength(3);
+    for (const r of rows.results) {
+      expect(r.id).toMatch(/^[0-9a-f]{32}$/);
+      expect(r.name).toBe("octocat");
+    }
+    expect(new Set(rows.results.map((r) => r.id)).size).toBe(3);
+    expect(rows.results.map((r) => r.id)).toContain(kept.session_id);
     await expect(env.DB.prepare("UPDATE sessions SET id = (SELECT MIN(id) FROM sessions)").run()).rejects.toThrow();
+  });
+
+  it("gives a session made after the migration by the Worker of before an id on its first use", async () => {
+    await signIn(1001, "octocat");
+    const token = "c".repeat(43);
+    await oldSession(token, 1001);
+    const list = (await (await call("GET", "/sessions", as(token))).json()) as { id: string; name: string; current: boolean }[];
+    expect(list).toHaveLength(2);
+    const mine = list.filter((s) => s.current);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(mine[0]!.name).toBe("octocat");
+    // The same id from then on, and it signs the session out.
+    const again = (await (await call("GET", "/sessions", as(token))).json()) as { id: string; current: boolean }[];
+    expect(again.find((s) => s.current)!.id).toBe(mine[0]!.id);
+    expect((await call("DELETE", `/sessions/${mine[0]!.id}`, as(token))).status).toBe(204);
+    expect((await call("GET", "/me", as(token))).status).toBe(401);
+  });
+
+  it("keeps at most 100 sessions of an account: the one used longest ago makes room", async () => {
+    const first = await signIn(1001, "octocat", "gho_0");
+    for (let i = 1; i < 100; i++) await signIn(1001, "octocat", `gho_${i}`);
+    const other = await signIn(2002, "other");
+    await env.DB.prepare("UPDATE sessions SET last_used_at = last_used_at - 60 WHERE id = ?").bind(first.session_id).run();
+    const newest = await signIn(1001, "octocat", "gho_100");
+    const list = (await (await call("GET", "/sessions", as(newest.session))).json()) as { id: string }[];
+    expect(list).toHaveLength(100);
+    expect(list.map((s) => s.id)).not.toContain(first.session_id);
+    expect((await call("GET", "/me", as(first.session))).status).toBe(401);
+    expect((await call("GET", "/me", as(other.session))).status).toBe(200);
   });
 });
 

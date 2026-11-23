@@ -76,6 +76,13 @@ describe("notices", () => {
     expect((await call("POST", `/notices/${id}/read`)).status).toBe(401);
   });
 
+  it("stores a notice's URL as the parser writes it, so every client reads the same address", async () => {
+    const a = await signIn(1001, "alice");
+    await make({ text: "one", url: " HTTPS://Arakun.dev/status" });
+    await make({ text: "two", url: "https:arakun.dev" });
+    expect((await notices(a.session)).map((n) => n.url).sort()).toEqual(["https://arakun.dev/", "https://arakun.dev/status"]);
+  });
+
   it("answer 400 for a bad text, url or expiry, and 404 for an account that does not exist", async () => {
     await signIn(1001, "alice");
     const bad: unknown[] = [

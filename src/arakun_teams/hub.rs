@@ -277,6 +277,10 @@ pub struct ChannelState {
     unknown: Vec<Stored>,
     /// What was sent and not acknowledged yet, by message ID.
     outbox: BTreeMap<String, String>,
+    /// Messages the server refused because a removal retired their key, with
+    /// the epoch each was sealed with. They are sealed again and sent once
+    /// this device holds a newer key: the server stored none of them.
+    rekey: Vec<(String, u64)>,
     link: Option<Link>,
     /// When the channel was last asked for, to pick the sockets to close.
     shown: Instant,
@@ -1272,6 +1276,7 @@ impl Hub {
                 self.ingest(&key, waiting, true, cx);
             }
         }
+        self.resend_rekeyed(team_id, cx);
         if self.setup.contains_key(team_id) {
             let has_channels = self
                 .team
@@ -1969,6 +1974,26 @@ impl Hub {
         );
     }
 
+    /// Sends again the messages refused for a retired key, sealed with the
+    /// key the team has now, once that key is newer than theirs. Until then
+    /// they stay as they are, with their Send again.
+    fn resend_rekeyed(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        let Some((epoch, _)) = self.sending_key(team_id) else {
+            return;
+        };
+        let mut due = Vec::new();
+        for c in self.channels.values_mut().filter(|c| c.team_id == team_id) {
+            for id in take_rekeyed(&mut c.rekey, epoch) {
+                due.push((c.channel_id.clone(), id));
+            }
+        }
+        for (channel_id, id) in due {
+            // A message already sent again by hand is gone, and this does
+            // nothing.
+            self.resend(team_id, &channel_id, &id, cx);
+        }
+    }
+
     /// Do not encrypt a new message with a key still held by a removed member.
     fn sending_key(&self, team_id: &str) -> Option<(u64, TeamKey)> {
         self.roster(team_id)?;
@@ -2136,6 +2161,7 @@ impl Hub {
             loading: true,
             unknown: Vec::new(),
             outbox: BTreeMap::new(),
+            rekey: Vec::new(),
             link: None,
             shown: Instant::now(),
             seen_ids: HashSet::new(),
@@ -2260,21 +2286,34 @@ impl Hub {
                 }
                 Some("error") => {
                     let id = v["id"].as_str().unwrap_or_default().to_string();
-                    let why = v["error"].as_str().unwrap_or("refused").to_string();
+                    let kind = refusal(&v);
+                    let why = match kind {
+                        Refusal::OldKey => OLD_KEY.to_string(),
+                        _ => v["error"].as_str().unwrap_or("refused").to_string(),
+                    };
                     let c = self.channels.get_mut(key).expect("looked up above");
                     // The reply to a replay may arrive after catch-up finished.
-                    if why.contains("exists") {
+                    if kind == Refusal::Stored {
                         stored_already(&mut c.outbox, &c.messages, &mut c.bot_waiting, &id);
                         c.needs_history = true;
                         self.catch_up(key, cx);
                     } else if refuse(&mut c.messages, &id, &why) {
-                        c.outbox.remove(&id);
+                        let epoch = c.outbox.remove(&id).as_deref().map_or(0, frame_epoch);
+                        // A review event is not sent again: its exchange ends
+                        // here, and a rotation cancels it anyway.
+                        let review = c
+                            .messages
+                            .iter()
+                            .any(|m| m.id == id && m.body.kind == "agent_review");
+                        if kind == Refusal::OldKey && !review {
+                            c.rekey.push((id.clone(), epoch));
+                        }
                         self.review_refused(&id, &why);
                         let c = self.channels.get_mut(key).expect("looked up above");
                         // Send again asks with the project open then.
                         self.bot.asked.remove(&id);
                         self.messages_rev += 1;
-                        if why.contains("epoch") {
+                        if kind == Refusal::OldKey || why.contains("epoch") {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
                         }
@@ -3249,8 +3288,58 @@ pub fn here_now<'a>(members: &'a [MemberRow], here: &[u64]) -> Vec<(&'a MemberRo
 
 const NO_KEY: &str = "This device does not hold the team's current key yet.";
 
-/// A pending rotation is its own wait: the server would still take the old
-/// key, but a removed member holds it, so nothing new is sealed with it.
+/// Why a message the server refused for a retired key was not sent.
+const OLD_KEY: &str =
+    "the team is getting a new key because someone left. It sends by itself once the key is here";
+
+/// How the client takes a refusal from the channel socket.
+#[derive(Debug, PartialEq)]
+enum Refusal {
+    /// The channel holds the message already.
+    Stored,
+    /// Sealed with a key a removal retired: read the team, seal it again.
+    OldKey,
+    Other,
+}
+
+/// What a socket `error` frame means. Servers that send `code` are matched
+/// on it; older ones only on their wording, which is all they had.
+fn refusal(frame: &serde_json::Value) -> Refusal {
+    match frame["code"].as_str() {
+        Some("exists") => return Refusal::Stored,
+        Some("rotation_pending" | "stale_epoch") => return Refusal::OldKey,
+        _ => {}
+    }
+    let why = frame["error"].as_str().unwrap_or_default();
+    if why.contains("exists") {
+        Refusal::Stored
+    } else if why.starts_with("stale epoch") || why.contains("has no envelopes yet") {
+        Refusal::OldKey
+    } else {
+        Refusal::Other
+    }
+}
+
+/// The epoch a queued `send` frame was sealed with, 0 if it has none.
+fn frame_epoch(frame: &str) -> u64 {
+    serde_json::from_str::<serde_json::Value>(frame)
+        .ok()
+        .and_then(|v| v["message"]["epoch"].as_u64())
+        .unwrap_or(0)
+}
+
+/// Takes the refused messages that a key of `epoch` can send again: those
+/// sealed with an older one. The rest wait for a newer key, so a refusal the
+/// team read does not explain yet never sends in a loop.
+fn take_rekeyed(rekey: &mut Vec<(String, u64)>, epoch: u64) -> Vec<String> {
+    let (due, wait): (Vec<_>, Vec<_>) = rekey.drain(..).partition(|(_, e)| *e < epoch);
+    *rekey = wait;
+    due.into_iter().map(|(id, _)| id).collect()
+}
+
+/// A pending rotation is its own wait: a removed member holds the newest key
+/// with envelopes, so nothing new is sealed with it, and the server refuses
+/// it too.
 fn no_key_reason(detail: &TeamDetail) -> &'static str {
     if detail.rotation_pending && detail.keyed_epoch.is_some_and(|k| k > 0) {
         "Someone left this team, so it needs a new key before anyone can send. An admin's Arakun makes it the next time it opens the team."
@@ -3764,6 +3853,81 @@ mod tests {
             Delivery::Failed("too many messages, slow down".into())
         );
         assert!(!refuse(&mut messages, "gone", "refused"));
+    }
+
+    #[test]
+    fn a_refusal_is_read_by_its_code_and_by_the_wording_of_older_servers() {
+        let frame = |code: Option<&str>, error: &str| {
+            let mut v = serde_json::json!({ "type": "error", "id": "m", "error": error });
+            if let Some(code) = code {
+                v["code"] = code.into();
+            }
+            v
+        };
+        let pending = "a key rotation is pending: epoch 1 is retired, so wait for the new team key and send again";
+        assert_eq!(
+            refusal(&frame(Some("rotation_pending"), pending)),
+            Refusal::OldKey
+        );
+        assert_eq!(
+            refusal(&frame(
+                Some("stale_epoch"),
+                "stale epoch: fetch the new team key"
+            )),
+            Refusal::OldKey
+        );
+        assert_eq!(
+            refusal(&frame(Some("exists"), "a message with this id exists")),
+            Refusal::Stored
+        );
+        assert_eq!(
+            refusal(&frame(Some("unknown_epoch"), "unknown epoch")),
+            Refusal::Other
+        );
+        // Servers from before `code`.
+        assert_eq!(
+            refusal(&frame(None, "stale epoch: fetch the new team key")),
+            Refusal::OldKey
+        );
+        assert_eq!(
+            refusal(&frame(
+                None,
+                "epoch 2 has no envelopes yet: keep using epoch 1 until the rotation ends"
+            )),
+            Refusal::OldKey
+        );
+        assert_eq!(
+            refusal(&frame(None, "a message with this id exists")),
+            Refusal::Stored
+        );
+        assert_eq!(
+            refusal(&frame(None, "too many messages, slow down")),
+            Refusal::Other
+        );
+        // A code this client does not know falls back to the wording.
+        assert_eq!(
+            refusal(&frame(Some("later"), "a message with this id exists")),
+            Refusal::Stored
+        );
+        assert_eq!(
+            refusal(&frame(Some("later"), "bad signature")),
+            Refusal::Other
+        );
+    }
+
+    #[test]
+    fn a_message_refused_for_an_old_key_goes_again_only_with_a_newer_one() {
+        let frame = serde_json::json!({ "type": "send", "message": { "id": "a", "epoch": 3 } });
+        assert_eq!(frame_epoch(&frame.to_string()), 3);
+        assert_eq!(frame_epoch("not json"), 0);
+        let mut rekey = vec![("a".to_string(), 3), ("b".to_string(), 4)];
+        // The team read still holds the key the server refused: nothing goes.
+        assert!(take_rekeyed(&mut rekey, 3).is_empty());
+        assert_eq!(rekey.len(), 2);
+        assert_eq!(take_rekeyed(&mut rekey, 4), vec!["a".to_string()]);
+        assert_eq!(rekey, vec![("b".to_string(), 4)]);
+        assert_eq!(take_rekeyed(&mut rekey, 6), vec!["b".to_string()]);
+        assert!(rekey.is_empty());
     }
 
     #[test]
@@ -4699,8 +4863,32 @@ mod tests {
         let read2 = read_team(&second, &team, true, &HashSet::new()).unwrap();
         assert_eq!(read2.keys, vec![(1, key)]);
 
-        // A removes B: a new key for A's devices only, and B is out.
+        // A removes B: a new key for A's devices only, and B is out. Until
+        // it is made, the server takes nothing, not even the old key.
         a.call().remove_member(&team, mb.github_id).unwrap();
+        let mut closed = false;
+        let old = crypto::seal_message(
+            &team,
+            &channel,
+            &crypto::ulid(),
+            1,
+            &key,
+            &a.local.device,
+            &Body::text("during the rotation", None),
+        );
+        la.send(serde_json::json!({ "type": "send", "message": old }).to_string());
+        loop {
+            match next() {
+                (who, socket::Event::Status(socket::Status::Refused(_))) if who == "b" => {
+                    closed = true
+                }
+                (who, socket::Event::Frame(v)) if who == "a" && v["id"] == old.id.as_str() => {
+                    assert_eq!(refusal(&v), Refusal::OldKey, "{v}");
+                    break;
+                }
+                _ => {}
+            }
+        }
         let read = read_team(&a, &team, true, &HashSet::from([1])).unwrap();
         assert!(read.detail.rotation_pending);
         assert_eq!(read.detail.epoch, 2);
@@ -4719,7 +4907,6 @@ mod tests {
             &Body::text("after rotation", None),
         );
         la.send(serde_json::json!({ "type": "send", "message": message }).to_string());
-        let mut closed = false;
         let mut received = false;
         while !(closed && received) {
             match next() {

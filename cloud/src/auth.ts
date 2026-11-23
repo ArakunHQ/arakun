@@ -10,25 +10,36 @@
 // app's client secret, which lives only here as a Worker secret: the desktop
 // app's device flow has no secret.
 
-import { DAY, GITHUB_LOGIN, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
+import { recheckAccount } from "./machines";
+import { unreadNotices } from "./notices";
+import { DAY, GITHUB_LOGIN, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, isObject, now, sha256, type Env } from "./util";
 
 const SESSION_DAYS = 90;
 /// Renewal never takes a session past this many days after its sign-in, so a
 /// stolen session ends even while it is in use.
 const MAX_SESSION_DAYS = 180;
 /// 32 bytes in base64url, as `signIn` makes them.
-const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+export const SESSION_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 /// GitHub tokens are at most 255 characters; this leaves room for a change.
-const MAX_ACCESS_TOKEN = 1024;
+export const MAX_ACCESS_TOKEN = 1024;
 /// Room for the token and some JSON around it. Anyone can call sign-in, so the
 /// body is cut off here, before it is parsed.
 const MAX_SIGN_IN_BODY = 4096;
-const GITHUB_TIMEOUT_MS = 10_000;
+export const GITHUB_TIMEOUT_MS = 10_000;
 
 export interface Session {
   hash: string;
+  /// The session's public id, which `GET /sessions` lists and
+  /// `DELETE /sessions/<id>` takes. Not a secret.
+  id: string;
   githubId: number;
   login: string;
+  name: string;
+  kind: string;
+  plan: string;
+  /// The account is blocked. `session()` still answers, so each caller
+  /// decides what a block means for it.
+  blocked: boolean;
   /// Whether the user has the flag `session()` was asked about; false when
   /// it was asked about none.
   flagged: boolean;
@@ -37,87 +48,210 @@ export interface Session {
 export interface GitHubUser {
   id: number;
   login: string;
+  /// The primary verified address; null when GitHub has none. Undefined when
+  /// we could not ask, so the stored address stays.
+  email?: string | null;
+}
+
+/// What a session can be for: the app, `arakun-server`, the phone page, and
+/// the native apps.
+const KINDS = ["app", "server", "phone", "ios", "android"];
+const MAX_NAME = 100;
+/// `__Host-`: the browser keeps it only when set `Secure`, with `Path=/` and
+/// no `Domain`, so a sibling host cannot plant one for this host.
+export const SESSION_COOKIE = "__Host-arakun_session";
+
+/// Thrown by `session()` for a cookie on a request from another origin, so a
+/// caller that does not catch it cannot treat it as "not signed in". The
+/// router answers it with 403.
+export class ForeignOrigin extends Error {
+  constructor() {
+    super("the request comes from another origin");
+  }
+}
+
+export function authConfig(env: Env): Response {
+  return Response.json({ github_client_id: env.GITHUB_CLIENT_ID ?? null });
 }
 
 export async function signIn(request: Request, env: Env): Promise<Response> {
-  // Before sign-in the caller's IP is the only thing we know about it.
+  if (!(await signInAllowed(request, env))) return error(429, "too many sign-ins, try again in a minute");
+
+  const body = await signInBody(request);
+  if (body === TOO_BIG) return error(413, "the body is too big");
+  if (!body) return error(400, 'expected {"access_token": "..."}');
+  if (body === "name") return error(400, `name must be 1 to ${MAX_NAME} characters`);
+  if (body === "kind") return error(400, `kind must be one of ${KINDS.join(", ")}`);
+  const user = await verifyAndRevoke(body.token, env);
+  if (user instanceof Response) return user;
+
+  const made = await newSession(env, user, body.name ?? user.login, body.kind);
+  const [flags, plan] = await env.DB.batch([
+    flagsQuery(env.DB, user.id),
+    env.DB.prepare("SELECT plan FROM users WHERE github_id = ?").bind(user.id),
+  ]);
+  return Response.json({
+    session: made.session,
+    session_id: made.session_id,
+    expires_at: made.expires_at,
+    github_id: user.id,
+    login: user.login,
+    flags: flagList(flags!),
+    plan: (plan!.results[0] as { plan: string }).plan,
+  });
+}
+
+/// Sign-in of any kind counts against one limit per client IP. Before sign-in
+/// the IP is the only thing we know about the caller.
+export async function signInAllowed(request: Request, env: Env): Promise<boolean> {
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   const { success } = await env.SIGN_IN_LIMIT.limit({ key: ip });
-  if (!success) return error(429, "too many sign-ins, try again in a minute");
+  return success;
+}
 
-  const token = await accessToken(request);
-  if (token === TOO_BIG) return error(413, "the body is too big");
-  if (!token) return error(400, 'expected {"access_token": "..."}');
-
+/// The steps both sign-ins share, for a GitHub user access token of our app:
+/// ask who it belongs to, read the email, revoke the token. The user, or the
+/// error answer to give.
+export async function verifyAndRevoke(token: string, env: Env): Promise<GitHubUser | Response> {
   if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return error(503, "sign-in is not set up");
   const user = await githubUser(token, env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
   if (user === "rejected") return error(401, "GitHub rejected the token");
   if (user === "unreachable") return error(502, "could not reach GitHub");
+  // Before the revoke, which ends the token's use.
+  user.email = await primaryEmail(token);
   // Before the session exists: a token that still works after sign-in could
   // make more sessions for whoever gets it later.
   const revoked = await revokeToken(token, env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET);
   if (revoked === "rejected") return error(401, "GitHub rejected the token");
   if (revoked === "unreachable") return error(502, "could not reach GitHub");
+  return user;
+}
 
+/// Makes the user's row if it is new and gives them a session. Callers have
+/// checked who the user is already, and `name` and `kind` too.
+export async function newSession(
+  env: Env,
+  user: GitHubUser,
+  name: string,
+  kind: string,
+): Promise<{ session: string; session_id: string; expires_at: number }> {
   const t = now();
   const session = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   const expiresAt = t + SESSION_DAYS * DAY;
   const db = env.DB;
   // One batch is one transaction: no session without its user row.
-  const results = await db.batch([
+  await db.batch([
     // Fills in the login of a row an admin made before the first sign-in.
     db
       .prepare(
-        `INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?3)
-         ON CONFLICT (github_id) DO UPDATE SET login = excluded.login, last_seen_at = excluded.last_seen_at`,
+        `INSERT INTO users (github_id, login, email, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT (github_id) DO UPDATE SET login = excluded.login,
+           email = CASE WHEN ?5 THEN excluded.email ELSE users.email END, last_seen_at = excluded.last_seen_at`,
       )
-      .bind(user.id, user.login, t),
+      .bind(user.id, user.login, user.email ?? null, t, user.email === undefined ? 0 : 1),
     // Each sign-in adds a session, so old ones are cleared here.
     db.prepare("DELETE FROM sessions WHERE github_id = ? AND expires_at <= ?").bind(user.id, t),
     db
-      .prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(hex(await sha256(session)), user.id, t, expiresAt, t),
-    flagsQuery(db, user.id),
+      .prepare("INSERT INTO sessions (token_hash, id, name, kind, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(hex(await sha256(session)), id, name, kind, user.id, t, expiresAt, t),
   ]);
-  const flags = flagList(results[3]!);
-  return Response.json({ session, expires_at: expiresAt, github_id: user.id, login: user.login, flags });
+  return { session, session_id: id, expires_at: expiresAt };
 }
 
 export async function me(request: Request, env: Env): Promise<Response> {
   const s = await session(request, env);
   if (!s) return error(401, "not signed in");
   const flags = flagList(await flagsQuery(env.DB, s.githubId).run());
-  return Response.json({ github_id: s.githubId, login: s.login, flags });
+  return Response.json({ github_id: s.githubId, login: s.login, flags, plan: s.plan, notices: await unreadNotices(env, s.githubId) });
 }
 
 export async function logout(request: Request, env: Env): Promise<Response> {
   // No renewal: a failed delete must not leave the session living longer.
   const s = await session(request, env, { renew: false });
-  if (!s) return error(401, "not signed in");
+  // A cookie that names no session is dead: the page should drop it.
+  if (!s) return withoutCookie(request, error(401, "not signed in"));
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(s.hash).run();
-  return new Response(null, { status: 204 });
+  await recheckAccount(env, s.githubId);
+  return withoutCookie(request, new Response(null, { status: 204 }));
 }
 
-/// The session the request's bearer token names, if it is still valid. Every
-/// endpoint that needs a user goes through here. Team endpoints pass `flag`,
-/// so the flag is read in the same query rather than in a second round trip.
+/// Clears the session cookie on an answer, only when the request came with
+/// it: a bearer client has no cookie to clear.
+function withoutCookie(request: Request, res: Response): Response {
+  if (!bearer(request) && !request.headers.has("Authorization") && cookie(request, SESSION_COOKIE)) {
+    res.headers.append("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+  }
+  return res;
+}
+
+/// The account's signed-in devices, the calling one marked.
+export async function listSessions(request: Request, env: Env): Promise<Response> {
+  const s = await session(request, env);
+  if (!s) return error(401, "not signed in");
+  const rows = await env.DB.prepare(
+    "SELECT id, name, kind, created_at, last_used_at FROM sessions WHERE github_id = ? AND expires_at > ? ORDER BY created_at, id",
+  )
+    .bind(s.githubId, now())
+    .all<{ id: string; name: string; kind: string; created_at: number; last_used_at: number }>();
+  return Response.json(rows.results.map((r) => ({ ...r, current: r.id === s.id })));
+}
+
+/// Signs one of the account's devices out. Another account's id is not found.
+export async function deleteSession(request: Request, env: Env, id: string): Promise<Response> {
+  const s = await session(request, env, { renew: false });
+  if (!s) return error(401, "not signed in");
+  const result = await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND github_id = ?").bind(id, s.githubId).run();
+  if (result.meta.changes === 0) return error(404, "no such session");
+  await recheckAccount(env, s.githubId);
+  const res = new Response(null, { status: 204 });
+  // Signing out the session that made this request ends the cookie too.
+  return id === s.id ? withoutCookie(request, res) : res;
+}
+
+/// The session the request names, if it is still valid: by the bearer token
+/// or by the cookie. Every endpoint that needs a user goes through here. Team
+/// endpoints pass `flag`, so the flag is read in the same query rather than
+/// in a second round trip.
 export async function session(
   request: Request,
   env: Env,
   { renew = true, flag = null }: { renew?: boolean; flag?: string | null } = {},
 ): Promise<Session | null> {
-  const token = bearer(request);
+  let token = bearer(request);
+  if (token === null && !request.headers.has("Authorization")) {
+    // A page's script cannot read the cookie, but a foreign page can make the
+    // browser send it. So whatever changes something, and any socket, must
+    // come from our own origin.
+    token = cookie(request, SESSION_COOKIE);
+    if (token !== null && (!["GET", "HEAD"].includes(request.method) || request.headers.has("Upgrade"))) {
+      if (request.headers.get("Origin") !== new URL(request.url).origin) throw new ForeignOrigin();
+    }
+  }
   if (!token || !SESSION_TOKEN.test(token)) return null;
   const hash = hex(await sha256(token));
   // A lookup by the hash itself, so no secret is compared here.
   const row = await env.DB.prepare(
-    `SELECT s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, f.flag IS NOT NULL AS flagged
+    `SELECT s.id, s.name, s.kind, s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, u.plan, u.blocked_at IS NOT NULL AS blocked,
+            f.flag IS NOT NULL AS flagged
      FROM sessions s JOIN users u ON u.github_id = s.github_id
      LEFT JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?2
      WHERE s.token_hash = ?1`,
   )
     .bind(hash, flag)
-    .first<{ github_id: number; created_at: number; expires_at: number; last_used_at: number; login: string; flagged: number }>();
+    .first<{
+      id: string;
+      name: string;
+      kind: string;
+      github_id: number;
+      created_at: number;
+      expires_at: number;
+      last_used_at: number;
+      login: string;
+      plan: string;
+      blocked: number;
+      flagged: number;
+    }>();
   if (!row) return null;
   const t = now();
   if (row.expires_at <= t) {
@@ -139,13 +273,25 @@ export async function session(
       env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ? AND last_seen_at < ?").bind(t, row.github_id, t),
     ]);
   }
-  return { hash, githubId: row.github_id, login: row.login, flagged: row.flagged === 1 };
+  return {
+    hash,
+    id: row.id,
+    githubId: row.github_id,
+    login: row.login,
+    name: row.name,
+    kind: row.kind,
+    plan: row.plan,
+    blocked: row.blocked === 1,
+    flagged: row.flagged === 1,
+  };
 }
 
 /// A body over the limit. A symbol, so no token string can be mistaken for it.
 const TOO_BIG = Symbol("too big");
 
-async function accessToken(request: Request): Promise<string | typeof TOO_BIG | null> {
+async function signInBody(
+  request: Request,
+): Promise<{ token: string; name: string | null; kind: string } | "name" | "kind" | typeof TOO_BIG | null> {
   let body: unknown;
   try {
     // A body stream that breaks off is a bad request too, not a server error.
@@ -156,9 +302,55 @@ async function accessToken(request: Request): Promise<string | typeof TOO_BIG | 
     return null;
   }
   if (typeof body !== "object" || body === null) return null;
-  const token = (body as Record<string, unknown>)["access_token"];
+  const { access_token: token, name, kind } = body as Record<string, unknown>;
   if (typeof token !== "string" || token.length === 0 || token.length > MAX_ACCESS_TOKEN) return null;
-  return token;
+  if (name !== undefined && (typeof name !== "string" || name.trim().length === 0 || name.length > MAX_NAME)) return "name";
+  if (kind !== undefined && (typeof kind !== "string" || !KINDS.includes(kind))) return "kind";
+  return { token, name: name === undefined ? null : name.trim(), kind: kind ?? "app" };
+}
+
+/// The value of one cookie, or null. Null too when it comes more than once:
+/// a second one may have been planted (by a sibling host, or a path of its
+/// own) and nothing says which one is ours.
+export function cookie(request: Request, name: string): string | null {
+  let found: string | null = null;
+  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key !== name) continue;
+    if (found !== null) return null;
+    found = value.join("=");
+  }
+  return found;
+}
+
+/// The primary verified address of the token's user, null if there is none,
+/// undefined if GitHub does not answer: sign-in does not depend on it, and
+/// the stored address is kept.
+async function primaryEmail(token: string): Promise<string | null | undefined> {
+  try {
+    const res = await fetch("https://api.github.com/user/emails", {
+      redirect: "manual",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "arakun-teams",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      await discard(res);
+      return undefined;
+    }
+    const list: unknown = await res.json();
+    if (!Array.isArray(list)) return undefined;
+    for (const e of list) {
+      if (isObject(e) && e["primary"] === true && e["verified"] === true && typeof e["email"] === "string") return e["email"];
+    }
+  } catch {
+    return undefined;
+  }
+  return null;
 }
 
 /// Who GitHub says owns the token, if our app issued it. Anything other than a

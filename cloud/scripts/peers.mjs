@@ -1,45 +1,58 @@
 #!/usr/bin/env node
-// A fake computer and two fake phones against a deployed relay, to see a
-// deployment work end to end before Arakun itself speaks the protocol.
+// A fake computer and two fake devices against a running Worker, to see the
+// relay work end to end before Arakun itself speaks the protocol.
 //
-//   node scripts/peers.mjs                  prints the computer's label (and makes its key)
-//   node scripts/peers.mjs --base <url>     runs the whole dance against that relay
+//   node scripts/peers.mjs --base <url> --session-pc <token> --session-phone <token>
+//   node scripts/peers.mjs --base http://127.0.0.1:8787 --local
 //
-// The key lives in .peers-key.json next to package.json: the label is derived
-// from it, and the Worker has to be reachable under that label (deployed as
-// `wrangler deploy --name <label>`, or `wrangler dev` with LABEL_OVERRIDE).
+// Both sessions belong to one account: sign in twice (the app's Account
+// panel, or POST /auth/github) and pass the two session tokens. `--local`
+// skips GitHub for a `wrangler dev` Worker: it writes a test account and two
+// sessions straight into the local D1. The computer's key lives in
+// .peers-key.json next to package.json; its label is derived from it.
 // Node 24 or newer: the script imports the Worker's own .ts helpers.
 
+import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { CONTROL, DATA, HELLO, b64url, concat, parsePcFrame, parsePhoneFrame, pcControl, pcFrame, phoneFrame, sha256, utf8 } from "../src/relay/frames.ts";
 import { hex, labelOf } from "../src/relay/label.ts";
 
 const KEY_FILE = fileURLToPath(new URL("../.peers-key.json", import.meta.url));
+const CLOUD_DIR = fileURLToPath(new URL("..", import.meta.url));
 const TIMEOUT_MS = 8000;
+/// The account `--local` makes; far from any real GitHub ID.
+const LOCAL_ACCOUNT = 9_000_000_001;
 
 // ---- the dance -------------------------------------------------------------
 
 async function main() {
   const args = new Map();
-  for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1] ?? "");
+  for (let i = 2; i < process.argv.length; i++) {
+    const name = process.argv[i];
+    if (name === "--local") args.set(name, "1");
+    else args.set(name, process.argv[++i] ?? "");
+  }
 
   const me = await identity();
   console.log(`computer label: ${me.label}`);
 
-  const base = args.get("--base");
-  if (!base) {
+  const base = (args.get("--base") ?? "").replace(/\/$/, "");
+  const local = args.has("--local");
+  let pcSession = args.get("--session-pc");
+  let phoneSession = args.get("--session-phone");
+  if (!base || (!local && (!pcSession || !phoneSession))) {
     console.log("");
-    console.log("Deploy the relay under that label and run again with --base:");
-    console.log(`  npx wrangler deploy --name ${me.label}`);
-    console.log(`  node scripts/peers.mjs --base https://${me.label}.<account>.workers.dev`);
-    console.log("Or locally:");
-    console.log(`  echo LABEL_OVERRIDE=${me.label} > .dev.vars && npx wrangler dev`);
-    console.log("  node scripts/peers.mjs --base http://127.0.0.1:8787");
+    console.log("Run it with the Worker's URL and two sessions of one account:");
+    console.log("  node scripts/peers.mjs --base https://<host> --session-pc <token> --session-phone <token>");
+    console.log("Or against `npx wrangler dev`, with sessions made in the local D1:");
+    console.log("  node scripts/peers.mjs --base http://127.0.0.1:8787 --local");
     return;
   }
+  if (local) [pcSession, phoneSession] = await localSessions();
 
-  const wsBase = base.replace(/^http/, "ws").replace(/\/$/, "");
+  const wsBase = base.replace(/^http/, "ws");
+  const bearer = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
   let steps = 0;
   const step = (name, ok, detail = "") => {
     steps++;
@@ -48,12 +61,11 @@ async function main() {
   };
 
   try {
-    const status = await fetch(`${base}/_relay`);
-    const body = await status.json().catch(() => ({}));
-    step("relay answers /_relay with our label", status.ok && body.label === me.label, JSON.stringify(body));
+    const config = await fetch(`${base}/auth/config`);
+    step("the Worker answers /auth/config", config.ok, String(config.status));
 
-    // The computer claims its label.
-    const pc = await Peer.open(`${wsBase}/pc`, parsePcFrame);
+    // The computer claims its label with the account's session.
+    const pc = await Peer.open(`${wsBase}/machines/${me.label}/pc?name=peers&kind=app`, parsePcFrame, bearer(pcSession));
     const challenge = await pc.control("challenge");
     const nonce = fromB64url(challenge.nonce);
     const sig = await sign(me.key, concat(nonce, utf8(me.label)));
@@ -61,28 +73,25 @@ async function main() {
     const claimed = await pc.control();
     step("computer claims", claimed.type === "claimed", JSON.stringify(claimed));
 
-    // It issues a ticket and opens pairing.
-    const ticket = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    const code = b64url(crypto.getRandomValues(new Uint8Array(16)));
-    pc.send(pcControl({ type: "tickets", hashes: [hex(await sha256(utf8(ticket)))] }));
-    pc.send(pcControl({ type: "pair_open", hash: hex(await sha256(utf8(code))), ttl: 120 }));
-    await sleep(300); // the two are in flight; no acknowledgement to wait for
+    // The account's list has it, online, with its key.
+    const list = await (await fetch(`${base}/machines`, bearer(phoneSession))).json();
+    const listed = Array.isArray(list) ? list.find((m) => m.label === me.label) : null;
+    step("the account lists the machine online", listed?.online === true && listed.pub === me.pubB64, JSON.stringify(listed ?? list));
 
-    // A phone pairs with the code.
-    const a = await Peer.open(`${wsBase}/ws?p=${code}`, parsePhoneFrame);
+    // Two pages of a device come in with the device's session.
+    const a = await Peer.open(`${wsBase}/machines/${me.label}/ws?page=${pageId()}`, parsePhoneFrame, bearer(phoneSession));
     const aOpen = await a.control();
-    step("phone A enters with the pairing code", aOpen.type === "open" && aOpen.channel > 0, JSON.stringify(aOpen));
+    step("device A comes in", aOpen.type === "open" && aOpen.channel > 0, JSON.stringify(aOpen));
     const aSeen = await pc.control();
-    step("computer hears phone A open", aSeen.type === "open" && aSeen.channel === aOpen.channel && aSeen.device === null, JSON.stringify(aSeen));
+    step("computer hears device A open, and who it is", aSeen.type === "open" && aSeen.channel === aOpen.channel && typeof aSeen.device === "string" && typeof aSeen.account === "number", JSON.stringify(aSeen));
 
-    // Another phone enters with the ticket.
-    const b = await Peer.open(`${wsBase}/ws?d=peers-b&t=${ticket}`, parsePhoneFrame);
+    const b = await Peer.open(`${wsBase}/machines/${me.label}/ws?page=${pageId()}`, parsePhoneFrame, bearer(phoneSession));
     const bOpen = await b.control();
-    step("phone B enters with the ticket", bOpen.type === "open" && bOpen.channel === aOpen.channel + 1, JSON.stringify(bOpen));
+    step("device B comes in", bOpen.type === "open" && bOpen.channel === aOpen.channel + 1, JSON.stringify(bOpen));
     const bSeen = await pc.control();
-    step("computer hears phone B open", bSeen.type === "open" && bSeen.device === "peers-b", JSON.stringify(bSeen));
+    step("computer hears device B open", bSeen.type === "open" && bSeen.channel === bOpen.channel, JSON.stringify(bSeen));
 
-    // Bytes cross both ways, each phone getting only its own. Two sockets'
+    // Bytes cross both ways, each device getting only its own. Two sockets'
     // frames may reach the computer in either order.
     a.send(phoneFrame(HELLO, utf8("hello from A")));
     b.send(phoneFrame(DATA, new Uint8Array([1, 2, 3])));
@@ -95,23 +104,21 @@ async function main() {
     pc.send(pcFrame(HELLO, aOpen.channel, utf8("hello A")));
     const toB = await b.frame();
     const toA = await a.frame();
-    step("phone B gets its data", toB.type === DATA && [...toB.payload].join() === "9,9", describe(toB));
-    step("phone A gets its hello", toA.type === HELLO && text(toA.payload) === "hello A", describe(toA));
+    step("device B gets its data", toB.type === DATA && [...toB.payload].join() === "9,9", describe(toB));
+    step("device A gets its hello", toA.type === HELLO && text(toA.payload) === "hello A", describe(toA));
 
-    // A spent code does not work twice.
-    const again = await Peer.open(`${wsBase}/ws?p=${code}`, parsePhoneFrame);
-    const refused = await again.control();
-    step("the pairing code is spent", refused.type === "bye" && refused.reason === "no_pairing", JSON.stringify(refused));
+    // Without a session, nobody comes in.
+    const stranger = await Peer.open(`${wsBase}/machines/${me.label}/ws`, parsePhoneFrame);
+    const refused = await stranger.control();
+    step("a device without a session is told signed_out", refused.type === "bye" && refused.reason === "signed_out", JSON.stringify(refused));
 
-    // Phones leave; the computer hears it.
+    // Devices leave; the computer hears it.
     a.ws.close(1000, "done");
     const aClosed = await pc.control();
-    step("computer hears phone A close", aClosed.type === "close" && aClosed.channel === aOpen.channel, JSON.stringify(aClosed));
-    pc.send(pcControl({ type: "tickets", hashes: [] }));
+    step("computer hears device A close", aClosed.type === "close" && aClosed.channel === aOpen.channel, JSON.stringify(aClosed));
+    pc.send(pcFrame(CONTROL, bOpen.channel, utf8(JSON.stringify({ type: "close", reason: "bye" }))));
     const bGone = await b.control();
-    step("phone B is revoked when its ticket goes", bGone.type === "bye" && bGone.reason === "revoked", JSON.stringify(bGone));
-    const bClosed = await pc.control();
-    step("computer hears phone B close", bClosed.type === "close" && bClosed.channel === bOpen.channel, JSON.stringify(bClosed));
+    step("the computer closes device B's channel", bGone.type === "bye" && bGone.reason === "bye", JSON.stringify(bGone));
 
     console.log(`\nall ${steps} steps passed against ${base}`);
     process.exitCode = 0;
@@ -125,6 +132,32 @@ async function main() {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+/// Two sessions of a test account, written into `wrangler dev`'s local D1.
+/// Only the hashes go in, as sign-in stores them.
+async function localSessions() {
+  const tokens = [b64url(crypto.getRandomValues(new Uint8Array(32))), b64url(crypto.getRandomValues(new Uint8Array(32)))];
+  const hashes = await Promise.all(tokens.map(async (t) => hex(await sha256(utf8(t)))));
+  const now = Math.floor(Date.now() / 1000);
+  const rows = tokens.map((_t, i) => {
+    const hash = hashes[i];
+    const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+    const [name, kind] = i === 0 ? ["peers computer", "app"] : ["peers device", "phone"];
+    return `INSERT INTO sessions (token_hash, id, name, kind, github_id, created_at, expires_at, last_used_at) VALUES ('${hash}', '${id}', '${name}', '${kind}', ${LOCAL_ACCOUNT}, ${now}, ${now + 86_400}, ${now});`;
+  });
+  const sql = [
+    `INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (${LOCAL_ACCOUNT}, 'peers', ${now}, ${now}) ON CONFLICT DO NOTHING;`,
+    ...rows,
+  ].join(" ");
+  execFileSync("npx", ["wrangler", "d1", "execute", "arakun-cloud-dev", "--local", "--command", sql], { cwd: CLOUD_DIR, stdio: "ignore" });
+  console.log(`two sessions of account ${LOCAL_ACCOUNT} written to the local D1`);
+  return tokens;
+}
+
+/// A page id, as the page makes one.
+function pageId() {
+  return hex(crypto.getRandomValues(new Uint8Array(8)));
+}
 
 async function identity() {
   let jwk;
@@ -171,9 +204,10 @@ function sleep(ms) {
 class Peer {
   static all = [];
 
-  static open(url, parse) {
+  /// `init` may carry headers: Node's WebSocket sends them with the upgrade.
+  static open(url, parse, init = {}) {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(url, init);
       ws.binaryType = "arraybuffer";
       const t = setTimeout(() => reject(new Error(`no socket at ${url}`)), TIMEOUT_MS);
       ws.addEventListener("open", () => {

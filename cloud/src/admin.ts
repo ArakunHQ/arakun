@@ -4,13 +4,27 @@
 //   PUT    /admin/users/<github_id>/flags/<flag>  → grants the flag
 //   DELETE /admin/users/<github_id>/flags/<flag>  → takes it away
 //   DELETE /admin/users/<github_id>/sessions      → signs the user out everywhere
+//   PUT    /admin/users/<github_id>/block         → blocks the account, { reason? }
+//   DELETE /admin/users/<github_id>/block         → lets it back
+//   PUT    /admin/users/<github_id>/plan          → puts it on a plan, { plan }
+//   GET    /admin/machines                        → every registered machine
+//   POST   /admin/notices                         → a notice for one account or all, { github_id?, text, url?, expires_at? }
+//   DELETE /admin/notices/<id>                    → takes it back
 //
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
+// Block, plan and notice delete answer 204; a new notice answers { id }. Each of them, and the sessions route, makes the
+// account's machine objects recheck their sockets at once.
 
-import { GITHUB_ID, bearer, error, flagList, flagsQuery, now, sha256, type Env } from "./util";
+import { recheckAccount } from "./machines";
+import { createNotice, deleteNotice } from "./notices";
+import { GITHUB_ID, bearer, error, flagList, flagsQuery, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 const FLAG = /^[a-z][a-z0-9_]{0,31}$/;
+/// A plan's name, as a key of the KV `plans`.
+const PLAN = /^[a-z][a-z0-9_]{0,31}$/;
+const MAX_REASON = 500;
+const MAX_BODY = 4096;
 
 export async function admin(request: Request, env: Env, path: string): Promise<Response> {
   if (!(await authorized(request, env))) return error(401, "unauthorized");
@@ -18,6 +32,15 @@ export async function admin(request: Request, env: Env, path: string): Promise<R
   if (flag && (request.method === "PUT" || request.method === "DELETE")) return setFlag(request.method, env, flag[1]!, flag[2]!);
   const sessions = /^\/admin\/users\/([^/]+)\/sessions$/.exec(path);
   if (sessions && request.method === "DELETE") return closeSessions(env, sessions[1]!);
+  const block = /^\/admin\/users\/([^/]+)\/block$/.exec(path);
+  if (block && request.method === "PUT") return setBlock(request, env, block[1]!);
+  if (block && request.method === "DELETE") return unblock(env, block[1]!);
+  const plan = /^\/admin\/users\/([^/]+)\/plan$/.exec(path);
+  if (plan && request.method === "PUT") return setPlan(request, env, plan[1]!);
+  if (path === "/admin/machines" && request.method === "GET") return listMachines(env);
+  if (path === "/admin/notices" && request.method === "POST") return createNotice(request, env);
+  const notice = /^\/admin\/notices\/([^/]+)$/.exec(path);
+  if (notice && request.method === "DELETE") return deleteNotice(env, notice[1]!);
   return error(404, "not found");
 }
 
@@ -55,7 +78,67 @@ async function closeSessions(env: Env, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   const result = await env.DB.prepare("DELETE FROM sessions WHERE github_id = ?").bind(id).run();
+  await recheckAccount(env, id);
   return Response.json({ github_id: id, closed: result.meta.changes });
+}
+
+/// Keeps the account off the relay: its sockets close now and new ones are
+/// refused. It can still sign in; `GET /machines` answers it 403 with
+/// `{ error: "blocked", reason }`, which is how it learns why.
+async function setBlock(request: Request, env: Env, idText: string): Promise<Response> {
+  const id = githubId(idText);
+  if (id === null) return error(400, "the GitHub ID must be a positive integer");
+  const body = request.headers.get("Content-Length") === "0" || !request.body ? {} : await jsonBody(request, MAX_BODY);
+  if (!isObject(body)) return error(400, 'expected {"reason": "..."} or no body');
+  const reason = body["reason"];
+  if (reason !== undefined && (typeof reason !== "string" || reason.length > MAX_REASON)) {
+    return error(400, `reason must be text of at most ${MAX_REASON} characters`);
+  }
+  // An account can be blocked before it first signs in, as it can get a flag.
+  await env.DB.prepare(
+    `INSERT INTO users (github_id, login, created_at, last_seen_at, blocked_at, blocked_reason) VALUES (?1, '', ?2, 0, ?2, ?3)
+     ON CONFLICT (github_id) DO UPDATE SET blocked_at = excluded.blocked_at, blocked_reason = excluded.blocked_reason`,
+  )
+    .bind(id, now(), reason ?? null)
+    .run();
+  await recheckAccount(env, id);
+  return new Response(null, { status: 204 });
+}
+
+async function unblock(env: Env, idText: string): Promise<Response> {
+  const id = githubId(idText);
+  if (id === null) return error(400, "the GitHub ID must be a positive integer");
+  await env.DB.prepare("UPDATE users SET blocked_at = NULL, blocked_reason = NULL WHERE github_id = ?").bind(id).run();
+  return new Response(null, { status: 204 });
+}
+
+/// The plan names a key of the KV `plans`; one KV does not know is the free
+/// plan. Open sockets go by the new plan after the recheck.
+async function setPlan(request: Request, env: Env, idText: string): Promise<Response> {
+  const id = githubId(idText);
+  if (id === null) return error(400, "the GitHub ID must be a positive integer");
+  const body = await jsonBody(request, MAX_BODY);
+  const plan = isObject(body) ? body["plan"] : undefined;
+  if (typeof plan !== "string" || !PLAN.test(plan)) return error(400, "a plan is a lower-case letter, then up to 31 of a-z, 0-9 and _");
+  await env.DB.prepare(
+    `INSERT INTO users (github_id, login, created_at, last_seen_at, plan) VALUES (?1, '', ?2, 0, ?3)
+     ON CONFLICT (github_id) DO UPDATE SET plan = excluded.plan`,
+  )
+    .bind(id, now(), plan)
+    .run();
+  await recheckAccount(env, id);
+  return new Response(null, { status: 204 });
+}
+
+/// Every registered machine, the one seen last first: what the operator
+/// looks at before blocking or changing a plan.
+async function listMachines(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT m.label, m.github_id, u.login, m.name, m.kind, m.created_at, m.last_seen_at
+     FROM machines m JOIN users u ON u.github_id = m.github_id
+     ORDER BY m.last_seen_at DESC, m.label`,
+  ).all();
+  return Response.json(rows.results);
 }
 
 /// `Authorization: Bearer <ADMIN_SECRET>`. Both sides are hashed first, so the

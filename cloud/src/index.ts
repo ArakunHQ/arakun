@@ -1,12 +1,14 @@
-// One Worker for Arakun's cloud. A host whose first level is a label under the
-// base domain is a phone reaching its computer: the relay. The operator's
-// /_admin comes in under any host. Everything else is the teams API, which
-// the desktop app calls.
+// One Worker for Arakun's cloud. A host `<label>.<BASE_DOMAIN>` is an old
+// relay host: an old app or page is told to update there. The account host
+// has the rest: sign-in, the account's machines and their sockets, the
+// operator's /admin, the teams API and the phone page. With ACCOUNT_HOST set
+// (production), that is the one host; any other answers 404, so the session
+// cookie and the page live on one name only. Unset (a Worker of one's own on
+// workers.dev, the tests), every other host is the account host.
 
-import { admin as relayAdmin } from "./relay/admin";
-import { labelFrom, relayRoute } from "./relay/router";
+import { labelFrom, oldHost } from "./relay/router";
 import { teamsFetch } from "./teams-router";
-import type { Env } from "./util";
+import { error, type Env } from "./util";
 
 export { Channel } from "./channel";
 export { Relay } from "./relay/relay";
@@ -14,10 +16,8 @@ export { Relay } from "./relay/relay";
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    // The operator comes in under any host; the secret is the door.
-    if (url.pathname.startsWith("/_admin/")) return relayAdmin(request, env, url.pathname);
-    const label = labelFrom(url.hostname, env);
-    if (label) return relayRoute(request, env, url.pathname, label);
+    if (labelFrom(url.hostname, env)) return oldHost(request, env, url.pathname);
+    if (env.ACCOUNT_HOST && url.hostname !== env.ACCOUNT_HOST.toLowerCase()) return error(404, "not found");
     return teamsFetch(request, env);
   },
 } satisfies ExportedHandler<Env>;

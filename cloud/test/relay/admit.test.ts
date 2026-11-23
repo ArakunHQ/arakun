@@ -1,147 +1,222 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { pcControl } from "../../src/relay/frames";
-import { claim, connectedComputer, issueTickets, openPairing, openPc, openPhone, stored } from "./helpers";
+import { parsePhoneFrame, pcControl } from "../../src/relay/frames";
+import { as, call } from "../helpers";
+import { HOST, Inbox, account, claim, computer, computerAndPhone, connectedComputer, device, openPc, openPhone, opened, stored } from "./helpers";
 
-describe("a phone with a ticket", () => {
-  it("comes in when the computer listed its hash, and both hear the channel open", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one", "ticket-two");
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-two");
-    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
-    expect(await pc.inbox.control()).toEqual({ type: "open", channel: 1, device: "dev-1" });
-    expect(phone.inbox.closed).toBeNull();
+interface Machine {
+  label: string;
+  pub: string;
+  name: string;
+  kind: string;
+  online: boolean;
+  last_seen_at: number;
+}
+
+async function machinesOf(session: string): Promise<Machine[]> {
+  const res = await call("GET", "/machines", as(session));
+  expect(res.status).toBe(200);
+  return res.json();
+}
+
+describe("a computer with its account's session", () => {
+  it("claims its label, and the account's machines list it online with its key", async () => {
+    const owner = await account();
+    const me = await computer();
+    const pc = await openPc(me.label, owner.session, "name=Rik%E2%80%99s%20desk&kind=server");
+    expect(await claim(pc, me)).toEqual({ type: "claimed" });
+    const list = await machinesOf(owner.session);
+    expect(list).toEqual([{ label: me.label, pub: me.pubB64, name: "Rik’s desk", kind: "server", online: true, last_seen_at: expect.any(Number) }]);
+    expect(await stored(me.label, "account")).toBe(owner.github_id);
+
+    pc.ws.close(1000, "going away");
+    await pc.inbox.closedWith();
+    for (let i = 0; i < 50 && (await machinesOf(owner.session))[0]!.online; i++) await new Promise((r) => setTimeout(r, 20));
+    expect((await machinesOf(owner.session))[0]!.online).toBe(false);
   });
 
-  it("is told and closed when the ticket is not on the list", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-zero");
-    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "bad_ticket" });
-    expect((await phone.inbox.closedWith()).code).toBe(4401);
-    await expect(pc.inbox.next(200)).rejects.toThrow();
+  it("lists no machine of another account", async () => {
+    await connectedComputer();
+    const other = await account();
+    expect(await machinesOf(other.session)).toEqual([]);
+    expect((await call("GET", "/machines")).status).toBe(401);
   });
 
-  it("is told and closed when there are no credentials at all", async () => {
-    const { me } = await connectedComputer();
-    const phone = await openPhone(me.label, "d=dev-1");
-    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "no_credentials" });
-    expect((await phone.inbox.closedWith()).code).toBe(4401);
+  it("is refused a sixth machine on the free plan, but a known one comes back", async () => {
+    const owner = await account();
+    const five = [];
+    for (let i = 0; i < 5; i++) five.push(await connectedComputer(owner));
+    const sixth = await computer();
+    const pc = await openPc(sixth.label, owner.session);
+    expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "machines_full" });
+    expect((await pc.inbox.closedWith()).code).toBe(4429);
+    expect((await machinesOf(owner.session)).map((m) => m.label).sort()).toEqual(five.map((c) => c.me.label).sort());
+
+    // One of the five reconnecting is not a new machine.
+    const again = await openPc(five[0]!.me.label, owner.session);
+    expect(await claim(again, five[0]!.me)).toEqual({ type: "claimed" });
   });
 
-  it("is thrown out when the computer sends a list without its hash", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one", "ticket-two");
-    const kept = await openPhone(me.label, "d=dev-1&t=ticket-one");
-    const dropped = await openPhone(me.label, "d=dev-2&t=ticket-two");
-    await kept.inbox.control();
-    await dropped.inbox.control();
-    await pc.inbox.control();
-    await pc.inbox.control();
-    await issueTickets(pc, me.label, "ticket-one");
-    expect(await dropped.inbox.control()).toEqual({ type: "bye", reason: "revoked" });
-    expect((await dropped.inbox.closedWith()).code).toBe(4401);
-    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 2, reason: "revoked" });
-    expect(kept.inbox.closed).toBeNull();
-    await expect(kept.inbox.next(200)).rejects.toThrow();
+  it("of another account cannot take a label that is taken, and leaves the owner's machine as it was", async () => {
+    const { me, owner } = await connectedComputer();
+    const before = await machinesOf(owner.session);
+    const intruder = await account();
+    const pc = await openPc(me.label, intruder.session, "name=Mine&kind=server");
+    expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "label_taken" });
+    expect((await pc.inbox.closedWith()).code).toBe(4403);
+    expect(await machinesOf(owner.session)).toEqual(before);
+    expect(await machinesOf(intruder.session)).toEqual([]);
   });
 
-  it("gets its own channel number, never reused", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
-    const first = await openPhone(me.label, "d=dev-1&t=ticket-one");
-    expect(await first.inbox.control()).toEqual({ type: "open", channel: 1 });
-    first.ws.close(1000, "done");
-    expect(await pc.inbox.control()).toEqual({ type: "open", channel: 1, device: "dev-1" });
-    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "done" });
-    const second = await openPhone(me.label, "d=dev-1&t=ticket-one");
-    expect(await second.inbox.control()).toEqual({ type: "open", channel: 2 });
+  it("is told signed_out without a valid session", async () => {
+    const me = await computer();
+    for (const session of [null, "A".repeat(43), "not a token"]) {
+      const pc = await openPc(me.label, session);
+      expect(await pc.inbox.control(), String(session)).toEqual({ type: "bye", reason: "signed_out" });
+      expect((await pc.inbox.closedWith()).code).toBe(4401);
+    }
+  });
+
+  it("must name itself as an app or a server", async () => {
+    const owner = await account();
+    const me = await computer();
+    for (const query of ["name=Desk&kind=phone", "name=&kind=app", `name=${"x".repeat(101)}&kind=app`]) {
+      const res = await SELF.fetch(`${HOST}/machines/${me.label}/pc?${query}`, { headers: { Upgrade: "websocket", ...as(owner.session) } });
+      expect(res.status, query).toBe(400);
+    }
+  });
+
+  it("is closed with unknown control when it still sends tickets or pairing", async () => {
+    for (const msg of [{ type: "tickets", hashes: [] }, { type: "pair_open", hash: "a".repeat(64), ttl: 60 }, { type: "pair_close" }]) {
+      const { pc } = await connectedComputer();
+      pc.ws.send(pcControl(msg));
+      expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "unknown control" });
+      expect((await pc.inbox.closedWith()).code).toBe(4400);
+    }
+  });
+
+  it("wants a socket", async () => {
+    const owner = await account();
+    const me = await computer();
+    expect((await call("GET", `/machines/${me.label}/pc`, as(owner.session))).status).toBe(426);
+    expect((await call("GET", `/machines/${me.label}/ws`, as(owner.session))).status).toBe(426);
   });
 });
 
-describe("a phone with a pairing code", () => {
-  it("comes in while the computer keeps the code open, and the code is spent", async () => {
-    const { me, pc } = await connectedComputer();
-    await openPairing(pc, me.label, "code-123");
-    const phone = await openPhone(me.label, "p=code-123");
+describe("a device", () => {
+  it("of the machine's account comes in, and the computer hears who it is", async () => {
+    const { me, pc, owner } = await connectedComputer();
+    const dev = await device(owner, "Rik’s iPhone 📱", "ios");
+    const phone = await openPhone(me.label, dev.session, "page=aaaaaaaa");
     expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
-    expect(await pc.inbox.control()).toEqual({ type: "open", channel: 1, device: null });
-    expect(await stored(me.label, "pair")).toBeUndefined();
-    const again = await openPhone(me.label, "p=code-123");
-    expect(await again.inbox.control()).toEqual({ type: "bye", reason: "no_pairing" });
-    expect((await again.inbox.closedWith()).code).toBe(4401);
+    expect(await pc.inbox.control()).toEqual({ type: "open", channel: 1, device: dev.session_id, name: "Rik’s iPhone 📱", kind: "ios", account: owner.github_id });
+    expect(phone.inbox.closed).toBeNull();
   });
 
-  it("is refused when the code is not the one open", async () => {
+  it("of another account is told not_yours, and the computer hears nothing", async () => {
     const { me, pc } = await connectedComputer();
-    await openPairing(pc, me.label, "code-123");
-    const phone = await openPhone(me.label, "p=code-124");
-    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "bad_code" });
-    expect((await phone.inbox.closedWith()).code).toBe(4401);
-    // A wrong guess does not spend the code.
-    expect(await stored(me.label, "pair")).toBeDefined();
+    const stranger = await device(await account());
+    const phone = await openPhone(me.label, stranger.session);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "not_yours" });
+    expect((await phone.inbox.closedWith()).code).toBe(4403);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 
-  it("is refused once the code has expired", async () => {
+  it("cannot pass as another account or device with headers of its own", async () => {
+    const { me, pc, owner } = await connectedComputer();
+    const stranger = await device(await account());
+    const forged = {
+      "x-arakun-account": String(owner.github_id),
+      "x-arakun-label": me.label,
+      "x-arakun-session": "0".repeat(64),
+      "x-arakun-plan": "unlimited",
+    };
+    const phone = await openPhone(me.label, stranger.session, "", forged);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "not_yours" });
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+
+    const dev = await device(owner);
+    const own = await openPhone(me.label, dev.session, "", { "x-arakun-device": "someone-else", "x-arakun-device-name": "Admin", "x-arakun-device-kind": "app" });
+    expect(await own.inbox.control()).toEqual({ type: "open", channel: 1 });
+    expect(await pc.inbox.control()).toEqual(opened(1, dev));
+  });
+
+  it("is told signed_out without a valid session", async () => {
     const { me, pc } = await connectedComputer();
-    await openPairing(pc, me.label, "code-123");
-    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
-    await runInDurableObject(stub, async (_instance, state) => {
-      const open = (await state.storage.get<{ hash: string; until: number }>("pair"))!;
-      await state.storage.put("pair", { ...open, until: Date.now() - 1 });
+    for (const session of [null, "A".repeat(43)]) {
+      const phone = await openPhone(me.label, session);
+      expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
+      expect((await phone.inbox.closedWith()).code).toBe(4401);
+    }
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("is told no_machine for a label nobody registered", async () => {
+    const dev = await device(await account());
+    const nobody = await computer();
+    const phone = await openPhone(nobody.label, dev.session);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "no_machine" });
+    expect((await phone.inbox.closedWith()).code).toBe(4404);
+  });
+
+  it("gets its own channel number, never reused", async () => {
+    const { me, pc, dev, phone: first } = await computerAndPhone();
+    first.ws.close(1000, "done");
+    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "done" });
+    const second = await openPhone(me.label, dev.session);
+    expect(await second.inbox.control()).toEqual({ type: "open", channel: 2 });
+  });
+
+  it("is refused by the object when the object's account is another one", async () => {
+    // The Worker checks D1 first; this is the object's own check behind it.
+    const { me, pc, owner } = await connectedComputer();
+    const { env } = await import("cloudflare:test");
+    const stranger = await account();
+    const res = await env.RELAY.get(env.RELAY.idFromName(me.label)).fetch("https://relay/ws", {
+      headers: {
+        Upgrade: "websocket",
+        "x-arakun-label": me.label,
+        "x-arakun-account": String(stranger.github_id),
+        "x-arakun-plan": "free",
+        "x-arakun-session": "0".repeat(64),
+        "x-arakun-device": "d",
+        "x-arakun-device-name": "x",
+        "x-arakun-device-kind": "phone",
+      },
     });
-    const phone = await openPhone(me.label, "p=code-123");
-    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "no_pairing" });
-  });
-
-  it("is refused after the computer closes pairing", async () => {
-    const { me, pc } = await connectedComputer();
-    await openPairing(pc, me.label, "code-123");
-    pc.ws.send(pcControl({ type: "pair_close" }));
-    for (let i = 0; i < 50 && (await stored(me.label, "pair")) !== undefined; i++) await new Promise((r) => setTimeout(r, 20));
-    const phone = await openPhone(me.label, "p=code-123");
-    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "no_pairing" });
-  });
-
-  it("cannot be opened for longer than five minutes or with a bad hash", async () => {
-    const { me, pc } = await connectedComputer();
-    pc.ws.send(pcControl({ type: "pair_open", hash: "a".repeat(64), ttl: 3600 }));
-    await new Promise((r) => setTimeout(r, 50));
-    const open = (await stored<{ until: number }>(me.label, "pair"))!;
-    expect(open.until - Date.now()).toBeLessThanOrEqual(300_000);
-    expect(open.until - Date.now()).toBeGreaterThan(290_000);
-
-    pc.ws.send(pcControl({ type: "pair_open", hash: "not-a-hash", ttl: 60 }));
-    expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "bad pair_open" });
-    expect((await pc.inbox.closedWith()).code).toBe(4400);
+    expect(res.status).toBe(101);
+    const ws = res.webSocket!;
+    const inbox = new Inbox(ws, (b) => parsePhoneFrame(b) ?? { bad: true });
+    ws.accept();
+    ws.binaryType = "arraybuffer";
+    expect(await inbox.control()).toEqual({ type: "bye", reason: "not_yours" });
+    expect((await inbox.closedWith()).code).toBe(4403);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await stored(me.label, "account")).toBe(owner.github_id);
   });
 });
 
 describe("the computer's presence", () => {
-  it("is announced to phones that arrive while it is away, and again when it returns", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
+  it("is announced to devices that arrive while it is away, and again when it returns", async () => {
+    const { me, pc, owner } = await connectedComputer();
     pc.ws.close(1000, "going away");
     await new Promise((r) => setTimeout(r, 50));
     const since = await stored<number>(me.label, "last_seen");
     expect(typeof since).toBe("number");
 
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-one");
+    const dev = await device(owner);
+    const phone = await openPhone(me.label, dev.session);
     expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
     expect(await phone.inbox.control()).toEqual({ type: "pc_offline", since });
 
-    const back = await openPc(me.label);
+    const back = await openPc(me.label, owner.session);
     expect(await claim(back, me)).toEqual({ type: "claimed" });
-    expect(await back.inbox.control()).toEqual({ type: "open", channel: 1, device: "dev-1" });
+    expect(await back.inbox.control()).toEqual(opened(1, dev));
     expect(await phone.inbox.control()).toEqual({ type: "pc_online" });
   });
 
-  it("is lost to connected phones when it hangs up", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-one");
-    await phone.inbox.control();
-    await pc.inbox.control();
+  it("is lost to connected devices when it hangs up", async () => {
+    const { pc, phone } = await computerAndPhone();
     pc.ws.close(1000, "going away");
     const told = await phone.inbox.control();
     expect(told["type"]).toBe("pc_offline");
@@ -149,31 +224,26 @@ describe("the computer's presence", () => {
     expect(phone.inbox.closed).toBeNull();
   });
 
-  it("is kept for phones when one socket of the computer replaces another", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-one");
-    await phone.inbox.control();
-    await pc.inbox.control();
-
-    const second = await openPc(me.label);
+  it("is kept for devices when one socket of the computer replaces another", async () => {
+    const { me, pc, owner, dev, phone } = await computerAndPhone();
+    const second = await openPc(me.label, owner.session);
     expect(await claim(second, me)).toEqual({ type: "claimed" });
-    expect(await second.inbox.control()).toEqual({ type: "open", channel: 1, device: "dev-1" });
+    expect(await second.inbox.control()).toEqual(opened(1, dev));
     expect(await phone.inbox.control()).toEqual({ type: "pc_online" });
     expect(await pc.inbox.closedWith()).toMatchObject({ code: 4409 });
     // No pc_offline follows the replaced socket's closing.
     await expect(phone.inbox.next(200)).rejects.toThrow();
   });
 
-  it("introduces a phone arriving right after a replacement to the new socket", async () => {
-    const { me, pc } = await connectedComputer();
-    await issueTickets(pc, me.label, "ticket-one");
-    const second = await openPc(me.label);
+  it("introduces a device arriving right after a replacement to the new socket", async () => {
+    const { me, owner } = await connectedComputer();
+    const second = await openPc(me.label, owner.session);
     expect(await claim(second, me)).toEqual({ type: "claimed" });
-    // The replaced socket is still closing when the phone comes in.
-    const phone = await openPhone(me.label, "d=dev-1&t=ticket-one");
+    // The replaced socket is still closing when the device comes in.
+    const dev = await device(owner);
+    const phone = await openPhone(me.label, dev.session);
     expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
-    expect(await second.inbox.control()).toEqual({ type: "open", channel: 1, device: "dev-1" });
+    expect(await second.inbox.control()).toEqual(opened(1, dev));
     expect(phone.inbox.closed).toBeNull();
     await expect(phone.inbox.next(200)).rejects.toThrow();
   });

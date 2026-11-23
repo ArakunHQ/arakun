@@ -2,7 +2,8 @@
 # Durable Object per computer, the phone page served as static assets), and
 # the teams API (sign-in with GitHub, per-user feature flags and the teams of
 # PROTOCOL.md, with a D1 database and one Durable Object per channel). A host
-# whose first level is a label is the relay; everything else is teams.
+# `<label>.<BASE_DOMAIN>` is an old relay host and only tells old apps to
+# update; every other host is the account host.
 # The top-level Worker is for tests; production is `--env production` below.
 # Their names differ so a test deploy cannot replace production's bindings.
 name = "arakun-cloud-dev"
@@ -39,7 +40,7 @@ migrations_dir = "migrations"
 # app issued a token with `wrangler secret put GITHUB_CLIENT_SECRET`.
 [vars]
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
-# Hosts under this domain carry the relay's label as their first level.
+# The old relay hosts are `<label>.<BASE_DOMAIN>`.
 BASE_DOMAIN = "arakun.dev"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
@@ -98,9 +99,8 @@ new_sqlite_classes = ["Channel"]
 # The hosted Worker (`npx wrangler deploy --env production`), which
 # .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET and
 # GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings,
-# so they are all here again. The one route covers both: a label host is the
-# relay, and every other host under arakun.dev that DNS sends here is the teams
-# API (the app calls teams.arakun.dev).
+# so they are all here again. The one route covers the account host
+# app.arakun.dev and the old label hosts, which tell old apps to update.
 [env.production]
 name = "arakun-cloud"
 workers_dev = false
@@ -165,3 +165,5 @@ run_worker_first = true
 [env.production.vars]
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 BASE_DOMAIN = "arakun.dev"
+# The route takes every host under arakun.dev; only this one is the account's.
+ACCOUNT_HOST = "app.arakun.dev"

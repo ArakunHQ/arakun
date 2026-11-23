@@ -1,7 +1,10 @@
-// A computer and phones made of WebCrypto, talking to the Worker under test.
+// A computer and devices made of WebCrypto and signed-in accounts, talking to
+// the Worker under test.
 import { SELF, env, runInDurableObject } from "cloudflare:test";
-import { CONTROL, b64url, concat, parseJson, parsePcFrame, parsePhoneFrame, pcControl, sha256, utf8 } from "../../src/relay/frames";
-import { hex, labelOf } from "../../src/relay/label";
+import { expect } from "vitest";
+import { CONTROL, b64url, concat, parseJson, parsePcFrame, parsePhoneFrame, pcControl, utf8 } from "../../src/relay/frames";
+import { labelOf } from "../../src/relay/label";
+import { signIn, type SignedIn } from "../helpers";
 
 export interface Computer {
   key: CryptoKeyPair;
@@ -85,11 +88,47 @@ export interface PcSocket {
   inbox: Inbox;
 }
 
-/// Opens the computer's socket under a label.
-export async function openPc(label: string): Promise<PcSocket> {
-  const res = await SELF.fetch(`https://${label}.arakun.dev/pc`, { headers: { Upgrade: "websocket" } });
+/// The account host: every host that is not `<label>.<BASE_DOMAIN>`.
+export const HOST = "https://app.arakun.dev";
+
+let nextAccount = 50_000;
+
+/// A new account, signed in once: the session a computer uses.
+export async function account(name = "Desk"): Promise<SignedIn> {
+  const id = nextAccount++;
+  return signIn(id, `user${id}`, `gho_pc_${id}`, { name, kind: "app" });
+}
+
+let nextDevice = 0;
+
+/// Another session of the same account: a device.
+export async function device(owner: SignedIn, name = "Phone", kind = "phone"): Promise<SignedIn> {
+  return signIn(owner.github_id, owner.login, `gho_dev_${owner.github_id}_${nextDevice++}`, { name, kind });
+}
+
+/// What the computer hears when a device's channel opens.
+export function opened(channel: number, dev: SignedIn, name = "Phone", kind = "phone"): Record<string, unknown> {
+  return { type: "open", channel, device: dev.session_id, name, kind, account: dev.github_id };
+}
+
+async function socket(url: string, headers: Record<string, string>): Promise<WebSocket> {
+  const res = await SELF.fetch(url, { headers: { Upgrade: "websocket", ...headers } });
   if (res.status !== 101 || !res.webSocket) throw new Error(`no socket: ${res.status} ${await res.text()}`);
-  const ws = res.webSocket;
+  return res.webSocket;
+}
+
+function bearerOf(session: string | null): Record<string, string> {
+  return session ? { Authorization: `Bearer ${session}` } : {};
+}
+
+/// Opens the computer's socket for a label, with the computer's session.
+export async function openPc(
+  label: string,
+  session: string | null,
+  query = "name=Desk&kind=app",
+  headers: Record<string, string> = {},
+): Promise<PcSocket> {
+  const ws = await socket(`${HOST}/machines/${label}/pc?${query}`, { ...bearerOf(session), ...headers });
   const inbox = new Inbox(ws, (b) => parsePcFrame(b) ?? { bad: true });
   ws.accept();
   // Newer compatibility dates hand binary frames over as Blob unless asked.
@@ -97,14 +136,16 @@ export async function openPc(label: string): Promise<PcSocket> {
   return { ws, inbox };
 }
 
-/// Opens a phone's socket under a label, with the given query (`d=…&t=…` or `p=…`).
-export async function openPhone(label: string, query: string): Promise<PcSocket> {
-  const res = await SELF.fetch(`https://${label}.arakun.dev/ws?${query}`, { headers: { Upgrade: "websocket" } });
-  if (res.status !== 101 || !res.webSocket) throw new Error(`no socket: ${res.status} ${await res.text()}`);
-  const ws = res.webSocket;
+/// Opens a device's socket for a label, with a device's session.
+export async function openPhone(
+  label: string,
+  session: string | null,
+  query = "",
+  headers: Record<string, string> = {},
+): Promise<PcSocket> {
+  const ws = await socket(`${HOST}/machines/${label}/ws${query ? `?${query}` : ""}`, { ...bearerOf(session), ...headers });
   const inbox = new Inbox(ws, (b) => parsePhoneFrame(b) ?? { bad: true });
   ws.accept();
-  // Newer compatibility dates hand binary frames over as Blob unless asked.
   ws.binaryType = "arraybuffer";
   return { ws, inbox };
 }
@@ -119,17 +160,24 @@ export async function claim(pc: PcSocket, me: Computer, label = me.label): Promi
   return pc.inbox.control();
 }
 
-/// A computer connected and claimed, ready to talk.
-export async function connectedComputer(): Promise<{ me: Computer; pc: PcSocket }> {
+/// A computer connected and claimed under an account (a new one if none is given).
+export async function connectedComputer(owner?: SignedIn): Promise<{ me: Computer; pc: PcSocket; owner: SignedIn }> {
+  const who = owner ?? (await account());
   const me = await computer();
-  const pc = await openPc(me.label);
+  const pc = await openPc(me.label, who.session);
   const answer = await claim(pc, me);
   if (answer["type"] !== "claimed") throw new Error(`claim refused: ${JSON.stringify(answer)}`);
-  return { me, pc };
+  return { me, pc, owner: who };
 }
 
-export async function hashOf(secret: string): Promise<string> {
-  return hex(await sha256(utf8(secret)));
+/// A connected computer and one device of its account, the `open` on both sides read.
+export async function computerAndPhone(): Promise<{ me: Computer; pc: PcSocket; owner: SignedIn; dev: SignedIn; phone: PcSocket }> {
+  const { me, pc, owner } = await connectedComputer();
+  const dev = await device(owner);
+  const phone = await openPhone(me.label, dev.session);
+  expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+  expect(await pc.inbox.control()).toEqual(opened(1, dev));
+  return { me, pc, owner, dev, phone };
 }
 
 /// What the label's object has under a key right now.
@@ -146,19 +194,4 @@ export async function untilStored<T>(label: string, key: string, ok: (v: T | und
     await new Promise((r) => setTimeout(r, 20));
   }
   throw new Error(`${key} never settled`);
-}
-
-/// The computer tells the relay which tickets stand, and we wait until it has them.
-export async function issueTickets(pc: PcSocket, label: string, ...tickets: string[]): Promise<string[]> {
-  const hashes = await Promise.all(tickets.map(hashOf));
-  pc.ws.send(pcControl({ type: "tickets", hashes }));
-  await untilStored<string[]>(label, "tickets", (v) => JSON.stringify(v) === JSON.stringify(hashes));
-  return hashes;
-}
-
-/// The computer opens pairing for `code`, and we wait until the relay knows.
-export async function openPairing(pc: PcSocket, label: string, code: string, ttl = 120): Promise<void> {
-  const hash = await hashOf(code);
-  pc.ws.send(pcControl({ type: "pair_open", hash, ttl }));
-  await untilStored<{ hash: string }>(label, "pair", (v) => v?.hash === hash);
 }

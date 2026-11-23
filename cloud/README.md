@@ -4,37 +4,43 @@ Arakun's Cloudflare Worker, one package for two jobs:
 
 - **The relay** lets a phone reach a computer running Arakun from outside the local
   network. It forwards encrypted frames without being able to read them: each computer
-  has a label derived from its public key and a Durable Object with that name, and
-  phones come in through `https://<label>.arakun.dev` with a ticket the computer
-  issued. The phone page (`../phone/`) is served as assets by the same Worker, so the
-  phone always loads the app from the same commit as the relay.
+  has a label derived from its public key and a Durable Object with that name. The
+  computer comes in with its GitHub account's session and registers the label to the
+  account; a device comes in with a session of the same account. The phone page
+  (`../phone/`) is served as assets by the same Worker, so the phone always loads the
+  app from the same commit as the relay.
 - **Teams** has a D1 database and one Durable Object per channel. It signs users in
   with GitHub, tells the app which features each user has, and runs the end-to-end
   encrypted teams of [PROTOCOL.md](PROTOCOL.md): devices, teams, invites, team keys in
   envelopes, and channels with live messages. The server stores and forwards; it never
   holds a key that opens team content.
 
-`src/index.ts` tells them apart by the host. A host whose first level is a label (16
-base32 characters) under `BASE_DOMAIN` is the relay, and so is every host while
-`LABEL_OVERRIDE` is set. `/_admin/*` is the relay's operator door under any host.
-Everything else is the teams API. Production's route is `*.arakun.dev/*`, so there the
-teams API answers on `teams.arakun.dev`, which the app calls, and on every other host
-under `arakun.dev` that is not a label and that DNS sends to the Worker. The old relay
-Worker answered `404` on those hosts.
+One host serves both: the account host (`app.arakun.dev` in production). The old
+relay hosts, `<label>.<BASE_DOMAIN>` (a label is 16 base32 characters), only tell an
+old app or page to update: `/pc` and `/ws` close with the reason `update`, `/_relay`
+answers `410 { "update": true }`, and the page itself still loads.
+On the account host, a `GET` or `HEAD` outside the API's paths serves the page, so
+`https://app.arakun.dev/` opens it; an unknown path under an API route stays a JSON 404.
 
 ```
 cloud/
-  src/index.ts          picks the relay or teams by host; exports both Durable Objects
-  src/relay/router.ts   the relay's routes: label → object; assets; /_relay
-  src/relay/relay.ts    the Relay Durable Object: computer claim, admission, channels, limits, alarm
-  src/relay/limits.ts   plans, kill switch and block list, read from KV
-  src/relay/admin.ts    GET /_admin/labels, POST /_admin/block|unblock/<label>
+  src/index.ts          old label hosts or the account host; exports both Durable Objects
+  src/machines.ts       GET /machines, DELETE /machines/<label>, the sockets
+                        /machines/<label>/pc and /ws, and the recheck after a sign-out
+  src/relay/router.ts   the old label hosts: "update", and the page
+  src/relay/relay.ts    the Relay Durable Object: computer claim, registration, devices,
+                        channels, limits, the recheck of sessions, alarm
+  src/relay/limits.ts   plans and the kill switch, read from KV
   src/relay/frames.ts   binary frames and control messages
   src/relay/label.ts    label = base32 of the first 80 bits of SHA-256(public key)
   src/teams-router.ts   the teams routes; every error is JSON: { "error": "..." }
   src/auth.ts           POST /auth/github, GET /me, POST /auth/logout, sessions
   src/admin.ts          PUT|DELETE /admin/users/<github_id>/flags/<flag>,
-                        DELETE /admin/users/<github_id>/sessions
+                        DELETE /admin/users/<github_id>/sessions,
+                        PUT|DELETE /admin/users/<github_id>/block,
+                        PUT /admin/users/<github_id>/plan, GET /admin/machines,
+                        POST /admin/notices, DELETE /admin/notices/<id>
+  src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets
   src/wire.ts           the shapes of PROTOCOL.md and their signature checks
@@ -42,7 +48,7 @@ cloud/
   test/                 Vitest inside workerd, with real D1, KV, the real Durable
                         Objects, real P-256 keys and a fake GitHub
   test/relay/           the relay's tests
-  scripts/peers.mjs     one fake computer and two fake phones against a deployed relay
+  scripts/peers.mjs     one fake computer and two fake devices against a running Worker
 ```
 
 ## Teams
@@ -107,23 +113,20 @@ npx wrangler d1 migrations apply arakun-cloud-dev --local
 npx wrangler dev
 ```
 
-`wrangler dev` has no subdomains, so the relay and teams are told apart by
-`LABEL_OVERRIDE` in `.dev.vars`: with it set, every request is the relay's label;
-without it, every request is teams. Leave it out to work on teams.
-
-To try the relay, `scripts/peers.mjs` with no arguments creates a key in
-`.peers-key.json` (git-ignored) and prints its label and the exact commands:
+To try the relay, run `scripts/peers.mjs` against `wrangler dev`. It keeps a
+computer's key in `.peers-key.json` (git-ignored). With `--local` it writes a test
+account and two sessions straight into the local D1, so no GitHub sign-in is needed:
 
 ```sh
-node scripts/peers.mjs
-echo LABEL_OVERRIDE=<label> >> .dev.vars
 npx wrangler dev
-node scripts/peers.mjs --base http://127.0.0.1:8787
+node scripts/peers.mjs --base http://127.0.0.1:8787 --local
 ```
 
-The script claims the label, issues a ticket, opens pairing, brings in two phones (one
-by code, one by ticket), sends bytes both ways, spends the code, revokes the ticket and
-checks the computer hears every close. It exits with 1 at the first failing step.
+Against a deployed Worker, sign in twice with one account and pass both sessions:
+`--session-pc <token> --session-phone <token>`. The script claims the label, checks
+the account lists the machine online, brings in two devices, sends bytes both ways,
+checks a socket without a session is turned away and that the computer hears every
+close. It exits with 1 at the first failing step.
 
 `wrangler dev` reads the secrets from `.dev.vars`. If you do not have that file yet,
 create it with the two lines below; if you have it, keep your values:
@@ -141,7 +144,9 @@ the hosts above). Do these once, in this order:
 
 1. Before the pull request that adds `cloud/` can merge: in the `main` ruleset, require
    "Cloud (types and tests)" in place of "Relay (types and tests)". That pull request
-   has no job with the old name, so the old required check never finishes.
+   has no job with the old name, so the old required check never finishes. Every other
+   open pull request still runs the old job: rebase each one on `main` after the merge
+   (or merge `main` into it) so its checks run under the new name.
 2. Create the database and put the `database_id` it prints in `wrangler.toml` under
    `[[env.production.d1_databases]]`. The deploy workflow fails until you do:
 
@@ -160,10 +165,25 @@ the hosts above). Do these once, in this order:
    npx wrangler secret put GITHUB_CLIENT_SECRET --env production
    ```
 
-5. Move the route by hand, from a checkout of the commit you are about to release.
+5. On Arakun's GitHub OAuth App (the one `GITHUB_CLIENT_ID` names), add the callback
+   URL `https://app.arakun.dev/auth/github/callback`. The phone page's sign-in fails
+   with GitHub's `redirect_uri` error without it.
+6. Add a proxied DNS record for `app.arakun.dev` in the `arakun.dev` zone (an `AAAA`
+   to `100::` is enough; the Worker route answers). The `*.arakun.dev/*` route already
+   covers the host, and `ACCOUNT_HOST` in `[env.production.vars]` makes it the only
+   account host.
+7. In the CONFIG KV, give each plan in `plans` its `machines`, how many machines an
+   account on it may register (5 when it is missing). The namespace is the same as
+   the old relay's, so the other limits carry over:
+
+   ```sh
+   npx wrangler kv key put --env production --remote --binding CONFIG plans '{"free":{"machines":5,"phones":3,"burst":50,"daily":20000,"frame":262144}}'
+   ```
+
+8. Move the route by hand, from a checkout of the commit you are about to release.
    Remove the `*.arakun.dev/*` route from the old `arakun-relay` Worker (two Workers
    cannot hold the same route, so the deploy fails otherwise), then run these right
-   away. No phone reaches its computer between the two:
+   away. No phone or app reaches a computer between the two:
 
    ```sh
    npx wrangler d1 migrations apply prod-arakun-cloud --env production --remote
@@ -173,10 +193,19 @@ the hosts above). Do these once, in this order:
    Do not leave this to the release: its Cloud job runs after everything else is built
    and published, and the relay would be down for all that time. When you publish the
    release, that job deploys the same commit again.
-6. The relay's objects start empty. Computers send their key and tickets again when
-   they reconnect, so nothing needs doing. The CONFIG KV is the same, so plans and
-   blocks carry over.
-7. Delete the old `arakun-relay` Worker once the relay answers from `arakun-cloud`.
+9. Delete the old KV keys, which nothing reads once `arakun-cloud` answers: `blocked`,
+   and every `labels/*` card:
+
+   ```sh
+   npx wrangler kv key delete --env production --remote --binding CONFIG blocked
+   npx wrangler kv key list --env production --remote --binding CONFIG --prefix labels/
+   # then, for each name it lists:
+   npx wrangler kv key delete --env production --remote --binding CONFIG "labels/<label>"
+   ```
+
+10. The relay's objects start empty, and computers register again when they claim
+    after signing in.
+11. Delete the old `arakun-relay` Worker once the relay answers from `arakun-cloud`.
 
 From the merge until the first release that has `cloud/`, CI cannot redeploy or hotfix
 the hosted relay: `relay-deploy.yml` is gone from `main`, and the latest release's tag
@@ -270,15 +299,11 @@ delay, so both are approximate: a client can get a few more.
 The compatibility date is after 2026-04-07, so the runtime answers a WebSocket
 client's close by itself; `src/channel.ts` relies on that.
 
-## Relay: self-hosting on a free account (workers.dev)
+## Relay: hosting your own
 
-Each computer deploys its own Worker named after its label on the account's
-`workers.dev` subdomain: `https://<label>.<account>.workers.dev`. It is the same code
-as production, teams included; the Worker reads the label from the first level of the
-Host either way. The top level of `wrangler.toml` also binds a D1 database, so create
-one (`npx wrangler d1 create arakun-cloud-dev`) and put its id under `[[d1_databases]]`
-before you deploy.
-Then set `relay_base` in Arakun's `phone.json` to your Worker's base URL.
+One deploy of this Worker serves every computer and every device of every account,
+on any host, `workers.dev` included. Labels travel in the path, so there is one
+Worker, not one per computer.
 
 To upgrade a Worker you deployed from the old `relay/` folder, create the database as
 above (the old Worker had none), then deploy over it from `cloud/` with the command of
@@ -294,37 +319,49 @@ old one.
    npx wrangler login
    ```
 
-   The account needs a registered `workers.dev` subdomain (dashboard: Workers & Pages
-   → Overview). A certificate for a freshly registered subdomain takes a minute or two
-   to be served; TLS fails until then.
+   On `workers.dev`, the account needs a registered subdomain (dashboard: Workers &
+   Pages → Overview). A certificate for a freshly registered subdomain takes a minute or
+   two to be served; TLS fails until then.
 
-2. The KV namespace, once per account. Put the `id` it returns in `wrangler.toml`
-   (`[[kv_namespaces]]`):
+2. The KV namespace and the database, once. Put the `id` and the `database_id` they
+   print in the top level of `wrangler.toml` (`[[kv_namespaces]]` and
+   `[[d1_databases]]`), then create the tables:
 
    ```sh
    npx wrangler kv namespace create CONFIG
+   npx wrangler d1 create arakun-cloud-dev
+   npx wrangler d1 migrations apply arakun-cloud-dev --remote
    ```
 
-3. Initial limits and the admin secret (without it, `/_admin` and `/admin` do not exist):
+3. A GitHub OAuth App of your own (GitHub → Settings → Developer settings → OAuth
+   Apps), with device flow enabled and the callback URL
+   `https://<your host>/auth/github/callback`. Put its client ID in `GITHUB_CLIENT_ID`
+   under `[vars]`, and its client secret and an admin secret in the Worker:
 
    ```sh
-   npx wrangler kv key put --binding CONFIG --env="" --remote plans '{"free":{"phones":3,"burst":50,"daily":20000,"frame":262144}}'
-   npx wrangler secret put ADMIN_SECRET --name <label> --env=""
+   npx wrangler secret put GITHUB_CLIENT_SECRET --env=""
+   npx wrangler secret put ADMIN_SECRET --env=""
    ```
 
-   Any field missing from `plans.free` takes that same default.
-
-4. Deploy under the computer's label (shown in Arakun's Phone tab, or by
-   `node scripts/peers.mjs` to test without Arakun):
+4. Deploy, and check it with a fake computer and device (sign in twice first, see
+   Development):
 
    ```sh
-   npx wrangler deploy --name <label> --env=""
-   node scripts/peers.mjs --base https://<label>.<account>.workers.dev
+   npx wrangler deploy --env=""
+   node scripts/peers.mjs --base https://arakun-cloud-dev.<account>.workers.dev --session-pc <token> --session-phone <token>
    ```
 
    `--env=""` picks the top level of `wrangler.toml`. Without it, wrangler warns that
    several environments are defined (`[env.production]` is `arakun.dev`'s own Worker)
    and none was picked, then deploys the top level anyway.
+
+5. Point Arakun at the Worker in two places, both with its URL: `relay_base` in
+   `phone.json`, where the relay is dialed, and `ARAKUN_TEAMS_URL` in the environment
+   of the app or `arakun-server`, where it signs in. A session only goes to the server
+   that issued it, so with only `relay_base` set the relay stays signed out. The app
+   reads the client ID from `/auth/config` and signs in there.
+
+The free plan's limits apply until you set `plans` in KV (see below).
 
 ## Relay: operating
 
@@ -332,51 +369,72 @@ Everything is tuned in KV without redeploying:
 
 | Key | Value | Effect |
 |---|---|---|
-| `plans` | `{"free":{"phones","burst","daily","frame"}}` | Phones at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute |
-| `disabled` | `true` or a message | 503 on `/pc`, `/ws` and `/_relay` with the message; the page still loads to show it |
-| `blocked` | `["<label>", …]` | 403 for those labels |
+| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan; a plan KV does not have is the free plan |
+| `disabled` | `true` or a message | Both sockets close with `bye` `disabled` and the message (`message`); a plain request to them answers 503 with it |
 
 ```sh
 # arakun.dev's own Worker ([env.production])
+npx wrangler kv key put --binding CONFIG --env production --remote plans '{"free":{"machines":5,"phones":3,"burst":50,"daily":20000,"frame":262144}}'
 npx wrangler kv key put --binding CONFIG --env production --remote disabled "maintenance until 05:00 UTC"
 npx wrangler kv key delete --binding CONFIG --env production --remote disabled
 # a self-hosted Worker (the top level of wrangler.toml)
 npx wrangler kv key put --binding CONFIG --env="" --remote disabled "maintenance until 05:00 UTC"
-npx wrangler kv key delete --binding CONFIG --env="" --remote disabled
 ```
 
 Without `--remote`, wrangler v4 writes to local storage and the relay never sees it.
 
-With the admin secret:
+With the admin secret (see Granting flags for how to pass it without it showing in
+the list of processes):
 
 ```sh
-curl -H "Authorization: Bearer $ADMIN_SECRET" https://<host>/_admin/labels
-curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" https://<host>/_admin/block/<label>
-curl -X POST -H "Authorization: Bearer $ADMIN_SECRET" https://<host>/_admin/unblock/<label>
+read -rs ADMIN_SECRET
+auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
+# every machine: label, owner's GitHub ID and login, name, kind, created and last seen
+auth | curl -fsS -H @- "https://<host>/admin/machines"
+# block an account: its computers and devices are closed now, new sockets are refused
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"reason":"abuse report 12"}' \
+  "https://<host>/admin/users/<github_id>/block"
+auth | curl -fsS -X DELETE -H @- "https://<host>/admin/users/<github_id>/block"
+# put an account on a plan from `plans`; open sockets follow at once
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"plan":"pro"}' \
+  "https://<host>/admin/users/<github_id>/plan"
+# a notice for one account (leave out github_id for everyone). text is 1 to 500 characters,
+# url must be https://, expires_at is Unix seconds in the future. Answers {"id": "..."}
+auth | curl -fsS -X POST -H @- -H "Content-Type: application/json" \
+  -d '{"github_id":1001,"text":"Your plan is now Pro.","url":"https://arakun.dev/pricing","expires_at":1893456000}' \
+  "https://<host>/admin/notices"
+# take a notice back, with the reads of it
+auth | curl -fsS -X DELETE -H @- "https://<host>/admin/notices/<id>"
 ```
 
-`labels` lists every computer that claimed (first claim, last seen, phones and frames
-of the day). `block` writes to KV and also drops everyone connected under that label.
+`GET /me` lists an account's unread notices, oldest first, at most 5, as
+`notices: [{ id, text, url }]`. `POST /notices/<id>/read` with a session dismisses
+one: `204`, also on a second read; `404` for one that is not the caller's, has expired
+or does not exist. A `github_id` with no account answers `404`.
+
+A blocked account can still sign in and read `/me`; `GET /machines` answers it
+`403 { "error": "blocked", "reason": … }` with the reason given.
+
+Each object checks its sockets' sessions and account in D1 every 5 minutes, and at
+once when the Worker asks after a sign-out, a block, a plan change or a forgotten
+machine. A socket whose session is gone closes with `signed_out`, a blocked
+account's with `blocked`.
 
 An object whose computer has not connected in 90 days empties itself (alarm). Nothing
-is lost: the computer sends its key and tickets again when it reconnects. A socket at
-`/pc` stores nothing until it claims, and is closed if it has not claimed within 30
-seconds.
+is lost: the machine stays in D1 and the computer claims again when it reconnects. A
+socket at `/pc` stores nothing until it claims, and is closed if it has not claimed
+within 30 seconds.
 
 ## Relay: hosting it for everyone on your own domain
 
-A single Worker serves every computer:
-
-1. DNS: a proxied `*` record (CNAME, or AAAA `100::`).
-2. Worker route `*.<domain>/*`, excluding `www.<domain>/*` and `<domain>/*` so the
-   landing page stays where it is.
-3. `npx wrangler deploy --env=""` under the normal name (`arakun-cloud-dev`). For `arakun.dev`
-   itself this is `[env.production]` in `wrangler.toml`, which the release deploys (see
-   Deploying above).
-4. A zone rate-limiting rule (one rule is free) on `/ws` and `/pc` per IP, so nobody can
-   open labels or connections without limit.
-
-Avoid a second-level wildcard such as `*.phone.<domain>`: its certificate is not free.
+One host serves every computer: a proxied DNS record for it (say `app.<domain>`) and a
+Worker route `app.<domain>/*`. For `arakun.dev` this is `[env.production]` in
+`wrangler.toml`, which the release deploys (see Deploying above); its route
+`*.arakun.dev/*` also keeps the old label hosts answering `update`. Add a zone
+rate-limiting rule (one rule is free) on `/machines/*` per IP, so nobody can open
+sockets without limit. With a wildcard route, set `ACCOUNT_HOST` under `[vars]` to
+that one host, so no other name under the domain serves the page or the session
+cookie.
 
 ## Granting flags
 

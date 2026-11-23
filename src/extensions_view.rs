@@ -2582,13 +2582,12 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// The pages, for the sidebar (`crate::subnav`): Arakun's own extensions,
-    /// then whose things, where to install, what there is to add, what is
-    /// installed, and in Discover its categories.
+    /// The pages, as tabs over the view (`crate::subnav`): Arakun's own
+    /// extensions, then whose things, what there is to add and what is
+    /// installed. Where to install and the categories are `filters`.
     pub fn nav(&self) -> Vec<Line> {
         let which = self.which;
         let mut out = vec![
-            Line::Heading("Arakun".into()),
             Line::Entry(
                 Entry::new("arakun", Lead::Icon("dashboard-square01"), "Extensions")
                     .count(Some(self.views.on.len()))
@@ -2606,7 +2605,6 @@ impl ExtensionsView {
         ];
 
         if which == Which::Claude {
-            out.extend(self.target_lines());
             out.push(Line::Heading("Discover".into()));
             for (m, key, label, icon_name) in [
                 (Market::Plugins, "market:plugins", "Plugins", "cube"),
@@ -2687,8 +2685,18 @@ impl ExtensionsView {
             out.push(Line::Entry(entry));
         }
 
-        if which == Which::Claude && self.kind == Kind::Marketplace {
-            out.extend(self.category_lines());
+        out
+    }
+
+    /// What narrows the page, in a quieter row under the tabs: where to
+    /// install and, in Discover, its categories.
+    pub fn filters(&self) -> Vec<Line> {
+        let mut out = Vec::new();
+        if self.which == Which::Claude {
+            out.extend(self.target_lines());
+            if self.kind == Kind::Marketplace {
+                out.extend(self.category_lines());
+            }
         }
         out
     }

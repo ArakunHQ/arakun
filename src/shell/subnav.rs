@@ -1,22 +1,14 @@
-//! One sidebar: the pages of the open view (Marketplace, Cloudflare) show in
-//! the rail under the view's row, not in a second column inside the view.
-//! When the rail can't hold them, the pane draws them beside the view
-//! (`crate::subnav`).
+//! A view's pages (Marketplace, Cloudflare) as tabs across the top of its
+//! pane (`crate::subnav`). The rail shows the view's row alone: its pages
+//! never open under it.
 
 use std::rc::Rc;
 
 use gpui::{App, SharedString};
 
 use super::*;
-use crate::sidebar::{Piece, View};
+use crate::sidebar::View;
 use crate::subnav::{self, Line, Pick};
-
-/// How far the pages sit right of the view's row: under its name, past
-/// the icon.
-pub(super) const RAIL_INSET: f32 = 16.;
-
-/// How tall the open view's pages get in the rail before they scroll.
-const RAIL_PAGES_MAX_H: f32 = 360.;
 
 impl Shell {
     /// The view of the focused tab, when it has pages of its own.
@@ -29,6 +21,14 @@ impl Shell {
         match view {
             View::Extensions => self.extensions_view.read(cx).nav(),
             View::Cloudflare => self.cloudflare_view.read(cx).nav(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// What narrows the page of `view`, in a row under its tabs.
+    pub(super) fn subnav_filters(&self, view: View, cx: &App) -> Vec<Line> {
+        match view {
+            View::Extensions => self.extensions_view.read(cx).filters(),
             _ => Vec::new(),
         }
     }
@@ -51,51 +51,17 @@ impl Shell {
         })
     }
 
-    /// Whether the rail draws `view`'s pages: it shows as a list (not
-    /// hidden, narrowed or being arranged) and holds the view where it can
-    /// be seen (not in a folded segment). In a row of icons, the pages go
-    /// under the row.
-    pub(super) fn rail_hosts_subnav(&self, view: View, cx: &App) -> bool {
-        if !self.rail_shown() || self.rail_narrow() || self.arranging() {
-            return false;
-        }
-        let piece = Piece::View { view };
-        let Some((s, _)) = self.sidebar.find(&piece) else {
-            return false;
-        };
-        let section = &self.sidebar.sections[s];
-        self.rail_shows(&piece, cx) && !(section.collapsible && section.collapsed)
+    /// Whether a tab shows `view`, so its pages are on screen and their
+    /// counts must follow it.
+    pub(super) fn shows_subnav_view(&self, view: View) -> bool {
+        self.strip
+            .tabs
+            .iter()
+            .any(|t| tab_subnav_view(&t.kind) == Some(view))
     }
 
-    /// The pages under `view`'s row in the rail, when that view is open.
-    /// `inset` is 0 under a row of icons, which has no name to line up with.
-    pub(super) fn rail_subnav(
-        &self,
-        view: View,
-        inset: f32,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if self.subnav_view() != Some(view) || !self.rail_hosts_subnav(view, cx) {
-            return None;
-        }
-        let lines = self.subnav_lines(view, cx);
-        if lines.is_empty() {
-            return None;
-        }
-        let pick = self.subnav_pick(view);
-        // A fixed segment doesn't scroll, so a long list scrolls itself.
-        Some(
-            div()
-                .id("rail-subnav-scroll")
-                .max_h(px(RAIL_PAGES_MAX_H))
-                .overflow_y_scroll()
-                .child(subnav::render("rail-subnav", lines, inset, pick).pb(crate::ui::sp(4.)))
-                .into_any_element(),
-        )
-    }
-
-    /// The pane of tab `index` holding view content `body`: the pages go in a
-    /// column beside it when the rail doesn't show them.
+    /// The pane of tab `index` holding view content `body`, with the view's
+    /// pages as tabs over it.
     pub(super) fn with_subnav(
         &self,
         index: usize,
@@ -110,19 +76,18 @@ impl Shell {
         else {
             return body;
         };
-        if index == self.strip.active_tab && self.rail_hosts_subnav(view, cx) {
-            return body;
-        }
         let lines = self.subnav_lines(view, cx);
         if lines.is_empty() {
             return body;
         }
+        let filters = self.subnav_filters(view, cx);
         let pick = self.subnav_pick(view);
         div()
             .flex()
+            .flex_col()
             .size_full()
-            .child(subnav::column("pane-subnav", lines, pick).bg(theme::background()))
-            .child(div().flex_1().min_w_0().h_full().child(body))
+            .child(subnav::bar("pane-subnav", lines, filters, pick))
+            .child(div().flex_1().min_h_0().w_full().child(body))
             .into_any_element()
     }
 }

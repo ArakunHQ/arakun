@@ -1728,10 +1728,8 @@ impl Hub {
             .iter()
             .filter(|(_, c)| c.link.is_some())
             .map(|(key, c)| {
-                let busy = c.loading
-                    || c.reading
-                    || !c.outbox.is_empty()
-                    || !c.bot_waiting.is_empty();
+                let busy =
+                    c.loading || c.reading || !c.outbox.is_empty() || !c.bot_waiting.is_empty();
                 (key.clone(), c.shown, busy)
             })
             .collect();

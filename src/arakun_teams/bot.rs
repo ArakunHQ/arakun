@@ -800,7 +800,7 @@ pub fn claude_result(stdout: &str) -> Result<String, String> {
 
 impl Agent for ClaudeCode {
     fn run(&self, prompt: &str, cwd: &Path, stop: &AtomicBool) -> Result<String, String> {
-        run_claude(prompt, cwd, stop, claude_args())
+        run_claude(prompt, cwd, stop, claude_args(), TIMEOUT)
     }
 }
 
@@ -833,7 +833,7 @@ pub(super) fn review_peer(prompt: &str, stop: &AtomicBool) -> Result<String, Str
         return Err("stopped".into());
     }
     let dir = private_dir().map_err(|e| e.to_string())?;
-    let out = run_claude(prompt, &dir, stop, peer_args());
+    let out = run_claude(prompt, &dir, stop, peer_args(), super::coord::TURN);
     let _ = std::fs::remove_dir(&dir);
     out
 }
@@ -843,6 +843,7 @@ fn run_claude(
     cwd: &Path,
     stop: &AtomicBool,
     args: Vec<String>,
+    timeout: Duration,
 ) -> Result<String, String> {
     let bin = crate::agent::claude_cli().ok_or(
         "Claude Code is not installed on this machine. @bot runs on your own Claude Code.",
@@ -857,12 +858,12 @@ fn run_claude(
     // On stdin, not in argv: other local users can read a process's
     // arguments. Stop and the time limit end the whole process tree: on
     // Windows the child is `claude.cmd`'s cmd.exe, and node runs under it.
-    let output = crate::platform::output_until(&mut cmd, Some(prompt.as_bytes()), TIMEOUT, stop)
+    let output = crate::platform::output_until(&mut cmd, Some(prompt.as_bytes()), timeout, stop)
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::Interrupted => "stopped".to_string(),
             std::io::ErrorKind::TimedOut => format!(
                 "Claude Code did not answer within {} minutes",
-                TIMEOUT.as_secs() / 60
+                timeout.as_secs() / 60
             ),
             _ => format!("could not start Claude Code: {e}"),
         })?;

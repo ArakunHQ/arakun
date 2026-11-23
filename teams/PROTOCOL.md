@@ -465,8 +465,10 @@ A device that cancels an unused ticket while the channel can still carry a
 message posts `withdrawn` with that ticket; do not send a `request` to a
 withdrawn ticket, and stop waiting for `notes` from one. A device whose
 enrollment ends during its review turn answers the `request` with `blocked`.
-A requester stops waiting for `notes` after 5 minutes, since a peer that lost
-its socket cannot say so. No grant survives a restart. The server does not schedule or see these steps.
+The 15 minutes bound how long a ticket waits to be used; an exchange that
+started in them may end after them. Each turn runs for at most 4 minutes, and a
+requester stops waiting for `notes` after 5 minutes, since a peer that lost its
+socket cannot say so. No grant survives a restart. The server does not schedule or see these steps.
 
 Members explicitly choose to send the selected text to their own Claude Code.
 The peer runner uses no tools, no project context and no MCP servers. Results

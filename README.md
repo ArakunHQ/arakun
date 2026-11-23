@@ -707,7 +707,7 @@ after a week).
 
   **Pair two agents for a review.** Open the same channel and a local project on
   both devices. Each member types `/agents pair @other-login` to lend one Claude
-  Code turn for up to 15 minutes. Either can then type `/agents review <goal>`:
+  Code turn; the offer stays open for 15 minutes. Either can then type `/agents review <goal>`:
   the other agent reviews the goal, and the asking member's agent reads those
   notes and posts a recommendation. Everyone in the channel sees the exchange. The model provider
   receives the goal and relevant notes, not the channel history or local files.

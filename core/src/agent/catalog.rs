@@ -234,7 +234,10 @@ pub fn claude_options() -> Arc<Vec<ConfigOption>> {
             .ok()
             .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         Arc::new(
+            // A cache an older build filled from a subagent's narrowed
+            // options is dropped, so `refresh_claude` asks the adapter again.
             raw.map(|v| claude_defaults(parse_config(&v["options"])))
+                .filter(|o| !narrowed(o))
                 .unwrap_or_default(),
         )
     })
@@ -244,7 +247,7 @@ pub fn claude_options() -> Arc<Vec<ConfigOption>> {
 /// Keeps the options a live Claude session reported, when they changed.
 pub fn remember_claude_options(raw: &Value) {
     let fresh = claude_defaults(parse_config(raw));
-    if fresh.is_empty() {
+    if fresh.is_empty() || narrowed(&fresh) {
         return;
     }
     let same = |a: &[ConfigOption], b: &[ConfigOption]| {
@@ -265,6 +268,17 @@ pub fn remember_claude_options(raw: &Value) {
         &json!({"fetched": unix_now(), "options": raw}),
     );
     *CLAUDE.lock().unwrap() = Some(Arc::new(fresh));
+}
+
+/// Options that are not a whole catalog: no model to pick from, or a single
+/// one. While a subagent runs the adapter reports such updates (its model,
+/// reasoning level and agent with one choice each, or only the agent). New
+/// sessions would then offer nothing to pick, so they are not kept.
+fn narrowed(options: &[ConfigOption]) -> bool {
+    options
+        .iter()
+        .find(|o| o.category.as_deref() == Some("model"))
+        .is_none_or(|o| o.options.len() < 2)
 }
 
 /// A session's values are its own; a new one starts on the defaults: the
@@ -924,6 +938,24 @@ fn read_session(path: &Path) -> Option<AgentSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_single_model_is_not_a_catalog() {
+        let config = |models: &[&str]| {
+            parse_config(&json!([{
+                "id": "model", "category": "model", "currentValue": models[0],
+                "options": models.iter().map(|i| json!({"value": i, "name": i})).collect::<Vec<_>>(),
+            }]))
+        };
+        // What a session reports while a subagent runs.
+        assert!(narrowed(&config(&["opus"])));
+        assert!(!narrowed(&config(&["default", "sonnet", "opus"])));
+        // An update with only the agent setting is not a catalog either.
+        assert!(narrowed(&parse_config(&json!([{
+            "id": "agent", "currentValue": "general-purpose",
+            "options": [{"value": "general-purpose", "name": "general-purpose"}],
+        }]))));
+    }
 
     #[test]
     fn claude_mode_defaults_as_the_adapter_does() {

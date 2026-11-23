@@ -929,6 +929,17 @@ pub fn acp_label(s: Setting, current: &str, options: &[SettingOption]) -> String
     }
 }
 
+/// Puts each option of `update` in place of the one with its id in `config`,
+/// adding the new ones and keeping the rest.
+fn merge_config(config: &mut Vec<ConfigOption>, update: Vec<ConfigOption>) {
+    for o in update {
+        match config.iter_mut().find(|c| c.id == o.id) {
+            Some(c) => *c = o,
+            None => config.push(o),
+        }
+    }
+}
+
 pub fn parse_config(list: &Value) -> Vec<ConfigOption> {
     list.as_array()
         .map(|a| {
@@ -3776,7 +3787,10 @@ impl Thread {
                 self.meta_changed(cx);
             }
             "config_option_update" => {
-                self.config = parse_config(&u["configOptions"]);
+                // An update may carry only the options that changed (Claude's
+                // adapter sends just the agent while a subagent runs): the
+                // others keep what they had.
+                merge_config(&mut self.config, parse_config(&u["configOptions"]));
                 if self.kind == AgentKind::Claude {
                     super::catalog::remember_claude_options(&u["configOptions"]);
                 }
@@ -4542,6 +4556,27 @@ pub fn staged_notice(staged: Result<Vec<String>, String>) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_partial_config_update_keeps_the_other_options() {
+        use super::{merge_config, parse_config};
+        use serde_json::json;
+        let opt = |id: &str, values: &[&str]| {
+            json!({"id": id, "currentValue": values[0],
+                   "options": values.iter().map(|v| json!({"value": v, "name": v})).collect::<Vec<_>>()})
+        };
+        let mut config = parse_config(&json!([
+            opt("model", &["default", "opus"]),
+            opt("agent", &["default"])
+        ]));
+        merge_config(
+            &mut config,
+            parse_config(&json!([opt("agent", &["general-purpose"])])),
+        );
+        assert_eq!(config.len(), 2);
+        assert_eq!(config[0].options.len(), 2, "the models stay");
+        assert_eq!(config[1].current, "general-purpose");
+    }
+
     #[test]
     fn command_output_keeps_its_tail_and_counts_what_it_dropped() {
         let mut t = super::ToolCall {

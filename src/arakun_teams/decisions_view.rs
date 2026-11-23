@@ -2,6 +2,7 @@
 //! channel's history, with who accepted it, when, and where it was argued.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -16,6 +17,10 @@ use super::bot_view::names;
 use super::{Faces, Pane, TeamsView, clock, day_label};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Type, Typography as _, icon};
+
+/// A built decision log, with the team, the hub's message revision and the
+/// number of the team's open channels it was built from.
+pub(super) type BuiltLog = ((String, u64, usize), Rc<Vec<Decision>>);
 
 /// The panel a decision opens in, at the right.
 const DECISION_W: f32 = 340.;
@@ -180,15 +185,36 @@ impl TeamsView {
         self.show(Pane::Channel(team, d.channel_id.clone()), window, cx);
     }
 
+    /// The team's decision log, built again only when a channel's messages
+    /// changed or a channel was opened or closed: building it reads every
+    /// message of every channel, and the pane renders on each keystroke.
+    fn built_log(&mut self, team_id: &str, cx: &mut Context<Self>) -> Rc<Vec<Decision>> {
+        let hub = self.hub.read(cx);
+        let channels = hub
+            .channels
+            .values()
+            .filter(|c| c.team_id == team_id)
+            .count();
+        let key = (team_id.to_string(), hub.messages_rev, channels);
+        if let Some((built, log)) = &self.decision_log
+            && *built == key
+        {
+            return log.clone();
+        }
+        let log = Rc::new(hub.decision_log(team_id));
+        self.decision_log = Some((key, log.clone()));
+        log
+    }
+
     pub(super) fn render_decisions(
         &mut self,
         team_id: &str,
         faces: &Faces,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let log = self.built_log(team_id, cx);
         let hub = self.hub.read(cx);
         let me = hub.me().map_or(0, |m| m.github_id);
-        let log = hub.decision_log(team_id);
         let channel_names: HashMap<String, String> = hub
             .team
             .get(team_id)

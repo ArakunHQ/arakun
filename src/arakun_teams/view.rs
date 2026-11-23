@@ -231,6 +231,8 @@ pub struct TeamsView {
     decisions_mine: bool,
     /// The channels (team, channel) Decisions opened to read the log.
     decisions_opened: HashSet<(String, String)>,
+    /// The decision log last built, and what it was built from.
+    decision_log: Option<decisions_view::BuiltLog>,
     decision_query: Entity<TextInput>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -329,6 +331,7 @@ impl TeamsView {
             pending_jump: None,
             decision: None,
             decisions_mine: false,
+            decision_log: None,
             decisions_opened: HashSet::new(),
             decision_query,
             focus: cx.focus_handle(),

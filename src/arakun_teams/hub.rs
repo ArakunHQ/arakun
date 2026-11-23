@@ -287,6 +287,9 @@ pub struct Hub {
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
+    /// Bumped whenever a channel's messages change, so what is built from
+    /// them (the decision log) is built again only then.
+    pub messages_rev: u64,
     roster_version: u64,
     applied_roster: u64,
     membership: HashMap<String, u64>,
@@ -373,6 +376,7 @@ impl Hub {
             bot: super::bot::Bots::default(),
             events: tx,
             generation: 0,
+            messages_rev: 0,
             roster_version: 0,
             applied_roster: 0,
             membership: HashMap::new(),
@@ -1813,6 +1817,7 @@ impl Hub {
                         c.outbox.remove(&id);
                         // Send again asks with the project open then.
                         self.bot.asked.remove(&id);
+                        self.messages_rev += 1;
                         if why.contains("epoch") {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
@@ -1960,6 +1965,7 @@ impl Hub {
         // Sent ones by seq; what is still on its way stays at the end.
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
+        self.messages_rev += 1;
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
         c.bot_waiting.extend(asked);
@@ -2062,6 +2068,7 @@ impl Hub {
             body,
             delivery: Delivery::Sending,
         });
+        self.messages_rev += 1;
         c.outbox.insert(id, frame.clone());
         if c.status == socket::Status::Connected
             && let Some(link) = &c.link
@@ -2092,6 +2099,7 @@ impl Hub {
             && let Some(c) = self.channels.get_mut(&ckey)
         {
             c.messages.retain(|m| m.id != id);
+            self.messages_rev += 1;
             self.bot.asked.remove(id);
         }
     }

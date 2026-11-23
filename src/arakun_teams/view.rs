@@ -2814,10 +2814,7 @@ impl TeamsView {
         let mut placed = vec![false; notices.len()];
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
-            // An acceptance shows as the "Decided" line under its answer, and
-            // one on its way as a note there. A refused one stays a row, so
-            // its error and Send again show.
-            if m.body.kind == "decision_accept" && !matches!(m.delivery, Delivery::Failed(_)) {
+            if accept_shown_under(m, &messages, &bot.decided) {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {
@@ -4040,6 +4037,28 @@ fn day_label_on(day: (i32, i32, i32), today: (i32, i32, i32)) -> String {
     }
 }
 
+/// Whether an acceptance has no row of its own: it shows as the "Decided"
+/// line under the answer it accepts, or while on its way as a note there.
+/// One that names no answer shown here keeps its row, or any member could
+/// post a message nobody sees. A refused one keeps it too, so its error and
+/// Send again show.
+fn accept_shown_under(
+    m: &Msg,
+    messages: &[Msg],
+    decided: &HashMap<String, Vec<super::decisions::Acceptance>>,
+) -> bool {
+    let Some(of) = super::decisions::accepting(m) else {
+        return false;
+    };
+    match m.delivery {
+        Delivery::Sent => decided.contains_key(of),
+        Delivery::Sending => messages
+            .iter()
+            .any(|a| a.id == of && a.delivery == Delivery::Sent && super::bot::meta(a).is_some()),
+        Delivery::Failed(_) => false,
+    }
+}
+
 /// The date before a date, by the calendar. A day is not always 24 hours:
 /// the local time 24 hours back is two dates back in the first hour after a
 /// 23-hour day.
@@ -4091,6 +4110,57 @@ fn when(at: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_acceptance_hides_only_under_an_answer_shown_here() {
+        let msg = |id: &str, body: super::super::crypto::Body, delivery| Msg {
+            id: id.into(),
+            seq: None,
+            at: 1,
+            github_id: 7,
+            login: "dani".into(),
+            body,
+            delivery,
+        };
+        let mut answer_body = super::super::crypto::Body::text("", None);
+        answer_body.kind = "bot".into();
+        answer_body.bot = Some(serde_json::json!({ "via": 7, "range": ["m1", "m2"], "cites": {} }));
+        let answer = msg("b1", answer_body, Delivery::Sent);
+        let accept = |of: &str, delivery| {
+            let mut body = super::super::bot::accept_body(&answer);
+            body.decision = Some(serde_json::json!({ "of": of }));
+            msg("a1", body, delivery)
+        };
+        let messages = vec![answer.clone()];
+        let decided = HashMap::from([("b1".to_string(), Vec::new())]);
+        assert!(accept_shown_under(
+            &accept("b1", Delivery::Sent),
+            &messages,
+            &decided
+        ));
+        // It names an answer this device cannot show, or none at all.
+        let nothing = HashMap::new();
+        assert!(!accept_shown_under(
+            &accept("b1", Delivery::Sent),
+            &messages,
+            &nothing
+        ));
+        assert!(!accept_shown_under(
+            &accept("gone", Delivery::Sending),
+            &messages,
+            &nothing
+        ));
+        assert!(accept_shown_under(
+            &accept("b1", Delivery::Sending),
+            &messages,
+            &nothing
+        ));
+        assert!(!accept_shown_under(
+            &accept("b1", Delivery::Failed("refused".into())),
+            &messages,
+            &decided
+        ));
+    }
 
     #[test]
     fn a_remote_environment_is_no_project_for_the_bot() {

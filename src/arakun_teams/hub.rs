@@ -114,6 +114,20 @@ pub enum Delivery {
     Failed(String),
 }
 
+/// Marks the message `id` as refused by the server, with why. Only one still
+/// on its way: a replay of a stored message may be refused for another
+/// reason (a rate limit, say), and that must not offer to send it twice.
+fn refuse(messages: &mut [Msg], id: &str, why: &str) -> bool {
+    let Some(m) = messages
+        .iter_mut()
+        .find(|m| m.id == id && m.delivery == Delivery::Sending)
+    else {
+        return false;
+    };
+    m.delivery = Delivery::Failed(why.to_string());
+    true
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Msg {
     pub id: String,
@@ -1622,9 +1636,8 @@ impl Hub {
                         c.outbox.remove(&id);
                         c.needs_history = true;
                         self.catch_up(key, cx);
-                    } else if let Some(m) = c.messages.iter_mut().find(|m| m.id == id) {
+                    } else if refuse(&mut c.messages, &id, &why) {
                         c.outbox.remove(&id);
-                        m.delivery = Delivery::Failed(why.clone());
                         if why.contains("epoch") {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
@@ -2262,6 +2275,33 @@ mod tests {
             endorsed_by: endorsed_by.map(|e| e.id().to_string()),
             endorsement_sig: endorsed_by.map(|e| e.endorse(21, d.sig_pub(), d.enc_pub())),
         }
+    }
+
+    #[test]
+    fn a_refusal_fails_only_a_message_still_on_its_way() {
+        let msg = |id: &str, delivery| Msg {
+            id: id.into(),
+            seq: None,
+            at: 0,
+            github_id: 21,
+            login: "a".into(),
+            body: Body::text("hi".to_string(), None),
+            delivery,
+        };
+        let mut messages = vec![msg("sent", Delivery::Sent), msg("new", Delivery::Sending)];
+        // A replay of a stored message refused for another reason.
+        assert!(!refuse(
+            &mut messages,
+            "sent",
+            "too many messages, slow down"
+        ));
+        assert_eq!(messages[0].delivery, Delivery::Sent);
+        assert!(refuse(&mut messages, "new", "too many messages, slow down"));
+        assert_eq!(
+            messages[1].delivery,
+            Delivery::Failed("too many messages, slow down".into())
+        );
+        assert!(!refuse(&mut messages, "gone", "refused"));
     }
 
     #[test]

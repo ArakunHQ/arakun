@@ -86,6 +86,11 @@ pub struct Grant {
     started: Instant,
     state: State,
     pub caller: Option<futures::channel::oneshot::Sender<crate::control::Reply>>,
+    /// This device's last review event, until the server stores it: a send
+    /// only queues it, and a refused one must end the exchange.
+    pub posted: Option<String>,
+    /// What the caller hears once the server stores `posted`.
+    pub answer: Option<crate::control::Reply>,
 }
 
 enum State {
@@ -118,6 +123,8 @@ impl Grant {
             started: Instant::now(),
             state: State::Available,
             caller: None,
+            posted: None,
+            answer: None,
         }
     }
 

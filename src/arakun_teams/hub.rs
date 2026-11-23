@@ -2151,6 +2151,8 @@ impl Hub {
                         self.catch_up(key, cx);
                     } else if refuse(&mut c.messages, &id, &why) {
                         c.outbox.remove(&id);
+                        self.review_refused(&id, &why);
+                        let c = self.channels.get_mut(key).expect("looked up above");
                         // Send again asks with the project open then.
                         self.bot.asked.remove(&id);
                         self.messages_rev += 1;
@@ -2323,6 +2325,7 @@ impl Hub {
         } else {
             std::mem::take(&mut c.bot_waiting)
         };
+        self.review_stored(key);
         for (sender, epoch, event, text, id, parent) in peer_mail {
             if event == PeerEvent::Blocked
                 && let Some(grant) = &self.peer_review
@@ -2429,12 +2432,24 @@ impl Hub {
                         } else {
                             crate::control::Reply::err("No recommendation was available.")
                         };
-                        if hub.send_body(&team, &channel, body, cx)
-                            && let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take())
-                        {
-                            let _ = caller.send(answer);
+                        let done = matches!(PeerEvent::read(&body), Some(PeerEvent::Done));
+                        match hub.send_review_body(&team, &channel, body, cx) {
+                            // The caller hears once the server stores the
+                            // recommendation, so it never holds one the channel lacks.
+                            Some(sent) if done => {
+                                if let Some(g) = hub.peer_review.as_mut() {
+                                    g.posted = Some(sent);
+                                    g.answer = Some(answer);
+                                }
+                            }
+                            Some(_) => {
+                                if let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take()) {
+                                    let _ = caller.send(answer);
+                                }
+                                hub.peer_review = None;
+                            }
+                            None => hub.peer_review = None,
                         }
-                        hub.peer_review = None;
                     });
                 }).detach();
             }
@@ -2524,6 +2539,69 @@ impl Hub {
         }
     }
 
+    /// `send_body` for a review event, with the id it was queued under.
+    fn send_review_body(
+        &mut self,
+        team: &str,
+        channel: &str,
+        body: Body,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        if !self.send_body(team, channel, body, cx) {
+            return None;
+        }
+        // `send_body` adds the message last.
+        self.channels
+            .get(&channel_key(team, channel))
+            .and_then(|c| c.messages.last())
+            .map(|m| m.id.clone())
+    }
+
+    /// The server stored this device's last review event: a recommendation
+    /// can go to the caller now.
+    fn review_stored(&mut self, key: &str) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        let stored = grant.channel == key
+            && grant.posted.as_ref().is_some_and(|id| {
+                self.channels[key]
+                    .messages
+                    .iter()
+                    .any(|m| &m.id == id && m.delivery == Delivery::Sent)
+            });
+        if !stored {
+            return;
+        }
+        grant.posted = None;
+        if let Some(answer) = grant.answer.take() {
+            if let Some(caller) = grant.caller.take() {
+                let _ = caller.send(answer);
+            }
+            self.peer_review = None;
+        }
+    }
+
+    /// The server refused this device's last review event, so the peer never
+    /// saw it: end the exchange now rather than wait out its time.
+    fn review_refused(&mut self, id: &str, why: &str) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        if grant.posted.as_deref() != Some(id) {
+            return;
+        }
+        if let Some(caller) = grant.caller.take() {
+            let _ = caller.send(crate::control::Reply::err(format!(
+                "The server refused the review message: {why}"
+            )));
+        }
+        self.error = Some(format!(
+            "The paired review ended: the server refused its message: {why}"
+        ));
+        self.peer_review = None;
+    }
+
     pub(super) fn review_command(
         &mut self,
         team: &str,
@@ -2606,9 +2684,12 @@ impl Hub {
         } else {
             return Err("Use /agents pair @login, /agents review <goal>, or /agents off.".into());
         };
-        if !self.send_body(team, channel, event.body(text, None), cx) {
+        let Some(sent) = self.send_review_body(team, channel, event.body(text, None), cx) else {
             self.peer_review = None;
             return Err("Could not send the review event; pair again.".into());
+        };
+        if let Some(g) = self.peer_review.as_mut() {
+            g.posted = Some(sent);
         }
         Ok(())
     }

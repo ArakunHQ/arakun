@@ -1316,6 +1316,36 @@ impl TeamsView {
 
     /// "Waiting for an admin to approve this device": after accepting an
     /// invite, or a device of a member that holds no team key yet.
+    /// An admin let this user in and the team is still loading, or failed
+    /// to load. Not the wait: nothing is left for an admin to do.
+    fn render_joining(&self, team: &str, failed: bool, cx: &mut Context<Self>) -> AnyElement {
+        let subtitle = if failed {
+            "An admin let you in, but the team did not load."
+        } else {
+            "An admin let you in. Loading the team…"
+        };
+        let mut page = Self::page().child(ui::page_title(
+            team.to_string(),
+            Some(subtitle.into_any_element()),
+        ));
+        if failed {
+            page = page.child(
+                div().flex().child(
+                    ui::button(
+                        "teams-joining-retry",
+                        "Try again",
+                        ButtonKind::Primary,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.hub.update(cx, |h, cx| h.retry(cx))),
+                    ),
+                ),
+            );
+        }
+        Self::scrolling("teams-joining-page", page)
+    }
+
     fn render_waiting(
         &self,
         team: &str,
@@ -3443,6 +3473,15 @@ impl TeamsView {
                 // The header's menu is the way back to the team.
                 Pane::NewTeam => (back_team(), None, self.render_new_team(cx)),
                 Pane::Invites => (back_team(), None, self.render_invites(faces, cx)),
+                // Let in, with the team not loaded yet: the request is gone,
+                // so its name comes from the team list.
+                Pane::Asked(t)
+                    if !asked.iter().any(|(a, _)| *a == t) && !name_of(&t).is_empty() =>
+                {
+                    let name = name_of(&t);
+                    let failed = unreachable.is_some();
+                    (back_team(), None, self.render_joining(&name, failed, cx))
+                }
                 Pane::Asked(t) => {
                     let name = asked
                         .iter()

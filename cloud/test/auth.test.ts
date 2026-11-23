@@ -1,7 +1,7 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { session, signIn as signInHandler } from "../src/auth";
-import { ADMIN, as, call, freshIp, github, nowSeconds, signIn, signInRequest } from "./helpers";
+import { ADMIN, as, call, freshIp, github, nowSeconds, roomInWindow, signIn, signInRequest } from "./helpers";
 
 const DAY = 24 * 60 * 60;
 
@@ -206,6 +206,7 @@ describe("sign-in with GitHub", () => {
     // Each sign-in revokes its token, so each needs a new one.
     for (let i = 0; i <= 11; i++) github.users.set(`gho_ok_${i}`, { id: 1001, login: "octocat" });
     const ip = "203.0.113.7";
+    await roomInWindow(60);
     for (let i = 0; i < 10; i++) expect((await signInRequest(`gho_ok_${i}`, ip)).status).toBe(200);
     const res = await signInRequest("gho_ok_10", ip);
     expect(res.status).toBe(429);

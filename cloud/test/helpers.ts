@@ -118,3 +118,12 @@ export function as(session: string): Record<string, string> {
 export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
+
+/// Waits for the next rate-limit window when this one has less than `roomMs`
+/// left. The simulated limiter counts in windows fixed to the clock, so a
+/// test that sends its burst across the end of one sees every call pass.
+export async function roomInWindow(periodSeconds: 10 | 60, roomMs = 3_000): Promise<void> {
+  const period = periodSeconds * 1000;
+  const left = period - (Date.now() % period);
+  if (left < roomMs) await new Promise((r) => setTimeout(r, left + 50));
+}

@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Channel } from "../src/channel";
 import { b64url, ulid } from "../src/util";
-import { ADMIN, call } from "./helpers";
+import { ADMIN, call, roomInWindow } from "./helpers";
 import { api, envelope, expectJson, join, makeDevice, message, newKey, openChannel, register, seal, team, user, type Socket, type TeamSetup } from "./clients";
 
 /// The next frame, which must be a stored message.
@@ -310,6 +310,7 @@ describe("channel sockets", () => {
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
     const key = t.keys.get(1)!;
     const msgs = await Promise.all(Array.from({ length: 61 }, () => message(t.teamId, t.channelId, t.owner.device, 1, key, "x")));
+    await roomInWindow(10);
     for (const msg of msgs) a.send(msg);
     const frames = [];
     for (let i = 0; i < 61; i++) frames.push(await a.inbox.next());

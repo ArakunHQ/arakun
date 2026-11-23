@@ -919,7 +919,8 @@ pub fn usage_limit(why: &str, now: u64, now_minute: u32) -> Option<Limit> {
     let limit = lower.contains("usage limit")
         || lower.contains("hit your limit")
         || lower.contains("limit reached")
-        || lower.contains("-hour limit");
+        || lower.contains("-hour limit")
+        || lower.contains("session limit");
     if !limit {
         return None;
     }
@@ -1313,6 +1314,10 @@ mod tests {
             14 * 60,
         );
         assert_eq!(at.unwrap().resets_at, Some(now - now % 60 + 3600));
+        // A plan's session limit is the five-hour one under another name.
+        let at = usage_limit("You've hit your session limit · resets 3pm", now, 14 * 60).unwrap();
+        assert!(!at.weekly);
+        assert_eq!(at.resets_at, Some(now - now % 60 + 3600));
         let weekly = usage_limit("Weekly limit reached", now, 0).unwrap();
         assert!(weekly.weekly);
         assert_eq!(weekly.resets_at, None);

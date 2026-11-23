@@ -372,6 +372,9 @@ pub struct Hub {
     unread_read: HashMap<String, usize>,
     /// When those were last read.
     unread_at: Option<Instant>,
+    /// When an invite was sent or withdrawn from here, by team. A team read
+    /// that started before then keeps the invite list as it is here.
+    invites_changed: HashMap<String, Instant>,
     /// The newest `seq` of each of those channels when it was counted: one
     /// that has not moved since is not read again.
     unread_newest: HashMap<String, u64>,
@@ -475,6 +478,7 @@ impl Hub {
             unread_read: HashMap::new(),
             unread_at: None,
             unread_newest: HashMap::new(),
+            invites_changed: HashMap::new(),
             events: tx,
             generation: 0,
             messages_rev: 0,
@@ -571,6 +575,7 @@ impl Hub {
         self.unread_read.clear();
         self.unread_at = None;
         self.unread_newest.clear();
+        self.invites_changed.clear();
         self.created = None;
         self._poll = None;
         self._tick = None;
@@ -1031,6 +1036,7 @@ impl Hub {
         let held: HashSet<u64> = self.kept.keys(team_id).iter().map(|(e, _)| *e).collect();
         let team_id = team_id.to_string();
         let admin = row.role.is_admin();
+        let asked = Instant::now();
         self.run(
             cx,
             {
@@ -1047,7 +1053,15 @@ impl Hub {
                     return;
                 }
                 match result {
-                    Ok(read) => hub.team_read(&team_id, row.role, read, cx),
+                    Ok(mut read) => {
+                        let changed = hub
+                            .invites_changed
+                            .get(&team_id)
+                            .is_some_and(|at| *at >= asked);
+                        let here = hub.team.get(&team_id).and_then(|t| t.invites.clone());
+                        read.invites = invites_after_read(read.invites, here, changed);
+                        hub.team_read(&team_id, row.role, read, cx)
+                    }
                     Err(ApiError::Status(404, _)) => hub.refresh(cx),
                     Err(e) => {
                         if let Some(t) = hub.team.get_mut(&team_id) {
@@ -1509,13 +1523,38 @@ impl Hub {
             cx,
             {
                 let team_id = team_id.clone();
-                move |net| net.call().invite(&team_id, &login).map(|()| login)
+                move |net| net.call().invite(&team_id, &login).map(|i| (i, login))
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
-                    // The invited list comes back from the server.
-                    Ok(_) => hub.load_team(&team_id, cx),
+                    // Listed at once: a team read already under way does not
+                    // know of it, and an older server lists no invites.
+                    Ok((invited, typed)) => {
+                        let by = hub.me.as_ref().map(|m| m.login.clone());
+                        if let Some(t) = hub.team.get_mut(&team_id) {
+                            let login = if invited.login.is_empty() {
+                                typed
+                            } else {
+                                invited.login
+                            }
+                            .to_ascii_lowercase();
+                            let list = t.invites.get_or_insert_with(Vec::new);
+                            list.retain(|i| i.login != login);
+                            list.insert(
+                                0,
+                                TeamInvite {
+                                    invite_id: invited.invite_id,
+                                    login,
+                                    invited_by_login: by,
+                                    created_at: now(),
+                                    expires_at: invited.expires_at,
+                                },
+                            );
+                        }
+                        hub.invites_changed.insert(team_id.clone(), Instant::now());
+                        hub.load_team(&team_id, cx);
+                    }
                     Err(ApiError::Status(409, _)) => {
                         hub.error =
                             Some("They are a member already, or waiting for approval.".into())
@@ -1538,13 +1577,22 @@ impl Hub {
         self.run(
             cx,
             {
-                let team_id = team_id.clone();
+                let (team_id, invite_id) = (team_id.clone(), invite_id.clone());
                 move |net| net.call().withdraw(&team_id, &invite_id)
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
-                    Ok(()) => hub.load_team(&team_id, cx),
+                    Ok(()) => {
+                        // Gone at once, so Withdraw is not offered again.
+                        if let Some(list) =
+                            hub.team.get_mut(&team_id).and_then(|t| t.invites.as_mut())
+                        {
+                            list.retain(|i| i.invite_id != invite_id);
+                        }
+                        hub.invites_changed.insert(team_id.clone(), Instant::now());
+                        hub.load_team(&team_id, cx);
+                    }
                     Err(e) => hub.error = Some(format!("Could not withdraw the invite: {e}")),
                 }
             },
@@ -2568,6 +2616,20 @@ fn stored_already(
     }
 }
 
+/// The invite list a team read leaves: the server's, unless the read started
+/// before an invite or a withdraw from here (`changed`) or the server lists
+/// none, when the list `here` stays.
+fn invites_after_read(
+    read: Option<Vec<TeamInvite>>,
+    here: Option<Vec<TeamInvite>>,
+    changed: bool,
+) -> Option<Vec<TeamInvite>> {
+    match read {
+        Some(read) if !changed => Some(read),
+        read => here.or(read),
+    }
+}
+
 /// What the unread poll learned of one channel.
 #[derive(Debug, PartialEq, Eq)]
 enum Polled {
@@ -3333,6 +3395,24 @@ mod tests {
         assert!(refuse(&mut one, "e1", "refused"));
         assert_eq!(one[0].body.text, "first");
         assert!(one[0].edited.is_none());
+    }
+
+    #[test]
+    fn a_team_read_from_before_an_invite_keeps_the_list_here() {
+        let inv = |id: &str| TeamInvite {
+            invite_id: id.into(),
+            login: id.into(),
+            invited_by_login: None,
+            created_at: 1,
+            expires_at: 2,
+        };
+        let here = Some(vec![inv("new")]);
+        let read = Some(vec![inv("old")]);
+        assert_eq!(invites_after_read(read.clone(), here.clone(), false), read);
+        assert_eq!(invites_after_read(read.clone(), here.clone(), true), here);
+        // An older server lists none: what was sent from here stays.
+        assert_eq!(invites_after_read(None, here.clone(), false), here);
+        assert_eq!(invites_after_read(None, None, false), None);
     }
 
     #[test]

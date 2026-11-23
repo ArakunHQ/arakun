@@ -378,6 +378,19 @@ pub struct InviteRow {
     pub member_count: Option<u64>,
 }
 
+/// What `POST /teams/<id>/invites` answers. Each field may be missing on an
+/// older server.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Invited {
+    #[serde(default)]
+    pub invite_id: String,
+    /// As GitHub spells it now.
+    #[serde(default)]
+    pub login: String,
+    #[serde(default)]
+    pub expires_at: u64,
+}
+
 /// An open invite of a team, as its admins see it (`GET /teams/<id>/invites`).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct TeamInvite {
@@ -551,10 +564,9 @@ impl Call<'_> {
         self.get(&format!("/teams/{team_id}"))
     }
 
-    pub fn invite(&self, team_id: &str, login: &str) -> Result<(), ApiError> {
+    pub fn invite(&self, team_id: &str, login: &str) -> Result<Invited, ApiError> {
         let body = serde_json::json!({ "github_login": login });
-        self.post::<serde_json::Value>("POST", &format!("/teams/{team_id}/invites"), body)
-            .map(|_| ())
+        self.post::<Invited>("POST", &format!("/teams/{team_id}/invites"), body)
     }
 
     pub fn invites(&self) -> Result<Vec<InviteRow>, ApiError> {

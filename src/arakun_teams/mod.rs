@@ -656,14 +656,12 @@ async fn device_flow(
     cx: &mut AsyncApp,
 ) -> Result<(api::SignedIn, Result<(), String>), Ended> {
     // A server of one's own checks tokens against an OAuth App of its own.
-    let client_id: String = if base == api::DEFAULT_URL {
-        api::CLIENT_ID.into()
-    } else {
-        let asked = base.clone();
-        cx.background_spawn(async move { cloud::client_id(&asked) })
-            .await
-            .map_err(|e| Ended::Failed(format!("Sign-in: {e}")))?
-    };
+    // Arakun's own for the default server, which is not asked.
+    let asked = base.clone();
+    let client_id: String = cx
+        .background_spawn(async move { cloud::github_client_id(&asked) })
+        .await
+        .map_err(|e| Ended::Failed(format!("Sign-in: {e}")))?;
     let id = client_id.clone();
     let code = cx
         .background_spawn(async move { cloud::start_device_flow(&id) })

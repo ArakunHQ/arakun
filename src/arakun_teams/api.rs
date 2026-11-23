@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use super::crypto::{Envelope, Sealed, WireMessage};
 
-/// Arakun's OAuth App. Public: the device flow has no client secret, and the
-/// server checks with GitHub that this app issued the token.
-pub const CLIENT_ID: &str = "Ov23lipgmMeATCa5aTr3";
 pub use crate::cloud::{DEFAULT_URL, URL_ENV, base_url};
 /// The flag the server sets on accounts that may use Teams.
 pub const TEAMS_FLAG: &str = "teams";

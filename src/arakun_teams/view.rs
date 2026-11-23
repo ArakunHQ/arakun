@@ -2253,6 +2253,7 @@ impl TeamsView {
             return ui::loading("Reading the team…").into_any_element();
         };
         let scope = hub.roster(team_id);
+        let my_login = hub.me().map(|m| m.login.clone());
         let keyless = t.keyless;
         let pending = t.pending.clone();
         let approving: Vec<bool> = pending
@@ -2325,6 +2326,25 @@ impl TeamsView {
                         .pl(ui::sp(50.))
                         .pr(ui::sp(10.))
                         .pb(ui::sp(8.))
+                        .children(
+                            p.invited_login
+                                .as_ref()
+                                .filter(|login| {
+                                    !login.is_empty() && !login.eq_ignore_ascii_case(&p.login)
+                                })
+                                .map(|login| {
+                                    ui::text(
+                                        Type::Label,
+                                        theme::attention().into(),
+                                        format!(
+                                            "Invited as @{}. A GitHub login can change hands: check this is the person you invited.",
+                                            // Masked as the row's login is, or
+                                            // there is nothing to compare.
+                                            shown_login(login, my_login.as_deref())
+                                        ),
+                                    )
+                                }),
+                        )
                         .children(p.devices.iter().map(device_line)),
                 );
         }

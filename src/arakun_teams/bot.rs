@@ -850,7 +850,9 @@ pub(super) fn review_peer(prompt: &str, stop: &AtomicBool) -> Result<String, Str
     let dir = private_dir().map_err(|e| e.to_string())?;
     let out = run_claude(prompt, &dir, stop, peer_args(), super::coord::TURN);
     let _ = std::fs::remove_dir(&dir);
-    out
+    // The run reads no project, but the peer's request can carry a diff or
+    // a log with a key in it, and the notes go to the whole channel.
+    out.map(|s| super::bot_guard::redact(&s))
 }
 
 fn run_claude(

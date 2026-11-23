@@ -73,6 +73,8 @@ pub(super) struct MarketState {
     pub(super) skills: Option<Vec<SkillEntry>>,
     /// The query the shown skills answer.
     pub(super) skills_for: String,
+    /// The repository the shown skills are all of, when the search named one.
+    pub(super) skills_repo: Option<String>,
     pub(super) skills_loading: bool,
     /// The query skills.sh is being asked, so asking again for it does not
     /// drop the answer on its way.
@@ -131,6 +133,7 @@ impl ExtensionsView {
         self.ms.skills_error = None;
         if query.chars().count() < 2 {
             self.ms.skills = None;
+            self.ms.skills_repo = None;
             self.ms.skills_for = query;
             self.ms.skills_loading = false;
             self.ms.skills_asking = None;
@@ -142,16 +145,53 @@ impl ExtensionsView {
         self.ms.skills_asking = Some(query.clone());
         self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
             let q = query.clone();
+            // A repository named in the box lists every skill in it, as GitHub
+            // has them now, whether skills.sh knows it or not.
             let found = cx
-                .background_spawn(crate::guard::task(async move { skills_sh::search(&q) }))
+                .background_spawn(crate::guard::task(async move {
+                    let search = || {
+                        skills_sh::search(&q).map(|l| {
+                            l.into_iter()
+                                .map(|e| (e, None::<skills_sh::SkillSource>))
+                                .collect::<Vec<_>>()
+                        })
+                    };
+                    let Some(repo) = skills_sh::repo_of(&q) else {
+                        return search();
+                    };
+                    match skills_sh::package(&repo) {
+                        Ok(p) => Ok(p.skills.into_iter().map(|(e, f)| (e, Some(f))).collect()),
+                        // Words like `ci/cd` look like a repository too: what
+                        // skills.sh finds for them beats GitHub's "not found".
+                        Err(e) => match search() {
+                            Ok(l) if !l.is_empty() => Ok(l),
+                            _ => Err(e),
+                        },
+                    }
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.ms.skills_loading = false;
                 this.ms.skills_asking = None;
                 match found {
-                    Ok(list) => this.ms.skills = Some(list),
+                    Ok(list) => {
+                        // Only a package read from GitHub comes with its folders.
+                        this.ms.skills_repo = list
+                            .iter()
+                            .find(|(_, f)| f.is_some())
+                            .map(|(e, _)| e.source.clone());
+                        let mut entries = Vec::with_capacity(list.len());
+                        for (entry, found) in list {
+                            if let Some(f) = found {
+                                this.ms.located.insert(entry.id.clone(), Located::Found(f));
+                            }
+                            entries.push(entry);
+                        }
+                        this.ms.skills = Some(entries);
+                    }
                     Err(e) => {
                         this.ms.skills = None;
+                        this.ms.skills_repo = None;
                         this.ms.skills_error = Some(format!("{e:#}").into());
                     }
                 }
@@ -225,6 +265,63 @@ impl ExtensionsView {
             None,
             cx,
         );
+    }
+
+    /// Installs every skill in the repository `source`, as Install does one.
+    /// Skills installed already stay as they are.
+    fn install_package(&mut self, source: &str, cx: &mut Context<Self>) {
+        if let Some(s) = self.target_server() {
+            self.error = Some(
+                format!(
+                    "Skills install on this computer only, not on {} yet.",
+                    s.name
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
+        let at = self.ms.at;
+        let Some(dir) = self.install_dir() else {
+            return;
+        };
+        let repo = source.to_string();
+        let listed = self.listed_package(source);
+        self.run_op(
+            package_op(source),
+            format!("are installed {}", at.done()),
+            move || {
+                let pkg = match listed {
+                    Some(p) => p,
+                    None => skills_sh::package(&repo)?,
+                };
+                mirror::install_package(&pkg, at, &dir).map(|_| ())
+            },
+            None,
+            cx,
+        );
+    }
+
+    /// The package a repository search listed, so Install all copies what it
+    /// showed without reading it from GitHub again.
+    fn listed_package(&self, source: &str) -> Option<skills_sh::Package> {
+        if self.ms.skills_repo.as_deref() != Some(source) {
+            return None;
+        }
+        let skills = self
+            .ms
+            .skills
+            .iter()
+            .flatten()
+            .map(|e| match self.ms.located.get(&e.id) {
+                Some(Located::Found(f)) => Some((e.clone(), f.clone())),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(skills_sh::Package {
+            source: source.to_string(),
+            skills,
+        })
     }
 
     /// The official servers: the last list at once, a new one when a day old.
@@ -710,20 +807,32 @@ impl ExtensionsView {
                     .as_ref()
                     .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
             }),
-            // Its folder in ~/.claude/skills, where Install puts it. A project's or a
-            // plugin's skill of that name leaves room for a copy of your own.
-            Item::Skill(k) => {
-                self.targets.target.is_none()
-                    && self.claude.as_ref().is_some_and(|x| {
-                        x.skills.iter().any(|i| {
-                            i.source == "personal"
-                                && i.path.file_name().is_some_and(|f| {
-                                    f.to_string_lossy().eq_ignore_ascii_case(&k.skill_id)
-                                })
-                        })
-                    })
-            }
+            Item::Skill(k) => self.skill_installed(&k.skill_id),
         }
+    }
+
+    /// Whether the skill `skill_id` is where Install puts it: the repository's
+    /// skills folder, or for the user, its folder in ~/.claude/skills. A project's
+    /// or a plugin's skill of that name leaves room for a copy of your own.
+    fn skill_installed(&self, skill_id: &str) -> bool {
+        if self.targets.target.is_some() {
+            return false;
+        }
+        if self.ms.at != Where::User {
+            return self
+                .ms
+                .repo_has
+                .as_ref()
+                .is_some_and(|has| has.skill(skill_id));
+        }
+        self.claude.as_ref().is_some_and(|x| {
+            x.skills.iter().any(|i| {
+                i.source == "personal"
+                    && i.path
+                        .file_name()
+                        .is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(skill_id))
+            })
+        })
     }
 
     fn select(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
@@ -919,7 +1028,7 @@ impl ExtensionsView {
                 ui::empty_state(
                     "sparkles",
                     "Search skills.sh",
-                    "Type what you need in the search box, like react, pdf or testing. A skill installs into ~/.claude/skills, where Claude Code and Workers AI find it.",
+                    "Type what you need in the search box, like react, pdf or testing, or a GitHub repository like anthropics/skills for all of its skills. A skill installs into ~/.claude/skills, where Claude Code and Workers AI find it.",
                     None,
                 )
                 .into_any_element()
@@ -1228,7 +1337,11 @@ impl ExtensionsView {
             (Market::Plugins, None) => "Official plugins".to_string(),
             (Market::Registry, None) if self.ms.everything => "MCP Registry".to_string(),
             (Market::Registry, None) => "Official MCP servers".to_string(),
-            (Market::Skills, None) => "skills.sh".to_string(),
+            (Market::Skills, None) => self
+                .ms
+                .skills_repo
+                .clone()
+                .unwrap_or_else(|| "skills.sh".to_string()),
         };
         let mut scope = ui::segmented();
         for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
@@ -1675,13 +1788,7 @@ impl ExtensionsView {
                             })
                             .into_any_element()
                     } else if busy {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(8.))
-                            .child(ui::spinner(14., theme::text_faint()))
-                            .child("Installing…")
-                            .into_any_element()
+                        busy_row("Installing…").into_any_element()
                     } else {
                         ui::button_with(
                             "ext-detail-install",
@@ -1731,16 +1838,20 @@ impl ExtensionsView {
             _ => None,
         };
         let page = k.page();
-        let mut links = div().flex().flex_wrap().gap(crate::ui::sp(8.)).child(
-            ui::button_with(
-                "ext-skill-page",
-                Some("link-square02"),
-                "skills.sh",
-                ButtonKind::Ghost,
-                true,
-            )
-            .on_click(move |_, _, cx| cx.open_url(&page)),
-        );
+        let mut links = div().flex().flex_wrap().gap(crate::ui::sp(8.));
+        // A skill listed from its repository may not be on skills.sh at all.
+        if self.ms.skills_repo.as_ref() != Some(&k.source) {
+            links = links.child(
+                ui::button_with(
+                    "ext-skill-page",
+                    Some("link-square02"),
+                    "skills.sh",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(move |_, _, cx| cx.open_url(&page)),
+            );
+        }
         if let Some(url) = found.as_ref().map(SkillSource::url) {
             links = links.child(
                 ui::button_with(
@@ -1797,13 +1908,7 @@ impl ExtensionsView {
                 .child("Installed for your user. It shows under Skills.")
                 .into_any_element()
         } else if busy {
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(8.))
-                .child(ui::spinner(14., theme::text_faint()))
-                .child("Installing…")
-                .into_any_element()
+            busy_row("Installing…").into_any_element()
         } else {
             ui::button_with(
                 "ext-detail-install",
@@ -1815,16 +1920,89 @@ impl ExtensionsView {
             .on_click(cx.listener(move |this, _, _, cx| this.install_skill(&entry, cx)))
             .into_any_element()
         };
+        let package = found
+            .as_ref()
+            .filter(|f| f.package.len() > 1)
+            .map(|f| self.render_package(&k.source, &f.package, cx));
         panel
             .children(state)
             .child(facts)
             .child(links)
+            .children(package)
             .child(note(
                 "A skill is instructions and sometimes scripts an agent follows. Read it on GitHub before you install one from someone you don't know.",
                 Tone::Warning,
             ))
             .child(div().flex_1())
             .child(action)
+    }
+
+    /// The other skills in the picked skill's repository, and Install for them all.
+    fn render_package(&self, source: &str, ids: &[String], cx: &mut Context<Self>) -> Div {
+        let missing = ids.iter().filter(|id| !self.skill_installed(id)).count();
+        let total = ids.len();
+        let line = match missing {
+            0 => format!("{source} has {total} skills. All of them are installed."),
+            n if n == total => format!("{source} has {total} skills."),
+            n => format!(
+                "{source} has {total} skills. {} of them are installed.",
+                total - n
+            ),
+        };
+        let busy = self.op.as_deref() == Some(package_op(source).as_str());
+        let action: Option<AnyElement> = if busy {
+            Some(busy_row(format!("Installing {missing} skills…")).into_any_element())
+        } else if missing > 0 {
+            let label = if missing == total {
+                format!("Install all {total}")
+            } else {
+                format!("Install {missing} more")
+            };
+            let source = source.to_string();
+            Some(
+                div()
+                    .flex()
+                    .child(
+                        ui::button_with(
+                            "ext-package-install",
+                            Some("download04"),
+                            label,
+                            ButtonKind::Outline,
+                            self.op.is_none(),
+                        )
+                        .tooltip(ui::tip_text(format!(
+                            "Install every skill in {source}, {}",
+                            self.ms.at.done()
+                        )))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.install_package(&source, cx)),
+                        ),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        let mut names = ids.to_vec();
+        names.truncate(12);
+        let more = total.saturating_sub(names.len());
+        let mut list = names.join(", ");
+        if more > 0 {
+            list.push_str(&format!(" and {more} more"));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .child(ui::overline("Package"))
+            .child(div().ty(Type::Body).text_color(theme::text()).child(line))
+            .child(
+                div()
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child(list),
+            )
+            .children(action)
     }
 
     /// How to install the picked registry server: the way, what it needs, the command.
@@ -2090,6 +2268,23 @@ impl ExtensionsView {
     }
 }
 
+/// A spinner and what is happening, where a button was.
+fn busy_row(text: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(8.))
+        .ty(Type::Body)
+        .text_color(theme::text_subtle())
+        .child(ui::spinner(14., theme::text_faint()))
+        .child(text.into())
+}
+
+/// The name a package's install runs under, so its button knows it is busy.
+fn package_op(source: &str) -> String {
+    format!("The skills of {source}")
+}
+
 /// Whether a field holds a key. Registry entries do not always mark one as
 /// secret, so its name counts too.
 fn looks_secret(input: &Input) -> bool {
@@ -2284,7 +2479,8 @@ impl Item {
             Item::Plugin(p) => p.description.clone(),
             Item::Server(s) => s.description.clone(),
             // skills.sh lists no descriptions; the details read the SKILL.md.
-            Item::Skill(k) => format!("A skill from {}.", k.source),
+            Item::Skill(k) if k.description.is_empty() => format!("A skill from {}.", k.source),
+            Item::Skill(k) => k.description.clone(),
         }
     }
 

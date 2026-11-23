@@ -5,7 +5,8 @@
 //! own API wants a Vercel token a desktop app does not have. A skill is a folder
 //! with a SKILL.md, so installing one copies that folder from GitHub into
 //! `~/.claude/skills`, where Claude Code and Workers AI both read it. Nothing from
-//! npm runs.
+//! npm runs. A repository with several skills is a package: [`package`] reads
+//! them all, so they install in one go.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -23,6 +24,12 @@ const MAX_FILES: usize = 400;
 const MAX_BYTES: u64 = 25 << 20;
 /// SKILL.md files read to match a skill by its front matter, when no folder has its name.
 const MAX_PROBES: usize = 25;
+/// Skills one package installs at most.
+const MAX_PACKAGE: usize = 100;
+/// A SKILL.md bigger than this is not read for its name and description.
+const MAX_SKILL_MD: u64 = 1 << 20;
+/// Files read from GitHub at once: one after another is slow for a big skill or package.
+const READERS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SkillEntry {
@@ -35,6 +42,9 @@ pub struct SkillEntry {
     pub name: String,
     #[serde(default)]
     pub installs: u64,
+    /// What its SKILL.md says, when it was read with its package; skills.sh lists none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 impl SkillEntry {
@@ -101,6 +111,8 @@ pub struct SkillSource {
     pub files: Vec<(String, u64)>,
     /// The paths of `files` that are executable.
     executable: Vec<String>,
+    /// The skill ids of every skill in the repository, this one too.
+    pub package: Vec<String>,
 }
 
 impl SkillSource {
@@ -130,19 +142,7 @@ struct Blob {
 
 /// Blocking, a request or a few: finds the skill's folder and reads its SKILL.md.
 pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
-    let rev = head_commit(&entry.source)?;
-    let tree = github_json(&format!(
-        "repos/{}/git/trees/{rev}?recursive=1",
-        entry.source
-    ))?;
-    // A cut list could leave out files the skill needs.
-    if tree["truncated"].as_bool() == Some(true) {
-        bail!(
-            "{} has too many files for GitHub to list at once",
-            entry.source
-        );
-    }
-    let blobs = blobs(&tree);
+    let (rev, blobs) = read_tree(&entry.source)?;
     let dir = match pick_dir(&blobs, &entry.skill_id, &repo_name(&entry.source)) {
         Some(d) => d,
         None => probe(entry, &rev, &blobs)?,
@@ -150,6 +150,40 @@ pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
     let text =
         String::from_utf8_lossy(&raw(&entry.source, &rev, &join(&dir, "SKILL.md"))?).into_owned();
     let (_, description) = super::claude_ext::parse_skill_frontmatter(&text);
+    let ids = package_dirs(&blobs, &repo_name(&entry.source))
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    Ok(source_at(
+        &entry.source,
+        &rev,
+        &blobs,
+        dir,
+        description,
+        ids,
+    ))
+}
+
+/// The commit the repository is at, and its files then.
+fn read_tree(source: &str) -> Result<(String, Vec<Blob>)> {
+    let rev = head_commit(source)?;
+    let tree = github_json(&format!("repos/{source}/git/trees/{rev}?recursive=1"))?;
+    // A cut list could leave out files the skill needs.
+    if tree["truncated"].as_bool() == Some(true) {
+        bail!("{source} has too many files for GitHub to list at once");
+    }
+    Ok((rev, blobs(&tree)))
+}
+
+/// The skill in `dir`, from the repository's files.
+fn source_at(
+    source: &str,
+    rev: &str,
+    blobs: &[Blob],
+    dir: String,
+    description: String,
+    package: Vec<String>,
+) -> SkillSource {
     let prefix = if dir.is_empty() {
         String::new()
     } else {
@@ -159,9 +193,9 @@ pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
         .iter()
         .filter(|b| b.path.starts_with(&prefix))
         .collect();
-    Ok(SkillSource {
-        source: entry.source.clone(),
-        rev,
+    SkillSource {
+        source: source.to_string(),
+        rev: rev.to_string(),
         description,
         files: inside
             .iter()
@@ -173,7 +207,142 @@ pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
             .map(|b| b.path[prefix.len()..].to_string())
             .collect(),
         dir,
+        package,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Packages: a repository of skills.
+
+/// Every skill in a repository, read at one commit.
+#[derive(Clone, Debug)]
+pub struct Package {
+    /// `owner/repo`.
+    pub source: String,
+    pub skills: Vec<(SkillEntry, SkillSource)>,
+}
+
+/// The GitHub repository a search names, `owner/repo`: typed as is, or as a link
+/// to it (`https://github.com/owner/repo/tree/main/skills`).
+pub fn repo_of(query: &str) -> Option<String> {
+    let q = query.trim();
+    if q.contains(char::is_whitespace) {
+        return None;
+    }
+    let link = ["https://", "http://", ""]
+        .iter()
+        .find_map(|p| {
+            let q = q.strip_prefix(p)?;
+            q.strip_prefix("www.")
+                .unwrap_or(q)
+                .strip_prefix("github.com/")
+        })
+        // A link copied from the browser may end in `?tab=readme` or `#readme`.
+        .map(|l| l.split(['?', '#']).next().unwrap_or_default());
+    let rest = link.unwrap_or(q);
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    // Plain `a/b/c` is a skills.sh id, not a repository.
+    if link.is_none() && parts.next().is_some() {
+        return None;
+    }
+    let plain = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (plain(owner) && plain(repo)).then(|| format!("{owner}/{repo}"))
+}
+
+/// The skills of a repository by the id each installs as (its folder's name, the
+/// repository's for one at the root), with their folders. Of two folders with one
+/// name, the shallower; a name no folder can have is left out.
+fn package_dirs(blobs: &[Blob], repo: &str) -> Vec<(String, String)> {
+    let mut dirs = skill_dirs(blobs);
+    dirs.sort_by_key(|d| (d.matches('/').count(), d.len(), d.to_string()));
+    let mut out: Vec<(String, String)> = Vec::new();
+    for dir in dirs {
+        let id = if dir.is_empty() {
+            repo
+        } else {
+            dir.rsplit('/').next().unwrap_or_default()
+        };
+        if folder_name(id).is_err() || out.iter().any(|(i, _)| i.eq_ignore_ascii_case(id)) {
+            continue;
+        }
+        out.push((id.to_string(), dir.to_string()));
+    }
+    out.sort_by_key(|(id, _)| id.to_lowercase());
+    out
+}
+
+/// Blocking: every skill in the repository `source`, with what its SKILL.md says.
+pub fn package(source: &str) -> Result<Package> {
+    let (rev, blobs) = read_tree(source)?;
+    let dirs = package_dirs(&blobs, &repo_name(source));
+    if dirs.is_empty() {
+        bail!("{source} has no SKILL.md");
+    }
+    if dirs.len() > MAX_PACKAGE {
+        bail!(
+            "{source} has {} skills, more than the {MAX_PACKAGE} a package installs",
+            dirs.len()
+        );
+    }
+    let ids: Vec<String> = dirs.iter().map(|(id, _)| id.clone()).collect();
+    let paths: Vec<String> = dirs.iter().map(|(_, d)| join(d, "SKILL.md")).collect();
+    // Only the front matter is kept: each chunk is parsed as it comes, and a
+    // SKILL.md too big to be one is not read here (it still installs).
+    let mut heads = Vec::with_capacity(paths.len());
+    for chunk in paths.chunks(READERS) {
+        let small: Vec<String> = chunk
+            .iter()
+            .filter(|p| blob_size(&blobs, p) <= MAX_SKILL_MD)
+            .cloned()
+            .collect();
+        let mut got = raw_many(source, &rev, &small).into_iter();
+        for p in chunk {
+            let text = if blob_size(&blobs, p) <= MAX_SKILL_MD {
+                got.next().and_then(|r| r.ok())
+            } else {
+                None
+            };
+            heads.push(
+                text.map(|b| {
+                    super::claude_ext::parse_skill_frontmatter(&String::from_utf8_lossy(&b))
+                })
+                .unwrap_or_default(),
+            );
+        }
+    }
+    let skills = dirs
+        .into_iter()
+        .zip(heads)
+        .map(|((id, dir), (name, description))| {
+            let entry = SkillEntry {
+                id: format!("{source}/{id}"),
+                source: source.to_string(),
+                skill_id: id.clone(),
+                name: name.unwrap_or(id),
+                installs: 0,
+                description: description.clone(),
+            };
+            let found = source_at(source, &rev, &blobs, dir, description, ids.clone());
+            (entry, found)
+        })
+        .collect();
+    Ok(Package {
+        source: source.to_string(),
+        skills,
     })
+}
+
+/// The size the tree gives a file, 0 for one it does not list.
+fn blob_size(blobs: &[Blob], path: &str) -> u64 {
+    blobs.iter().find(|b| b.path == path).map_or(0, |b| b.size)
 }
 
 fn repo_name(source: &str) -> String {
@@ -256,6 +425,19 @@ fn probe(entry: &SkillEntry, rev: &str, blobs: &[Blob]) -> Result<String> {
     bail!("could not find {} in {}", entry.skill_id, entry.source)
 }
 
+#[cfg(test)]
+pub(crate) fn test_source(dir: &str, files: &[(&str, u64)]) -> SkillSource {
+    SkillSource {
+        source: "o/r".into(),
+        rev: "0".repeat(40),
+        dir: dir.into(),
+        description: String::new(),
+        files: files.iter().map(|(p, n)| (p.to_string(), *n)).collect(),
+        executable: Vec::new(),
+        package: Vec::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Installing.
 
@@ -283,27 +465,24 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
     let _ = std::fs::remove_dir_all(&staging);
     let result = (|| -> Result<()> {
         let mut received = 0u64;
-        for (path, _) in &found.files {
-            let rel = safe_relative(path)?;
-            let bytes = raw(&found.source, &found.rev, &join(&found.dir, path))?;
-            // The sizes were read before; a file may have grown since.
-            received += bytes.len() as u64;
-            if received > MAX_BYTES {
-                bail!(
-                    "it is more than the {} MB a skill is copied with",
-                    MAX_BYTES >> 20
-                );
-            }
-            let to = staging.join(rel);
-            if let Some(dir) = to.parent() {
-                std::fs::create_dir_all(dir)
-                    .with_context(|| format!("cannot create {}", dir.display()))?;
-            }
-            write_new(&to, &bytes)?;
-            #[cfg(unix)]
-            if found.executable.contains(path) {
-                use std::os::unix::fs::PermissionsExt as _;
-                let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
+        for chunk in found.files.chunks(READERS) {
+            // Every path is checked before anything of the chunk is read.
+            let rels = chunk
+                .iter()
+                .map(|(p, _)| safe_relative(p))
+                .collect::<Result<Vec<_>>>()?;
+            let paths: Vec<String> = chunk.iter().map(|(p, _)| join(&found.dir, p)).collect();
+            let got = raw_many(&found.source, &found.rev, &paths);
+            for (((path, _), rel), bytes) in chunk.iter().zip(rels).zip(got) {
+                let to = staging.join(rel);
+                write_file(&to, bytes?, &mut received)?;
+                #[cfg(unix)]
+                if found.executable.iter().any(|e| e == path) {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
+                }
+                #[cfg(not(unix))]
+                let _ = path;
             }
         }
         if !staging.join("SKILL.md").is_file() {
@@ -315,6 +494,22 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
         let _ = std::fs::remove_dir_all(&staging);
     }
     result.map(|_| dest)
+}
+
+/// Writes one file of the skill to `to`, counting what came so far.
+fn write_file(to: &Path, bytes: Vec<u8>, received: &mut u64) -> Result<()> {
+    // The sizes were read before; a file may have grown since.
+    *received += bytes.len() as u64;
+    if *received > MAX_BYTES {
+        bail!(
+            "it is more than the {} MB a skill is copied with",
+            MAX_BYTES >> 20
+        );
+    }
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_new(to, &bytes)
 }
 
 /// Writes a file that must not be there yet: two paths that name one file (`A.md`
@@ -466,6 +661,23 @@ fn raw(source: &str, rev: &str, path: &str) -> Result<Vec<u8>> {
     )
 }
 
+/// Files of the repository at commit `rev`, read side by side, in order.
+fn raw_many(source: &str, rev: &str, paths: &[String]) -> Vec<Result<Vec<u8>>> {
+    std::thread::scope(|s| {
+        let reads: Vec<_> = paths
+            .iter()
+            .map(|p| s.spawn(move || raw(source, rev, p)))
+            .collect();
+        reads
+            .into_iter()
+            .map(|r| {
+                r.join()
+                    .unwrap_or_else(|_| Err(anyhow!("reading it stopped")))
+            })
+            .collect()
+    })
+}
+
 fn curl(url: &str, headers: &[&str]) -> Result<Vec<u8>> {
     curl_with(url, headers, None)
 }
@@ -606,6 +818,7 @@ mod tests {
             skill_id: "pdf".into(),
             name: "pdf".into(),
             installs: 0,
+            description: String::new(),
         };
         let mut found = SkillSource {
             source: "a/b".into(),
@@ -614,6 +827,7 @@ mod tests {
             description: String::new(),
             files: vec![("SKILL.md".into(), 10)],
             executable: Vec::new(),
+            package: Vec::new(),
         };
         let e = install(&entry, &found, &root).unwrap_err();
         assert!(e.to_string().contains("already exists"));
@@ -657,6 +871,71 @@ mod tests {
     }
 
     #[test]
+    fn a_search_can_name_a_repository() {
+        for q in [
+            "anthropics/skills",
+            " anthropics/skills ",
+            "github.com/anthropics/skills",
+            "https://github.com/anthropics/skills",
+            "https://github.com/anthropics/skills.git",
+            "https://github.com/anthropics/skills/tree/main/skills/pdf",
+            "https://www.github.com/anthropics/skills",
+            "https://github.com/anthropics/skills?tab=readme-ov-file",
+            "https://github.com/anthropics/skills#readme",
+        ] {
+            assert_eq!(repo_of(q).as_deref(), Some("anthropics/skills"), "{q}");
+        }
+        for q in [
+            "pdf",
+            "pdf tools",
+            "anthropics/skills/pdf",
+            "a/",
+            "/b",
+            "../b",
+            "a/b c",
+            "https://gitlab.com/a/b",
+        ] {
+            assert_eq!(repo_of(q), None, "{q}");
+        }
+    }
+
+    #[test]
+    fn a_package_is_every_skill_folder_once() {
+        let blobs = tree(&[
+            ("SKILL.md", "100644"),
+            ("skills/pdf/SKILL.md", "100644"),
+            ("skills/pdf/fill.py", "100755"),
+            ("archive/old/pdf/SKILL.md", "100644"),
+            ("skills/Docx/SKILL.md", "100644"),
+            ("skills/bad name/SKILL.md", "100644"),
+            ("README.md", "100644"),
+        ]);
+        let got = package_dirs(&blobs, "toolkit");
+        assert_eq!(
+            got,
+            [
+                ("Docx".to_string(), "skills/Docx".to_string()),
+                ("pdf".into(), "skills/pdf".into()),
+                ("toolkit".into(), "".into()),
+            ]
+        );
+        // Each installs from where `locate` would find it again on a server.
+        for (id, dir) in &got {
+            assert_eq!(pick_dir(&blobs, id, "toolkit").as_ref(), Some(dir));
+        }
+        let pdf = source_at(
+            "o/toolkit",
+            "r",
+            &blobs,
+            "skills/pdf".into(),
+            String::new(),
+            vec![],
+        );
+        assert_eq!(pdf.files.len(), 2);
+        assert_eq!(pdf.executable, ["fill.py"]);
+    }
+
+    #[test]
     fn source_links_point_at_the_folder() {
         let rev = "a".repeat(40);
         let mut s = SkillSource {
@@ -666,6 +945,7 @@ mod tests {
             description: String::new(),
             files: vec![("SKILL.md".into(), 3), ("a.py".into(), 4)],
             executable: Vec::new(),
+            package: Vec::new(),
         };
         assert_eq!(
             s.url(),
@@ -694,6 +974,14 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let dest = install(pdf, &found, &root).unwrap();
         assert!(dest.join("SKILL.md").is_file());
+        assert!(found.package.iter().any(|id| id == "docx"));
         let _ = std::fs::remove_dir_all(&root);
+        let pkg = package("anthropics/skills").unwrap();
+        let (_, docx) = pkg
+            .skills
+            .iter()
+            .find(|(e, _)| e.skill_id == "docx")
+            .unwrap();
+        assert!(!docx.description.is_empty());
     }
 }

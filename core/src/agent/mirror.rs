@@ -475,15 +475,18 @@ pub fn install_skill(
     at: Where,
     dir: &Path,
 ) -> Result<()> {
+    let dest = skills_sh::install(entry, found, &skills_root_for(at, dir))?;
     if at == Where::User {
-        skills_sh::install(entry, found, &skills_sh::skills_root())?;
         remember_skill(entry);
         return Ok(());
     }
-    let root = repo_skills(dir);
-    let dest = skills_sh::install(entry, found, &root)?;
-    if at == Where::Mine {
-        keep_out_of_git(dir, &dest)?;
+    // Left in place, it would go into git, and a second Install would take
+    // the folder for done: it goes, and Install can run again.
+    if at == Where::Mine
+        && let Err(e) = keep_out_of_git(dir, &dest)
+    {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
     }
     remember_repo_install(
         dir,
@@ -493,6 +496,40 @@ pub fn install_skill(
         },
     );
     Ok(())
+}
+
+/// Where `install_skill` puts a skill for `at`.
+fn skills_root_for(at: Where, dir: &Path) -> PathBuf {
+    match at {
+        Where::User => skills_sh::skills_root(),
+        Where::Shared | Where::Mine => repo_skills(dir),
+    }
+}
+
+/// Blocking: installs every skill of a package where `at` says, as
+/// [`install_skill`] does one. A skill whose folder is there already is left as
+/// it is; one that fails does not stop the others. Returns how many it installed.
+pub fn install_package(pkg: &skills_sh::Package, at: Where, dir: &Path) -> Result<usize> {
+    let root = skills_root_for(at, dir);
+    let mut done = 0;
+    let mut failed = Vec::new();
+    for (entry, found) in &pkg.skills {
+        if skill_dir(&root, entry).is_some_and(|d| d.exists()) {
+            continue;
+        }
+        match install_skill(entry, found, at, dir) {
+            Ok(()) => done += 1,
+            Err(e) => failed.push(format!("{}: {e:#}", entry.skill_id)),
+        }
+    }
+    if !failed.is_empty() {
+        bail!(
+            "{done} installed, {} did not ({})",
+            failed.len(),
+            failed.join("; ")
+        );
+    }
+    Ok(done)
 }
 
 /// Lists `path` in the repository's `info/exclude`, which is not committed.
@@ -910,6 +947,54 @@ mod tests {
     }
 
     #[test]
+    fn a_package_skips_what_is_there_and_tells_what_failed() {
+        let dir = std::env::temp_dir().join(format!("arakun-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".claude/skills/here")).unwrap();
+        let entry = |id: &str| SkillEntry {
+            id: format!("o/r/{id}"),
+            source: "o/r".into(),
+            skill_id: id.into(),
+            name: id.into(),
+            installs: 0,
+            description: String::new(),
+        };
+        let mut pkg = skills_sh::Package {
+            source: "o/r".into(),
+            skills: vec![(
+                entry("here"),
+                skills_sh::test_source("here", &[("SKILL.md", 3)]),
+            )],
+        };
+        assert_eq!(install_package(&pkg, Where::Shared, &dir).unwrap(), 0);
+        // Too big to copy, so it fails before reaching GitHub.
+        pkg.skills.push((
+            entry("huge"),
+            skills_sh::test_source("huge", &[("a.bin", 1 << 30)]),
+        ));
+        let e = install_package(&pkg, Where::Shared, &dir).unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.starts_with("0 installed, 1 did not (huge: "), "{e}");
+        assert!(!dir.join(".claude/skills/huge").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "reaches GitHub"]
+    fn a_package_installs_live() {
+        let dir = std::env::temp_dir().join(format!("arakun-pkg-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pkg = skills_sh::package("anthropics/skills").unwrap();
+        let n = install_package(&pkg, Where::Shared, &dir).unwrap();
+        assert_eq!(n, pkg.skills.len());
+        assert!(dir.join(".claude/skills/pdf/SKILL.md").is_file());
+        // Again, everything is there already.
+        assert_eq!(install_package(&pkg, Where::Shared, &dir).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_server_per_repo_is_named_after_the_repo() {
         assert_eq!(suffixed("github", "acme-web"), "github-acme-web");
         assert_eq!(suffixed("github", "My.Repo.git"), "github-my-repo");
@@ -932,6 +1017,7 @@ mod tests {
             skill_id: id.into(),
             name: id.into(),
             installs: 0,
+            description: String::new(),
         };
         let kept = |shared, repo: Option<&str>, item| RepoInstall {
             path: dir.clone(),

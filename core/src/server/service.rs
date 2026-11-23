@@ -2,12 +2,16 @@
 //! starts it again at login or boot. On Linux it is a systemd user unit with
 //! lingering on, so it runs while nobody is logged in and starts at boot; as
 //! root (a VPS often has only root) it is a system unit instead. macOS gets a
-//! launchd agent. Each runs this same binary with `serve`, the `PATH` of the
-//! shell that installed it (where the agents are), `ARAKUN_SERVER_DIR` if
-//! it is set, and `ARAKUN_GITHUB=readonly` if that is.
+//! launchd agent. Each runs this same binary with `serve --service`, the
+//! `PATH` of the shell that installed it (where the agents are),
+//! `ARAKUN_SERVER_DIR` if it is set, and `ARAKUN_GITHUB=readonly` if that is.
 //!
 //! Both restart the server when it fails, but not after `quit`: `quit` exits
-//! cleanly, and stopping the server is what the user asked for.
+//! cleanly, and stopping the server is what the user asked for. A failure
+//! must therefore be one a restart can cure. Having no sign-in for the relay
+//! is not: with `--service` the server stays up signed out and waits for
+//! `login`. A unit written before that flag gets the same from `serve`
+//! seeing no terminal.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -123,13 +127,7 @@ fn name_for(server_dir: Option<&Path>) -> String {
 fn spec(flags: &[String]) -> Result<Spec, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let exe = crate::platform::canonicalize(&exe).unwrap_or(exe);
-    // The app takes `server serve`; `arakun-server` takes `serve`.
-    let mut args: Vec<String> = name()
-        .split_once(' ')
-        .map(|(_, sub)| vec![sub.to_string()])
-        .unwrap_or_default();
-    args.push("serve".into());
-    args.extend(flags.iter().cloned());
+    let args = serve_args(name(), flags);
     let root = system_unit();
     let env = service_env(|key| std::env::var_os(key), root)?;
     text("this program's path", &exe)?;
@@ -161,6 +159,52 @@ fn spec(flags: &[String]) -> Result<Spec, String> {
         env,
         log: dir().join("server.log"),
     })
+}
+
+/// What the service runs after the program, for a command typed as `name`:
+/// the app takes `server serve`, `arakun-server` takes `serve`. Always with
+/// `--service`, so a server with no sign-in yet waits for one where it would
+/// exit and be started again every few seconds.
+fn serve_args(name: &str, flags: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = name
+        .split_once(' ')
+        .map(|(_, sub)| vec![sub.to_string()])
+        .unwrap_or_default();
+    args.extend(["serve".to_string(), super::SERVICE_FLAG.to_string()]);
+    args.extend(
+        flags
+            .iter()
+            .filter(|f| f.as_str() != super::SERVICE_FLAG)
+            .cloned(),
+    );
+    args
+}
+
+/// Whether the server this folder's service runs still waits for a sign-in:
+/// it is reached through the relay and `account.json` holds none.
+fn waits_for_login() -> bool {
+    crate::phone::use_settings_file(dir().join("phone.json"));
+    let relay = crate::phone::Settings::read()
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.reach == crate::phone::Reach::Relay);
+    relay && !matches!(super::login::load(&dir()), Ok(Some(_)))
+}
+
+/// What `install` ends on: the commands that come next. A server waiting
+/// for a sign-in lets no device in, so `login` comes first.
+fn next_steps(waits_for_login: bool) -> String {
+    let n = name();
+    let first = if waits_for_login {
+        format!(
+            "The server is not signed in, so no device can reach it yet. It takes the sign-in as soon as you run:\n  {n} login\n\nThen add a device: {n} pair"
+        )
+    } else {
+        format!("Add a device:    {n} pair")
+    };
+    format!(
+        "\n{first}\nLogs:            {n} service logs -f\nRemove it:       {n} service uninstall"
+    )
 }
 
 /// The folders whose contents decide what a root server does: its own, the
@@ -387,10 +431,7 @@ fn install(spec: &Spec) -> i32 {
             "when you log in"
         }
     );
-    println!(
-        "\nPair a device:   {n} pair\nLogs:            {n} service logs -f\nRemove it:       {n} service uninstall",
-        n = name()
-    );
+    println!("{}", next_steps(waits_for_login()));
     0
 }
 
@@ -861,6 +902,52 @@ mod tests {
         assert_eq!(parse(&args(&["status"])), Ok(Action::Status));
         assert!(parse(&args(&["status", "now"])).is_err());
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn the_service_serves_as_a_service_whatever_flags_it_was_given() {
+        assert_eq!(
+            serve_args("arakun-server", &[]),
+            args(&["serve", "--service"])
+        );
+        // The app's own command has `server` before it.
+        assert_eq!(
+            serve_args("arakun server", &args(&["--reach", "lan"])),
+            args(&["server", "serve", "--service", "--reach", "lan"])
+        );
+        // Given by hand too: once.
+        assert_eq!(
+            serve_args("arakun-server", &args(&["--service", "--port", "7575"])),
+            args(&["serve", "--service", "--port", "7575"])
+        );
+        // What it writes is what `serve` reads.
+        let written = serve_args("arakun-server", &args(&["--reach", "relay"]));
+        let Ok(crate::server::Command::Serve(opts)) =
+            crate::server::parse(&written, Path::new("/"))
+        else {
+            panic!("{written:?} is a way to serve");
+        };
+        assert!(opts.service);
+    }
+
+    #[test]
+    fn install_ends_on_login_when_the_server_waits_for_a_sign_in() {
+        let n = name();
+        let waiting = next_steps(true);
+        assert!(waiting.contains(&format!("{n} login")), "{waiting}");
+        assert!(waiting.contains("not signed in"), "{waiting}");
+        // `login` comes before the device.
+        assert!(
+            waiting.find("login").unwrap() < waiting.find(" pair").unwrap(),
+            "{waiting}"
+        );
+        let ready = next_steps(false);
+        assert!(!ready.contains("login"), "{ready}");
+        assert!(ready.contains(&format!("{n} pair")), "{ready}");
+        for text in [waiting, ready] {
+            assert!(text.contains(&format!("{n} service logs -f")), "{text}");
+            assert!(text.contains(&format!("{n} service uninstall")), "{text}");
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -71,6 +72,9 @@ pub struct Options {
     pub reach: Option<Reach>,
     pub port: Option<u16>,
     pub relay: Option<String>,
+    /// `--service`: nobody reads what this prints as it starts, and whatever
+    /// started it would start it again. It stays up where it would give up.
+    pub service: bool,
 }
 
 /// Where devices find the server, as last worked out.
@@ -212,6 +216,12 @@ pub struct Daemon {
     listen: Task<()>,
     /// The relay client said `SignedOut` last.
     relay_signed_out: bool,
+    /// The relay client said `Rejected` last: it dials nothing until it is
+    /// started again.
+    relay_rejected: bool,
+    /// The account answered that the session in `signed_in` is over. Nothing
+    /// is asked with it again; `login` clears this.
+    session_dead: bool,
     /// When the account was last asked for its signed-in devices, and
     /// whether an ask is under way.
     relay_pruned_at: Option<Instant>,
@@ -437,7 +447,9 @@ pub fn run(opts: Options) -> i32 {
     });
     // Before what it was started with is saved: the next `serve` must not
     // take a reach this one could not start with.
-    if let Some(text) = not_signed_in(settings.reach, signed_in.as_ref()) {
+    let attended = !opts.service && std::io::stderr().is_terminal();
+    let start = start_as(settings.reach, signed_in.as_ref(), attended);
+    if let Start::Refuse(text) = &start {
         eprintln!("{text}");
         return 1;
     }
@@ -474,11 +486,12 @@ pub fn run(opts: Options) -> i32 {
         }
         Reach::Relay => {
             let (client, rx) = start_relay(&mut settings, access.clone(), signed_in.as_ref());
-            (
-                Transport::Relay(client),
-                rx,
-                Address::Pending("connecting to the relay".into()),
-            )
+            let address = match start {
+                // Nothing is dialed without a sign-in.
+                Start::Waiting => relay_address(relay::Status::SignedOut, ""),
+                _ => Address::Pending("connecting to the relay".into()),
+            };
+            (Transport::Relay(client), rx, address)
         }
     };
     println!(
@@ -494,9 +507,16 @@ pub fn run(opts: Options) -> i32 {
     );
     println!(
         "  account {}",
-        account_line(settings.reach, &settings.relay_base, signed_in.as_ref())
+        account_line(
+            settings.reach,
+            &settings.relay_base,
+            signed_in.as_ref(),
+            false
+        )
     );
-    if settings.reach == Reach::Relay {
+    if start == Start::Waiting {
+        // The relay client says the one line there is to say: not signed in.
+    } else if settings.reach == Reach::Relay {
         println!("`{} pair` says where a device signs in.", super::name());
     } else {
         println!("Pair a device with `{} pair`.", super::name());
@@ -561,6 +581,29 @@ fn not_signed_in(reach: Reach, signed_in: Option<&SignIn>) -> Option<String> {
             name = super::name()
         )
     })
+}
+
+/// How `serve` starts, given whether it has the sign-in its reach asks for.
+#[derive(Debug, PartialEq)]
+enum Start {
+    /// Signed in, or reached without an account.
+    Ready,
+    /// Up but signed out, until `login` tells it of a sign-in.
+    Waiting,
+    /// Not at all, saying why.
+    Refuse(String),
+}
+
+/// A person at a terminal (`attended`) reads why it cannot start and what to
+/// run. A service has nobody to read it, and its manager would start it
+/// again every few seconds for as long as nobody signed in: there it stays
+/// up, signed out, and takes the sign-in when `login` tells it.
+fn start_as(reach: Reach, signed_in: Option<&SignIn>, attended: bool) -> Start {
+    match not_signed_in(reach, signed_in) {
+        None => Start::Ready,
+        Some(text) if attended => Start::Refuse(text),
+        Some(_) => Start::Waiting,
+    }
 }
 
 /// The sign-in whose session may go to the relay at `relay_base`: only the
@@ -655,17 +698,30 @@ fn relay_pair(
 /// What a new `account.json` does to the relay client.
 #[derive(Debug, PartialEq)]
 enum RelayChange {
-    /// Nothing: no relay, or the same sign-in.
+    /// Nothing: no relay, or the same sign-in on a client that still dials.
     Leave,
-    /// A new client as the new account.
+    /// A new client as the account now kept.
     Restart,
     /// A new client, signed out: it hangs up and dials nothing.
     SignOut,
 }
 
-fn relay_change(reach: Reach, old: Option<&SignIn>, new: Option<&SignIn>) -> RelayChange {
-    if reach != Reach::Relay || old == new {
+/// `stuck`: the client stopped dialing (the relay signed it out or will not
+/// have it). `login` on a sign-in the account still takes is then the person
+/// asking for another try, so the same sign-in starts a new client too.
+fn relay_change(
+    reach: Reach,
+    old: Option<&SignIn>,
+    new: Option<&SignIn>,
+    stuck: bool,
+) -> RelayChange {
+    if reach != Reach::Relay {
         RelayChange::Leave
+    } else if old == new {
+        match new {
+            Some(_) if stuck => RelayChange::Restart,
+            _ => RelayChange::Leave,
+        }
     } else if new.is_none() {
         RelayChange::SignOut
     } else {
@@ -673,10 +729,55 @@ fn relay_change(reach: Reach, old: Option<&SignIn>, new: Option<&SignIn>) -> Rel
     }
 }
 
-/// Who the server is signed in as, for `status` and the start.
-fn account_line(reach: Reach, relay_base: &str, signed_in: Option<&SignIn>) -> String {
+/// What the relay client says, in a server's words: the client's own name
+/// the app's relay switch, which a server does not have.
+fn server_words(status: relay::Status) -> relay::Status {
+    let name = super::name();
+    match status {
+        relay::Status::Rejected(why) if why == relay::REMOVED => relay::Status::Rejected(format!(
+            "This server was removed from your account. `{name} login` adds it back."
+        )),
+        relay::Status::Rejected(why) if why == relay::MACHINES_FULL => {
+            relay::Status::Rejected(format!(
+                "Your account has as many computers on the relay as its plan allows. Remove one with `{name} forget <label>`, then run `{name} login`."
+            ))
+        }
+        other => other,
+    }
+}
+
+/// Whether the tick asks the account for its signed-in devices now. Never
+/// without a session the account may still take (`usable`). While the relay
+/// has the server signed out and the account has not said so itself, every
+/// relay device is at stake, not only one that gets pushes: the answer
+/// either drops them all (the session is over) or lists the ones to keep.
+fn account_ask_due(
+    usable: bool,
+    relay_signed_out: bool,
+    devices: &[phone::Device],
+    last: Option<Instant>,
+    now: Instant,
+) -> bool {
+    if !usable {
+        return false;
+    }
+    if !relay_signed_out {
+        return phone::relay_prune_due(true, devices, last, now);
+    }
+    devices.iter().any(|d| phone::Door::Relay.admits(d))
+        && last.is_none_or(|at| now.saturating_duration_since(at) >= phone::RELAY_PRUNE_EVERY)
+}
+
+/// Who the server is signed in as, for `status` and the start. `ended`: the
+/// account said the session is over.
+fn account_line(reach: Reach, relay_base: &str, signed_in: Option<&SignIn>, ended: bool) -> String {
     match signed_in {
         None => "Not signed in".into(),
+        Some(s) if ended => format!(
+            "The sign-in as {} ended; run `{} login`",
+            s.login,
+            super::name()
+        ),
         Some(s) if reach == Reach::Relay && sign_in_for(relay_base, Some(s)).is_err() => {
             format!("Signed in as {} at {}, not at this relay", s.login, s.base)
         }
@@ -981,6 +1082,8 @@ impl Daemon {
             signed_in: parts.signed_in,
             listen,
             relay_signed_out: false,
+            relay_rejected: false,
+            session_dead: false,
             relay_pruned_at: None,
             relay_pruning: false,
             _tasks: tasks,
@@ -1001,32 +1104,48 @@ impl Daemon {
         })
     }
 
-    /// `login` or `logout` changed `account.json`: the relay client starts
-    /// again as the account it holds now, or signed out.
+    /// `login` or `logout` changed `account.json`, or `login` found the kept
+    /// sign-in still good: the relay client starts again as the account it
+    /// holds now, or signed out. The same sign-in starts it again only when
+    /// it had stopped dialing. The reply is for `login` to print.
     fn account_changed(&mut self, cx: &mut Context<Self>) -> Reply {
         let signed_in = match login::load(&super::dir()) {
             Ok(signed_in) => signed_in,
             Err(e) => return Reply::err(e),
         };
-        let change = relay_change(self.reach, self.signed_in.as_ref(), signed_in.as_ref());
-        if signed_in == self.signed_in {
+        let stuck = self.relay_signed_out || self.relay_rejected;
+        let change = relay_change(
+            self.reach,
+            self.signed_in.as_ref(),
+            signed_in.as_ref(),
+            stuck,
+        );
+        let same = signed_in == self.signed_in;
+        if same && change == RelayChange::Leave {
             return Reply::ok("");
         }
         eprintln!(
             "arakun server: {}",
             match &signed_in {
+                Some(_) if same => "connecting to the relay again".into(),
                 Some(s) => format!("signed in as {}", s.login),
                 None => "signed out".into(),
             }
         );
         self.signed_in = signed_in;
+        // `login` tells of a sign-in the account just took or just vouched for.
+        self.session_dead = false;
         match change {
             // The client follows `signed_in`, which is now none for a sign-out.
             RelayChange::Restart | RelayChange::SignOut => self.restart_relay(cx),
             RelayChange::Leave => {}
         }
         self.check_relay_devices(cx);
-        Reply::ok("")
+        Reply::ok(if same {
+            "The running server connects to the relay again."
+        } else {
+            ""
+        })
     }
 
     /// The devices the relay let in belong to the account signed in then:
@@ -1053,15 +1172,18 @@ impl Daemon {
     }
 
     /// The tick's part: while a relay device gets pushes, the account is
-    /// asked every so often (`phone::relay_prune_due`), so one signed out
-    /// while not connected stops getting this server's pushes.
+    /// asked every so often (`account_ask_due`), so one signed out while not
+    /// connected stops getting this server's pushes. Not once the server's
+    /// own session is over: the answer would be the same 401 every time.
     fn relay_prune_tick(&mut self, cx: &mut Context<Self>) {
-        let signed_in = matches!(
-            sign_in_for(&self.settings.relay_base, self.signed_in.as_ref()),
-            Ok(Some(_))
-        );
-        let due = phone::relay_prune_due(
-            signed_in,
+        let usable = !self.session_dead
+            && matches!(
+                sign_in_for(&self.settings.relay_base, self.signed_in.as_ref()),
+                Ok(Some(_))
+            );
+        let due = account_ask_due(
+            usable,
+            self.relay_signed_out,
             &self.access.lock().unwrap().devices,
             self.relay_pruned_at,
             Instant::now(),
@@ -1072,8 +1194,13 @@ impl Daemon {
     }
 
     /// Asks the account for its signed-in devices, off this thread, and
-    /// drops the relay devices it no longer lists. A failed ask drops nothing.
+    /// drops the relay devices it no longer lists. An ask that got no answer
+    /// drops nothing; a 401 means the server's own session is over
+    /// (`session_ended`).
     fn prune_signed_out(&mut self, cx: &mut Context<Self>) {
+        if self.session_dead {
+            return;
+        }
         // Only to the service that issued the session.
         let Ok(Some(s)) = sign_in_for(&self.settings.relay_base, self.signed_in.as_ref()) else {
             return;
@@ -1102,13 +1229,35 @@ impl Daemon {
                             asked_at,
                         }));
                     }
-                    // A dead session is the relay client's to say; the rest
-                    // waits for the next start or sign-in.
-                    Err(e) => eprintln!("arakun server: could not list the signed-in devices: {e}"),
+                    Err(crate::cloud::Error::SignedOut) => this.session_ended(),
+                    // No answer: asked again at the next tick that is due.
+                    Err(e) => eprintln!(
+                        "arakun server: could not list the signed-in devices: {}",
+                        super::printable(&e.to_string())
+                    ),
                 }
             });
         })
         .detach();
+    }
+
+    /// The account no longer takes this server's session: signed out from
+    /// another device, or older than a session may get. The server can no
+    /// longer learn which devices were signed out with it, so every device
+    /// the relay let in goes, with its push subscription; they are made
+    /// again when they come in after `login`. `account.json` stays, so
+    /// `login` knows the account. Said once: nothing is asked with a dead
+    /// session again.
+    fn session_ended(&mut self) {
+        if self.session_dead {
+            return;
+        }
+        self.session_dead = true;
+        eprintln!(
+            "arakun server: the account ended this server's sign-in. The devices the relay let in are forgotten and get nothing pushed from here. Run `{} login` to sign in again.",
+            super::name()
+        );
+        self.drop_relay_devices(None);
     }
 
     /// Drops the relay's devices the account does not list (`None`: every
@@ -1139,6 +1288,7 @@ impl Daemon {
         self.transport = Transport::Relay(client);
         self.listen = Self::listen_to(rx, cx);
         self.relay_signed_out = false;
+        self.relay_rejected = false;
         for id in gone {
             self.client_gone(id, cx);
         }
@@ -2435,6 +2585,7 @@ impl Daemon {
             Incoming::Relay(status) => {
                 if let Transport::Relay(client) = &self.transport {
                     let page = client.page_url().to_string();
+                    let status = server_words(status);
                     let news = match &status {
                         relay::Status::Connecting => None,
                         relay::Status::Connected => Some(format!("reachable at {page}")),
@@ -2450,12 +2601,17 @@ impl Daemon {
                         }
                         relay::Status::SignedOut => None,
                     };
+                    self.relay_rejected = matches!(status, relay::Status::Rejected(_));
                     self.relay_signed_out = status == relay::Status::SignedOut;
                     if self.relay_signed_out {
                         let why =
                             signed_out_reason(&self.settings.relay_base, self.signed_in.as_ref());
                         let news = format!("the relay: {why}");
                         self.set_address(Address::Problem(why), Some(news));
+                        // The relay's word on the session is not the
+                        // account's: ask it. A 401 there ends the sign-in
+                        // for the devices too; any other answer keeps them.
+                        self.prune_signed_out(cx);
                     } else {
                         self.set_address(relay_address(status, &page), news);
                     }
@@ -3863,7 +4019,8 @@ impl Daemon {
             account_line(
                 self.reach,
                 &self.settings.relay_base,
-                self.signed_in.as_ref()
+                self.signed_in.as_ref(),
+                self.session_dead
             ),
             self.transport.connected_devices().len(),
             self.store.places.len(),
@@ -3884,7 +4041,7 @@ impl Daemon {
                 client.page_url(),
                 &self.settings.relay_base,
                 self.signed_in.as_ref(),
-                self.relay_signed_out,
+                self.relay_signed_out || self.session_dead,
             );
         }
         let base = match &self.address {
@@ -5398,6 +5555,120 @@ mod tests {
     }
 
     #[test]
+    fn a_service_without_a_sign_in_stays_up_and_a_terminal_is_told_why() {
+        let me = octocat();
+        // At a terminal: the error, and no server.
+        assert_eq!(
+            start_as(Reach::Relay, None, true),
+            Start::Refuse(not_signed_in(Reach::Relay, None).unwrap())
+        );
+        // Under a service manager an exit would be started again every few
+        // seconds: it waits for `login`.
+        assert_eq!(start_as(Reach::Relay, None, false), Start::Waiting);
+        for attended in [true, false] {
+            assert_eq!(start_as(Reach::Relay, Some(&me), attended), Start::Ready);
+            assert_eq!(start_as(Reach::Lan, None, attended), Start::Ready);
+            assert_eq!(start_as(Reach::Tailscale, None, attended), Start::Ready);
+        }
+    }
+
+    #[test]
+    fn a_server_removed_from_the_account_is_told_login_adds_it_back() {
+        let login = format!("`{} login`", super::super::name());
+        for app_words in [relay::REMOVED, relay::MACHINES_FULL] {
+            let relay::Status::Rejected(why) =
+                server_words(relay::Status::Rejected(app_words.into()))
+            else {
+                panic!("still turned away");
+            };
+            assert!(why.contains(&login), "{why}");
+            // A server has no relay switch.
+            assert!(!why.contains("off and on"), "{why}");
+        }
+        let relay::Status::Rejected(why) =
+            server_words(relay::Status::Rejected(relay::REMOVED.into()))
+        else {
+            panic!("still turned away");
+        };
+        assert!(why.starts_with("This server was removed from your account."));
+        // The rest is said as the client says it.
+        let other = relay::Status::Rejected("This address belongs to another key.".into());
+        assert_eq!(server_words(other.clone()), other);
+        assert_eq!(
+            server_words(relay::Status::SignedOut),
+            relay::Status::SignedOut
+        );
+    }
+
+    #[test]
+    fn a_server_whose_session_ended_says_so_and_names_no_device_door() {
+        let me = octocat();
+        let base = "https://app.arakun.dev";
+        assert_eq!(
+            account_line(Reach::Relay, base, Some(&me), false),
+            "Signed in as octocat"
+        );
+        let ended = account_line(Reach::Relay, base, Some(&me), true);
+        assert!(ended.contains("ended"), "{ended}");
+        assert!(
+            ended.contains(&format!("`{} login`", super::super::name())),
+            "{ended}"
+        );
+        assert!(!ended.contains("s3cret"), "{ended}");
+        assert_eq!(
+            account_line(Reach::Relay, base, None, false),
+            "Not signed in"
+        );
+    }
+
+    fn relay_device(id: &str, pushed: bool) -> phone::Device {
+        phone::Device {
+            id: id.into(),
+            name: id.into(),
+            token_hash: String::new(),
+            ticket_hash: String::new(),
+            paired_at: 0,
+            last_seen: 0,
+            push: pushed.then(|| phone::push::Subscription {
+                endpoint: "https://push.example/x".into(),
+                p256dh: "k".into(),
+                auth: "a".into(),
+            }),
+            notices: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_account_is_not_asked_with_a_session_it_ended() {
+        // Later than now, so going back from it never passes the clock's start.
+        let now = Instant::now() + 2 * phone::RELAY_PRUNE_EVERY;
+        let long_ago = Some(now - phone::RELAY_PRUNE_EVERY);
+        let pushed = [relay_device("r1", true)];
+        let quiet = [relay_device("r0", false)];
+        // Signed in: every 15 minutes, while a relay device gets pushes.
+        assert!(account_ask_due(true, false, &pushed, None, now));
+        assert!(account_ask_due(true, false, &pushed, long_ago, now));
+        assert!(!account_ask_due(true, false, &pushed, Some(now), now));
+        assert!(!account_ask_due(true, false, &quiet, None, now));
+        // No session the account may take (none, another service's, or one
+        // it ended): never, however long ago the last ask was.
+        for relay_signed_out in [true, false] {
+            assert!(!account_ask_due(
+                false,
+                relay_signed_out,
+                &pushed,
+                long_ago,
+                now
+            ));
+        }
+        // The relay signed the server out and the account has not confirmed
+        // it: a device without pushes is at stake too, at the same pace.
+        assert!(account_ask_due(true, true, &quiet, long_ago, now));
+        assert!(!account_ask_due(true, true, &quiet, Some(now), now));
+        assert!(!account_ask_due(true, true, &[], long_ago, now));
+    }
+
+    #[test]
     fn the_relay_client_dials_as_the_signed_in_account() {
         let account = relay_account(Some(&octocat()));
         assert_eq!(account.github_id, 583231);
@@ -5469,31 +5740,52 @@ mod tests {
             session: "another".into(),
             ..octocat()
         };
+        for stuck in [true, false] {
+            assert_eq!(
+                relay_change(Reach::Relay, None, Some(&me), stuck),
+                RelayChange::Restart
+            );
+            assert_eq!(
+                relay_change(Reach::Relay, Some(&me), Some(&other), stuck),
+                RelayChange::Restart
+            );
+            assert_eq!(
+                relay_change(Reach::Relay, Some(&me), None, stuck),
+                RelayChange::SignOut
+            );
+            // Signed out and still signed out: nothing to dial as.
+            assert_eq!(
+                relay_change(Reach::Relay, None, None, stuck),
+                RelayChange::Leave
+            );
+            // The network and Tailscale have no relay client.
+            assert_eq!(
+                relay_change(Reach::Lan, None, Some(&me), stuck),
+                RelayChange::Leave
+            );
+            assert_eq!(
+                relay_change(Reach::Lan, Some(&me), Some(&me), stuck),
+                RelayChange::Leave
+            );
+            assert_eq!(
+                relay_change(Reach::Tailscale, Some(&me), None, stuck),
+                RelayChange::Leave
+            );
+        }
         assert_eq!(
-            relay_change(Reach::Relay, None, Some(&me)),
+            relay_change(Reach::Relay, Some(&me), Some(&me), false),
+            RelayChange::Leave
+        );
+    }
+
+    #[test]
+    fn login_on_a_good_sign_in_dials_again_once_the_relay_client_gave_up() {
+        // Removed from the account, or signed out by the relay: the client
+        // dials nothing, and `login` is how a person says "try again".
+        let me = octocat();
+        assert_eq!(
+            relay_change(Reach::Relay, Some(&me), Some(&me), true),
             RelayChange::Restart
-        );
-        assert_eq!(
-            relay_change(Reach::Relay, Some(&me), Some(&other)),
-            RelayChange::Restart
-        );
-        assert_eq!(
-            relay_change(Reach::Relay, Some(&me), None),
-            RelayChange::SignOut
-        );
-        assert_eq!(
-            relay_change(Reach::Relay, Some(&me), Some(&me)),
-            RelayChange::Leave
-        );
-        assert_eq!(relay_change(Reach::Relay, None, None), RelayChange::Leave);
-        // The network and Tailscale have no relay client.
-        assert_eq!(
-            relay_change(Reach::Lan, None, Some(&me)),
-            RelayChange::Leave
-        );
-        assert_eq!(
-            relay_change(Reach::Tailscale, Some(&me), None),
-            RelayChange::Leave
         );
     }
 

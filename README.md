@@ -1459,22 +1459,41 @@ arakun-server forget <label> # remove one of them from the account
 device, enter the code and approve, and the terminal says "Signed in as <login>." The
 server keeps the sign-in in `account.json` in its folder and tells a running server,
 which reaches the relay as your account from then on. Ctrl+C gives up, and so does a
-code that runs out. `login` again asks the service whether the sign-in still works:
-if it does, `login` only says who is signed in, and if it was ended, `login` signs in
+code that runs out; when GitHub cannot be reached for a while, `login` says so and
+keeps trying. `login` again asks the service whether the sign-in still works:
+if it does, `login` says who is signed in and tells a running server, which connects
+to the relay again if the relay had turned it away; if it was ended, `login` signs in
 again. `login --force` signs in again in any case and ends the old sign-in. A sign-in
-for another service is replaced, and `login` says so first. `logout` ends the sign-in and removes the file; a
-running server leaves the relay, and devices on the network or Tailscale stay.
-`serve` through the relay without a sign-in stops and says to run `login`, or to serve
-with `--reach lan` or `--reach tailscale`, which need no account. A server the relay
-signs out later (the sign-in was ended from another device, say) keeps running, keeps
-the file, and logs a line that says to run `login`. A sign-in lasts at most 180 days
-(90 without use), so a server nobody touches is signed out that way within half a
-year: run `arakun-server login` on it again. `status` shows "Signed in as
-<login>" or "Not signed in". `machines` lists the account's machines with their label,
-kind and whether they are online, and `forget <label>` removes one from the account; a
-machine still signed in comes back the next time it connects. At start and after
-`login` or `logout`, the server drops the devices the account no longer lists among
-its signed-in devices, with their notifications.
+for another service is replaced, and `login` says so first. `logout` ends the sign-in
+and removes the file; a running server stays up, leaves the relay, and devices on the
+network or Tailscale stay. When the service cannot be reached, `logout` still removes
+the file, but exits with code 1 and names the session, which is good until you sign it
+out from another signed-in device.
+
+`serve` through the relay needs a sign-in. Started in a terminal without one, it stops
+and says to run `login`, or to serve with `--reach lan` or `--reach tailscale`, which
+need no account. Started with `--service` (as `service install` starts it), or with no
+terminal to print to, it stays up signed out instead, logs one line that says to run
+`arakun-server login`, and connects as soon as `login` tells it: a service that exited
+would only be started again every few seconds. A server the relay signs out later (the
+sign-in was ended from another device, say) keeps running, keeps the file, and logs a
+line that says to run `login`. Once the account itself answers that the server's
+sign-in is over, the server forgets every device the relay let in, with its
+notifications, and asks nothing more until you run `login`: it can no longer learn
+which of them were signed out. They are let in again when they connect after `login`.
+A sign-in lasts at most 180 days (90 without use), so a server nobody touches is signed
+out that way within half a year: run `arakun-server login` on it again. `status` shows
+"Signed in as <login>", "Not signed in", or that the sign-in ended.
+
+`machines` lists the account's machines with their label, kind and whether they are
+online, and `forget <label>` removes one from the account. The relay hangs up on a
+removed machine that is running, and it stays out until someone acts: a server comes
+back with `arakun-server login` (plain `login` is enough) or a restart, and its log and
+`status` say so; `logout` keeps it out. A machine that was off is listed again when it
+next connects signed in. At start, after `login` or `logout`, and every 15 minutes
+while a device the relay let in gets notifications, the server asks the account for its
+signed-in devices and drops the ones it no longer lists, with their notifications. An
+ask that gets no answer drops nothing.
 
 A sign-in is good only at the service it came from: `https://app.arakun.dev`, or
 `ARAKUN_TEAMS_URL` when set. When `--relay` names another relay, the server starts
@@ -1595,7 +1614,8 @@ arakun-server service install   # keep it running; see Keep it running
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. It needs `login`
-  first, and lets in the devices signed in to the same account, with nothing to pair. `--reach tailscale`
+  (before or after it starts as a service), and lets in the devices signed in to the
+  same account, with nothing to pair. `--reach tailscale`
   serves it at the machine's tailnet name over HTTPS; that takes the machine's HTTPS
   port on the tailnet, as the app's Phone tab on Tailscale does, so only one of the two
   can use it on a machine. `--reach lan` listens on every
@@ -1621,16 +1641,17 @@ arakun-server service install   # keep it running; see Keep it running
 
 ### Keep it running
 
-`service install` runs `serve` as a service: systemd on Linux, launchd on macOS. It
-starts the server now, again after a crash, and at boot (Linux) or login (macOS). On
-Linux it keeps running while nobody is logged in, so on a VPS you can install it over
-SSH and log out. `quit` stops it until the next boot or login. First put the binary
-somewhere that stays, not in `target/`:
+`service install` runs `serve --service` as a service: systemd on Linux, launchd on
+macOS. It starts the server now, again after a crash, and at boot (Linux) or login
+(macOS). On Linux it keeps running while nobody is logged in, so on a VPS you can
+install it over SSH and log out. `quit` stops it until the next boot or login. First
+put the binary somewhere that stays, not in `target/`:
 
 ```sh
 install -Dm755 target/release/arakun-server ~/.local/bin/arakun-server
+arakun-server login               # through the relay: sign in, before or after install
 arakun-server service install     # takes serve's flags: --reach, --port, --relay
-arakun-server pair                # then pair a device, and log out if you like
+arakun-server pair                # where a device signs in (or a link), then log out if you like
 arakun-server service status      # installed, running, lingering, and how it is reached
 arakun-server service logs -f     # what it prints (journalctl, or server.log on macOS)
 arakun-server service uninstall   # stop it and remove the service; the data stays
@@ -1641,6 +1662,12 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   `~/Library/LaunchAgents/dev.arakun.server.plist` on macOS. `service install --print`
   shows the file and installs nothing. Running `install` again rewrites the file and
   restarts the server.
+- **Not signed in.** Through the relay, a service with no sign-in does not fail: it
+  runs signed out, `install` ends by saying to run `arakun-server login`, and the
+  running server takes the sign-in with no restart. The same holds after `logout`, and
+  for a service installed before servers signed in (its file has no `--service`, and a
+  server with no terminal waits just the same): after updating, run
+  `arakun-server login` once, and nothing else.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
   It also keeps `ARAKUN_GITHUB=readonly` when that is set in that shell.
@@ -1660,8 +1687,8 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   that nobody sits at needs automatic login.
 - **A second server.** With `ARAKUN_SERVER_DIR` set, the service is named after that
   folder (`arakun-server-<folder>`) and keeps the variable.
-- **Windows** has no `service` command yet: start `arakun-server serve` from Task
-  Scheduler at logon.
+- **Windows** has no `service` command yet: start `arakun-server serve --service` from
+  Task Scheduler at logon.
 
 Tried on Linux and macOS.
 

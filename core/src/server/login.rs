@@ -1,7 +1,9 @@
 //! The server's sign-in to its account, which the relay asks for. `login`
 //! runs GitHub's device flow in the terminal and keeps the session in
 //! `account.json` in the server's folder, next to its relay key; `logout`
-//! ends it. A running server is told either way and dials the relay again.
+//! ends it. A running server is told either way and dials the relay again;
+//! `login` on a sign-in that is still good tells it too, which brings back a
+//! server the relay had turned away (one removed from the account).
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -9,6 +11,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::local::{self, Request};
+use super::printable;
 use crate::cloud;
 
 /// The file the sign-in is kept in, in the server's folder.
@@ -93,23 +96,30 @@ pub fn login(force: bool) -> i32 {
             Checked::Good => {
                 println!(
                     "Signed in as {}. `{} login --force` signs in again.",
-                    old.login,
+                    printable(&old.login),
                     super::name()
                 );
+                // A running server the relay turned away, as one removed
+                // from the account was, dials again on this.
+                tell_server();
                 return 0;
             }
             Checked::Ended => {}
             Checked::Unknown(e) => {
                 return super::fail(&format!(
                     "could not check the sign-in as {} at {}. {e} It is kept; try again, or `{} login --force` signs in again.",
-                    old.login,
-                    old.base,
+                    printable(&old.login),
+                    printable(&old.base),
                     super::name()
                 ));
             }
         },
         Plan::Replace(old) => {
-            println!("Replacing the sign-in as {} at {}.", old.login, old.base)
+            println!(
+                "Replacing the sign-in as {} at {}.",
+                printable(&old.login),
+                printable(&old.base)
+            )
         }
         Plan::SignIn => {}
     }
@@ -186,6 +196,8 @@ fn device_flow(base: &str) -> Result<SignIn, String> {
         code.verification_uri, code.user_code
     );
     let deadline = Instant::now() + code.expires_in;
+    // Polls in a row that got no answer.
+    let mut unanswered = 0u32;
     let token = loop {
         std::thread::sleep(code.interval);
         if Instant::now() >= deadline {
@@ -195,10 +207,17 @@ fn device_flow(base: &str) -> Result<SignIn, String> {
             ));
         }
         match cloud::poll_device_flow(&client_id, &code) {
-            Ok(None) => {}
+            Ok(None) => unanswered = 0,
             Ok(Some(token)) => break token,
-            // A network that drops for a moment leaves the code good.
-            Err(cloud::Error::Unreachable(_)) => {}
+            // A network that drops for a moment leaves the code good. One
+            // that stays down is said once: the wait is otherwise silent
+            // until the code runs out.
+            Err(cloud::Error::Unreachable(_)) => {
+                unanswered += 1;
+                if unanswered == UNANSWERED_SAID {
+                    println!("Cannot reach GitHub. Still trying until the code runs out.");
+                }
+            }
             Err(e) => return Err(failed(e)),
         }
     };
@@ -210,9 +229,13 @@ fn device_flow(base: &str) -> Result<SignIn, String> {
         session: signed.session,
         session_id: signed.session_id,
         github_id: signed.github_id,
-        login: signed.login,
+        // Kept and printed from here on: never with a control character.
+        login: printable(&signed.login),
     })
 }
+
+/// How many polls in a row get no answer before `login` says so.
+const UNANSWERED_SAID: u32 = 3;
 
 /// `logout`: ends the session on the service, forgets it and tells a running
 /// server. Returns the exit code.
@@ -221,6 +244,8 @@ pub fn logout() -> i32 {
     // A file that cannot be read is forgotten all the same.
     let kept = match load(&dir) {
         Ok(None) => {
+            // A server started before the file went still holds the session.
+            tell_server();
             println!("Not signed in.");
             return 0;
         }
@@ -234,20 +259,27 @@ pub fn logout() -> i32 {
     tell_server();
     match (kept, ended) {
         (Some(s), Some(Err(e))) if e != cloud::Error::SignedOut => {
-            println!("Signed out of {} on this machine.", s.login);
-            eprintln!(
-                "{}: the session could not be ended on {}. {e} It still shows among the account's signed-in devices until it is signed out there.",
-                super::name(),
-                s.base
-            );
+            println!("Signed out of {} on this machine.", printable(&s.login));
+            // Not a success for a script that takes a machine out of use:
+            // the session is still good on the service.
+            return super::fail(&not_ended_text(&s, &e));
         }
-        (Some(s), _) => println!("Signed out of {}.", s.login),
+        (Some(s), _) => println!("Signed out of {}.", printable(&s.login)),
         (None, _) => println!(
             "Signed out. {} could not be read, so a session may still be active on the service; end it from another signed-in device.",
             FILE
         ),
     }
     0
+}
+
+/// What `logout` says when the service did not end the session: it is gone
+/// from this machine, so it is named for whoever ends it from another one.
+fn not_ended_text(s: &SignIn, e: &cloud::Error) -> String {
+    format!(
+        "the session could not be ended on {}. {e} It is forgotten here but still good there: sign it out from another signed-in device, where this server shows among the account's signed-in devices (session {}).",
+        s.base, s.session_id
+    )
 }
 
 /// The sign-in kept here, or the exit code of saying there is none.
@@ -326,14 +358,19 @@ fn machines_text(list: &[cloud::Machine], own_label: Option<&str>, now: u64) -> 
         .join("\n")
 }
 
-/// `s` with its control characters dropped: the names come from the
-/// service, and an escape sequence in one must not drive the terminal.
-fn printable(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
-}
-
 /// `forget <label>`: removes one of the account's machines. Returns the exit code.
 pub fn forget_machine(label: &str) -> i32 {
+    let no_machine = || {
+        super::fail(&format!(
+            "the account has no machine {}; `{} machines` lists them",
+            printable(label),
+            super::name()
+        ))
+    };
+    // Nothing is asked for a name no machine can have.
+    if !is_label(label) {
+        return no_machine();
+    }
     let kept = match kept_or_fail() {
         Ok(kept) => kept,
         Err(code) => return code,
@@ -343,35 +380,41 @@ pub fn forget_machine(label: &str) -> i32 {
             println!("{}", forgot_text(label, own_label().as_deref()));
             0
         }
-        Ok(false) => super::fail(&format!(
-            "the account has no machine {}; `{} machines` lists them",
-            printable(label),
-            super::name()
-        )),
+        Ok(false) => no_machine(),
         Err(e) => account_failed(e),
     }
 }
 
-/// What `forget` says it did. This server, still signed in, comes back
-/// when it next connects, so that is said too.
+/// Whether `label` can name a machine: what goes into the request's path.
+fn is_label(label: &str) -> bool {
+    (1..=128).contains(&label.len())
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// What `forget` says it did, and what brings the machine back: the relay
+/// hangs up on one that is running, and it does not dial again by itself.
 fn forgot_text(label: &str, own_label: Option<&str>) -> String {
+    let name = super::name();
     if Some(label) == own_label {
         format!(
-            "Removed {label}, this server, from the account. It is listed again the next time it connects; `{} logout` keeps it out.",
-            super::name()
+            "Removed {label}, this server, from the account. If it is running, it is disconnected now and stays out until `{name} login` or a restart adds it back; `{name} logout` keeps it out."
         )
     } else {
         format!(
-            "Removed {label} from the account. If it is still signed in, it is listed again the next time it connects."
+            "Removed {label} from the account. If it is running, it is disconnected now and stays out until it is restarted or signed in again (on a server: `{name} login`). One that is off is listed again when it next connects; signing it out keeps it out."
         )
     }
 }
 
-/// Tells the server running here, if one is, that its sign-in changed.
+/// Tells the server running here, if one is, that its sign-in changed or
+/// was found good, and prints what it has to say to that.
 fn tell_server() {
     let socket = super::socket_path();
     match local::send(&socket, &Request::new(CHANGED, &[]), local::REPLY_WAIT) {
         Ok(reply) if !reply.ok => eprintln!("{}: {}", super::name(), reply.message),
+        Ok(reply) if !reply.message.is_empty() => println!("{}", reply.message),
         Ok(_) => {}
         // No server: the next one reads the file.
         Err(e)
@@ -441,12 +484,40 @@ mod tests {
     }
 
     #[test]
-    fn a_file_that_cannot_be_read_says_so() {
+    fn a_file_that_cannot_be_read_says_so_and_quotes_none_of_it() {
         let dir = temp("bad");
-        std::fs::write(path(&dir), "{ not json").unwrap();
-        let e = load(&dir).unwrap_err();
-        assert!(e.contains(FILE), "{e}");
+        // Cut short after the session: the parser's own message would quote
+        // the place it stopped at.
+        for bad in [
+            r#"{ "base": "https://app.arakun.dev", "session": "s3cret-session", "#,
+            r#"{ "session": "s3cret-session", "github_id": "s3cret-session" }"#,
+            "s3cret-session",
+        ] {
+            std::fs::write(path(&dir), bad).unwrap();
+            let e = load(&dir).unwrap_err();
+            assert!(e.contains(FILE), "{e}");
+            assert!(!e.contains("s3cret"), "{e}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_the_service_did_not_end_is_named_by_its_id_never_itself() {
+        let e = cloud::Error::Unreachable("timed out".into());
+        let text = not_ended_text(&octocat(), &e);
+        assert!(text.contains("sid1"), "{text}");
+        assert!(text.contains("https://app.arakun.dev"), "{text}");
+        assert!(text.contains("timed out"), "{text}");
+        assert!(!text.contains("s3cret"), "{text}");
+    }
+
+    #[test]
+    fn forget_asks_only_for_what_can_be_a_label() {
+        assert!(is_label("aaaaaaaaaaaaaaaa"));
+        assert!(is_label("a-b_9"));
+        for bad in ["", "my box", "a/b", "..", "a%2f", "é", &"a".repeat(129)] {
+            assert!(!is_label(bad), "{bad:?}");
+        }
     }
 
     #[test]
@@ -526,17 +597,20 @@ mod tests {
     }
 
     #[test]
-    fn forget_says_this_server_comes_back_unless_it_logs_out() {
+    fn forget_says_a_running_machine_stays_out_until_login_or_a_restart() {
+        let name = crate::server::name();
         let own = forgot_text("aaaaaaaaaaaaaaaa", Some("aaaaaaaaaaaaaaaa"));
-        assert!(
-            own.contains("this server") && own.contains("logout"),
-            "{own}"
-        );
+        assert!(own.contains("this server"), "{own}");
+        assert!(own.contains("stays out until"), "{own}");
+        assert!(own.contains(&format!("`{name} login`")), "{own}");
+        assert!(own.contains(&format!("`{name} logout`")), "{own}");
+        // The relay client does not dial again by itself.
+        assert!(!own.contains("next time it connects"), "{own}");
         let other = forgot_text("bbbbbbbbbbbbbbbb", Some("aaaaaaaaaaaaaaaa"));
-        assert!(
-            other.contains("Removed bbbbbbbbbbbbbbbb") && !other.contains("logout"),
-            "{other}"
-        );
+        assert!(other.contains("Removed bbbbbbbbbbbbbbbb"), "{other}");
+        assert!(!other.contains("this server"), "{other}");
+        assert!(other.contains("stays out until"), "{other}");
+        assert!(!other.contains("logout"), "{other}");
     }
 
     #[test]

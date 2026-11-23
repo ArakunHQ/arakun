@@ -118,7 +118,9 @@ build with the browser.
 
 `arakun server` (and `arakun-server`) run on Windows, but `service install`, `status`,
 `logs` and `uninstall` do not: they print an error and exit. To keep the server running,
-start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
+start `arakun-server serve --service` from Task Scheduler, with the trigger "At log on".
+With `--service` a server that is not signed in yet stays up and waits for
+`arakun-server login`; without it, started in a console, it says so and exits.
 
 ## Where things are stored
 

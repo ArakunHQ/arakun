@@ -118,7 +118,9 @@ build with the browser.
 
 `arakun server` (and `arakun-server`) run on Windows, but `service install`, `status`,
 `logs` and `uninstall` do not: they print an error and exit. To keep the server running,
-start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
+start `arakun-server serve --service` from Task Scheduler, with the trigger "At log on".
+With `--service` a server that is not signed in yet stays up and waits for
+`arakun-server login`; without it, started in a console, it says so and exits.
 
 ## Where things are stored
 
@@ -137,7 +139,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Doop sign-ins, canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
-| `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
+| `arakun server`: its settings, sign-in (`account.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with or reaches through your account (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |

@@ -2,10 +2,12 @@
 //! runs agent sessions there (any agent signed in on that machine) and keeps
 //! them going while nothing is connected.
 //!
-//! `arakun server serve` is the server ([`daemon`]). Paired devices reach it
-//! the way phones reach the app, with the same pairing, transports and
-//! messages (`crate::phone`): through the relay, end-to-end encrypted, unless
-//! it is told another way. A device asks before an agent may do what the agent
+//! `arakun server serve` is the server ([`daemon`]). Devices reach it the way
+//! phones reach the app, with the same transports and messages
+//! (`crate::phone`): through the relay, end-to-end encrypted, unless it is
+//! told another way. The relay lets in the devices of the account the server
+//! is signed in to (`login`, [`login`]); on the network and Tailscale a device
+//! pairs. A device asks before an agent may do what the agent
 //! asks permission for; the user answers from wherever they are.
 //!
 //! The other commands talk to the running server over a local socket
@@ -14,7 +16,7 @@
 //!
 //! Everything it keeps is in `<data>/arakun/server/`, apart from the app's own
 //! files: `phone.json` (how it is reached, its relay identity and the paired
-//! devices), `state.json` (folders and sessions, see [`store`]), `sessions/`
+//! devices), `account.json` (its sign-in), `state.json` (folders and sessions, see [`store`]), `sessions/`
 //! (transcripts) and `uploads/` (photos sent with prompts). The app and a
 //! server can run on one machine; they share nothing.
 //!
@@ -24,6 +26,7 @@
 pub mod daemon;
 mod files;
 mod local;
+mod login;
 mod pty;
 mod service;
 mod store;
@@ -81,21 +84,40 @@ const HELP: &str = "\
 {name} — Arakun without a window, for a machine nobody sits at
 
 It runs agent sessions on this machine and keeps them going while nothing is
-connected. Paired devices reach it as phones reach the app: through the relay
-(the default; end-to-end encrypted), Tailscale, or the local network.
+connected. Devices reach it as phones reach the app: through the relay (the
+default; end-to-end encrypted; your account's devices, once it is signed in),
+Tailscale, or the local network (paired devices).
 
 Usage:
+  {name} login [--force]     sign in to your account with GitHub, which the
+                             relay asks for; --force signs in again
+  {name} logout              sign out; the relay no longer lets it in. A
+                             running server stays up, signed out
+  {name} machines            the account's machines, this one marked
+  {name} forget <label>      remove a machine from the account, by the label
+                             `machines` shows. One that is running is
+                             disconnected and stays out until it is restarted
+                             or signed in again (for a server: `login`)
   {name} serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>]
+               [--service]
                              run the server until it is stopped (Ctrl+C, a
                              signal or `quit`). What it is started with is kept
                              for the next run. --port is for tailscale and lan;
-                             --relay names a relay of your own
-  {name} status              how it is reached, and what it holds
+                             --relay names a relay of your own. Through the
+                             relay it needs a sign-in: in a terminal it says so
+                             and stops; with --service, or with no terminal, it
+                             stays up signed out until `login`
+  {name} status              how it is reached, who it is signed in as, and
+                             what it holds
   {name} quit                stop the running server
-  {name} pair                print a link (and its QR code) that pairs one
-                             device; good for two minutes, and for one device
-  {name} devices             the paired devices
-  {name} unpair <device>     forget one, by its id or name
+  {name} pair                through the relay: say where a device signs in.
+                             On tailscale and lan: print a link (and its QR
+                             code) that pairs one device; good for two
+                             minutes, and for one device
+  {name} devices             the paired devices, and those the relay let in
+  {name} unpair <device>     forget one, by its id or name. One the relay let
+                             in is only disconnected: it comes back while it
+                             is signed in to the account
   {name} add [--agent <agent>] [dir]
                              let sessions start in a folder (default: this
                              one); --agent is the agent they start with
@@ -121,10 +143,12 @@ Usage:
 
 Keep it running (systemd on Linux, launchd on macOS):
   {name} service install [--print] [serve flags]
-                             run `serve` as a service: it starts now, after a
-                             failure, and at boot (Linux, logged in or not; as
-                             root a system unit) or login (macOS). --print
-                             shows the file and installs nothing
+                             run `serve --service` as a service: it starts
+                             now, after a failure, and at boot (Linux, logged
+                             in or not; as root a system unit) or login
+                             (macOS). --print shows the file and installs
+                             nothing. Through the relay, run `login` before or
+                             after: the running server takes the sign-in
   {name} service status      whether it is installed and running
   {name} service logs [-f]   what the server printed; -f follows it
   {name} service uninstall   stop it and remove the service; nothing else goes
@@ -141,6 +165,16 @@ enum Command {
     /// One request to the running server; its reply is printed.
     Ask(Request),
     Pair,
+    /// Sign in to the account the relay lets this server in for; `force`
+    /// signs in again over a sign-in that is there.
+    Login {
+        force: bool,
+    },
+    Logout,
+    /// The account's machines.
+    Machines,
+    /// Remove one of the account's machines, by its label.
+    Forget(String),
     Wait {
         id: String,
         timeout: Duration,
@@ -189,10 +223,16 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
     match sub.as_str() {
         "help" | "-h" | "--help" => Ok(Command::Help),
         "serve" => {
-            let text = "serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>]";
+            let text =
+                "serve [--reach relay|tailscale|lan] [--port <n>] [--relay <url>] [--service]";
             let mut opts = Options::default();
             while !rest.is_empty() {
-                if let Some(v) = flag(&mut rest, &["--reach"]).map_err(|()| usage(text))? {
+                if let [f, tail @ ..] = rest
+                    && f == SERVICE_FLAG
+                {
+                    opts.service = true;
+                    rest = tail;
+                } else if let Some(v) = flag(&mut rest, &["--reach"]).map_err(|()| usage(text))? {
                     opts.reach = Some(match v {
                         "relay" => Reach::Relay,
                         "tailscale" => Reach::Tailscale,
@@ -211,7 +251,18 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
         }
         "status" | "devices" | "ls" | "quit" if rest.is_empty() => ask(sub, Vec::new()),
         "pair" if rest.is_empty() => Ok(Command::Pair),
-        "status" | "devices" | "ls" | "quit" | "pair" => Err(usage(sub)),
+        "logout" if rest.is_empty() => Ok(Command::Logout),
+        "machines" if rest.is_empty() => Ok(Command::Machines),
+        "status" | "devices" | "ls" | "quit" | "pair" | "logout" | "machines" => Err(usage(sub)),
+        "forget" => match rest {
+            [label] => Ok(Command::Forget(label.clone())),
+            _ => Err(usage("forget <label>")),
+        },
+        "login" => match rest {
+            [] => Ok(Command::Login { force: false }),
+            [f] if f == "--force" => Ok(Command::Login { force: true }),
+            _ => Err(usage("login [--force]")),
+        },
         "unpair" => match rest {
             [device] => ask("unpair", vec![device.clone()]),
             _ => Err(usage("unpair <device>")),
@@ -338,8 +389,21 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
     }
 }
 
+/// What `service install` adds to `serve`: see `Options::service`.
+const SERVICE_FLAG: &str = "--service";
+
+/// `s` with its control characters dropped. Names and error texts come from
+/// the account's service, and an escape sequence in one must not drive the
+/// terminal.
+fn printable(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Says why a command failed; the exit code. The message may quote what a
+/// service answered, so only its line breaks get through as they are.
 fn fail(message: &str) -> i32 {
-    eprintln!("{}: {message}", name());
+    let lines: Vec<String> = message.lines().map(printable).collect();
+    eprintln!("{}: {}", name(), lines.join("\n"));
     1
 }
 
@@ -408,6 +472,10 @@ pub fn cli(args: &[String]) -> i32 {
             }
             Err(e) => fail(&e),
         },
+        Command::Login { force } => login::login(force),
+        Command::Logout => login::logout(),
+        Command::Machines => login::machines(),
+        Command::Forget(label) => login::forget_machine(&label),
         Command::Wait { id, timeout } => wait(&id, timeout),
         Command::Service(action) => service::run(action),
     }
@@ -428,9 +496,16 @@ fn serve(opts: Options) -> i32 {
 
 /// What `pair` prints, from the server's reply: the link, its QR code for a
 /// phone to scan off the terminal, and the code to type where there is one.
+/// Through the relay there is no link: a device signs in to the account.
 fn pairing_text(reply: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
     let text = |key: &str| v[key].as_str().unwrap_or("").to_string();
+    if let Some(open) = v["open"].as_str() {
+        return format!(
+            "Open {open} on the device and sign in as {}.\n",
+            text("login")
+        );
+    }
     let (url, code, waiting) = (text("url"), text("code"), text("waiting"));
     let minutes = v["seconds"].as_u64().unwrap_or(120) / 60;
     let mut out = format!(
@@ -529,8 +604,20 @@ mod tests {
                 reach: Some(Reach::Tailscale),
                 port: Some(7575),
                 relay: Some("https://relay.example".into()),
+                service: false,
             }))
         );
+        // What the service passes, anywhere among the flags.
+        for words in [
+            &["serve", "--service"][..],
+            &["serve", "--service", "--reach", "relay"],
+            &["serve", "--reach", "relay", "--service"],
+        ] {
+            let Ok(Command::Serve(opts)) = parse(&args(words), cwd) else {
+                panic!("{words:?} is a way to serve");
+            };
+            assert!(opts.service, "{words:?}");
+        }
         for bad in [
             &["serve", "--reach", "wifi"][..],
             &["serve", "--port", "many"],
@@ -658,11 +745,73 @@ mod tests {
         // The QR code: blocks, many lines of them.
         assert!(lan.lines().filter(|l| l.contains('█')).count() > 10);
 
-        let relay = pairing_text(
-            r#"{"url":"https://abc.relay.example/#p=c&s=s","code":"","seconds":120,"waiting":"not yet: connecting to the relay"}"#,
+        let tailscale = pairing_text(
+            r#"{"url":"https://box.tail1234.ts.net/?p=c","code":"","seconds":120,"waiting":"not yet: asking Tailscale"}"#,
         );
-        assert!(!relay.contains("code:"));
-        assert!(relay.contains("(not yet: connecting to the relay)"));
+        assert!(!tailscale.contains("code:"));
+        assert!(tailscale.contains("(not yet: asking Tailscale)"));
+    }
+
+    #[test]
+    fn login_and_logout_are_commands_of_their_own() {
+        let cwd = Path::new("/");
+        assert_eq!(
+            parse(&args(&["login"]), cwd),
+            Ok(Command::Login { force: false })
+        );
+        assert_eq!(
+            parse(&args(&["login", "--force"]), cwd),
+            Ok(Command::Login { force: true })
+        );
+        assert_eq!(parse(&args(&["logout"]), cwd), Ok(Command::Logout));
+        assert_eq!(parse(&args(&["login", "--help"]), cwd), Ok(Command::Help));
+        for bad in [
+            &["login", "now"][..],
+            &["login", "--force", "x"],
+            &["logout", "all"],
+        ] {
+            let e = parse(&args(bad), cwd).unwrap_err();
+            assert!(
+                e.starts_with(&format!("usage: arakun server {}", bad[0])),
+                "{e}"
+            );
+        }
+        assert!(help().contains("arakun server login [--force]"));
+        assert!(help().contains("arakun server logout"));
+    }
+
+    #[test]
+    fn machines_and_forget_ask_the_account() {
+        let cwd = Path::new("/");
+        assert_eq!(parse(&args(&["machines"]), cwd), Ok(Command::Machines));
+        assert_eq!(
+            parse(&args(&["forget", "aaaaaaaaaaaaaaaa"]), cwd),
+            Ok(Command::Forget("aaaaaaaaaaaaaaaa".into()))
+        );
+        for bad in [&["machines", "x"][..], &["forget"], &["forget", "a", "b"]] {
+            let e = parse(&args(bad), cwd).unwrap_err();
+            assert!(
+                e.starts_with(&format!("usage: arakun server {}", bad[0])),
+                "{e}"
+            );
+        }
+        assert!(help().contains("arakun server machines"));
+        assert!(help().contains("arakun server forget <label>"));
+    }
+
+    #[test]
+    fn pairing_through_the_relay_says_where_to_sign_in_and_has_no_link() {
+        let relay = pairing_text(r#"{"open":"https://app.arakun.dev","login":"octocat"}"#);
+        assert_eq!(
+            relay,
+            "Open https://app.arakun.dev on the device and sign in as octocat.\n"
+        );
+    }
+
+    #[test]
+    fn what_a_service_answered_cannot_drive_the_terminal() {
+        assert_eq!(printable("octo\u{1b}[2Jcat\u{7}\r\n"), "octo[2Jcat");
+        assert_eq!(printable("plain text"), "plain text");
     }
 
     #[test]

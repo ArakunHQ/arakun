@@ -126,10 +126,10 @@ impl Call {
     /// sides of a server's connection.
     pub fn run(self, dir: &Path) -> Result<Value> {
         Ok(match self {
-            Call::Status => json!(Status {
-                changes: git::status(dir)?,
-                sync: git::sync(dir)?,
-            }),
+            Call::Status => {
+                let (changes, sync) = git::status_and_sync(dir)?;
+                json!(Status { changes, sync })
+            }
             Call::Diff {
                 path,
                 untracked,

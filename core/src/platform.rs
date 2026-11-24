@@ -1363,6 +1363,9 @@ pub fn output_until(
     }
     drop(tx);
     let started = Instant::now();
+    // Most git calls end within a few milliseconds, and a flat 20 ms wait added up to
+    // that much to each: look again soon at first, then less often.
+    let mut wait = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -1374,7 +1377,8 @@ pub fn output_until(
                 ));
             }
             Ok(None) if started.elapsed() < limit => {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(Duration::from_millis(20));
             }
             Ok(None) => {
                 self::stop(&tree, &mut child);

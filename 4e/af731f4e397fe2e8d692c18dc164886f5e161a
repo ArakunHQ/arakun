@@ -1,0 +1,21 @@
+ios/project.yml
+  s_3b44324993e021::t_917357fe907d83 20-21
+android/app/build.gradle.kts
+  s_3b44324993e021::t_2cfba0b6199ae5 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4eaf731f4e397fe2e8d692c18dc164886f5e161a",
+  "prompts": {},
+  "sessions": {
+    "s_3b44324993e021": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51446698-c4b9-46de-b23a-e4c666f704c4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

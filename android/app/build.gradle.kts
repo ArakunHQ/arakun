@@ -18,7 +18,7 @@ android {
         // android-release.yml sets both: the version is Arakun's, the code a
         // number that only goes up, as Google Play wants.
         versionCode = providers.gradleProperty("versionCode").map(String::toInt).getOrElse(1)
-        versionName = providers.gradleProperty("versionName").getOrElse("0.13.0")
+        versionName = providers.gradleProperty("versionName").getOrElse("0.19.0")
         // Crash reports go to Arakun's PostHog project, as the desktop's do
         // (src/telemetry.rs). The token is write-only, so it is safe in the
         // app. `-PposthogKey=` (empty) builds an app that sends nothing.

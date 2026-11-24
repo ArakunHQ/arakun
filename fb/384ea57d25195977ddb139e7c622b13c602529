@@ -1,0 +1,30 @@
+src/shell/menus.rs
+  s_8cd02a11870499::t_76384f4980693f 1230-1231
+src/shell/rail.rs
+  s_8cd02a11870499::t_76384f4980693f 1173,1409
+src/shell.rs
+  s_8cd02a11870499::t_76384f4980693f 249-252
+src/shell/rail_pick.rs
+  s_8cd02a11870499::t_b0d51cf9019c93 465-477
+  s_8cd02a11870499::t_76384f4980693f 14,394-395,408-464,478-504
+  s_8cd02a11870499::t_7a6863ba294870 121-123,125
+src/shell/session_tree.rs
+  s_8cd02a11870499::t_7a6863ba294870 312-314,320
+  s_8cd02a11870499::t_76384f4980693f 395-495,503,996
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fb384ea57d25195977ddb139e7c622b13c602529",
+  "prompts": {},
+  "sessions": {
+    "s_8cd02a11870499": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daf8d12b-0170-4652-9621-4b8d4d32215b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

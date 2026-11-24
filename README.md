@@ -857,7 +857,9 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
 - **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
-  Everything); it lays out the pieces and keeps the style you chose. Style (Card, Flush,
+  Everything); it lays out the pieces and keeps the style you chose. Every preset holds
+  the User row, where you sign in with GitHub; a layout saved without it gets it once,
+  next to Help. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
   sidebar. While this tab is open the sidebar is being arranged: it shows in full,
   every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of

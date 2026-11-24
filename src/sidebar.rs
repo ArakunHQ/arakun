@@ -686,6 +686,7 @@ impl Preset {
         let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()])
             .titled()
             .with_action(TitleAction::New);
+        // Every preset holds the User row: it is where Teams signs in with GitHub.
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
         let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
         let mut style = Style::default();
@@ -710,7 +711,6 @@ impl Preset {
                         only_open: true,
                     }],
                 ),
-                // The User row is where Teams signs in with GitHub.
                 account(vec![Piece::Usage, Piece::User]),
                 Section::new(
                     "Views",
@@ -771,7 +771,12 @@ impl Preset {
                     ),
                 )
                 .folding(true),
-                account(vec![Piece::Usage, Piece::Help, Piece::Settings]),
+                account(vec![
+                    Piece::Usage,
+                    Piece::User,
+                    Piece::Help,
+                    Piece::Settings,
+                ]),
             ],
             Preset::Developer => vec![
                 Section::new(
@@ -859,7 +864,7 @@ impl Preset {
                     ),
                     active(),
                     projects,
-                    account(vec![Piece::Help, Piece::Settings]),
+                    account(vec![Piece::User, Piece::Help, Piece::Settings]),
                 ]
             }
             // Inbox sits by Search, where it shares the search box's row.
@@ -886,7 +891,12 @@ impl Preset {
                 ),
                 active(),
                 projects,
-                account(vec![Piece::Usage, Piece::Help, Piece::Settings]),
+                account(vec![
+                    Piece::Usage,
+                    Piece::User,
+                    Piece::Help,
+                    Piece::Settings,
+                ]),
             ],
         };
         Sidebar {
@@ -895,6 +905,7 @@ impl Preset {
             known: View::ALL.to_vec(),
             offered_active: true,
             offered_help: true,
+            offered_user: true,
             switcher_offered: true,
             trial_of: None,
         }
@@ -917,6 +928,10 @@ pub struct Sidebar {
     /// Help was put in once, the same way as the Active list.
     #[serde(default)]
     pub offered_help: bool,
+    /// The User row was put in once, the same way: layouts saved before every
+    /// preset held it had no way to sign in.
+    #[serde(default)]
+    pub offered_user: bool,
     /// The Switcher was offered to this layout and answered. A layout saved
     /// before the Switcher was the default lacks it, so the rail offers it once.
     #[serde(default)]
@@ -998,6 +1013,7 @@ impl Sidebar {
         s.tidy();
         s.offer_active();
         s.offer_help();
+        s.offer_user();
         Some(s)
     }
 
@@ -1284,6 +1300,26 @@ impl Sidebar {
         }
     }
 
+    /// Next to Help, as the presets have it, or Settings; with neither, at
+    /// the end of the last segment when it is fixed, as the presets' bottom
+    /// one is. Under a scrolling list it would sit out of sight.
+    fn offer_user(&mut self) {
+        if std::mem::replace(&mut self.offered_user, true) || self.has(&Piece::User) {
+            return;
+        }
+        let at = self
+            .find(&Piece::Help)
+            .or_else(|| self.find(&Piece::Settings))
+            .or_else(|| {
+                let last = self.sections.len().checked_sub(1)?;
+                let section = &self.sections[last];
+                (section.mode == Mode::Fixed).then_some((last, section.items.len()))
+            });
+        if let Some(at) = at {
+            self.insert(Item::new(Piece::User), at);
+        }
+    }
+
     fn tidy(&mut self) {
         let mut seen: Vec<Piece> = Vec::new();
         for sec in &mut self.sections {
@@ -1449,6 +1485,7 @@ mod tests {
             known: View::ALL.to_vec(),
             offered_active: true,
             offered_help: true,
+            offered_user: true,
             switcher_offered: false,
             trial_of: None,
         }
@@ -1598,8 +1635,12 @@ mod tests {
             {"title":"B","mode":"fixed","items":[{"type":"view","view":"inbox","label":"Mail"},{"type":"projects"}]}
         ],"known":["inbox","teleporter"]}"#;
         let s = Sidebar::parse(json).unwrap();
-        // A layout from before the Active list gets it once, over the projects.
-        assert_eq!(names(&s), ["A[Inbox]", "Active[Active]", "B[Projects]"]);
+        // A layout from before the Active list gets it once, over the projects,
+        // and one from before the User row gets that at the end.
+        assert_eq!(
+            names(&s),
+            ["A[Inbox]", "Active[Active]", "B[Projects,User]"]
+        );
         assert_eq!(s.style.variant, Variant::Floating);
         assert_eq!(s.style.side, Side::Right);
         assert!(s.style.badges);
@@ -1656,6 +1697,38 @@ mod tests {
         old.offered_help = false;
         let s = Sidebar::parse(old.to_json().as_bytes()).unwrap();
         assert_eq!(s.preset(), Some(Preset::Focused));
+    }
+
+    #[test]
+    fn the_user_row_is_offered_once_next_to_help() {
+        let mut s = small();
+        s.offered_user = false;
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert_eq!(
+            names(&s),
+            ["A[Search,Inbox]", "B[Projects,Runs]", "C[User,Settings]"]
+        );
+        // Taken out, it stays out.
+        let mut s = s;
+        s.remove((2, 0));
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert!(!s.has(&Piece::User));
+        // A layout saved from an older preset becomes today's preset.
+        for p in [Preset::Focused, Preset::Compact, Preset::Everything] {
+            let mut old = p.layout();
+            let at = old.find(&Piece::User).unwrap();
+            old.remove(at);
+            old.offered_user = false;
+            let s = Sidebar::parse(old.to_json().as_bytes()).unwrap();
+            assert_eq!(s.preset(), Some(p), "{}", p.label());
+        }
+    }
+
+    #[test]
+    fn every_preset_can_sign_in() {
+        for p in Preset::ALL {
+            assert!(p.layout().has(&Piece::User), "{}", p.label());
+        }
     }
 
     #[test]
@@ -1791,6 +1864,7 @@ mod tests {
             known: View::ALL.to_vec(),
             offered_active: true,
             offered_help: true,
+            offered_user: true,
             switcher_offered: false,
             trial_of: None,
         };
@@ -1802,6 +1876,7 @@ mod tests {
             known: vec![],
             offered_active: true,
             offered_help: true,
+            offered_user: true,
             switcher_offered: false,
             trial_of: None,
         };

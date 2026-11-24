@@ -860,15 +860,22 @@ impl Shell {
                 .rounded(crate::ui::rad(8.))
                 .w_full()
                 .text_size(px(ui::TEXT_MD))
-                .text_color(theme::text_subtle())
+                .text_color(theme::text())
                 .cursor_pointer()
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                // Outlined like a button, so signing in doesn't read as a
+                // gray label among the rows.
+                .when(!narrow, |d| {
+                    d.border_1()
+                        .border_color(theme::border())
+                        .font_weight(FontWeight::MEDIUM)
+                })
                 .when(narrow, |d| {
                     d.justify_center()
                         .px(crate::ui::sp(0.))
                         .tooltip(ui::tip("Sign in with GitHub"))
                 })
-                .child(icon("github", 15.).text_color(theme::text_faint()))
+                .child(icon("github", 15.).text_color(theme::text_muted()))
                 .when(!narrow, |d| {
                     d.child(
                         div()

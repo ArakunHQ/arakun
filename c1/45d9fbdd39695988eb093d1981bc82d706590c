@@ -1,0 +1,21 @@
+core/src/agent/thread.rs
+  s_52ad1ac7bad7dd::t_5442d3fc0ff7bd 4484-4485
+  s_52ad1ac7bad7dd::t_cf96cc3c06a382 3000-3001,3005,4483,4486-4489,4567-4574
+  s_52ad1ac7bad7dd::t_585df2951eca30 2993
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c145d9fbdd39695988eb093d1981bc82d706590c",
+  "prompts": {},
+  "sessions": {
+    "s_52ad1ac7bad7dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ded65b4c-f178-43b5-bb92-b9654b24d848",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

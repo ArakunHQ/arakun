@@ -11,7 +11,7 @@ use gpui::{
     Styled, Window, div, prelude::FluentBuilder, px,
 };
 
-use super::{Modal, Shell};
+use super::{ContextMenu, MenuTarget, Modal, Shell};
 use crate::git_dialogs::{ConfirmDialog, GitDialogEvent};
 use crate::model::Status;
 use crate::{git, theme, ui};
@@ -118,8 +118,11 @@ impl Shell {
                 .rail_pick_anchor
                 .clone()
                 .or_else(|| Some(self.env().path.clone()));
+            // An anchor not in the list (the main checkout, a row gone) picks
+            // the row alone, which then anchors the next Shift+click.
+            let anchor = anchor.filter(|a| order.contains(a));
             self.rail_pick = range(&order, anchor.as_deref(), &path);
-            self.rail_pick_anchor = anchor;
+            self.rail_pick_anchor = anchor.or(Some(path));
         } else if modifiers.secondary() {
             if self.rail_pick.is_empty() {
                 // The open row is part of it, as in a file manager; not the
@@ -388,13 +391,8 @@ impl Shell {
         self.forget_envs(&gone, window, cx);
     }
 
-    /// The bar under the picked rows: how many, and what to do with them.
-    pub(super) fn render_pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let picked = self.picked();
-        if picked.is_empty() {
-            return None;
-        }
-        let n = picked.len();
+    /// What the picked rows allow: archive, close and delete.
+    fn pick_allows(&self, picked: &[(usize, usize)]) -> (bool, bool, bool) {
         let envs = || {
             picked
                 .iter()
@@ -407,6 +405,103 @@ impl Shell {
         });
         let can_close = envs().any(|e| !e.sessions.is_empty());
         let can_delete = envs().any(|e| !e.is_checkout);
+        (can_archive, can_close, can_delete)
+    }
+
+    /// A right-click on row `ei` of project `pi`. On a picked row, while more
+    /// than one is picked, the menu acts on all of them, as the bar does.
+    /// Another row drops the pick, so no action reaches rows it does not show.
+    pub(super) fn open_env_menu(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        at: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let on_pick = self
+            .projects
+            .get(pi)
+            .and_then(|p| p.environments.get(ei))
+            .is_some_and(|e| self.is_picked(&e.path));
+        let target = if on_pick && self.picked().len() > 1 {
+            MenuTarget::Picked
+        } else {
+            self.drop_pick();
+            MenuTarget::Env(pi, ei)
+        };
+        self.menu = Some(ContextMenu { target, at });
+        cx.notify();
+    }
+
+    /// The menu of a right-click on one of several picked rows: the bar's
+    /// actions, on all of them.
+    pub(super) fn render_pick_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let picked = self.picked();
+        let n = picked.len();
+        let (can_archive, can_close, can_delete) = self.pick_allows(&picked);
+        let s = plural(n);
+        ui::menu_panel("pick-menu", 240.)
+            .child(
+                div()
+                    .px(ui::sp(8.))
+                    .py(ui::sp(4.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child(format!("{n} environment{s} selected")),
+            )
+            .child(
+                ui::menu_item("pm-archive", "archive02", "Archive", false, can_archive)
+                    .tooltip(ui::tip(
+                        "Hide their sessions and resolve their pull requests' review threads",
+                    ))
+                    .when(can_archive, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            this.archive_picked(cx);
+                        }))
+                    }),
+            )
+            .child(
+                ui::menu_item(
+                    "pm-close",
+                    "cancel-circle",
+                    "Close sessions",
+                    false,
+                    can_close,
+                )
+                .when(can_close, |d| {
+                    d.on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.close_picked(window, cx);
+                    }))
+                }),
+            )
+            .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+            .child(
+                ui::menu_item(
+                    "pm-delete",
+                    "delete02",
+                    format!("Delete {n} environment{s}…"),
+                    true,
+                    can_delete,
+                )
+                .when(can_delete, |d| {
+                    d.on_click(
+                        cx.listener(|this, _, window, cx| this.open_delete_picked(window, cx)),
+                    )
+                }),
+            )
+            .into_any_element()
+    }
+
+    /// The bar under the picked rows: how many, and what to do with them.
+    pub(super) fn render_pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let picked = self.picked();
+        if picked.is_empty() {
+            return None;
+        }
+        let n = picked.len();
+        let (can_archive, can_close, can_delete) = self.pick_allows(&picked);
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
             // gpui has no disabled state to give screen readers: without a
             // click handler the button offers no action, and this says why.

@@ -62,17 +62,20 @@ impl GitAt {
     }
 
     /// The changes and where the branch stands, each with its own error
-    /// here. A server reads both at once.
+    /// here. One `git status` reads both, so they fail together.
     pub fn status(&self) -> (Result<Vec<git::Change>>, Result<git::Sync>) {
-        match self {
-            GitAt::Here(dir) => (git::status(dir), git::sync(dir)),
-            GitAt::Server(_) => match self.call::<Status>(Call::Status) {
-                Ok(s) => (Ok(s.changes), Ok(s.sync)),
-                Err(e) => {
-                    let again = anyhow!("{e}");
-                    (Err(e), Err(again))
-                }
-            },
+        let both = match self {
+            GitAt::Here(dir) => git::status_and_sync(dir),
+            GitAt::Server(_) => self
+                .call::<Status>(Call::Status)
+                .map(|s| (s.changes, s.sync)),
+        };
+        match both {
+            Ok((changes, sync)) => (Ok(changes), Ok(sync)),
+            Err(e) => {
+                let again = anyhow!("{e}");
+                (Err(e), Err(again))
+            }
         }
     }
 

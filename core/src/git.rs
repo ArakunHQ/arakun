@@ -5,6 +5,7 @@
 //! Every call has a time limit ([`GIT_LOCAL`], [`GIT_REMOTE`] or [`GIT_LONG`]): the
 //! background executor has a few threads, and a call that hangs would hold one for good.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
 use std::time::Duration;
@@ -596,69 +597,180 @@ fn diff_base(dir: &Path) -> Result<&'static str> {
 /// Uncommitted changes against HEAD (staged and unstaged together, as the Changes
 /// list shows them), with line counts. Untracked files count all their lines as added.
 pub fn status(dir: &Path) -> Result<Vec<Change>> {
+    Ok(read_status(dir)?.0)
+}
+
+/// The changes and where the branch stands. The Changes list polls this every few
+/// seconds, so one `git status` answers both, and what rarely changes is kept.
+pub fn status_and_sync(dir: &Path) -> Result<(Vec<Change>, Sync)> {
+    let (changes, head) = read_status(dir)?;
+    Ok((changes, sync_from(dir, head)?))
+}
+
+/// What `git status --branch` says about HEAD.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Head {
+    /// HEAD names a commit: false before the first one.
+    born: bool,
+    /// None when HEAD is detached.
+    branch: Option<String>,
+    /// `origin/main`. Git still names it after it was deleted on the remote.
+    upstream: Option<String>,
+    /// Ahead and behind the upstream. None when the upstream is gone.
+    ab: Option<(u32, u32)>,
+}
+
+fn read_status(dir: &Path) -> Result<(Vec<Change>, Head)> {
     let text = stdout(git(dir).args([
         "status",
-        "--porcelain=v1",
+        "--porcelain=v2",
         "-z",
+        "--branch",
         "--untracked-files=all",
         "--no-renames",
     ]))?;
+    let (mut changes, head) = parse_status(&text);
+    if changes.iter().any(|c| c.kind != ChangeKind::Untracked) {
+        let base = if head.born { "HEAD" } else { EMPTY_TREE };
+        let numstat = stdout(git(dir).args(["diff", base, "--numstat", "-z", "--no-renames"]))
+            .unwrap_or_default();
+        let mut counts = HashMap::new();
+        for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
+            let mut f = rec.splitn(3, '\t');
+            let (Some(a), Some(r), Some(p)) = (f.next(), f.next(), f.next()) else {
+                continue;
+            };
+            counts.insert(p, (a.parse().unwrap_or(0), r.parse().unwrap_or(0)));
+        }
+        for c in &mut changes {
+            if let Some(&(a, r)) = counts.get(c.path.as_str()) {
+                c.added = a;
+                c.removed = r;
+            }
+        }
+    }
+    count_untracked(dir, &mut changes);
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((changes, head))
+}
+
+/// Reads `git status --porcelain=v2 -z --branch`.
+fn parse_status(text: &str) -> (Vec<Change>, Head) {
     let mut changes = Vec::new();
+    let mut head = Head {
+        born: true,
+        ..Head::default()
+    };
     let mut parts = text.split('\0').filter(|s| !s.is_empty());
     while let Some(entry) = parts.next() {
-        if entry.len() < 4 {
+        if let Some(header) = entry.strip_prefix("# ") {
+            let (key, value) = header.split_once(' ').unwrap_or((header, ""));
+            match key {
+                "branch.oid" => head.born = value != "(initial)",
+                "branch.head" if value != "(detached)" => head.branch = Some(value.to_string()),
+                "branch.upstream" => head.upstream = Some(value.to_string()),
+                "branch.ab" => {
+                    let mut n = value
+                        .split(' ')
+                        .map(|n| n.trim_start_matches(['+', '-']).parse().unwrap_or(0));
+                    head.ab = Some((n.next().unwrap_or(0), n.next().unwrap_or(0)));
+                }
+                _ => {}
+            }
             continue;
         }
-        let (code, path) = entry.split_at(3);
-        let code = code.as_bytes();
-        let kind = match (code[0], code[1]) {
+        // The fields before the path: the path is last and may hold spaces.
+        let fields = match entry.as_bytes()[0] {
+            b'?' => 1,
+            b'1' => 8,
+            // A rename or copy: its old path is the next entry.
+            b'2' => {
+                parts.next();
+                9
+            }
+            b'u' => 10,
+            // Ignored files, and whatever a later git adds.
+            _ => continue,
+        };
+        let mut f = entry.splitn(fields + 1, ' ');
+        let (Some(kind), Some(path)) = (f.next(), f.nth(fields - 1)) else {
+            continue;
+        };
+        // v2 writes an unchanged side as `.` where v1 wrote a space.
+        let (x, y) = match kind {
+            "?" => (b'?', b'?'),
+            _ => match entry.as_bytes().get(2..4) {
+                Some(&[x, y]) => (x, y),
+                _ => continue,
+            },
+        };
+        let change_kind = match (x, y) {
             (b'?', b'?') => ChangeKind::Untracked,
             (b'A', _) => ChangeKind::Added,
             (b'D', _) | (_, b'D') => ChangeKind::Deleted,
             (b'R', _) => ChangeKind::Renamed,
             _ => ChangeKind::Modified,
         };
-        if code[0] == b'R' || code[0] == b'C' {
-            parts.next();
-        }
-        let untracked = kind == ChangeKind::Untracked;
+        let untracked = change_kind == ChangeKind::Untracked;
         changes.push(Change {
             path: path.to_string(),
-            kind,
+            kind: change_kind,
             added: 0,
             removed: 0,
-            staged: !untracked && code[0] != b' ',
-            unstaged: untracked || code[1] != b' ',
+            staged: !untracked && x != b'.',
+            unstaged: untracked || y != b'.',
         });
     }
-    if changes.is_empty() {
-        return Ok(changes);
-    }
+    (changes, head)
+}
 
-    let numstat =
-        stdout(git(dir).args(["diff", diff_base(dir)?, "--numstat", "-z", "--no-renames"]))
-            .unwrap_or_default();
-    let mut counts = std::collections::HashMap::new();
-    for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
-        let mut f = rec.splitn(3, '\t');
-        let (Some(a), Some(r), Some(p)) = (f.next(), f.next(), f.next()) else {
-            continue;
+/// A file's modified time and size: when both are the same, so is what we read
+/// from it.
+type Stamp = (std::time::SystemTime, u64);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// A folder's untracked files and their line counts.
+type Counted = HashMap<String, (Stamp, u32)>;
+
+/// Line counts of untracked files, by folder. Without them the poll would read every
+/// untracked file again every few seconds: a new build folder git doesn't ignore is
+/// hundreds of MB.
+static UNTRACKED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Counted>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Counts the lines of the untracked files, reading only those that changed since
+/// the last call for `dir`.
+fn count_untracked(dir: &Path, changes: &mut [Change]) {
+    let lock = || {
+        UNTRACKED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    // Taken out, so other folders' polls don't wait while this one reads files.
+    let old = lock().remove(dir).unwrap_or_default();
+    let mut new = HashMap::new();
+    for c in changes
+        .iter_mut()
+        .filter(|c| c.kind == ChangeKind::Untracked)
+    {
+        let path = dir.join(&c.path);
+        let now = stamp(&path);
+        c.added = match old.get(&c.path) {
+            Some(&(was, lines)) if Some(was) == now => lines,
+            _ => count_lines(&path),
         };
-        counts.insert(
-            p.to_string(),
-            (a.parse().unwrap_or(0), r.parse().unwrap_or(0)),
-        );
-    }
-    for c in &mut changes {
-        if c.kind == ChangeKind::Untracked {
-            c.added = count_lines(&dir.join(&c.path));
-        } else if let Some(&(a, r)) = counts.get(&c.path) {
-            c.added = a;
-            c.removed = r;
+        if let Some(now) = now {
+            new.insert(c.path.clone(), (now, c.added));
         }
     }
-    changes.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(changes)
+    // Only what is still untracked is kept, so the cache can't grow past that.
+    if !new.is_empty() {
+        lock().insert(dir.to_path_buf(), new);
+    }
 }
 
 fn count_lines(path: &Path) -> u32 {
@@ -870,14 +982,47 @@ pub struct Sync {
     pub gh: bool,
 }
 
-pub fn sync(dir: &Path) -> Result<Sync> {
-    let mut s = Sync::default();
+/// A folder's remotes and the config file they were read from, with its stamp then.
+#[derive(Clone)]
+struct Remotes {
+    config: PathBuf,
+    stamp: Stamp,
+    list: Vec<(String, String)>,
+}
+
+/// Remotes by folder, read again only when the repository's config changes.
+static REMOTES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Remotes>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Each remote's name and URL. Remotes set outside the repository's own config (an
+/// include or a worktree's config) are seen once that config changes too.
+fn remotes(dir: &Path) -> Result<Vec<(String, String)>> {
+    let lock = || {
+        REMOTES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let cached = lock().get(dir).cloned();
+    let known = cached.and_then(|r| {
+        let now = stamp(&r.config)?;
+        Some((r, now))
+    });
+    let config = match known {
+        Some((r, now)) if r.stamp == now => return Ok(r.list),
+        Some((r, _)) => r.config,
+        // A linked worktree shares the main checkout's config.
+        None => dir
+            .join(stdout(git(dir).args(["rev-parse", "--git-common-dir"]))?.trim_end())
+            .join("config"),
+    };
+    // Stamped before it is read, so a change made during the read is seen next time.
+    let before = stamp(&config);
     // Exits 1 when there are no remotes at all.
     let urls = output(
         git(dir).args(["config", "--get-regexp", r"^remote\..*\.url$"]),
         GIT_LOCAL,
     )?;
-    let mut remotes: Vec<(String, String)> = Vec::new();
+    let mut list = Vec::new();
     for line in String::from_utf8_lossy(&urls.stdout).lines() {
         let Some((key, url)) = line.split_once(' ') else {
             continue;
@@ -886,18 +1031,45 @@ pub fn sync(dir: &Path) -> Result<Sync> {
             .strip_prefix("remote.")
             .and_then(|k| k.strip_suffix(".url"))
         {
-            remotes.push((name.to_string(), url.trim().to_string()));
+            list.push((name.to_string(), url.trim().to_string()));
         }
     }
-    let head = output(
-        git(dir).args(["symbolic-ref", "-q", "--short", "HEAD"]),
-        GIT_LOCAL,
-    );
-    s.branch = head
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|b| !b.is_empty());
+    match before {
+        Some(stamp) if urls.status.code().is_some_and(|c| c <= 1) => {
+            lock().insert(
+                dir.to_path_buf(),
+                Remotes {
+                    config,
+                    stamp,
+                    list: list.clone(),
+                },
+            );
+        }
+        _ => {
+            lock().remove(dir);
+        }
+    }
+    Ok(list)
+}
+
+/// Where the checked-out branch stands against its remote, without the changes.
+pub fn sync(dir: &Path) -> Result<Sync> {
+    let text = stdout(git(dir).args([
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--branch",
+        "--untracked-files=no",
+    ]))?;
+    sync_from(dir, parse_status(&text).1)
+}
+
+fn sync_from(dir: &Path, head: Head) -> Result<Sync> {
+    let mut s = Sync {
+        branch: head.branch,
+        ..Sync::default()
+    };
+    let remotes = remotes(dir)?;
     if remotes.is_empty() {
         return Ok(s);
     }
@@ -905,17 +1077,12 @@ pub fn sync(dir: &Path) -> Result<Sync> {
     let Some(branch) = s.branch.clone() else {
         return Ok(s);
     };
-
-    let track = stdout(git(dir).args([
-        "for-each-ref",
-        "--format=%(upstream:short)%00%(upstream:track,nobracket)",
-        &format!("refs/heads/{branch}"),
-    ]))
-    .unwrap_or_default();
-    let (upstream, track) = track.trim_end().split_once('\0').unwrap_or(("", ""));
-    if !upstream.is_empty() && track != "gone" {
-        s.upstream = Some(upstream.to_string());
+    // An upstream deleted on the remote has no counts: it is no upstream any more.
+    let (track_ahead, behind) = head.ab.unwrap_or_default();
+    if head.ab.is_some() {
+        s.upstream = head.upstream;
     }
+    s.behind = behind;
     let upstream_remote = s.upstream.as_ref().and_then(|u| {
         remotes
             .iter()
@@ -930,15 +1097,6 @@ pub fn sync(dir: &Path) -> Result<Sync> {
         s.github = url.contains("github.com");
         s.published = s.upstream.as_deref() == Some(&format!("{name}/{branch}"));
         s.remote = Some(name);
-    }
-    let mut track_ahead = 0;
-    for part in track.split(',') {
-        let part = part.trim();
-        if let Some(n) = part.strip_prefix("ahead ") {
-            track_ahead = n.parse().unwrap_or(0);
-        } else if let Some(n) = part.strip_prefix("behind ") {
-            s.behind = n.parse().unwrap_or(0);
-        }
     }
     s.ahead = if s.published {
         track_ahead
@@ -2034,6 +2192,128 @@ test: cover the resize\u{1f}\u{1e}\n";
             "https://github.com/ArakunHQ/arakun.git",
         ]);
         assert!(!super::pushes_elsewhere(&dir, "origin"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reads_porcelain_v2_status() {
+        use super::{ChangeKind, Head, parse_status};
+        let text = [
+            "# branch.oid 1234",
+            "# branch.head main",
+            "# branch.upstream origin/main",
+            "# branch.ab +2 -3",
+            "1 .M N... 100644 100644 100644 aaa aaa with space.rs",
+            "1 A. N... 000000 100644 100644 000 bbb new.rs",
+            "1 .D N... 100644 100644 000000 ccc ccc gone.rs",
+            "2 R. N... 100644 100644 100644 ddd ddd R100 moved.rs",
+            "was.rs",
+            "u UU N... 100644 100644 100644 100644 e e e both.rs",
+            "? untracked dir/a b.txt",
+            "! ignored.log",
+            "",
+        ]
+        .join("\0");
+        let (changes, head) = parse_status(&text);
+        assert_eq!(
+            head,
+            Head {
+                born: true,
+                branch: Some("main".into()),
+                upstream: Some("origin/main".into()),
+                ab: Some((2, 3)),
+            }
+        );
+        let got: Vec<_> = changes
+            .iter()
+            .map(|c| (c.path.as_str(), c.kind, c.staged, c.unstaged))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("with space.rs", ChangeKind::Modified, false, true),
+                ("new.rs", ChangeKind::Added, true, false),
+                ("gone.rs", ChangeKind::Deleted, false, true),
+                ("moved.rs", ChangeKind::Renamed, true, false),
+                ("both.rs", ChangeKind::Modified, true, true),
+                ("untracked dir/a b.txt", ChangeKind::Untracked, false, true),
+            ]
+        );
+        let (_, head) = parse_status("# branch.oid (initial)\0# branch.head (detached)\0");
+        assert!(!head.born);
+        assert_eq!(head.branch, None);
+    }
+
+    #[test]
+    fn status_and_sync_follow_the_files_and_the_remote() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "git {args:?}");
+        };
+        let (changes, sync) = super::status_and_sync(&dir).unwrap();
+        assert!(changes.is_empty());
+        assert_eq!(sync.branch.as_deref(), Some("env/brave-otter"));
+        assert_eq!(sync.remote, None);
+
+        // An untracked file is read again once it changes, not before.
+        std::fs::write(dir.join("notes.txt"), "a\nb\n").unwrap();
+        let (changes, _) = super::status_and_sync(&dir).unwrap();
+        assert_eq!(
+            (changes[0].path.as_str(), changes[0].added),
+            ("notes.txt", 2)
+        );
+        std::fs::write(dir.join("notes.txt"), "a\nb\nc\n").unwrap();
+        let (changes, _) = super::status_and_sync(&dir).unwrap();
+        assert_eq!(changes[0].added, 3);
+
+        // A remote added after the first read is seen, and so is the upstream.
+        let bare = dir.with_extension("remote.git");
+        let ok = super::unpinned(&mut Command::new("git"))
+            .args(["init", "-q", "--bare"])
+            .arg(&bare)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        git(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        git(&["push", "-q", "-u", "origin", "env/brave-otter"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "y",
+        ]);
+        let (_, sync) = super::status_and_sync(&dir).unwrap();
+        assert_eq!(sync.remote.as_deref(), Some("origin"));
+        assert_eq!(sync.upstream.as_deref(), Some("origin/env/brave-otter"));
+        assert!(sync.published);
+        assert_eq!((sync.ahead, sync.behind), (1, 0));
+
+        // Deleted on the remote: no upstream, and ahead counts what no remote has.
+        git(&["push", "-q", "origin", ":env/brave-otter"]);
+        let (_, sync) = super::status_and_sync(&dir).unwrap();
+        assert_eq!(sync.upstream, None);
+        assert!(!sync.published);
+        assert_eq!(sync.ahead, 2);
+
+        // Before the first commit, changes diff against the empty tree.
+        git(&["checkout", "-q", "--orphan", "fresh"]);
+        let (changes, sync) = super::status_and_sync(&dir).unwrap();
+        assert_eq!(sync.branch.as_deref(), Some("fresh"));
+        assert!(changes.iter().all(|c| c.path == "notes.txt"));
+        let _ = std::fs::remove_dir_all(&bare);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

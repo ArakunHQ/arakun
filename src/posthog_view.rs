@@ -41,6 +41,7 @@ use gpui::{
 };
 
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::posthog::{self, ApiError, Directory, Overview, Project, Region, Resolved, Session};
 use crate::theme;
 use crate::ui::{self, AreaChart, ButtonKind, Format, Series, Tone, Type, Typography as _, icon};
@@ -116,8 +117,7 @@ pub struct PostHogView {
     root: Option<PathBuf>,
     /// With their credentials: never rendered, only handed to `posthog`.
     sessions: Vec<Session>,
-    directory: Option<Directory>,
-    dir_loading: bool,
+    directory: Loadable<Directory>,
     /// The `phc_` keys in the project's files; None while scanning.
     keys: Option<Vec<String>>,
     current: Option<Project>,
@@ -125,9 +125,7 @@ pub struct PostHogView {
     auto: bool,
     /// Projects whose keys are all in the files.
     candidates: Vec<Project>,
-    overview: Option<Overview>,
-    loading: bool,
-    error: Option<ApiError>,
+    overview: Loadable<Overview, ApiError>,
     /// Unix seconds of the last read asked for.
     asked_at: u64,
     page: Page,
@@ -160,8 +158,6 @@ pub struct PostHogView {
     chart: Entity<AreaChart>,
     focus: FocusHandle,
     scroll: ScrollHandle,
-    _load: Option<Task<()>>,
-    _dir: Option<Task<()>>,
     _scan: Option<Task<()>>,
     _connect: Option<Task<()>>,
     _input: Subscription,
@@ -218,15 +214,12 @@ impl PostHogView {
         Self {
             root: None,
             sessions: posthog::sessions(),
-            directory: posthog::cached_directory(),
-            dir_loading: false,
+            directory: Loadable::new(posthog::cached_directory()),
             keys: None,
             current: None,
             auto: false,
             candidates: Vec::new(),
-            overview: None,
-            loading: false,
-            error: None,
+            overview: Loadable::default(),
             asked_at: 0,
             page: Page::Main,
             tab: Tab::Overview,
@@ -251,8 +244,6 @@ impl PostHogView {
             chart: cx.new(|_| AreaChart::new(96.)),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
-            _load: None,
-            _dir: None,
             _scan: None,
             _connect: None,
             _input: sub,
@@ -274,8 +265,7 @@ impl PostHogView {
         self.keys = None;
         self.current = None;
         self.candidates.clear();
-        self.overview = None;
-        self.error = None;
+        self.overview.reset();
         self.menu = None;
         let root = root.to_path_buf();
         self._scan = Some(cx.spawn(async move |this, cx| {
@@ -303,6 +293,7 @@ impl PostHogView {
         if !self.sessions.is_empty()
             && self
                 .directory
+                .data
                 .as_ref()
                 .is_none_or(|d| now.saturating_sub(d.fetched_at) >= DIRECTORY_STALE)
         {
@@ -311,6 +302,7 @@ impl PostHogView {
         if self.current.is_some()
             && self
                 .overview
+                .data
                 .as_ref()
                 .is_none_or(|o| now.saturating_sub(o.fetched_at) >= STALE)
         {
@@ -326,7 +318,7 @@ impl PostHogView {
         if self.sessions.is_empty() {
             return;
         }
-        let Some(dir) = self.directory.clone() else {
+        let Some(dir) = self.directory.data.clone() else {
             self.refresh_directory(cx);
             return;
         };
@@ -407,11 +399,8 @@ impl PostHogView {
             return;
         }
         self.close_detail();
-        self._load = None;
-        self.loading = false;
         self.asked_at = 0;
-        self.overview = posthog::cached(&p);
-        self.error = None;
+        self.overview = Loadable::new(posthog::cached(&p));
         self.current = Some(p);
         self.sync_tabs(cx);
         self.update_chart(cx);
@@ -444,7 +433,7 @@ impl PostHogView {
 
     fn refresh(&mut self, manual: bool, cx: &mut Context<Self>) {
         let now = crate::model::unix_now();
-        if self.loading || (manual && now.saturating_sub(self.asked_at) < GAP) {
+        if self.overview.loading() || (manual && now.saturating_sub(self.asked_at) < GAP) {
             return;
         }
         let Some(p) = self.current.clone() else {
@@ -456,70 +445,51 @@ impl PostHogView {
             return;
         };
         self.asked_at = now;
-        self.loading = true;
-        cx.notify();
-        let previous = self.overview.clone();
-        self._load = Some(cx.spawn(async move |this, cx| {
-            let project = p.clone();
-            let got = cx
-                .background_spawn(crate::guard::task(async move {
-                    posthog::load_overview(s, &project, previous.as_ref())
-                }))
-                .await;
-            this.update(cx, |this, cx| {
-                this.loading = false;
+        let previous = self.overview.data.clone();
+        let project = p.clone();
+        self.overview.start(
+            cx,
+            |this| &mut this.overview,
+            async move { posthog::load_overview(s, &project, previous.as_ref()) },
+            move |this, got, cx| {
                 if this.current.as_ref() != Some(&p) {
                     return;
                 }
-                match got {
-                    Ok(o) => {
-                        this.overview = Some(o);
-                        this.error = None;
-                    }
-                    Err(e) => this.error = Some(e),
-                }
+                this.overview.settle(got);
                 this.update_chart(cx);
-                cx.notify();
-            })
-            .ok();
-        }));
+            },
+        );
     }
 
     fn refresh_directory(&mut self, cx: &mut Context<Self>) {
-        if self.dir_loading || self.sessions.is_empty() {
+        if self.sessions.is_empty() {
             return;
         }
-        self.dir_loading = true;
-        cx.notify();
         let sessions = self.sessions.clone();
-        self._dir = Some(cx.spawn(async move |this, cx| {
-            let dir = cx
-                .background_spawn(crate::guard::task_or_default(async move {
-                    posthog::load_directory(&sessions)
-                }))
-                .await;
-            this.update(cx, |this, cx| {
-                this.dir_loading = false;
-                this.directory = Some(dir);
+        self.directory.start(
+            cx,
+            |this| &mut this.directory,
+            async move { posthog::load_directory(&sessions) },
+            |this, dir, cx| {
+                this.directory.data = Some(dir);
                 this.sessions = posthog::sessions();
                 // A project that is gone, or a better match, shows up now.
                 if this.current.as_ref().is_none_or(|c| {
                     !this
                         .directory
+                        .data
                         .as_ref()
                         .is_some_and(|d| d.projects.contains(c))
                 }) {
                     this.current = None;
                 }
                 this.resolve(cx);
-                cx.notify();
-            })
-            .ok();
-        }));
+            },
+        );
     }
 
     fn update_chart(&mut self, cx: &mut Context<Self>) {
-        let Some(o) = &self.overview else { return };
+        let Some(o) = &self.overview.data else { return };
         if o.hourly.len() != posthog::HOURS {
             return;
         }
@@ -683,13 +653,14 @@ impl PostHogView {
         };
         let updated = self
             .overview
+            .data
             .as_ref()
             .filter(|_| self.current.is_some())
             .map(|o| crate::memory::ago(o.fetched_at, now));
         let can_refresh = self.current.is_some() && now.saturating_sub(self.asked_at) >= GAP;
         let refresh = ui::refresh_control(
             "ph-refresh",
-            self.loading || self.dir_loading,
+            self.overview.loading() || self.directory.loading(),
             updated,
             cx.listener(move |this, _, _, cx| {
                 if can_refresh {
@@ -768,7 +739,7 @@ impl PostHogView {
     /// Overview · Events · People · Flags 14 · Experiments · Errors 9 · Ask,
     /// and the project's host at the right.
     fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
-        let o = self.overview.as_ref();
+        let o = self.overview.data.as_ref();
         let mut strip = ui::segmented();
         for (i, tab) in Tab::ALL.into_iter().enumerate() {
             let n = match tab {
@@ -818,7 +789,7 @@ impl PostHogView {
         menu: bool,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(dir) = &self.directory else {
+        let Some(dir) = &self.directory.data else {
             return Vec::new();
         };
         let mut rows = Vec::new();
@@ -873,7 +844,7 @@ impl PostHogView {
                             "refresh01",
                             "Read the project list again",
                             false,
-                            !self.dir_loading,
+                            !self.directory.loading(),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.menu = None;
@@ -894,7 +865,8 @@ impl PostHogView {
 
     /// No project picked yet: scanning, or asking which one this is.
     fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
-        let waiting = self.keys.is_none() || (self.directory.is_none() && self.dir_loading);
+        let waiting =
+            self.keys.is_none() || (self.directory.data.is_none() && self.directory.loading());
         if waiting {
             return ui::loading("Looking for this project's PostHog key…").into_any_element();
         }
@@ -928,7 +900,7 @@ impl PostHogView {
             .child(ui::text(Type::Body, theme::text_muted(), why))
             .when(keys == 0, |d| d.child(self.setup_draft(cx)))
             .when(empty, |d| {
-                d.child(quiet(if self.dir_loading {
+                d.child(quiet(if self.directory.loading() {
                     "Reading your projects…"
                 } else {
                     "Your accounts don't see any project yet."
@@ -950,7 +922,7 @@ impl PostHogView {
     }
 
     fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
-        let state = match &self.error {
+        let state = match &self.overview.error {
             None => return ui::loading("Reading PostHog…").into_any_element(),
             Some(ApiError::SignedOut(why)) => ui::empty_state(
                 "square-lock02",
@@ -1029,11 +1001,11 @@ impl PostHogView {
             return self.render_accounts(cx);
         }
         if self.current.is_some()
-            && let (Some(o), Some(d)) = (&self.overview, &self.detail)
+            && let (Some(o), Some(d)) = (&self.overview.data, &self.detail)
         {
             return self.render_detail(d, o, cx);
         }
-        match (&self.current, &self.overview, self.tab) {
+        match (&self.current, &self.overview.data, self.tab) {
             (None, _, _) => self.render_picker(cx),
             (Some(_), _, Tab::Events) => self.events.clone().into_any_element(),
             (Some(_), _, Tab::People) => self.people.clone().into_any_element(),

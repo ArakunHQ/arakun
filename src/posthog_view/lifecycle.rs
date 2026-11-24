@@ -143,8 +143,7 @@ impl PostHogView {
                 if this.current.as_ref() != Some(&p) {
                     return;
                 }
-                this._load = None;
-                this.loading = false;
+                this.overview.cancel();
                 this.refresh(false, cx);
                 let open = this.exp_change.as_mut().filter(|e| e.busy && e.seq == seq);
                 match (open, result) {

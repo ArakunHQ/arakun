@@ -16,6 +16,10 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
   only of what breaks.
 - **Send a pull request.** For anything bigger than a small fix, open an issue first so
   we can agree on the approach before you spend time on it.
+- **Coding agents track every task in an issue.** Before it changes anything, the agent
+  finds or opens the issue, assigns it to the person running the agent while it works,
+  keeps the plan and progress in it up to date, and links the pull request. AGENTS.md
+  has the commands.
 
 **Security problems:** do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 

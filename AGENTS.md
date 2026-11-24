@@ -22,6 +22,23 @@ Code on the web, `.claude/settings.json` runs it when the session starts, and th
 in `$TMPDIR/arakun-setup-dev.log` (`/tmp` if `TMPDIR` is not set). Build without the
 browser (`--no-default-features`), as CI does.
 
+## Tracking work in issues
+
+Every task you work on has a GitHub issue, so the team sees who is doing what.
+
+- Before you change anything, find the issue (`gh issue list --search "<words>"`) or
+  open one with `gh issue create`: what is wrong or missing, and the plan. One issue
+  per fix or feature, like the pull requests.
+- Assign it to the person running you as soon as you start:
+  `gh issue edit <number> --add-assignee "@me"` (`@me` is the account `gh` is
+  logged in as).
+- Keep it current while you work: edit the body when the plan or scope changes, and
+  comment on decisions, blockers and anything you found that a reader would need.
+- Link the pull request with `Closes #<number>` (`Refs #<number>` for part of the
+  work), as the template asks.
+- If you stop before it is done, comment where you stopped and what is left, then
+  `gh issue edit <number> --remove-assignee "@me"`.
+
 ## Commits and pull requests
 
 Every commit message and pull request title follows

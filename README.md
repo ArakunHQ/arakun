@@ -1520,9 +1520,10 @@ for two minutes and pairs one device. There are two ways to use it:
   the open environment's machine. To spread them instead, turn on **Spread across
   machines** in the Servers tab: a new environment then goes to a connected machine
   that has the project, This computer included, picking the least busy one (the fewest
-  sessions at work). Set each machine to Prefer, Normal or Avoid there: a preferred
-  machine takes new environments before the others, and an avoided one only when no other
-  can. The New environment dialog starts on that machine too, and a first prompt stays
+  sessions at work). Set each machine to Prefer, Normal, Avoid or Off there: a preferred
+  machine takes new environments before the others, an avoided one only when no other
+  can, and one that is off never does (you can still pick it in the dialog). When every
+  machine is off, a new environment goes to the open environment's machine. The New environment dialog starts on that machine too, and a first prompt stays
   on the machine it was written on. This is kept in `servers-balance.json`. A new environment on a server goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a

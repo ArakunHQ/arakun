@@ -30,6 +30,8 @@ name: Cloud deploy
 #   A commit that is not on main gets a warning: the next release deploys
 #   main, and a fix only on the hotfix branch would go away again.
 #
+# A manual run on any other ref, such as main, fails and names the tag to use.
+#
 # Whatever the way in, only the latest published release, or a hotfix branch
 # made from it, deploys. So re-running an old release's run can't put an old
 # Worker back.
@@ -54,6 +56,27 @@ on:
 permissions: {}
 
 jobs:
+  # A manual run on main (the default in the Actions tab) would skip the deploy
+  # below and show no reason. Fail instead, and say which ref to run it on.
+  wrong-ref:
+    name: Check the ref
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && !(startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))
+      && !startsWith(github.ref, 'refs/heads/cloud-hotfix/v')
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          latest=$(gh release view --json tagName --jq .tagName || echo 'v<latest>')
+          echo "::error::$REF does not deploy. A release deploys from its v* tag: run this on the latest release's tag (gh workflow run cloud-deploy.yml --ref $latest), or on a cloud-hotfix/$latest branch. To ship what is on main, publish a release."
+          exit 1
+
   deploy:
     name: Deploy the cloud Worker
     # Pre-releases don't deploy; a branch other than a hotfix one never does.

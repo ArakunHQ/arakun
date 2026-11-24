@@ -191,8 +191,8 @@ struct Row {
 /// that tie keep the environments' order.
 fn sort_rows(rows: &mut [Row], sort: Sort) {
     match sort {
-        Sort::Latest => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
-        Sort::Title => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
+        Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
+        Sort::Name => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
         Sort::Environment => {}
     }
 }
@@ -732,25 +732,37 @@ impl Shell {
             )
     }
 
-    /// Switches the tree to the next order. It says the order in use, as
-    /// the icon alone can't.
-    pub(super) fn tree_sort_button(
-        &self,
-        id: &'static str,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let layout = crate::tab_layout::current();
-        let next = layout.with(|l| l.sort = l.sort.next());
-        super::rail::heading_icon_button(
-            id,
-            "sorting01",
-            format!("Sort sessions: {}", layout.sort.label()),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-            cx.stop_propagation();
-            this.drop_pick();
-            this.apply_tab_layout(next, None, cx)
-        }))
+    /// The order in use, which the icon alone can't say, and the button
+    /// that opens the menu to pick another (`render_tree_sort_menu`).
+    pub(super) fn tree_sort_button(&self, id: &'static str, cx: &mut Context<Self>) -> gpui::Div {
+        let sort = crate::tab_layout::current().sort;
+        let open = matches!(
+            self.menu.as_ref().map(|m| m.target),
+            Some(MenuTarget::TreeSort)
+        );
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(4.))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child(sort.label()),
+            )
+            .child(
+                super::rail::heading_icon_button(
+                    id,
+                    "sorting01",
+                    format!("Sort sessions: {}", sort.label()),
+                )
+                .when(open, |d| d.bg(theme::fill_selected()))
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_composer_menu(MenuTarget::TreeSort, ev.position(), cx)
+                })),
+            )
     }
 
     fn render_tree_project(
@@ -1132,8 +1144,8 @@ mod tests {
             r.into_iter().map(|r| r.id.to_string()).collect::<Vec<_>>()
         };
         // A tie keeps the listed order.
-        assert_eq!(ids(Sort::Latest), ["b", "d", "c", "a"]);
-        assert_eq!(ids(Sort::Title), ["c", "d", "b", "a"]);
+        assert_eq!(ids(Sort::Recent), ["b", "d", "c", "a"]);
+        assert_eq!(ids(Sort::Name), ["c", "d", "b", "a"]);
         assert_eq!(ids(Sort::Environment), ["a", "b", "c", "d"]);
     }
 

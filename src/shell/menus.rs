@@ -303,6 +303,11 @@ impl Shell {
                 .map(MenuKey::Rail)
                 .chain([MenuKey::OpenUsage])
                 .collect(),
+            MenuTarget::TreeSort => crate::tab_layout::Sort::ALL
+                .into_iter()
+                .map(MenuKey::TreeSort)
+                .chain([MenuKey::TreeGroup, MenuKey::TreeArchived])
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -360,6 +365,22 @@ impl Shell {
             MenuKey::OpenUsage => {
                 self.menu = None;
                 self.open_usage_tab(window, cx);
+            }
+            // The tree's menu stays open: the tree changes beside it, and
+            // the next row is one click away.
+            MenuKey::TreeSort(sort) => {
+                self.drop_pick();
+                let layout = crate::tab_layout::current().with(|l| l.sort = sort);
+                self.apply_tab_layout(layout, None, cx);
+            }
+            MenuKey::TreeGroup => {
+                self.drop_pick();
+                let layout = crate::tab_layout::current().with(|l| l.group = !l.group);
+                self.apply_tab_layout(layout, None, cx);
+            }
+            MenuKey::TreeArchived => {
+                self.drop_pick();
+                self.show_settled = !self.show_settled;
             }
         }
     }
@@ -493,6 +514,7 @@ impl Shell {
             MenuKey::Choice(agent, s, id, _) => self
                 .agent_choices(*agent, *s, cx)
                 .is_some_and(|(c, _)| c == *id),
+            MenuKey::TreeSort(sort) => crate::tab_layout::current().sort == *sort,
             _ => false,
         }
     }
@@ -559,6 +581,47 @@ impl Shell {
                         this.menu_run(MenuKey::OpenUsage, window, cx)
                     }),
                 ),
+            )
+    }
+
+    /// The tree's menu: the order of its sessions, then the two switches
+    /// for what it lists. Settings has the order and the grouping too, and
+    /// the end of the tree shows the archived sessions as well.
+    pub(super) fn render_tree_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::tab_layout::Sort;
+        let layout = crate::tab_layout::current();
+        let orders = Sort::ALL.len();
+        ui::menu_panel("tree-sort-menu", 240.)
+            .child(ui::menu_heading("Order sessions by"))
+            .children(Sort::ALL.into_iter().enumerate().map(|(i, sort)| {
+                ui::choice_row(("tree-sort-order", i), sort.label(), layout.sort == sort)
+                    .child(div().flex_1().child(sort.label()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(sort.hint()),
+                    )
+                    .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeSort(sort), window, cx)
+                    }))
+            }))
+            .child(ui::menu_divider())
+            .child(
+                ui::switch_row("tree-sort-group", "Group by project", layout.group)
+                    .when(self.menu_focus(orders), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeGroup, window, cx)
+                    })),
+            )
+            .child(
+                ui::switch_row("tree-sort-archived", "Show archived", self.show_settled)
+                    .when(self.menu_focus(orders + 1), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeArchived, window, cx)
+                    })),
             )
     }
 
@@ -1229,6 +1292,7 @@ impl Shell {
             MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
             MenuTarget::Picked => return self.render_pick_menu(cx),
             MenuTarget::TreePicked => return self.render_tree_pick_menu(cx),
+            MenuTarget::TreeSort => return self.render_tree_sort_menu(cx).into_any_element(),
             MenuTarget::MoreTabs => return self.render_more_menu(cx),
             MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Help => return self.render_help_menu(cx),

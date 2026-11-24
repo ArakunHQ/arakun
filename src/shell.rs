@@ -250,6 +250,9 @@ enum MenuTarget {
     Picked,
     /// Several sessions of the tree picked at once (`tree_pick`).
     TreePicked,
+    /// The order of the tree's sessions and what it lists, from the button
+    /// in its heading.
+    TreeSort,
     /// The pinned tabs that don't fit the title bar.
     MoreTabs,
     /// The tree of sessions, from the title bar while the sidebar is hidden.
@@ -288,6 +291,12 @@ enum MenuKey {
     /// Shows or hides a provider in the rail's usage card.
     Rail(AgentKind),
     OpenUsage,
+    /// Puts the tree's sessions in this order.
+    TreeSort(crate::tab_layout::Sort),
+    /// Whether each project heads its own sessions in the tree.
+    TreeGroup,
+    /// Whether the tree lists archived sessions too.
+    TreeArchived,
 }
 
 /// Opens a view, once what it needs is there (`Shell::pick_project_for`).

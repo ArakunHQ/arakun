@@ -145,8 +145,16 @@ impl Shell {
         let (pi, ei, id) = (row.project, row.env, s.id.clone());
         let picked = self.is_picked(&env.path);
         let path = env.path.clone();
+        // As the context menu's Archive: not while it works.
+        let can_archive = !s.settled && s.status != Status::Working && env.remote.is_none();
+        let (archive_path, archive_id) = (env.path.clone(), s.id.to_string());
+        // From the shell's state, not `group_hover`: that one only paints, and
+        // the title needs the room the project name gives up.
+        let archive_shown = can_archive && self.active_hover.as_ref() == Some(&s.id);
+        let hovered = s.id.clone();
         div()
             .id(SharedString::from(format!("active-{pi}-{ei}-{}", s.id)))
+            .relative()
             .flex()
             .items_center()
             .gap(crate::ui::sp(8.))
@@ -185,16 +193,58 @@ impl Shell {
                     })
                     .when(!picked, |d| d.child(status_dot(s.shown_status()))),
             )
-            .child(div().flex_1().min_w_0().truncate().child(title))
             .child(
                 div()
-                    .flex_none()
-                    .max_w(px(88.))
+                    .flex_1()
+                    .min_w_0()
                     .truncate()
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(theme::text_faint())
-                    .child(project.name.clone()),
+                    // Room for the archive button, so it never covers the title.
+                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
+                    .child(title),
             )
+            .when(!archive_shown, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .max_w(px(88.))
+                        .truncate()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(project.name.clone()),
+                )
+            })
+            // On hover, the project name gives way to an archive button.
+            .when(archive_shown, |d| {
+                d.child(
+                    div().absolute().right(crate::ui::sp(4.)).child(
+                        icon_button(
+                            SharedString::from(format!("active-archive-{pi}-{ei}-{}", s.id)),
+                            "archive02",
+                            14.,
+                            "Archive",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.archive_sessions(
+                                &archive_path,
+                                std::slice::from_ref(&archive_id),
+                                cx,
+                            );
+                        })),
+                    ),
+                )
+            })
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                if *over {
+                    this.active_hover = Some(hovered.clone());
+                } else if this.active_hover.as_ref() == Some(&hovered) {
+                    this.active_hover = None;
+                } else {
+                    return;
+                }
+                // The archive button comes and goes with the pointer.
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 // Picks its worktree for the bar's actions, as in the list below.
                 let m = ev.modifiers();

@@ -1,0 +1,21 @@
+.github/workflows/cloud-deploy.yml
+  s_7882842d95a716::t_1815dd5c9c35c1 33-34
+  s_7882842d95a716::t_d1dab081f47950 59-66,68-79
+  s_7882842d95a716::t_ef60c0753fd100 67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "82b368cb2198a2d9dfe2ef7380f908866e00a3e9",
+  "prompts": {},
+  "sessions": {
+    "s_7882842d95a716": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e29d2e2-218d-4d40-8210-38648d3b544a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

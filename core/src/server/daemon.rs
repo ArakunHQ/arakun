@@ -577,7 +577,7 @@ pub(super) fn make_private_dir(dir: &Path) -> std::io::Result<()> {
 fn not_signed_in(reach: Reach, signed_in: Option<&SignIn>) -> Option<String> {
     (reach == Reach::Relay && signed_in.is_none()).then(|| {
         format!(
-            "Not signed in. Run `{name} login`, or serve without an account:\n  {name} serve --reach lan\n  {name} serve --reach tailscale",
+            "Not signed in. {SINCE_ACCOUNTS} Run `{name} login`, or serve without an account:\n  {name} serve --reach lan\n  {name} serve --reach tailscale",
             name = super::name()
         )
     })
@@ -661,10 +661,16 @@ fn start_relay(
     )
 }
 
+/// For a server upgraded from before accounts, whose devices came in by link.
+const SINCE_ACCOUNTS: &str = "Since 0.19 the relay lets a server in only with a GitHub sign-in, and pairing links no longer work.";
+
 /// What the relay says when it has no session of this server's, or no
 /// longer takes the one it has.
 fn signed_out_text() -> String {
-    format!("not signed in; run `{} login`", super::name())
+    format!(
+        "not signed in; run `{name} login`, or serve over Tailscale with `{name} serve --reach tailscale`",
+        name = super::name()
+    )
 }
 
 /// Why the relay has the server signed out, with the command that helps: when
@@ -5545,7 +5551,7 @@ mod tests {
         assert_eq!(
             not_signed_in(Reach::Relay, None),
             Some(format!(
-                "Not signed in. Run `{name} login`, or serve without an account:\n  {name} serve --reach lan\n  {name} serve --reach tailscale"
+                "Not signed in. {SINCE_ACCOUNTS} Run `{name} login`, or serve without an account:\n  {name} serve --reach lan\n  {name} serve --reach tailscale"
             ))
         );
         assert_eq!(not_signed_in(Reach::Relay, Some(&octocat())), None);

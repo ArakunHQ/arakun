@@ -146,7 +146,8 @@ The app asks first ("Open <host> in the browser?"), since any app or web page ca
 such a link, then hands it to the browser.
 
 The relay's old pairing links and the ticket they gave are gone: the first launch after
-the update deletes the stored ones, and an `arakun://pair?link=` link to the relay only
+the update deletes the stored ones (the sign-in screen then says why, until a sign-in
+works), and an `arakun://pair?link=` link to the relay only
 says "Relay links are no longer used. Sign in to reach your computers."
 
 ## What it does

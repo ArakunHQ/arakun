@@ -88,6 +88,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** The account's session on this phone; null shows the sign-in screen. */
     var account by mutableStateOf<AccountSession?>(null)
         private set
+
+    /** This phone was paired by link before sign-in, and that was forgotten: the sign-in screen says why. */
+    var pairedByLink by mutableStateOf(false)
+        private set
+
     var me by mutableStateOf<Me?>(null)
         private set
     var machines by mutableStateOf<List<Machine>>(emptyList())
@@ -192,6 +197,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             return
         }
         keeper.forgetOldPairing()
+        pairedByLink = keeper.pairedByLink
         account = keeper.load()
         if (account != null) loadAccount(reopen = true)
     }
@@ -244,6 +250,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
                 signingIn = null
                 account = s
+                keeper.pairedByLink = false
+                pairedByLink = false
                 loadAccount(reopen = true)
             } catch (e: AccountError) {
                 // Cancelled meanwhile: the person no longer waits for an answer.

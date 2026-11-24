@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import com.arakun.android.AppModel
 import com.arakun.android.R
+import com.arakun.kit.LinkKind
 
 /**
  * The first screen: sign in with GitHub to reach the account's computers
@@ -86,6 +87,9 @@ fun SignInScreen(model: AppModel) {
                         "Sign in with the GitHub account you use in Arakun on your computer.",
                         style = Type.callout,
                     )
+                    if (model.pairedByLink) {
+                        Text(LinkKind.PAIRED_BY_LINK, style = Type.small, color = c.textMuted)
+                    }
                     PrimaryButton(onClick = model::signIn, modifier = Modifier.fillMaxWidth()) {
                         Text("Sign in with GitHub")
                     }

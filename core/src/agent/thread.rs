@@ -2990,18 +2990,19 @@ impl Thread {
 
     /// Stops the running turn (`session/cancel`), and the subagents running in
     /// the background with it. Queued prompts wait until resumed, those sent
-    /// now too: they stay in the queue.
+    /// now too: they stay in the queue. With no turn running, the queue goes on.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.remote {
             cx.emit(ThreadEvent::Remote(RemoteAction::Cancel));
             return;
         }
         self.urgent = 0;
-        if !self.queue.is_empty() {
+        let stopping = self.is_busy() || self.in_background();
+        if pauses_on_cancel(stopping, self.queue.len()) {
             self.queue_paused = true;
             self.meta_changed(cx);
         }
-        if !self.is_busy() && !self.in_background() {
+        if !stopping {
             return;
         }
         let (Some(conn), Some(id)) = (self.conn.clone(), self.session_id.clone()) else {
@@ -4479,6 +4480,13 @@ fn put_next(queue: &mut Vec<String>, urgent: &mut usize, prompt: String) {
     *urgent += 1;
 }
 
+/// Whether a cancel pauses the queue: only when it stops a turn. With none
+/// running, the prompts that wait are waiting for the agent to start, and an
+/// Esc then (on a server's session too) must not hold them back.
+fn pauses_on_cancel(stopping: bool, queued: usize) -> bool {
+    stopping && queued > 0
+}
+
 /// The next queued prompt to send: one sent now goes even while the queue is paused.
 fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Option<String> {
     if queue.is_empty() || (paused && *urgent == 0) {
@@ -4556,6 +4564,14 @@ pub fn staged_notice(staged: Result<Vec<String>, String>) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cancel_pauses_the_queue_only_when_it_stops_a_turn() {
+        assert!(pauses_on_cancel(true, 2));
+        assert!(!pauses_on_cancel(true, 0));
+        // The first prompt, waiting for the agent to start.
+        assert!(!pauses_on_cancel(false, 1));
+    }
+
     #[test]
     fn a_partial_config_update_keeps_the_other_options() {
         use super::{merge_config, parse_config};

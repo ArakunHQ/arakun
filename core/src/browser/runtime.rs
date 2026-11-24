@@ -410,6 +410,10 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     // CEF compares the resolved root_cache_path with cache_path as given: under a link
     // (macOS' /tmp is one to /private/tmp) they differ and the profile is dropped for memory.
     let profile = crate::platform::canonicalize(&profile).unwrap_or(profile);
+    // CEF starts cef.log afresh on every launch. A failed Chromium check takes the app
+    // down with its reason as the last line there, and the restart that follows would
+    // erase it, so the last run's log is kept beside the new one.
+    let _ = std::fs::rename(profile.join("cef.log"), profile.join("cef.previous.log"));
     let spanish = std::env::var("LANG").is_ok_and(|l| l.starts_with("es"));
     let path = |p: PathBuf| cef::CefString::from(p.to_string_lossy().as_ref());
     // macOS reads the resources and locales from inside the framework.

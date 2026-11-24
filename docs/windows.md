@@ -293,7 +293,7 @@ Manager (Windows Credentials, Generic Credentials).
   `%LOCALAPPDATA%\arakun\bin` does not need it. If the tab says it cannot find the
   runtime, `libcef.dll` is missing next to `arakun.exe` (build again) or `ARAKUN_CEF_DIR`
   points at another folder. The browser profile lives in `%LOCALAPPDATA%\arakun\browser\`
-  and the CEF log in `cef.log` inside it.
+  and the CEF log in `cef.log` inside it (`cef.previous.log` is the run before).
 - **The terminal tab name does not follow the foreground program.** On Linux Arakun reads
   it from the PTY (`tcgetpgrp`); ConPTY does not expose it, so the tab keeps the shell's
   name.

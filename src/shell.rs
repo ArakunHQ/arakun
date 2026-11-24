@@ -246,6 +246,10 @@ enum MenuTarget {
     ProjectSwitch,
     /// A session of the sidebar's tree: project, environment, session.
     TreeSession(usize, usize, usize),
+    /// Several rows of the projects list picked at once (`rail_pick`).
+    Picked,
+    /// Several sessions of the tree picked at once (`tree_pick`).
+    TreePicked,
     /// The pinned tabs that don't fit the title bar.
     MoreTabs,
     /// The tree of sessions, from the title bar while the sidebar is hidden.

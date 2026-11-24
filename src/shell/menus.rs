@@ -1227,6 +1227,8 @@ impl Shell {
             MenuTarget::RailSection(i) => return self.render_rail_section_menu(i, cx),
             MenuTarget::ProjectSwitch => return self.render_project_switch_menu(cx),
             MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
+            MenuTarget::Picked => return self.render_pick_menu(cx),
+            MenuTarget::TreePicked => return self.render_tree_pick_menu(cx),
             MenuTarget::MoreTabs => return self.render_more_menu(cx),
             MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Help => return self.render_help_menu(cx),

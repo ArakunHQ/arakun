@@ -1170,11 +1170,7 @@ impl Shell {
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                             cx.stop_propagation();
-                            this.menu = Some(ContextMenu {
-                                target: MenuTarget::Env(pi, ei),
-                                at: ev.position,
-                            });
-                            cx.notify();
+                            this.open_env_menu(pi, ei, ev.position, cx);
                         }),
                     )
                     .on_click(
@@ -1410,11 +1406,7 @@ impl Shell {
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    this.menu = Some(ContextMenu {
-                        target: MenuTarget::Env(pi, ei),
-                        at: ev.position,
-                    });
-                    cx.notify();
+                    this.open_env_menu(pi, ei, ev.position, cx);
                 }),
             )
             .group("env-row")

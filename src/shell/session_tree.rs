@@ -309,11 +309,15 @@ impl Shell {
                 .tree_pick_anchor
                 .clone()
                 .or_else(|| self.active_session_id());
+            // Without a listed anchor the row is picked alone and anchors
+            // the next Shift+click.
+            let anchor = anchor.filter(|a| order.contains(a));
             for id in pick_range(&order, anchor.as_ref(), &id) {
                 if !self.tree_pick.contains(&id) {
                     self.tree_pick.push(id);
                 }
             }
+            self.tree_pick_anchor = anchor.or(Some(id));
         } else {
             match self.tree_pick.iter().position(|p| *p == id) {
                 Some(i) => {
@@ -388,6 +392,107 @@ impl Shell {
         out
     }
 
+    /// What the picked sessions allow: archive and close.
+    fn tree_pick_allows(&self, picked: &[(usize, usize, SharedString)]) -> (bool, bool) {
+        let can_archive = picked.iter().any(|(pi, ei, id)| {
+            let env = &self.projects[*pi].environments[*ei];
+            env.session_index(id)
+                .and_then(|i| env.sessions.get(i))
+                .is_some_and(|s| !s.settled && s.status != Status::Working && env.remote.is_none())
+        });
+        let can_close = picked
+            .iter()
+            .any(|(_, _, id)| self.strip.session_tab(id).is_some());
+        (can_archive, can_close)
+    }
+
+    /// A right-click on session `si` of the tree. On a picked session, while
+    /// more than one is picked, the menu acts on all of them, as the bar
+    /// does. Another session drops the pick.
+    fn open_tree_menu(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        si: usize,
+        at: gpui::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let on_pick = self
+            .projects
+            .get(pi)
+            .and_then(|p| p.environments.get(ei))
+            .and_then(|e| e.sessions.get(si))
+            .is_some_and(|s| self.tree_pick.contains(&s.id));
+        let target = if on_pick && self.tree_picked().len() > 1 {
+            MenuTarget::TreePicked
+        } else {
+            self.drop_pick();
+            MenuTarget::TreeSession(pi, ei, si)
+        };
+        self.menu = Some(ContextMenu { target, at });
+        cx.notify();
+    }
+
+    /// The menu of a right-click on one of several picked sessions: the
+    /// bar's actions, on all of them.
+    pub(super) fn render_tree_pick_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let picked = self.tree_picked();
+        let n = picked.len();
+        let (can_archive, can_close) = self.tree_pick_allows(&picked);
+        let all_pinned = picked.iter().all(|(_, _, id)| self.is_pinned(id));
+        ui::menu_panel("tree-pick-menu", 240.)
+            .child(
+                div()
+                    .px(crate::ui::sp(8.))
+                    .py(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child(format!("{n} sessions selected")),
+            )
+            .when(crate::tab_layout::current().pinned_bar(), |d| {
+                d.child(
+                    ui::menu_item(
+                        "tpm-pin",
+                        if all_pinned { "pin-off" } else { "pin" },
+                        if all_pinned {
+                            "Unpin from the title bar"
+                        } else {
+                            "Pin to the title bar"
+                        },
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.menu = None;
+                        this.pin_tree_picked(cx);
+                    })),
+                )
+            })
+            .child(
+                ui::menu_item("tpm-archive", "archive02", "Archive", false, can_archive).when(
+                    can_archive,
+                    |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            this.archive_tree_picked(cx);
+                        }))
+                    },
+                ),
+            )
+            .child(
+                ui::menu_item("tpm-close", "cancel-circle", "Close tabs", false, can_close).when(
+                    can_close,
+                    |d| {
+                        d.on_click(cx.listener(|this, _, window, cx| {
+                            this.menu = None;
+                            this.close_tree_picked(window, cx);
+                        }))
+                    },
+                ),
+            )
+            .into_any_element()
+    }
+
     /// "N selected" and what to do with the picked sessions, under the tree.
     fn render_tree_pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let picked = self.tree_picked();
@@ -395,17 +500,7 @@ impl Shell {
             return None;
         }
         let n = picked.len();
-        let sessions = || {
-            picked.iter().filter_map(|(pi, ei, id)| {
-                let env = &self.projects[*pi].environments[*ei];
-                Some((env, env.sessions.get(env.session_index(id)?)?))
-            })
-        };
-        let can_archive = sessions()
-            .any(|(e, s)| !s.settled && s.status != Status::Working && e.remote.is_none());
-        let can_close = picked
-            .iter()
-            .any(|(_, _, id)| self.strip.session_tab(id).is_some());
+        let (can_archive, can_close) = self.tree_pick_allows(&picked);
         let pin_bar = crate::tab_layout::current().pinned_bar();
         let all_pinned = picked.iter().all(|(_, _, id)| self.is_pinned(id));
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
@@ -898,11 +993,7 @@ impl Shell {
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    this.menu = Some(ContextMenu {
-                        target: MenuTarget::TreeSession(pi, ei, si),
-                        at: ev.position,
-                    });
-                    cx.notify();
+                    this.open_tree_menu(pi, ei, si, ev.position, cx);
                 }),
             )
     }

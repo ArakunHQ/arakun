@@ -2,7 +2,8 @@
 //! computer and the paired servers that have the project. Each machine has a
 //! preference. A new environment goes to the most preferred group and, within
 //! it, to the machine with the fewest sessions at work. An avoided machine
-//! gets one only when no other machine can take it.
+//! gets one only when no other machine can take it, and a machine that is
+//! off never gets one this way; it can still be chosen by hand.
 //!
 //! Kept in `servers-balance.json` beside `servers.json`, so that file keeps
 //! its format and an older app still reads it.
@@ -20,13 +21,16 @@ pub enum Preference {
     #[default]
     Normal,
     Avoided,
+    /// Left out when new environments are spread.
+    Off,
 }
 
 impl Preference {
-    pub const ALL: [Preference; 3] = [
+    pub const ALL: [Preference; 4] = [
         Preference::Preferred,
         Preference::Normal,
         Preference::Avoided,
+        Preference::Off,
     ];
 
     pub fn label(self) -> &'static str {
@@ -34,15 +38,17 @@ impl Preference {
             Preference::Preferred => "Prefer",
             Preference::Normal => "Normal",
             Preference::Avoided => "Avoid",
+            Preference::Off => "Off",
         }
     }
 
-    /// Lower goes first.
-    fn rank(self) -> u8 {
+    /// Lower goes first; `None` is never picked.
+    fn rank(self) -> Option<u8> {
         match self {
-            Preference::Preferred => 0,
-            Preference::Normal => 1,
-            Preference::Avoided => 2,
+            Preference::Preferred => Some(0),
+            Preference::Normal => Some(1),
+            Preference::Avoided => Some(2),
+            Preference::Off => None,
         }
     }
 }
@@ -100,13 +106,14 @@ pub struct Candidate {
 /// The index of the candidate a new environment goes to: the most preferred
 /// group first, then the fewest sessions at work. On a tie the earlier one
 /// wins, so callers list the open environment's machine first and nothing
-/// moves while the machines are equal.
+/// moves while the machines are equal. `None` when every one is off.
 pub fn pick(candidates: &[Candidate]) -> Option<usize> {
     candidates
         .iter()
         .enumerate()
-        .min_by_key(|(i, c)| (c.preference.rank(), c.busy, *i))
-        .map(|(i, _)| i)
+        .filter_map(|(i, c)| Some((c.preference.rank()?, c.busy, i)))
+        .min()
+        .map(|(_, _, i)| i)
 }
 
 fn file() -> PathBuf {
@@ -166,6 +173,14 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_that_is_off_is_never_picked() {
+        use Preference::{Avoided, Normal, Off};
+        assert_eq!(pick(&[c(Off, 0), c(Avoided, 9)]), Some(1));
+        assert_eq!(pick(&[c(Normal, 5), c(Off, 0)]), Some(0));
+        assert_eq!(pick(&[c(Off, 0), c(Off, 1)]), None);
+    }
+
+    #[test]
     fn a_normal_server_is_not_written_down() {
         let mut b = Balance::default();
         b.set(Some("a1"), Preference::Avoided);
@@ -187,8 +202,10 @@ mod tests {
             ..Balance::default()
         };
         b.set(Some("a1"), Preference::Preferred);
+        b.set(Some("b2"), Preference::Off);
         let json = serde_json::to_string(&b).unwrap();
         assert!(json.contains(r#""a1":"preferred""#));
+        assert!(json.contains(r#""b2":"off""#));
         assert_eq!(serde_json::from_str::<Balance>(&json).unwrap(), b);
         assert_eq!(
             serde_json::from_str::<Balance>("{}").unwrap(),

@@ -462,7 +462,7 @@ impl ServersView {
             let choices = Preference::ALL.iter().enumerate().map(|(i, &p)| {
                 let server = server.clone();
                 ui::segment(
-                    ("servers-prefer", ix * 3 + i),
+                    ("servers-prefer", ix * Preference::ALL.len() + i),
                     None,
                     p.label(),
                     p == current,
@@ -525,7 +525,7 @@ impl ServersView {
                     Type::Caption,
                     theme::text_faint(),
                     if spread {
-                        "A new environment goes to a connected machine that has the project: a preferred one first, then the one with the fewest sessions at work. An avoided machine gets one only when no other can. A first prompt stays on the machine it was written on."
+                        "A new environment goes to a connected machine that has the project: a preferred one first, then the one with the fewest sessions at work. An avoided machine gets one only when no other can, and one that is off never does. A first prompt stays on the machine it was written on."
                     } else {
                         "A new environment is made on the open environment's machine."
                     },

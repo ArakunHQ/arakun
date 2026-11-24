@@ -99,6 +99,8 @@ required-features = ["browser"]
 [workspace]
 members = ["core", "server"]
 default-members = [".", "core"]
+# Patched copies of other crates (see [patch.crates-io]): not ours to lint.
+exclude = ["vendor"]
 
 # What more than one package depends on, written once so all resolve to the same
 # crate in Cargo.lock.
@@ -208,4 +210,7 @@ ztracing = { git = "https://github.com/arakunhq/zed", rev = "72f741a393eb21b8ffc
 ztracing_macro = { git = "https://github.com/arakunhq/zed", rev = "72f741a393eb21b8ffc23b85c717c3fb643015d0" }
 
 [patch.crates-io]
+# block 0.1.6 (macOS, through gpui) declares a static that a future Rust rejects;
+# vendor/block/README.md has the one-line fix and when to drop it.
+block = { path = "vendor/block" }
 wgpu-hal = { git = "https://github.com/arakunhq/wgpu-hal-fork", rev = "97c3ab65c0b663b91c370a16ee5f3462aa01f0aa" }

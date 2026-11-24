@@ -182,6 +182,9 @@ struct Row {
     pr: Option<u64>,
     /// Unix seconds of its last activity.
     updated: u64,
+    /// Not working, not archived yet and not on a server: the same rule as
+    /// the context menu's Archive.
+    can_archive: bool,
 }
 
 /// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
@@ -224,6 +227,7 @@ impl Shell {
                     state: RowState::of(s.shown_status(), ci),
                     pr,
                     updated: s.updated,
+                    can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
                 });
             }
         }
@@ -781,12 +785,17 @@ impl Shell {
             state,
             pr,
             updated: _,
+            can_archive,
         } = row;
         let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
         let picked = self.tree_pick.contains(&id);
-        let dragged = super::drag::DraggedSession::new(env_path, id.clone(), title.clone(), agent);
+        let dragged =
+            super::drag::DraggedSession::new(env_path.clone(), id.clone(), title.clone(), agent);
         let shell = cx.entity();
+        // From the shell's state, not `group_hover`: that one only paints, and
+        // the title needs the room the end of the row gives up.
+        let archive_shown = can_archive && self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
         let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
@@ -803,8 +812,10 @@ impl Shell {
         let logo: Hsla = gpui::rgb(project.logo).into();
         let opens = id.clone();
         let picks = id.clone();
+        let archives = id.clone();
         div()
             .id(SharedString::from(format!("tree-session-{id}")))
+            .relative()
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
             .aria_selected(selected || picked)
             .flex()
@@ -850,9 +861,11 @@ impl Shell {
                             d.truncate()
                         }
                     })
+                    // Room for the archive button, so it never covers the title.
+                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
                     .child(title),
             )
-            .children(end.map(|text| {
+            .children(end.filter(|_| !archive_shown).map(|text| {
                 div()
                     .flex_none()
                     .text_size(px(ui::TEXT_XS))
@@ -860,7 +873,7 @@ impl Shell {
                     .child(text)
             }))
             // Small and faint: the tab in the bar already says it.
-            .when(pinned, |d| {
+            .when(pinned && !archive_shown, |d| {
                 d.child(
                     div()
                         .id(SharedString::from(format!("tree-pinned-{id}")))
@@ -869,12 +882,33 @@ impl Shell {
                         .child(icon("pin", 11.).text_color(theme::text_faint())),
                 )
             })
-            .on_hover(cx.listener(move |this, over: &bool, _, _| {
+            // On hover, what the row ends with gives way to an archive button.
+            .when(archive_shown, |d| {
+                d.child(
+                    div().absolute().right(crate::ui::sp(4.)).child(
+                        icon_button(
+                            SharedString::from(format!("tree-archive-{id}")),
+                            "archive02",
+                            14.,
+                            "Archive",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.archive_sessions(&env_path, &[archives.to_string()], cx);
+                        })),
+                    ),
+                )
+            })
+            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 if *over {
                     this.tree_hover = Some((pi, ei, hovered.clone()));
                 } else if this.tree_hover.as_ref().is_some_and(|h| h.2 == hovered) {
                     this.tree_hover = None;
+                } else {
+                    return;
                 }
+                // The archive button comes and goes with the pointer.
+                cx.notify();
             }))
             .when(picked, |d| d.bg(theme::selection_strong()))
             // Ctrl (Cmd) or Shift picks the session; a plain click opens it.
@@ -991,6 +1025,7 @@ mod tests {
             state: RowState::Idle,
             pr: None,
             updated,
+            can_archive: true,
         };
         let rows = || {
             vec![

@@ -556,6 +556,9 @@ pub struct Shell {
     tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
     /// The tree's row under the pointer, which Alt+P pins.
     tree_hover: Option<(usize, usize, SharedString)>,
+    /// The id of the sidebar's active row under the pointer, which shows
+    /// its archive button.
+    active_hover: Option<SharedString>,
     /// The search of the Sessions menu.
     tree_filter: Entity<TextInput>,
     _tree_filter: Subscription,
@@ -1138,6 +1141,7 @@ impl Shell {
             pins_seeded: false,
             tree_open: std::collections::HashMap::new(),
             tree_hover: None,
+            active_hover: None,
             tree_filter,
             _tree_filter: tree_filter_sub,
             bar_more: RefCell::default(),

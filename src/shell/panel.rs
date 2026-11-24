@@ -434,37 +434,49 @@ impl Shell {
                                 s.agent,
                             );
                             let shell = cx.entity();
-                            let card =
-                                session_card(i, s, active, &self.project().name, &env.branch)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_session(id.clone(), window, cx)
+                            // As the context menu's Archive: not while it works.
+                            let can_archive =
+                                !s.settled && s.status != Status::Working && env.remote.is_none();
+                            let archive = can_archive.then(|| {
+                                let env_path = env.path.clone();
+                                let id = s.id.to_string();
+                                icon_button(("session-archive", i), "archive02", 14., "Archive")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.archive_sessions(
+                                            &env_path,
+                                            std::slice::from_ref(&id),
+                                            cx,
+                                        );
                                     }))
-                                    .on_mouse_down(
-                                        MouseButton::Right,
-                                        cx.listener(
-                                            move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                                this.open_session_menu(
-                                                    menu_id.clone(),
-                                                    ev.position,
-                                                    cx,
-                                                )
-                                            },
-                                        ),
-                                    )
-                                    .on_drag(dragged, move |d, offset, _, cx| {
-                                        shell.update(cx, |this, cx| {
-                                            this.start_session_drag(d, offset, cx)
-                                        })
-                                    })
-                                    .drag_over::<drag::DraggedSession>(|s, _, _, _| {
-                                        s.bg(theme::active().opacity(0.10))
-                                    })
-                                    .on_drop(cx.listener(
-                                        move |this, d: &drag::DraggedSession, _, cx| {
-                                            this.drop_session_on_row(d, i, cx)
-                                        },
-                                    ))
-                                    .when(lifted, |d| d.opacity(0.3));
+                            });
+                            let card = session_card(
+                                i,
+                                s,
+                                active,
+                                &self.project().name,
+                                &env.branch,
+                                archive,
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_session(id.clone(), window, cx)
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                    this.open_session_menu(menu_id.clone(), ev.position, cx)
+                                }),
+                            )
+                            .on_drag(dragged, move |d, offset, _, cx| {
+                                shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
+                            })
+                            .drag_over::<drag::DraggedSession>(|s, _, _, _| {
+                                s.bg(theme::active().opacity(0.10))
+                            })
+                            .on_drop(cx.listener(move |this, d: &drag::DraggedSession, _, cx| {
+                                this.drop_session_on_row(d, i, cx)
+                            }))
+                            .when(lifted, |d| d.opacity(0.3));
                             self.sliding_card(i, &s.id, card)
                         }),
                 )
@@ -522,13 +534,17 @@ pub(super) fn archived_toggle(
         .child(label)
 }
 
+/// `archive` is the button that takes the place of the status on hover, for
+/// a session that can be archived.
 pub(super) fn session_card(
     i: usize,
     s: &model::Session,
     active: bool,
     project: &SharedString,
     branch: &SharedString,
+    archive: Option<gpui::Stateful<gpui::Div>>,
 ) -> gpui::Stateful<gpui::Div> {
+    let can_archive = archive.is_some();
     let (status, color): (SharedString, Hsla) = match s.status {
         Status::Idle if s.unread => ("Finished".into(), theme::needs_you()),
         Status::Idle => (model::age(s.updated), theme::mix(0.45)),
@@ -538,6 +554,7 @@ pub(super) fn session_card(
     };
     div()
         .id(("session", i))
+        .group("session-card")
         .flex()
         .flex_col()
         .px(crate::ui::sp(10.))
@@ -571,8 +588,21 @@ pub(super) fn session_card(
                     div()
                         .text_size(px(ui::TEXT_XS))
                         .text_color(color)
+                        .when(can_archive, |d| {
+                            d.group_hover("session-card", |s| s.invisible())
+                        })
                         .child(status),
-                ),
+                )
+                .when_some(archive, |d, button| {
+                    d.relative().child(
+                        div()
+                            .absolute()
+                            .right(px(-4.))
+                            .invisible()
+                            .group_hover("session-card", |s| s.visible())
+                            .child(button),
+                    )
+                }),
         )
         .child(
             div()

@@ -90,6 +90,7 @@ impl PostHogView {
     /// `flag` is still what the last read of the project says.
     fn flag_unchanged(&self, flag: &Flag) -> bool {
         self.overview
+            .data
             .as_ref()
             .is_some_and(|o| o.flags.contains(flag))
     }
@@ -100,6 +101,7 @@ impl PostHogView {
         };
         let Some(f) = self
             .overview
+            .data
             .as_ref()
             .and_then(|o| o.flags.iter().find(|f| f.id == id))
         else {
@@ -172,8 +174,7 @@ impl PostHogView {
                 }
                 // Read the flag again either way: a refused or timed-out
                 // change may still have changed it.
-                this._load = None;
-                this.loading = false;
+                this.overview.cancel();
                 this.refresh(false, cx);
                 if let Some(e) = this.edit.as_mut().filter(|e| e.busy && e.seq == seq) {
                     match result {

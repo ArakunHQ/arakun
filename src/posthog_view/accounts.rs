@@ -20,15 +20,14 @@ impl PostHogView {
         self.page = Page::Main;
         self.current = None;
         self.close_detail();
-        self.overview = None;
-        self.directory = None;
+        self.overview.reset();
+        self.directory.reset();
         self.sync_tabs(cx);
         self.directory_force(cx);
     }
 
     fn directory_force(&mut self, cx: &mut Context<Self>) {
-        self.dir_loading = false;
-        self._dir = None;
+        self.directory.cancel();
         self.refresh_directory(cx);
     }
 
@@ -70,16 +69,15 @@ impl PostHogView {
         self.sessions = posthog::sessions();
         // A read still running used the removed account: start it again
         // without it, or the picker waits on a read that was dropped.
-        let reading = self.dir_loading;
-        self._dir = None;
-        self.dir_loading = false;
-        if let Some(d) = &mut self.directory {
+        let reading = self.directory.loading();
+        self.directory.cancel();
+        if let Some(d) = &mut self.directory.data {
             d.projects.retain(|p| p.session != id);
             d.problems.clear();
         }
         if self.current.as_ref().is_some_and(|p| p.session == id) {
             self.current = None;
-            self.overview = None;
+            self.overview.reset();
             self.resolve(cx);
             self.sync_tabs(cx);
         }
@@ -160,7 +158,7 @@ impl PostHogView {
     }
 
     pub(super) fn render_accounts(&self, cx: &mut Context<Self>) -> AnyElement {
-        let dir = self.directory.as_ref();
+        let dir = self.directory.data.as_ref();
         let mut list = div().flex().flex_col().gap(crate::ui::sp(8.)).max_w(px(720.)).child(ui::heading("Accounts")).child(ui::text(
             Type::Body,
             theme::text_muted(),

@@ -648,6 +648,13 @@ pub struct Directory {
     pub fetched_at: u64,
 }
 
+/// A read that panicked found no projects.
+impl crate::guard::Fallback for Directory {
+    fn fallback(_: crate::guard::Panicked) -> Self {
+        Self::default()
+    }
+}
+
 fn directory_file() -> PathBuf {
     cache_dir().join("posthog-projects.json")
 }

@@ -108,7 +108,7 @@ impl PostHogView {
                 ),
             ));
         }
-        match &self.error {
+        match &self.overview.error {
             Some(ApiError::RateLimited(until)) if *until > now => notes.push(notice(
                 "clock01",
                 Tone::Info,

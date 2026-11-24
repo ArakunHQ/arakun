@@ -13,6 +13,10 @@ public enum PairingText: Equatable, Sendable {
     public static let relayLinkSentence =
         "Relay links are no longer used. Sign in to reach your computers."
 
+    /// On the sign-in screen after an update forgot a pairing made by link.
+    public static let pairedByLinkSentence =
+        "Since 0.19 the relay no longer takes pairing links, so this phone's pairing was removed. Sign in with the same GitHub account as Arakun on your computer, after updating it there. To use no account, pair below over Tailscale or the same Wi-Fi."
+
     public init(_ text: String) {
         guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",

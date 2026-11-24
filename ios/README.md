@@ -119,7 +119,8 @@ reach the relay: do not release.
 A relay pairing link from before sign-in (`https://<label>.arakun.dev/#p=…`) no
 longer works; the app says "Relay links are no longer used. Sign in to reach your
 computers.", and pairing credentials kept by an older version are deleted at the
-first launch.
+first launch. The sign-in screen then says why, and that Tailscale or the same Wi-Fi
+need no account, until a sign-in works.
 
 **Pair on this network** pairs the browser, not this app. On the same network or
 over Tailscale, the code in Arakun's Phone tab opens the computer's own page in the

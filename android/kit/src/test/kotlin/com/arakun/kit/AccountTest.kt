@@ -238,10 +238,22 @@ class AccountKeeperTest {
         store.values[AccountKeeper.OLD_CREDENTIALS] = """{"label":"x","ticket":"t","token":"k"}"""
         store.values[AccountKeeper.SESSION] = "kept"
         AccountKeeper(store).forgetOldPairing()
-        assertEquals(setOf(AccountKeeper.SESSION), store.values.keys)
+        assertEquals(setOf(AccountKeeper.SESSION, AccountKeeper.PAIRED_BY_LINK), store.values.keys)
+        assertTrue(AccountKeeper(store).pairedByLink)
         // Once gone, a launch writes nothing.
         store.writes.clear()
         AccountKeeper(store).forgetOldPairing()
+        assertTrue(store.writes.isEmpty())
+        // A sign-in that works clears the note.
+        AccountKeeper(store).pairedByLink = false
+        assertEquals(setOf(AccountKeeper.SESSION), store.values.keys)
+    }
+
+    @Test
+    fun aPhoneThatNeverPairedByLinkIsNotTold() {
+        val store = Recorder()
+        AccountKeeper(store).forgetOldPairing()
+        assertTrue(!AccountKeeper(store).pairedByLink)
         assertTrue(store.writes.isEmpty())
     }
 }

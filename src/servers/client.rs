@@ -39,6 +39,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const SIGNED_OUT: &str = "Your sign-in is no longer valid. Sign in again to reach this server.";
 /// A server's status while nobody is signed in here.
 pub const SIGN_IN_TO_RECONNECT: &str = "Sign in to reconnect.";
+/// A server's status while it was paired through the relay by link, before
+/// accounts: it comes back once the account lists it.
+pub const PAIRED_BY_LINK: &str = "Paired by link before 0.19, which the relay no longer takes. Sign in here and run `arakun-server login` on the server with the same GitHub account, or pair it again over Tailscale.";
 /// A server's status while the account could not be asked for its machines.
 pub const ACCOUNT_UNREACHABLE: &str = "Could not reach your account. Trying again.";
 /// A server's status once the account answered without it.
@@ -554,7 +557,7 @@ impl Link {
     fn relay(&mut self, wait: &mut Duration) -> Ended {
         let Who::Account(saved, account) = &self.who else {
             // Paired through the old relay: its ticket is never sent again.
-            return Ended::Refused(SIGN_IN_TO_RECONNECT.into());
+            return Ended::Refused(PAIRED_BY_LINK.into());
         };
         let Way::Account { label } = &saved.way else {
             return Ended::Refused(SIGN_IN_TO_RECONNECT.into());
@@ -1899,10 +1902,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded();
         let _client = Client::connect(saved, tx);
         assert_eq!(status(&mut rx), Status::Connecting);
-        assert_eq!(
-            status(&mut rx),
-            Status::Refused(SIGN_IN_TO_RECONNECT.into())
-        );
+        assert_eq!(status(&mut rx), Status::Refused(PAIRED_BY_LINK.into()));
         // Its ticket and token go nowhere.
         listener.set_nonblocking(true).unwrap();
         assert!(listener.accept().is_err());

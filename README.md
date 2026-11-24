@@ -1570,8 +1570,10 @@ for two minutes and pairs one device. There are two ways to use it:
   next to its state, which only your user can read: a server's address and token,
   or, for one reached through the account, only its label on the relay (the sign-in
   stays in the system keyring). A server paired through the relay before accounts
-  stays in the file as it was and shows "Sign in to reconnect." until your account
-  lists it, then it is kept as one of the account's; its old ticket is never sent again.
+  stays in the file as it was and says it was paired by link, which the relay no longer
+  takes: sign in here and run `arakun-server login` on the server with the same GitHub
+  account, or pair it again over Tailscale. Once your account lists it, it is kept as
+  one of the account's; its old ticket is never sent again.
   While the app cannot reach your account, a server of the account says "Could not reach
   your account. Trying again." and connects once the account answers. A server whose
   user removed the app from its devices is marked in the file and is not connected

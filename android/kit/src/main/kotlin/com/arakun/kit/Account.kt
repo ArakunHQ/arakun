@@ -484,11 +484,21 @@ class AccountKeeper(private val store: SealedStore) {
     /**
      * Before sign-in this app paired through the relay and kept a ticket and
      * a token for one computer. The relay no longer takes them. Only a store
-     * that has them is written, so a normal launch writes nothing.
+     * that has them is written, so a normal launch writes nothing. Notes
+     * [pairedByLink] when it forgets one, so the sign-in screen can say why.
      */
     fun forgetOldPairing() {
-        if (store.has(OLD_CREDENTIALS)) store.write(OLD_CREDENTIALS, null)
+        if (!store.has(OLD_CREDENTIALS)) return
+        pairedByLink = true
+        store.write(OLD_CREDENTIALS, null)
     }
+
+    /** A pairing made by link was forgotten, and no sign-in has worked since. */
+    var pairedByLink: Boolean
+        get() = store.has(PAIRED_BY_LINK)
+        set(value) {
+            if (value != pairedByLink) store.write(PAIRED_BY_LINK, if (value) "1" else null)
+        }
 
     companion object {
         const val SESSION = "account"
@@ -496,5 +506,6 @@ class AccountKeeper(private val store: SealedStore) {
 
         /** Where the relay pairing's credentials were kept. */
         const val OLD_CREDENTIALS = "credentials"
+        const val PAIRED_BY_LINK = "paired_by_link"
     }
 }

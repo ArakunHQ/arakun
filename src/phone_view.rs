@@ -199,6 +199,9 @@ pub struct PhoneView {
     focus: FocusHandle,
 }
 
+/// Under the sign-in button: phones paired by link before accounts stopped
+/// working through the relay, and the ways in that need no account.
+const SIGN_IN_OR_TAILSCALE: &str = "Since 0.19 phones paired by link must sign in with the same GitHub account. To use no account, pick Tailscale or Same Wi-Fi above.";
 /// Said next to the way in when the page comes from this computer.
 const AWAKE_NOTE: &str = "In this mode the page comes from this computer, so it only opens while the computer is on and awake. Relay works from anywhere and says when the computer is offline.";
 
@@ -467,6 +470,12 @@ impl PhoneView {
                         )
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SignIn))),
                     ),
+                )
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(SIGN_IN_OR_TAILSCALE),
                 )
                 .into_any_element(),
             RelayAccount::SignedIn {

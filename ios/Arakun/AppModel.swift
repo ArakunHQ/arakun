@@ -93,6 +93,11 @@ final class AppModel {
     /// deleted and the Keychain does not, so a session found without this was
     /// left by an install that is gone.
     private static let hasRunKey = "arakun.hasRun"
+    private static let pairedByLinkKey = "arakun.pairedByLink"
+
+    /// This phone was paired by link before sign-in, and that pairing was
+    /// forgotten: the sign-in screen says why, until a sign-in works.
+    private(set) var pairedByLink = UserDefaults.standard.bool(forKey: AppModel.pairedByLinkKey)
 
     init(store: any SessionStore = Keychain.session) {
         #if DEBUG
@@ -102,7 +107,10 @@ final class AppModel {
             return
         }
         #endif
-        Keychain.forgetOldPairing()
+        if Keychain.forgetOldPairing() {
+            UserDefaults.standard.set(true, forKey: Self.pairedByLinkKey)
+            pairedByLink = true
+        }
         keeper = AccountSession(store: store)
         if !UserDefaults.standard.bool(forKey: Self.hasRunKey) {
             UserDefaults.standard.set(true, forKey: Self.hasRunKey)
@@ -207,6 +215,8 @@ final class AppModel {
         signIn = nil
         signedIn = keeper.token
         me = Me(githubID: s.githubID, login: s.login)
+        UserDefaults.standard.removeObject(forKey: Self.pairedByLinkKey)
+        pairedByLink = false
         Task { await loadAccount(openOne: true) }
     }
 

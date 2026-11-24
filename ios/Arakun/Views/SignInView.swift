@@ -60,6 +60,12 @@ struct SignInView: View {
             Text("Sign in with the GitHub account you use in Arakun on your computer.")
                 .font(.callout)
                 .foregroundStyle(Color.textMuted)
+            if model.pairedByLink {
+                Text(PairingText.pairedByLinkSentence)
+                    .font(.small)
+                    .foregroundStyle(Color.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             switch model.signIn {
             case nil:
                 Button { model.startSignIn() } label: {

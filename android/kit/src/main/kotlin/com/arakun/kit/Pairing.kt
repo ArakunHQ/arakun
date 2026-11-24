@@ -37,6 +37,12 @@ enum class LinkKind {
         }
 
     companion object {
+        /** On the sign-in screen after an update forgot a pairing made by link. */
+        const val PAIRED_BY_LINK = "Since 0.19 the relay no longer takes pairing links, so this " +
+            "phone's pairing was removed. Sign in with the same GitHub account as Arakun on your " +
+            "computer, after updating it there. To use no account, pair below over Tailscale or " +
+            "the same Wi-Fi."
+
         fun of(text: String): LinkKind {
             val uri = try {
                 URI(text.trim())

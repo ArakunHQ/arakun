@@ -1247,8 +1247,9 @@ impl Shell {
         .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
-        // The compositor's close (Super+W, Alt+F4) hides too when the setting is on.
-        window.on_window_should_close(cx, |window, _| crate::background::should_close(window));
+        // The system close (the title bar's X, Alt+F4, Super+W) goes through the
+        // same hide-or-quit as Arakun's own close button.
+        window.on_window_should_close(cx, crate::background::should_close);
         this.watch_headless(window, cx);
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);

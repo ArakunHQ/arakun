@@ -1,0 +1,52 @@
+android/kit/src/main/kotlin/com/arakun/kit/Account.kt
+  s_b3ed19db4fd276::t_a88054080261f3 487-488,491-493,496-502,509
+ios/ArakunKit/Sources/ArakunKit/Pairing.swift
+  s_b3ed19db4fd276::t_f9eb2a7edd0693 16-19
+src/servers/client.rs
+  s_b3ed19db4fd276::t_0d1ee6934102b7 42-44,560
+  s_b3ed19db4fd276::t_f0cabd616957d4 1905
+ios/Arakun/Views/SignInView.swift
+  s_b3ed19db4fd276::t_f9eb2a7edd0693 63-68
+android/kit/src/test/kotlin/com/arakun/kit/AccountTest.kt
+  s_b3ed19db4fd276::t_a88054080261f3 241-242,247-256
+  s_b3ed19db4fd276::t_2b2b86538a16ac 257
+ios/README.md
+  s_b3ed19db4fd276::t_7780d5bdf18f01 122-123
+ios/Arakun/AppModel.swift
+  s_b3ed19db4fd276::t_f9eb2a7edd0693 96-100,110-113,218-219
+README.md
+  s_b3ed19db4fd276::t_7780d5bdf18f01 1573-1576
+core/src/server/daemon.rs
+  s_b3ed19db4fd276::t_9230ada787cdf4 580,664-666,670-673,5554
+src/phone_view.rs
+  s_b3ed19db4fd276::t_734ff1d1376368 202-204
+  s_b3ed19db4fd276::t_33db1809672226 474-479
+android/app/src/main/java/com/arakun/android/ui/SignInScreen.kt
+  s_b3ed19db4fd276::t_a88054080261f3 90-92
+  s_b3ed19db4fd276::t_efc9d5ae4e1d37 34
+ios/Arakun/Keychain.swift
+  s_b3ed19db4fd276::t_f9eb2a7edd0693 12-19
+android/README.md
+  s_b3ed19db4fd276::t_7780d5bdf18f01 149-150
+android/app/src/main/java/com/arakun/android/AppModel.kt
+  s_b3ed19db4fd276::t_0a6729d0be6e57 95
+  s_b3ed19db4fd276::t_a88054080261f3 91-94,200,253-254
+android/kit/src/main/kotlin/com/arakun/kit/Pairing.kt
+  s_b3ed19db4fd276::t_a88054080261f3 40-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "05e3509f55d9ef17602d2d0c72fdf82408a6bb6b",
+  "prompts": {},
+  "sessions": {
+    "s_b3ed19db4fd276": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed682a15-0836-4fde-8eaa-b40e6e006d5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

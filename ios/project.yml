@@ -40,6 +40,11 @@ targets:
       path: Arakun/Info.plist
       properties:
         CFBundleDisplayName: Arakun
+        # XcodeGen writes "1.0" and "1" here otherwise, which ignores the
+        # versions ios-release.yml sets, so App Store Connect rejects every
+        # upload after the first as a build it already has.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         # App Store Connect rejects an iPad app with multitasking unless it

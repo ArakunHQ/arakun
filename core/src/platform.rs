@@ -1293,6 +1293,10 @@ pub const GIT_LONG: std::time::Duration = std::time::Duration::from_secs(30 * 60
 /// How long a stopped command has to clean up before it is killed.
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// The longest limit [`output_until`] starts without a fork (see
+/// [`ProcessTree::prepare_short`]).
+const SHORT_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// [`Command::output`], `input` on its stdin, but the command and everything it started
 /// are stopped once it has run for `limit`. Background work runs on a few shared threads,
 /// so one call that hangs (a stalled transfer, a slow disk) must not hold one for good.
@@ -1303,10 +1307,6 @@ const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 ///
 /// Make `cmd` with [`command`] or [`agent_command`]; this leaves its window and priority
 /// as they are.
-/// The longest limit [`output_until`] starts without a fork (see
-/// [`ProcessTree::prepare_short`]).
-const SHORT_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
-
 pub fn output_within(
     cmd: &mut Command,
     input: Option<&[u8]>,
@@ -1377,11 +1377,36 @@ pub fn output_until(
         });
     }
     drop(tx);
+    let (mut stdout, mut stderr) = (None, None);
+    let mut take = |is_stdout: bool, bytes: Vec<u8>| {
+        if is_stdout {
+            stdout = Some(bytes);
+        } else {
+            stderr = Some(bytes);
+        }
+    };
+    let mut open = 2;
     let started = Instant::now();
-    // Most git calls end within a few milliseconds, and a flat 20 ms wait added up to
-    // that much to each: look again soon at first, then less often.
+    // Once the pipes close the command has almost always ended: look again soon at
+    // first, then less often, in case it only closed them and runs on.
     let mut wait = Duration::from_millis(1);
     let status = loop {
+        // The pipes close when the command ends, so it is their readers that wake us,
+        // not a timer: a git call that takes 3 ms returns after 3 ms. The tick still
+        // checks `stop` and the limit, and sees a command that ended while something
+        // it started holds a pipe open.
+        if open > 0 {
+            let left = limit.saturating_sub(started.elapsed());
+            match rx.recv_timeout(left.min(Duration::from_millis(20))) {
+                Ok((is_stdout, bytes)) => {
+                    take(is_stdout, bytes);
+                    open -= 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => open = 0,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if stop.load(std::sync::atomic::Ordering::Relaxed) => {
@@ -1392,8 +1417,10 @@ pub fn output_until(
                 ));
             }
             Ok(None) if started.elapsed() < limit => {
-                std::thread::sleep(wait);
-                wait = (wait * 2).min(Duration::from_millis(20));
+                if open == 0 {
+                    std::thread::sleep(wait);
+                    wait = (wait * 2).min(Duration::from_millis(20));
+                }
             }
             Ok(None) => {
                 self::stop(&tree, &mut child);
@@ -1416,20 +1443,11 @@ pub fn output_until(
             }
         }
     };
-    let (mut stdout, mut stderr) = (None, None);
-    let mut take = |is_stdout: bool, bytes: Vec<u8>| {
-        if is_stdout {
-            stdout = Some(bytes);
-        } else {
-            stderr = Some(bytes);
-        }
-    };
     // The tree is left alone when the pipes close: git starts helpers on purpose that
     // outlive it, such as the fsmonitor daemon, and killing them after every status
     // would make them useless. Something it started that holds a pipe open does get
     // killed, or the call would last as long as that does.
     let until = Instant::now() + STOP_GRACE;
-    let mut open = 2;
     while open > 0 {
         match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
             Ok((is_stdout, bytes)) => {
@@ -2223,6 +2241,43 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert!(dir.join("cleaned").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pipes closing is what usually says the command ended; one that closes
+    /// them and runs on must still be stopped at its limit.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_closes_its_pipes_still_has_a_limit() {
+        let started = Instant::now();
+        let err = output_within(
+            Command::new("sh").args(["-c", "exec >/dev/null 2>&1; sleep 30"]),
+            None,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_stops_soon_after_it_is_told_to() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = output_until(
+            Command::new("sh").args(["-c", "sleep 30"]),
+            None,
+            Duration::from_secs(20),
+            &stop,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[cfg(unix)]

@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Link } from "../../lib/link";
 import type { Session } from "../../lib/model";
+import "./transcript.css";
 
 export interface PendingMessage {
   text: string;

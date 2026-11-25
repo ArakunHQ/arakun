@@ -7,6 +7,7 @@ import { StatusBar } from "../components/StatusBar";
 import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { AGENTS, formAt, lastPlace, placeLabel, type SettingSet, type StartForm, useStartForm } from "../lib/places";
+import "./new.css";
 
 function Rows({ set, picked, onPick }: { set: SettingSet; picked?: string; onPick: (key: string, id: string) => void }) {
   const current = picked ?? set.current;

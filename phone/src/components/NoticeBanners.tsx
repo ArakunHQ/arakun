@@ -1,6 +1,7 @@
 import { type Notice, useMarkNoticeRead } from "../lib/account";
 import { RELAY } from "../lib/globals";
 import { Icon } from "../lib/icons";
+import "./SetupCards.css";
 
 /** The operator's notices for this account, until dismissed. */
 export function NoticeBanners({ notices }: { notices: Notice[] }) {

@@ -1,0 +1,20 @@
+/* Shortcuts: phrases over the composer, and their sheet. */
+.cuts { display: flex; gap: 6px; padding: 8px var(--gr) 0 var(--gl); overflow-x: auto; scrollbar-width: none; flex: none; }
+.cuts::-webkit-scrollbar { display: none; }
+.cuts[hidden] { display: none; }
+.cuts .chip { max-width: 220px; }
+/* One tap sends these: bigger, and in the text's own color. */
+.cuts .chip.go { height: 40px; padding: 0 16px; font-size: var(--text-lg); color: var(--color-text); }
+.cuts .chip.more { display: flex; align-items: center; gap: 6px; padding: 0 12px; color: var(--color-text-subtle); }
+.cuts .chip.more svg { width: 14px; height: 14px; }
+.cutlabel { display: flex; justify-content: space-between; gap: 12px; }
+.setform .opt.cutrow { padding: 0 6px 0 0; gap: 6px; }
+.cutmain { flex: 1; min-width: 0; min-height: 52px; padding: 8px 12px; text-align: left; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.cuttext { display: block; font-size: var(--text-sm); font-weight: 400; color: var(--color-text-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cuttext.wrap { white-space: normal; margin-top: 2px; }
+/* 16px, as the composer: iOS zooms into a smaller field. */
+.cutin { display: block; width: 100%; background: var(--color-raised); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text); padding: 11px 12px; font: 16px/1.4 var(--font-sans); outline: none; resize: none; }
+.cutnote { font: var(--text-xs)/1.5 var(--font-mono); color: var(--color-text-faint); padding: 8px 4px 0; }
+.cutblank { margin-top: 8px; height: 34px; font-size: var(--text-md); }
+.cutbtns { display: flex; gap: 10px; margin-top: 24px; }
+.cutbtns .btn { flex: 1; height: 48px; }

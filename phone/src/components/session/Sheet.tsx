@@ -9,6 +9,7 @@ import type { ClientMessage, Session } from "../../lib/model";
 import { Counts } from "./Entry";
 import { CutSheet, type CutSeed, CutsSheet } from "./Shortcuts";
 import { SheetHeader } from "./Views";
+import "./Sheet.css";
 
 export type SheetState =
   | { kind: "changes" }

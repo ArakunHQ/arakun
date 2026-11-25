@@ -1,0 +1,74 @@
+/* What the agent writes: Markdown, tables and the charts drawn from it. */
+.md { word-break: break-word; }
+.md p { margin: 6px 0; }
+/* Pictures stand on their own: no frame, only rounded corners. */
+.md img { display: block; max-width: 100%; max-height: 360px; margin: 10px 0; border-radius: var(--radius-lg); }
+.md h1, .md h2, .md h3 { font-size: var(--text-m-sub); margin: 10px 0 4px; font-weight: 600; }
+.md ul, .md ol { padding-left: 20px; margin: 4px 0; }
+.md li { margin: 2px 0; }
+.md code { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--color-fill-raised); padding: 1px 5px; border-radius: var(--radius-sm); }
+.md pre { background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); padding: 10px; overflow-x: auto; font-size: var(--text-sm); margin: 6px 0; }
+.md pre code { background: none; padding: 0; font-size: var(--text-sm); }
+.md blockquote { border-left: 2px solid var(--color-border); margin: 6px 0; padding-left: 10px; color: var(--color-text-muted); }
+/* Tables: a header that stands apart, the first column pinned while the rest
+   scrolls sideways, figures on the right; the corner button opens it whole. */
+.md .tablewrap { position: relative; margin: 10px 0; border-radius: var(--radius-lg); background: var(--color-raised); box-shadow: 0 0 0 1px var(--color-border-subtle); overflow: hidden; }
+.md .tscroll { overflow-x: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+.md table, #tableview table { border-collapse: separate; border-spacing: 0; font-size: var(--text-lg); line-height: 1.4; min-width: 100%; }
+.md th, .md td, #tableview th, #tableview td { padding: 10px 12px; text-align: left; vertical-align: top; white-space: nowrap; border-bottom: 1px solid var(--color-border-subtle); }
+.md td.long, #tableview td.long { white-space: normal; min-width: 200px; }
+.md th, #tableview th { font-size: var(--text-sm); font-weight: 600; color: var(--color-text-subtle); background: var(--color-sheet); white-space: nowrap; }
+.md tr:last-child td { border-bottom: 0; }
+.md td.num, #tableview td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.md th:first-child, .md td:first-child, #tableview th:first-child, #tableview td:first-child { position: sticky; left: 0; z-index: 1; box-shadow: 1px 0 0 var(--color-border-subtle); }
+.md td:first-child, #tableview td:first-child { background: var(--color-raised); font-weight: 500; }
+.tbar { display: flex; align-items: center; justify-content: space-between; padding: 4px 4px 4px 12px; font-size: var(--text-sm); color: var(--color-text-faint); border-bottom: 1px solid var(--color-border-subtle); }
+.tablex { height: 32px; padding: 0 10px; border-radius: var(--radius-lg); display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-md); font-weight: 500; color: var(--color-text-muted); }
+.tablex:active { background: var(--color-fill-hover); }
+.tablex svg { width: 14px; height: 14px; }
+/* Charts and flowcharts drawn from ```chart and ```mermaid (diagrams.js). The
+   SVG takes its colors from these classes so both themes apply; only series
+   colors are fixed, the desktop's category palette. The drawing scales down to
+   the column through its viewBox, never above its own size. */
+.md .diagram { margin: 10px 0; background: var(--color-sheet); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); overflow: hidden; }
+.dgview { min-width: 0; }
+.dghead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 14px 0; }
+.dgtitle { font-size: var(--text-md); font-weight: 500; color: var(--color-text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgunit { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-faint); flex: none; }
+.dglegend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px 0; font-size: var(--text-sm); color: var(--color-text-subtle); }
+.dglegend span, .dgrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dglegend i, .dgrow i { width: 8px; height: 8px; border-radius: var(--radius-sm); flex: none; }
+.dgbody { padding: 14px; }
+.dgsvg { display: block; width: 100%; height: auto; max-width: 100%; margin: 0 auto; overflow: visible; }
+.dgflow { max-width: var(--dgw); }
+.dgsvg text { font-family: var(--font-sans); font-size: var(--text-xs); fill: var(--color-text-subtle); }
+.dgsvg .dglabel { font-size: var(--text-sm); fill: var(--color-text-muted); }
+.dgsvg .dgtotal { font-size: 16px; font-weight: 600; fill: var(--color-text); }
+.dgsvg .dgnl { font-size: var(--text-md); fill: var(--color-text); }
+.dgsvg .dgel { font-family: var(--font-mono); font-size: var(--text-xs); fill: var(--color-text-subtle); }
+.dgaxis { stroke: var(--color-border); stroke-width: 1; }
+.dggrid { stroke: var(--color-border-subtle); stroke-width: 1; }
+.dgtrack { fill: var(--color-fill-hover); }
+.dgdot { fill: var(--color-sheet); }
+.dgnode { fill: var(--color-raised); stroke: var(--color-border); stroke-width: 1; }
+.dgedge { fill: none; stroke: var(--color-text-faint); stroke-width: 1.25; }
+.dgedge.thick { stroke-width: 2.5; }
+.dgedge.dotted { stroke-dasharray: 4 4; }
+.dgarrow { fill: var(--color-text-subtle); }
+.dgpill { fill: var(--color-sheet); }
+.dgpiewrap { display: flex; align-items: center; gap: 18px; }
+.dgpie { width: 132px; flex: none; margin: 0; }
+.dglist { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: var(--text-md); }
+.dgname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-muted); }
+.dgval { color: var(--color-text-subtle); flex: none; }
+.dgpct { width: 36px; text-align: right; color: var(--color-text-faint); flex: none; }
+/* "Code" shows the block's source where the drawing was. */
+.md .diagram .dgsrc { display: none; margin: 0; border: 0; border-radius: 0; background: none; padding: 14px; }
+.diagram.showcode .dgsrc { display: block; }
+.diagram.showcode .dgview { display: none; }
+.dgfoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 14px; border-top: 1px solid var(--color-border-subtle); }
+.dgcap { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dgacts { display: flex; gap: 6px; flex: none; }
+.dgbtn { height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--color-border); display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); font-weight: 500; color: var(--color-text-muted); }
+.dgbtn:active, .dgbtn[aria-pressed="true"] { background: var(--color-fill-hover); }
+.dgbtn svg { width: 13px; height: 13px; }

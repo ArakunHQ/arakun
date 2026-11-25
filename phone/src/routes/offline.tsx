@@ -3,6 +3,7 @@ import { useContext, useSyncExternalStore } from "react";
 import { clock } from "../lib/format";
 import { Icon } from "../lib/icons";
 import { type Link, LinkContext } from "../lib/link";
+import "./offline.css";
 
 const noLink = () => () => {};
 

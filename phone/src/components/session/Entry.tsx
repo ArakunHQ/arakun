@@ -6,6 +6,7 @@ import { clock, fmtElapsed } from "../../lib/format";
 import { Icon } from "../../lib/icons";
 import { Markdown } from "../../lib/markdown";
 import type { Entry } from "../../lib/model";
+import "./transcript.css";
 
 /** What an entry needs from the screen: pictures, the full-screen views, the changes sheet. */
 export interface EntryHandlers {

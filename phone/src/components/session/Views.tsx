@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 import { api } from "../../lib/api";
 import { DIAGRAMS } from "../../lib/globals";
 import { Icon } from "../../lib/icons";
+import "./Views.css";
 
 /**
  * The relay serves no images: the computer sends them inside the channel.

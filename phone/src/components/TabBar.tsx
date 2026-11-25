@@ -3,6 +3,7 @@ import { Icon, type IconName } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { needsYou } from "../lib/sessions";
 import { PlusButton } from "./PlusMenu";
+import "./TabBar.css";
 
 type Tab = { to: "/inbox" | "/sessions" | "/usage" | "/settings"; label: string; icon: IconName };
 

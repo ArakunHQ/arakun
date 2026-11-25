@@ -1,0 +1,161 @@
+/* The page's ground and the parts every screen shares, on the tokens. A
+   component's own look sits in a .css file next to it. */
+@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("/fonts/Geist-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("/fonts/Geist-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("/fonts/Geist-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("/fonts/GeistMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("/fonts/GeistMono-Medium.woff2") format("woff2"); }
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  /* The safe areas, never thinner than what keeps a thumb off the hardware:
+     the top clears the status bar, notch, Dynamic Island or a punch-hole
+     camera (iOS reports its inset; Android standalone often reports 0, so a
+     floor stays); the sides keep everything you tap away from curved edges
+     (iOS and Material both ask 16 or more); the bottom clears the home bar. */
+  --top: calc(max(var(--sat), 12px) + 8px);
+  --gl: max(16px, env(safe-area-inset-left, 0px));
+  --gr: max(16px, env(safe-area-inset-right, 0px));
+  --bot: max(var(--sab), 16px);
+  /* A floating card sits close over the home bar, as iOS's own bars do; the
+     bar is a thin line near the very bottom, not the whole inset. */
+  --float: max(calc(var(--sab) - 16px), 12px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: var(--vh, 100%); margin: 0; overscroll-behavior: none; }
+body {
+  background: var(--color-background);
+  color: var(--color-text);
+  font: var(--text-m-sub)/1.45 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+b, strong { font-weight: 600; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+/* No blue links: a link is the text, underlined. */
+a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+#app { height: 100%; display: flex; flex-direction: column; }
+
+.screen { height: 100%; display: flex; flex-direction: column; position: relative; }
+.hdr { display: flex; align-items: center; gap: 10px; padding: 4px var(--gr) 12px var(--gl); }
+.hdr h1 { font-size: var(--text-m-title); font-weight: 600; margin: 0; letter-spacing: -0.03em; }
+.hdr .sub { font: var(--text-sm) var(--font-mono); color: var(--color-text-faint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hdr .grow { flex: 1; min-width: 0; }
+.hdr .title { font-size: var(--text-m-body); font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Buttons: the plain one is the view's one primary action, in amber. The rest
+   are outline, ghost or danger. */
+.btn {
+  height: 44px; padding: 0 18px; border-radius: var(--radius-md);
+  font-size: var(--text-lg); font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  background: var(--color-accent); color: var(--color-on-accent);
+}
+.btn:disabled { opacity: 0.4; }
+.btn.outline { background: var(--color-raised); color: var(--color-text); box-shadow: inset 0 0 0 1px var(--color-border); }
+.btn.ghost { background: transparent; color: var(--color-text-muted); }
+.btn.danger { background: var(--color-raised); color: var(--color-error); box-shadow: inset 0 0 0 1px var(--color-border); }
+/* A second tap confirms: the button turns into the warning itself. */
+.btn.armed { background: var(--color-error); color: var(--color-background); box-shadow: none; }
+.btn:active { filter: brightness(1.1); }
+.btn.small { height: 36px; padding: 0 12px; font-size: var(--text-md); flex: none; }
+a.btn { text-decoration: none; }
+
+.iconbtn {
+  width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; flex: none;
+  color: var(--color-text); background: var(--color-raised); box-shadow: inset 0 0 0 1px var(--color-border-subtle);
+}
+.iconbtn:active { background: var(--color-fill-selected); }
+.iconbtn:disabled { opacity: 0.25; }
+.iconbtn svg { width: 18px; height: 18px; }
+
+.empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; color: var(--color-text-subtle); text-align: center; padding: 40px 24px;
+}
+.empty .big { font-size: var(--text-m-large); color: var(--color-text-faint); }
+.empty .mascot { width: 96px; height: auto; margin-bottom: 8px; }
+.empty .hint { font-size: var(--text-md); color: var(--color-text-faint); max-width: 280px; }
+
+/* Waiting on something that is not here yet: the working ring. */
+.spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--color-border); border-top-color: var(--color-link); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* A state is a dot and a word. Working is a blue ring, never amber; amber
+   is what needs you. */
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--color-text-faint); }
+.dot.needs { background: var(--color-accent); }
+.dot.working { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-link); }
+.dot.ok { background: var(--color-success); }
+.dot.bad { background: var(--color-error); }
+
+.add { color: var(--color-diff-add); }
+.del { color: var(--color-diff-del); }
+
+/* Grouped rows: Phone (settings) and Computers. */
+.settings { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 18px; }
+/* Why the list of computers is shown again: the relay sent the page back. */
+.settings .err { font-size: var(--text-md); color: var(--color-error); padding: 0 4px; }
+.glabel { font: 500 var(--text-xs) var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); padding: 0 4px 8px; }
+.gbox { background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); overflow: hidden; }
+.prow {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 14px; border-top: 1px solid var(--color-border-subtle);
+}
+.prow:first-child { border-top: 0; }
+.prow .ricon { width: 20px; height: 20px; flex: none; color: var(--color-text-muted); }
+.prow .ricon svg { width: 100%; height: 100%; }
+.prow .rbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.prow .rt { font-size: var(--text-m-sub); font-weight: 500; }
+.prow .rs { font-size: var(--text-md); line-height: 17px; color: var(--color-text-subtle); }
+.prow.danger .rt, .prow.danger .ricon { color: var(--color-error); }
+button.prow:active { background: var(--color-fill-hover); }
+.prow:has(.switch) { cursor: pointer; }
+/* A row with two buttons: the pick takes the room, the action sits at the end. */
+.prow.mrow { padding: 0 14px 0 0; }
+.prow.mrow .mpick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; padding: 12px 0 12px 14px; }
+.prow.mrow .mpick:active { background: var(--color-fill-hover); }
+
+/* On or off: the text color when on, no amber (nothing waits on you here). */
+.switch {
+  width: 44px; height: 26px; border-radius: 999px; flex: none; position: relative;
+  background: var(--color-fill-selected); transition: background 0.15s;
+}
+.switch .knob {
+  position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--color-text); transition: transform 0.15s;
+}
+.switch.on { background: var(--color-text); }
+.switch.on .knob { transform: translateX(18px); background: var(--color-background); }
+
+/* Chips: projects in Sessions and New session, shortcuts over the composer. */
+.chips { display: flex; gap: 6px; padding: 0 var(--gr) 6px var(--gl); overflow-x: auto; scrollbar-width: none; flex: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  flex: none; height: 36px; padding: 0 14px; border-radius: 999px; font-size: var(--text-md); font-weight: 500;
+  background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted); max-width: 160px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chip.on { background: var(--color-fill-selected); border-color: transparent; color: var(--color-text); }
+
+/* A list of choices: the model and reasoning (session sheet), New session. */
+.setform { padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); overflow-y: auto; }
+.setform .glabel, .newform .glabel { padding: 12px 4px 8px; }
+.setform .opts, .newform .opts { display: flex; flex-direction: column; background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); overflow: hidden; }
+.setform .opt, .newform .opt { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 12px; text-align: left; color: var(--color-text); font-size: var(--text-m-sub); }
+.setform .opt + .opt, .newform .opt + .opt { border-top: 1px solid var(--color-border-subtle); }
+.setform .opt:active, .newform .opt:active { background: var(--color-fill-hover); }
+.setform .opt:disabled, .newform .opt:disabled { opacity: 0.4; }
+.opt .on-mark { width: 16px; height: 16px; flex: none; color: var(--color-text); }
+.opt .on-mark svg { width: 16px; height: 16px; }
+.opt .oname { flex: 1; min-width: 0; }
+.opt.on .oname { font-weight: 600; }
+.opt .odetail { font-size: var(--text-sm); color: var(--color-text-subtle); flex: none; }
+.nhint { font-size: var(--text-md); color: var(--color-text-faint); padding: 8px 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

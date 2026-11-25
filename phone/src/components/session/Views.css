@@ -1,0 +1,18 @@
+/* The picture viewer: over everything, a tap anywhere closes it. The page
+   never navigates away — on the relay the /image route lives on the computer,
+   not on the page's origin, so a link there is a blank screen. */
+#picview { position: fixed; inset: 0; z-index: 60; background: color-mix(in srgb, var(--color-background) 94%, transparent); display: grid; place-items: center; padding: 24px; }
+#picview[hidden] { display: none; }
+#picview img { max-width: 100%; max-height: 100%; border-radius: var(--radius-lg); }
+#tableview { position: fixed; inset: 0; z-index: 60; background: var(--color-background); display: flex; flex-direction: column; padding: var(--top) 0 var(--bot); }
+#tableview[hidden] { display: none; }
+#tableview .tvbar { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--gr) 10px var(--gl); font-weight: 600; }
+#tableview .tvbody { flex: 1; overflow: auto; padding: 0 var(--gr) 0 var(--gl); }
+#tableview table { background: var(--color-raised); border-radius: var(--radius-lg); box-shadow: 0 0 0 1px var(--color-border-subtle); overflow: hidden; }
+#tableview td:first-child { background: var(--color-raised); }
+/* Opened full screen, a flowchart fills the width, up to a little over its own
+   size, and never shrinks below it: a tall one scrolls down, a wide one sideways. */
+#tableview .dgview { background: var(--color-sheet); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
+#tableview .dgdiagram { min-width: max-content; }
+#tableview .dgflow { max-width: none; width: min(max(100%, var(--dgw)), calc(var(--dgw) * 1.6)); }
+#tableview .dgbars, #tableview .dghbars, #tableview .dglines { max-width: 640px; }

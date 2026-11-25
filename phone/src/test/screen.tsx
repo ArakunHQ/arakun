@@ -94,3 +94,39 @@ export async function renderScreen(
   );
   return { ...out, router };
 }
+
+/** The window as wide as `px`: what `matchMedia` answers for a min-width query. */
+export function widthIs(px: number) {
+  vi.stubGlobal("matchMedia", (q: string) => {
+    const min = /min-width:\s*(\d+)px/.exec(q);
+    return {
+      matches: min ? px >= Number(min[1]) : false,
+      media: q,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent: () => false,
+    };
+  });
+}
+
+/**
+ * The page's CSS as a window of `size` applies it (a number is a width, as
+ * tall as a phone), put in the document. jsdom measures its queries against
+ * its own window, 1024 by 768 px, so each min-width and max-height query
+ * becomes one that always or never holds. Gives back how to take it out.
+ */
+export function styleAt(size: number | { width: number; height: number }, ...css: string[]): () => void {
+  const { width, height } = typeof size === "number" ? { width: size, height: 844 } : size;
+  const el = document.createElement("style");
+  el.textContent = css
+    .join("\n")
+    .replace(/@media\s*\((min-width|max-height):\s*(\d+)px\)/g, (_, kind, n) => {
+      const holds = kind === "min-width" ? width >= Number(n) : height <= Number(n);
+      return holds ? "@media screen" : "@media not all";
+    });
+  document.head.append(el);
+  return () => el.remove();
+}

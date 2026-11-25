@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { SessionRow } from "../components/SessionRow";
 import { StatusBar } from "../components/StatusBar";
-import { TabBar } from "../components/TabBar";
+import { TopBar } from "../components/shell/TopBar";
 import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { connecting, connectingHint, projects } from "../lib/sessions";
@@ -67,6 +67,7 @@ export function Sessions() {
   return (
     <div className="screen">
       <StatusBar />
+      <TopBar />
       <div className="hdr">
         <div className="grow">
           <h1>Sessions</h1>
@@ -84,7 +85,6 @@ export function Sessions() {
         </div>
       ) : null}
       <div className="inbox">{list}</div>
-      <TabBar />
     </div>
   );
 }

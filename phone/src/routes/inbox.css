@@ -1,14 +1,7 @@
 /* The list screens: Inbox and Sessions scroll in .inbox. */
 .inbox { flex: 1; overflow-y: auto; padding: 0 var(--gr) 12px var(--gl); }
-/* The computer on top, whether it answers, and the screen's large title. */
-.ihead { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 6px var(--gr) 8px var(--gl); }
-.ihead .hostchip {
-  display: inline-flex; align-items: center; gap: 8px; max-width: 100%; height: 32px; padding: 0 12px;
-  border-radius: 999px; background: var(--color-raised); box-shadow: inset 0 0 0 1px var(--color-border-subtle);
-  font-size: var(--text-m-sub); font-weight: 600;
-}
-.ihead .host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ihead .state { font-size: var(--text-md); font-weight: 400; color: var(--color-text-faint); flex: none; }
+/* The screen's large title. */
+.ihead { padding: 6px var(--gr) 8px var(--gl); }
 .ihead h1 { margin: 0; font-size: var(--text-m-large); line-height: 1.1; font-weight: 600; letter-spacing: -0.03em; }
 /* Three counts: what waits on you, what runs, what ended today. */
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 4px; }

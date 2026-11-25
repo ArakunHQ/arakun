@@ -1,6 +1,6 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TabBar } from "../components/TabBar";
+import { TopBar } from "../components/shell/TopBar";
 import type { OptionsMessage, Place } from "../lib/model";
 import { fakeLink, renderScreen } from "../test/screen";
 import { NewSession } from "./new";
@@ -73,10 +73,10 @@ describe("new session", () => {
   });
 });
 
-describe("the + in the tab bar", () => {
+describe("the + in the top bar", () => {
   it("asks which project, then starts there from the quick sheet", async () => {
     const link = fakeLink({ places });
-    await renderScreen(<TabBar />, "/inbox", link);
+    await renderScreen(<TopBar />, "/inbox", link);
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     expect(screen.getByText("Which project?")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /^api/ }));
@@ -88,7 +88,7 @@ describe("the + in the tab bar", () => {
   });
 
   it("goes straight to the quick sheet with one project", async () => {
-    await renderScreen(<TabBar />, "/inbox", fakeLink({ places: places.slice(0, 1) }));
+    await renderScreen(<TopBar />, "/inbox", fakeLink({ places: places.slice(0, 1) }));
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     expect(screen.queryByText("Which project?")).toBeNull();
     expect(screen.getByPlaceholderText("What should Claude Code do?")).toBeTruthy();
@@ -96,7 +96,7 @@ describe("the + in the tab bar", () => {
 
   it("picks another branch of the project in the quick sheet", async () => {
     const link = fakeLink({ places });
-    await renderScreen(<TabBar />, "/inbox", link);
+    await renderScreen(<TopBar />, "/inbox", link);
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     fireEvent.click(screen.getByRole("button", { name: /^api/ }));
     fireEvent.click(screen.getByRole("button", { name: "api" }));
@@ -105,7 +105,7 @@ describe("the + in the tab bar", () => {
   });
 
   it("takes what is written to the full form with More options", async () => {
-    const { router } = await renderScreen(<TabBar />, "/inbox", fakeLink({ places: places.slice(0, 1) }));
+    const { router } = await renderScreen(<TopBar />, "/inbox", fakeLink({ places: places.slice(0, 1) }));
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     fireEvent.change(screen.getByPlaceholderText("What should Claude Code do?"), { target: { value: "Half a thought" } });
     fireEvent.click(screen.getByRole("button", { name: "More options" }));
@@ -115,7 +115,7 @@ describe("the + in the tab bar", () => {
   });
 
   it("closes the project tiles with the phone's back", async () => {
-    const { router } = await renderScreen(<TabBar />, "/inbox", fakeLink({ places }));
+    const { router } = await renderScreen(<TopBar />, "/inbox", fakeLink({ places }));
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
     expect(screen.getByText("Which project?")).toBeTruthy();
     router.history.back();

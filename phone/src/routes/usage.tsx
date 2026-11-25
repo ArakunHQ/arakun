@@ -1,6 +1,6 @@
 import { useContext, useEffect } from "react";
 import { StatusBar } from "../components/StatusBar";
-import { TabBar } from "../components/TabBar";
+import { TopBar } from "../components/shell/TopBar";
 import { ago } from "../lib/format";
 import { Icon } from "../lib/icons";
 import { LinkContext, useLink } from "../lib/link";
@@ -108,6 +108,7 @@ export function Usage() {
   return (
     <div className="screen">
       <StatusBar />
+      <TopBar />
       <div className="hdr">
         <div className="grow">
           <h1>Usage</h1>
@@ -133,7 +134,6 @@ export function Usage() {
           </div>
         )}
       </div>
-      <TabBar />
     </div>
   );
 }

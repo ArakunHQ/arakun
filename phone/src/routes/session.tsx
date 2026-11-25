@@ -25,6 +25,7 @@ import type { ClientMessage, Session } from "../lib/model";
 import { sendShot, type Shot } from "../lib/shots";
 import { mode, openSession } from "../lib/start";
 import { toast } from "../lib/toast";
+import { useWidth } from "../lib/useWidth";
 import { refit } from "../lib/viewport";
 import { OfflineCard } from "./offline";
 import "./session.css";
@@ -74,6 +75,8 @@ function Opened({ link, id }: { link: Link; id: string }) {
 function SessionView({ link, s }: { link: Link; s: Session }) {
   const router = useRouter();
   const navigate = useNavigate();
+  // Next to the sidebar or the rail, they are the way out: no Back.
+  const alone = useWidth() === "phone";
   const row = useLink((st) => st.inbox.find((r) => r.id === s.id));
   const connected = useLink((st) => st.connected);
   const [draft, setDraftState] = useState(() => loadDraft(s.id));
@@ -197,9 +200,11 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
     <div className="screen" data-session={s.id}>
       <StatusBar />
       <div className="hdr">
-        <button type="button" className="iconbtn" aria-label="Back" onClick={back}>
-          <Icon name="back" />
-        </button>
+        {alone ? (
+          <button type="button" className="iconbtn" aria-label="Back" onClick={back}>
+            <Icon name="back" />
+          </button>
+        ) : null}
         <AgentAvatar agent={s.agent} />
         <div className="grow">
           <div className="title">{title || "New session"}</div>
@@ -213,59 +218,62 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
           <Icon name="tune" />
         </button>
       </div>
-      <OfflineCard link={link} />
-      {changes?.files ? (
-        <button type="button" className="chg" onClick={() => openSheet({ kind: "changes" })}>
-          <Icon name="diff" />
-          <span>
-            {changes.files} file{changes.files === 1 ? "" : "s"} changed
-          </span>
-          <Counts added={changes.added} removed={changes.removed} />
-        </button>
-      ) : null}
-      <div className="older" style={s.from > 0 ? undefined : { display: "none" }}>
-        {s.from > 0 ? (loadingOlder ? "Loading…" : `${s.from} earlier`) : ""}
+      {/* What is read and written: a column in the middle of a desktop. */}
+      <div className="scol">
+        <OfflineCard link={link} />
+        {changes?.files ? (
+          <button type="button" className="chg" onClick={() => openSheet({ kind: "changes" })}>
+            <Icon name="diff" />
+            <span>
+              {changes.files} file{changes.files === 1 ? "" : "s"} changed
+            </span>
+            <Counts added={changes.added} removed={changes.removed} />
+          </button>
+        ) : null}
+        <div className="older" style={s.from > 0 ? undefined : { display: "none" }}>
+          {s.from > 0 ? (loadingOlder ? "Loading…" : `${s.from} earlier`) : ""}
+        </div>
+        <EntryContext.Provider value={handlers}>
+          <Transcript
+            ref={transcript}
+            session={s}
+            loadingOlder={loadingOlder}
+            onLoadOlder={loadOlder}
+            pending={pendingNode}
+            onHoldBubble={keepAsCut}
+          />
+        </EntryContext.Provider>
+        {p && !answered.includes(p.tool_call_id) ? (
+          <PermissionCard
+            key={p.tool_call_id}
+            permission={p}
+            place={place}
+            tool={s.entries.find((e) => e.type === "tool" && e.id === p.tool_call_id)}
+            onAnswer={(option) => {
+              const o = p.options.find((x) => x.id === option);
+              if (answer({ type: "permission", session: s.id, option }, p.tool_call_id) && o) toast(o.kind.startsWith("allow") ? `${o.name} ✓` : o.name);
+            }}
+          />
+        ) : null}
+        {q && !answered.includes(q.tool_call_id) ? (
+          <QuestionCard
+            key={q.tool_call_id}
+            question={q}
+            onAnswer={(answers) => answer({ type: "answer", session: s.id, answers }, q.tool_call_id)}
+            onSkip={() => answer({ type: "skip_question", session: s.id }, q.tool_call_id)}
+          />
+        ) : null}
+        <Composer
+          session={live}
+          draft={draft}
+          setDraft={setDraft}
+          shots={shots}
+          setShots={setShots}
+          onSubmit={submit}
+          onCancel={cancel}
+          onOpenCuts={() => openSheet({ kind: "cuts" })}
+        />
       </div>
-      <EntryContext.Provider value={handlers}>
-        <Transcript
-          ref={transcript}
-          session={s}
-          loadingOlder={loadingOlder}
-          onLoadOlder={loadOlder}
-          pending={pendingNode}
-          onHoldBubble={keepAsCut}
-        />
-      </EntryContext.Provider>
-      {p && !answered.includes(p.tool_call_id) ? (
-        <PermissionCard
-          key={p.tool_call_id}
-          permission={p}
-          place={place}
-          tool={s.entries.find((e) => e.type === "tool" && e.id === p.tool_call_id)}
-          onAnswer={(option) => {
-            const o = p.options.find((x) => x.id === option);
-            if (answer({ type: "permission", session: s.id, option }, p.tool_call_id) && o) toast(o.kind.startsWith("allow") ? `${o.name} ✓` : o.name);
-          }}
-        />
-      ) : null}
-      {q && !answered.includes(q.tool_call_id) ? (
-        <QuestionCard
-          key={q.tool_call_id}
-          question={q}
-          onAnswer={(answers) => answer({ type: "answer", session: s.id, answers }, q.tool_call_id)}
-          onSkip={() => answer({ type: "skip_question", session: s.id }, q.tool_call_id)}
-        />
-      ) : null}
-      <Composer
-        session={live}
-        draft={draft}
-        setDraft={setDraft}
-        shots={shots}
-        setShots={setShots}
-        onSubmit={submit}
-        onCancel={cancel}
-        onOpenCuts={() => openSheet({ kind: "cuts" })}
-      />
       {sheet ? (
         <div id="sheet">
           <Sheet sheet={sheet} session={live} send={send} open={openSheet} draft={draft} />

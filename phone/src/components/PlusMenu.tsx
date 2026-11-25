@@ -1,4 +1,5 @@
-// The + in the tab bar. A tap asks which project (straight on with only one)
+// The + for a new session: in the phone's top bar, the desktop sidebar's New
+// session row and the tablet rail's tile. A tap asks which project (straight on with only one)
 // and opens the quick sheet there; holding it opens a menu of the places, to
 // start in one of them or reach the full form. The tiles and the quick sheet
 // are one step in the history, so the phone's back closes them.
@@ -230,8 +231,11 @@ function Quick({ init, onClose, onProjects, onMore }: { init: StartForm; onClose
   );
 }
 
-/** The + and what it opens over the screen. */
-export function PlusButton({ disabled }: { disabled: boolean }) {
+/**
+ * The + and what it opens over the screen. `className` gives it the look of
+ * where it sits; `label` writes "New session" next to the +.
+ */
+export function PlusButton({ disabled, className = "tplus", label = false }: { disabled: boolean; className?: string; label?: boolean }) {
   const router = useRouter();
   const navigate = useNavigate();
   const places = useLink((s) => s.places);
@@ -303,7 +307,7 @@ export function PlusButton({ disabled }: { disabled: boolean }) {
   return (
     <>
       <button
-        className="tplus"
+        className={className}
         aria-label="New session"
         disabled={disabled}
         onPointerDown={() => {
@@ -326,6 +330,7 @@ export function PlusButton({ disabled }: { disabled: boolean }) {
         }}
       >
         <Icon name="plus" size={20} />
+        {label ? <span>New session</span> : null}
       </button>
       {over ? createPortal(over, document.body) : null}
     </>

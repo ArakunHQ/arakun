@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { needsYou } from "../lib/sessions";
 import { fakeLink, renderScreen } from "../test/screen";
@@ -8,7 +8,7 @@ const now = Math.floor(Date.now() / 1000);
 const row = (id: string, status: string, over = {}) => ({ id, title: `t-${id}`, agent: "claude", status, project: "p", updated: now - 60, ...over });
 
 describe("inbox", () => {
-  it("puts what needs you first, and the badge counts it", async () => {
+  it("puts what needs you first", async () => {
     const link = fakeLink({
       inbox: [row("a", "working"), row("b", "idle"), row("c", "needs_input", { asks: { kind: "permission", text: "rm x" } }), row("d", "error")] as never,
     });
@@ -16,17 +16,13 @@ describe("inbox", () => {
     const titles = [...container.querySelectorAll(".srow .t")].map((e) => e.textContent);
     expect(titles).toEqual(["t-c", "t-d", "t-a", "t-b"]);
     expect(container.querySelector(".group.needs h2")?.textContent).toBe("Needs you");
+    // One word with the sidebar's groups.
+    expect(container.querySelector(".group.done h2")?.textContent).toBe("Done");
+    expect(container.querySelector(".group.working h2")?.textContent).toBe("Working");
     expect(screen.getByText("Run: rm x")).toBeTruthy();
     expect(screen.getByText("Stopped with an error")).toBeTruthy();
-    const tab = screen.getByRole("button", { name: "Inbox" });
-    expect(within(tab).getByText("2").className).toBe("tbadge");
   });
 
-  it("shows no badge when nothing waits", async () => {
-    const link = fakeLink({ inbox: [row("a", "working")] as never });
-    const { container } = await renderScreen(<Inbox />, "/inbox", link);
-    expect(container.querySelector(".tbadge")).toBeNull();
-  });
 
   it("opens a session through the link", async () => {
     const link = fakeLink({ inbox: [row("a", "working")] as never });

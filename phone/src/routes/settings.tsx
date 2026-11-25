@@ -3,14 +3,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useReducer, useState } from "react";
 import { turnOnNotifications, appleTab } from "../components/SetupCards";
 import { StatusBar } from "../components/StatusBar";
-import { TabBar } from "../components/TabBar";
-import { leaveMachine, meQuery, signedOut, useMachines, useSignedInSessions, useSignOut } from "../lib/account";
+import { TopBar } from "../components/shell/TopBar";
+import { meQuery, signedOut, useMachines, useSignedInSessions, useSignOut } from "../lib/account";
 import { activeLink, api, setActiveLink } from "../lib/api";
 import { ago, clock } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon, type IconName } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { deviceName } from "../lib/pair";
+import { useWidth } from "../lib/useWidth";
 import { notifyState } from "../lib/push";
 import { mode, setPairMessage } from "../lib/start";
 import { toast } from "../lib/toast";
@@ -139,7 +140,7 @@ function SignedInDevices() {
 
 export function Settings() {
   const navigate = useNavigate();
-  const qc = useQueryClient();
+  const width = useWidth();
   const me = useLink((s) => s.me);
   const host = useLink((s) => s.host);
   const connected = useLink((s) => s.connected);
@@ -176,11 +177,11 @@ export function Settings() {
     }
   };
 
-  // This phone lets go of the computer it paired with on the network: its token
-  // dies there, and here. On the account host the phone signs out instead.
+  // This device lets go of the computer it paired with on the network: its
+  // token dies there, and here. On the account host it signs out instead.
   const unpair = async () => {
     const name = host || location.hostname;
-    if (!confirm(`Unpair this phone from ${name}?\n\nYou will need a new code from Arakun to pair it again.`)) return;
+    if (!confirm(`Unpair this device from ${name}?\n\nYou will need a new code from Arakun to pair it again.`)) return;
     try {
       await api("/unpair", { method: "POST" });
     } catch {
@@ -206,7 +207,7 @@ export function Settings() {
   const askSignOut = () => {
     if (signOut.isPending) return;
     const login = bootData?.me?.login;
-    if (confirm(`Sign out of ${login || "GitHub"} on this phone?`)) signOut.mutate();
+    if (confirm(`Sign out of ${login || "GitHub"} in this browser?`)) signOut.mutate();
   };
 
   const ns = notifyState();
@@ -252,19 +253,25 @@ export function Settings() {
   return (
     <div className="screen">
       <StatusBar />
+      <TopBar />
       <div className="hdr">
         <div className="grow">
-          <h1>Phone</h1>
+          <h1>Settings</h1>
         </div>
       </div>
       <div className="settings">
         <Group label="Desktop">
           <Row icon="monitor" title={host || location.hostname} sub={connected ? wayIn() : pcOffline ? `Away since ${clock(pcOffline)}` : "Reconnecting…"} />
-          {account && computers.length > 1 ? <Row icon="layers" title="All computers" onClick={() => { leaveMachine(qc); void navigate({ to: "/computers" }); }} /> : null}
         </Group>
+        {/* A phone has no Usage tab: it is here. */}
+        {width === "phone" ? (
+          <Group label="Agents">
+            <Row icon="gauge" title="Usage" onClick={() => void navigate({ to: "/usage" })} />
+          </Group>
+        ) : null}
         <Group label="Notifications">{notify}</Group>
         {account ? <SignedInDevices /> : null}
-        <Group label="This phone">
+        <Group label="This device">
           {account ? (
             <>
               <Row icon="phone" title={name} sub={bootData?.me?.login ? `Signed in as ${bootData.me.login}` : ""} />
@@ -273,12 +280,11 @@ export function Settings() {
           ) : (
             <>
               <Row icon="phone" title={name} sub={me?.paired_at ? `Paired ${pairedOn(Number(me.paired_at))} · last seen now` : ""} />
-              <Row icon="unlink" title="Unpair this phone" danger onClick={unpair} />
+              <Row icon="unlink" title="Unpair this device" danger onClick={unpair} />
             </>
           )}
         </Group>
       </div>
-      <TabBar />
     </div>
   );
 }

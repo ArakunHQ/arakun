@@ -1,8 +1,14 @@
 import { act, screen } from "@testing-library/react";
 import { StrictMode } from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import composerCss from "../components/session/Composer.css?raw";
+import permissionCss from "../components/session/PermissionCard.css?raw";
+import shortcutsCss from "../components/session/Shortcuts.css?raw";
+import transcriptCss from "../components/session/transcript.css?raw";
 import type { Session } from "../lib/model";
-import { fakeLink, renderScreen } from "../test/screen";
+import baseCss from "../styles/base.css?raw";
+import { fakeLink, renderScreen, styleAt, widthIs } from "../test/screen";
+import sessionCss from "./session.css?raw";
 import { SessionScreen } from "./session";
 
 const session = (over: Partial<Session> = {}): Session => ({
@@ -29,6 +35,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   delete (globalThis as any).RELAY;
+  vi.unstubAllGlobals();
 });
 
 describe("the session screen", () => {
@@ -131,5 +138,90 @@ describe("the session screen", () => {
     await tick();
     expect(container.querySelector(".sheet .title")?.textContent).toBe("Changes");
     expect(link.sent).toContainEqual({ type: "changes", session: "a" });
+  });
+});
+
+describe("the session at each width", () => {
+  const permission = {
+    tool_call_id: "t1",
+    title: "cargo test",
+    options: [
+      { id: "yes", name: "Allow", kind: "allow_once" },
+      { id: "always", name: "Always allow", kind: "allow_always" },
+      { id: "no", name: "Deny", kind: "reject_once" },
+    ],
+  };
+  let unstyle = () => {};
+  afterEach(() => unstyle());
+
+  async function at(px: number, height = 844) {
+    widthIs(px);
+    unstyle = styleAt({ width: px, height }, baseCss, sessionCss, transcriptCss, permissionCss, composerCss, shortcutsCss);
+    const link = fakeLink({ session: session({ status: "needs_input", permission, entries: [{ type: "user", text: "hello" }] }) });
+    return renderScreen(<SessionScreen />, "/s/a", link);
+  }
+
+  it("reads in a 760 px column in the middle of a desktop, the composer under the transcript", async () => {
+    const { container } = await at(1440);
+    const col = container.querySelector<HTMLElement>(".scol")!;
+    expect(col).toBeTruthy();
+    // The column spans the pane, so the wheel works over the sides and the
+    // scrollbar is at the pane's edge; its gutters leave 760 px in the middle.
+    const css = getComputedStyle(col);
+    expect(css.maxWidth).not.toBe("760px");
+    const gutter = css.getPropertyValue("--gl").trim();
+    expect(gutter).toBe("max(0px, calc(50% - 380px))");
+    expect(css.getPropertyValue("--gr").trim()).toBe(gutter);
+    // In a 1152 px pane (1440 less the sidebar) that leaves 760 px between them.
+    const side = (pane: number) => Math.max(0, pane / 2 - 380);
+    expect(1152 - 2 * side(1152)).toBe(760);
+    const log = col.querySelector(".logwrap")!;
+    const composer = col.querySelector(".composer")!;
+    expect(log && composer).toBeTruthy();
+    expect(log.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The sidebar is the way out; the header has no Back.
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  });
+
+  it.each([834, 390])("fills the width with big permission buttons at %i px", async (px) => {
+    const { container } = await at(px);
+    expect(getComputedStyle(container.querySelector(".scol")!).maxWidth).not.toBe("760px");
+    const buttons = [...container.querySelectorAll<HTMLElement>(".perm .opts button, .perm .always")];
+    // Deny, Hold to allow and Always allow.
+    expect(buttons).toHaveLength(3);
+    for (const b of buttons) {
+      const css = getComputedStyle(b);
+      expect(Math.max(parseFloat(css.height) || 0, parseFloat(css.minHeight) || 0)).toBeGreaterThanOrEqual(44);
+    }
+    // Hold to allow and tap twice for Always allow, at every width.
+    expect(container.querySelector(".perm .btn.hold")).toBeTruthy();
+    expect(screen.getByText("For the rest of this session · tap twice")).toBeTruthy();
+    // A tablet has the rail to go back with; a phone has only Back.
+    expect(!!screen.queryByRole("button", { name: "Back" })).toBe(px < 768);
+  });
+
+  it("keeps the gutters clear of a notch on a tablet", async () => {
+    const { container } = await at(834, 1194);
+    const css = getComputedStyle(container.querySelector(".scol")!);
+    // jsdom has no notch: it gives env() its fallback, 0px.
+    expect(css.getPropertyValue("--gl").trim()).toMatch(/^max\(32px, (env\(safe-area-inset-left, 0px\)|0px)\)$/);
+    expect(css.getPropertyValue("--gr").trim()).toMatch(/^max\(32px, (env\(safe-area-inset-right, 0px\)|0px)\)$/);
+  });
+
+  it("keeps Hold to allow and Always allow out of any scroll on a phone on its side", async () => {
+    const { container } = await at(844, 390);
+    const card = container.querySelector<HTMLElement>(".perm")!;
+    const scrolls = (el: Element) => /auto|scroll/.test(getComputedStyle(el).overflowY);
+    for (const b of card.querySelectorAll<HTMLElement>(".opts button, .always")) {
+      for (let el: Element | null = b.parentElement; el && el !== card.parentElement; el = el.parentElement) {
+        expect(scrolls(el), `${el.className} scrolls around ${b.textContent}`).toBe(false);
+      }
+      expect(getComputedStyle(b).display).not.toBe("none");
+    }
+    // The command scrolls sideways on its own line instead.
+    expect(getComputedStyle(card.querySelector(".what")!).overflowX).toBe("auto");
+    // The shortcuts give their row to the card.
+    expect(container.querySelector(".cuts")).toBeTruthy();
+    expect(getComputedStyle(container.querySelector(".cuts")!).display).toBe("none");
   });
 });

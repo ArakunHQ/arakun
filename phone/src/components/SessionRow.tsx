@@ -26,14 +26,20 @@ export function AgentAvatar({ agent }: { agent?: string }) {
   return <span className="av">{(a[0] || "?").toUpperCase()}</span>;
 }
 
-/** A row of the inbox (`inbox`: what it asks, the changes) or of Sessions (`list`: its status). */
-export function SessionRow({ s, variant }: { s: InboxSession; variant: "inbox" | "list" }) {
+/** Opens a session from a list: through the link first, so the screen finds it open. */
+export function useOpenSession(): (id: string) => void {
   const link = useContext(LinkContext);
   const navigate = useNavigate();
-  const open = () => {
-    if (link) openSession(link, s.id);
-    void navigate({ to: "/s/$session", params: { session: s.id } });
+  return (id) => {
+    if (link) openSession(link, id);
+    void navigate({ to: "/s/$session", params: { session: id } });
   };
+}
+
+/** A row of the inbox (`inbox`: what it asks, the changes) or of Sessions (`list`: its status). */
+export function SessionRow({ s, variant }: { s: InboxSession; variant: "inbox" | "list" }) {
+  const openRow = useOpenSession();
+  const open = () => openRow(s.id);
   const asks = variant === "inbox" ? asksLine(s) : "";
   const status = s.status ?? "idle";
   const sub =

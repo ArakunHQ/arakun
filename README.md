@@ -512,7 +512,7 @@ after a week).
   phones paired here with a code.
   On the phone, open `https://app.arakun.dev`,
   sign in with GitHub and pick the computer (with one, the page opens it straight away).
-  Each computer in the list has **Remove**, and the page's Phone tab lists the
+  Each computer in the list has **Remove**, and the page's Settings tab lists the
   account's signed-in devices with **Sign out**. A device unpaired in the Phone tab
   goes back to the list and does not connect again by itself. With several computers,
   push notifications on the page come only from the computer opened last: a browser

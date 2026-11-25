@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { age, githubUrl, relative } from "./format";
+import { age, githubUrl, parseGithubId, relative } from "./format";
 
 const DAY = 24 * 60 * 60;
 const now = 1_800_000_000;
@@ -51,5 +51,12 @@ describe("githubUrl", () => {
     expect(githubUrl("a b")).toBeNull();
     expect(githubUrl("../x")).toBeNull();
     expect(githubUrl("a".repeat(40))).toBeNull();
+  });
+});
+
+describe("parseGithubId", () => {
+  it("accepts the IDs the Worker accepts and nothing else", () => {
+    expect(parseGithubId("1002")).toBe(1002);
+    for (const bad of ["", "0", "012", "-1", "1e3", "12a", " 1", "99999999999999999", "9007199254740993"]) expect(parseGithubId(bad)).toBeNull();
   });
 });

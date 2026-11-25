@@ -19,7 +19,10 @@ export interface RouterContext {
 
 /// The screens in the navigation. Each task that adds a screen adds it here,
 /// so the list never links to a route that does not exist.
-export const NAV: { to: LinkProps["to"]; label: string }[] = [{ to: "/", label: "Cloud access" }];
+export const NAV: { to: LinkProps["to"]; label: string }[] = [
+  { to: "/", label: "Cloud access" },
+  { to: "/users", label: "Users" },
+];
 
 export const Route = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ context, location }) => {

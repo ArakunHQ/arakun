@@ -434,3 +434,164 @@ time {
 .request-actions .message {
   margin: 0;
 }
+
+/* Forms: the controls of the Users screens. */
+
+.input {
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: var(--line) solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-ground);
+  color: var(--color-text);
+  font: inherit;
+}
+
+textarea.input {
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+}
+
+.input::placeholder {
+  color: var(--color-text-faint);
+}
+
+.form {
+  display: grid;
+  gap: var(--space-3);
+  max-width: var(--reading-width);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.field > span,
+.field > legend {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.hint {
+  font-size: var(--text-xs);
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.form-inline,
+.form-actions,
+.toolbar,
+.pager,
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.form-actions .message,
+.form-inline .message {
+  margin: 0;
+}
+
+.page-head h1 {
+  margin: 0;
+}
+
+.toolbar .input {
+  width: 100%;
+  max-width: var(--reading-width);
+}
+
+.section {
+  margin-top: var(--space-6);
+}
+
+/* Users: one line per account, device, machine or notice. */
+
+.rows {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--line) solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-raised);
+}
+
+.row-meta {
+  margin-left: auto;
+  font-size: var(--text-sm);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chips .button {
+  min-height: 0;
+  padding: 0 var(--space-1);
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.chip[data-tone="error"] {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+/* The log: time, operator, what was done, to whom. */
+
+.log {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.log-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.log-who {
+  font-weight: var(--weight-medium);
+}
+
+.log-account {
+  font-family: var(--font-mono);
+}

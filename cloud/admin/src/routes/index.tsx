@@ -84,12 +84,13 @@ function Request({ request: r }: { request: CloudRequest }) {
   const busy = grant.isPending || decline.isPending;
   const error = grant.error ?? decline.error;
   const { github } = r;
+  const url = githubUrl(r.login);
   return (
     <li className="request" aria-label={r.login}>
       <div className="request-head">
         <img className="avatar" src={`https://avatars.githubusercontent.com/u/${r.github_id}?s=64`} alt="" />
-        {githubUrl(r.login) ? (
-          <a className="request-login" href={githubUrl(r.login)!} rel="noreferrer">
+        {url ? (
+          <a className="request-login" href={url} rel="noreferrer">
             {r.login}
           </a>
         ) : (
@@ -98,10 +99,9 @@ function Request({ request: r }: { request: CloudRequest }) {
         )}
         {r.blocked && <span className="chip">blocked</span>}
         {r.has_flag && <span className="chip">has cloud access</span>}
-        {/* The user's screen is a route the next task adds; until it is typed, a plain link. */}
-        <a className="request-account" href={`/users/${r.github_id}`}>
+        <Link className="request-account" to="/users/$githubId" params={{ githubId: String(r.github_id) }}>
           Account
-        </a>
+        </Link>
       </div>
       <dl className="signals">
         <Signal label="GitHub account age" value={github.age_days === null ? null : age(0, github.age_days * 86400)} />
@@ -122,11 +122,16 @@ function Request({ request: r }: { request: CloudRequest }) {
       </p>
       {r.status !== "granted" && (
         <div className="request-actions">
-          <button type="button" className="button primary" disabled={busy} onClick={() => {
+          <button
+            type="button"
+            className="button primary"
+            disabled={busy}
+            onClick={() => {
               // One error at a time: the one of the call that ran last.
               decline.reset();
               grant.mutate(r.github_id);
-            }}>
+            }}
+          >
             Grant
           </button>
           {r.status === "pending" && (

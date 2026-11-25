@@ -43,3 +43,13 @@ const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 export function githubUrl(login: string): string | null {
   return GITHUB_LOGIN.test(login) ? `https://github.com/${login}` : null;
 }
+
+/// The cloud Worker's rule for a GitHub ID (`GITHUB_ID` in cloud/src/util.ts).
+const GITHUB_ID = /^[1-9][0-9]{0,15}$/;
+
+/// The number in `text` if it is a GitHub ID the Worker accepts, else null.
+export function parseGithubId(text: string): number | null {
+  if (!GITHUB_ID.test(text)) return null;
+  const id = Number(text);
+  return Number.isSafeInteger(id) ? id : null;
+}

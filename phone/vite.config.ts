@@ -1,5 +1,5 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 // The Worker and the desktop app serve dist/ as it is, so the file names
 // carry no hash and the page can be checked in and diffed.
@@ -24,6 +24,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    setupFiles: ["src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });

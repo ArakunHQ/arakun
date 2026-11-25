@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "vite",
+    "check": "tsc --noEmit",
     "build": "vite build",
     "test": "node --test \"test/*.test.mjs\" && vitest run --passWithNoTests"
   },

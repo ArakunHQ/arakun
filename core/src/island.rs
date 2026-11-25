@@ -30,7 +30,7 @@ use futures::StreamExt as _;
 use gpui::{
     AnimationExt as _, App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla,
     IntoElement, MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder,
-    PathStyle, Pixels, Point, Render, SharedString, StrokeOptions, Styled as _, TextRun,
+    PathStyle, Pixels, Point, Render, SharedString, Size, StrokeOptions, Styled as _, TextRun,
     TruncateFrom, Window, canvas, div, hsla, point, prelude::*, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin};
@@ -55,6 +55,10 @@ const WIN_H: f32 = if cfg!(target_os = "macos") {
 } else {
     300.
 };
+/// The size the island's window asks for.
+pub fn window_size() -> Size<Pixels> {
+    size(px(WIN_W), px(WIN_H))
+}
 /// The concave fillets where the shape melts into the top edge.
 const SHOULDER: f32 = 10.;
 const SMALL_W: f32 = 30.;
@@ -294,7 +298,7 @@ pub fn window_options(keys: bool) -> gpui::WindowOptions {
         titlebar: None,
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(0.), px(0.)),
-            size: size(px(WIN_W), px(WIN_H)),
+            size: window_size(),
         })),
         app_id: Some("arakun-island".to_string()),
         focus: false,

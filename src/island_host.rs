@@ -418,7 +418,15 @@ mod host {
                 island::adopt(window);
                 cx.new(Island::new)
             })
-            .and_then(|handle| handle.update(cx, |_, _, cx| cx.entity()));
+            .and_then(|handle| {
+                handle.update(cx, |_, window, cx| {
+                    #[cfg(target_os = "linux")]
+                    keep_size(window, cx);
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = window;
+                    cx.entity()
+                })
+            });
         let view = match opened {
             Ok(view) => view,
             Err(e) => {
@@ -438,6 +446,46 @@ mod host {
             }
         })
         .detach();
+    }
+
+    /// Hyprland can configure the layer with the whole output when it opens
+    /// while the outputs are still coming up, and gpui answers every configure
+    /// by asking for the size it got, so the layer keeps it. Ask for the
+    /// island's size again; if the compositor still refuses, exit so the app
+    /// starts a new host, which gets it.
+    #[cfg(target_os = "linux")]
+    fn keep_size(window: &mut gpui::Window, cx: &mut Context<Island>) {
+        const TRIES: u8 = 3;
+        let want = island::window_size();
+        let mut tries = 0;
+        cx.observe_window_bounds(window, move |_, window, cx| {
+            let got = window.viewport_size();
+            // Our own resize lands here too, at the size we want, so this
+            // doesn't reset `tries`.
+            if got == want {
+                return;
+            }
+            eprintln!(
+                "arakun: the compositor sized the island {}x{}, asking for {}x{} again",
+                got.width.as_f32(),
+                got.height.as_f32(),
+                want.width.as_f32(),
+                want.height.as_f32()
+            );
+            tries += 1;
+            if tries > TRIES {
+                EXIT.store(1, Ordering::Relaxed);
+                cx.quit();
+                return;
+            }
+            // Not from inside the resize that called this.
+            window.defer(cx, move |window, _| window.resize(want));
+        })
+        .detach();
+        // The first configure may have come already.
+        if window.viewport_size() != want {
+            window.resize(want);
+        }
     }
 
     /// Every Arakun and every agent hook outside it connects; none needs long.

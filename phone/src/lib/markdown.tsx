@@ -189,7 +189,9 @@ function inline(raw: string, h: Handlers): ReactNode[] {
     .replace(/\*\*(.+?)\*\*/g, (_, t: string) => wrap("b", t))
     .replace(/(^|\W)_(.+?)_(?=\W|$)/g, (_, pre: string, t: string) => pre + wrap("i", t))
     .replace(/(^|\W)\*(.+?)\*(?=\W|$)/g, (_, pre: string, t: string) => pre + wrap("i", t))
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t: string, url: string) => wrap("a", t, url));
+    // A link's address may hold no marker, or a code, a picture or bold put
+    // back into it would end up in the href (GHSA-756p-frh7-w9cw).
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)<\u0000-\u0003]+)\)/g, (_, t: string, url: string) => wrap("a", t, url));
 
   // Fold the markers into a tree. A close pops to its open, as a browser
   // would, so a crossing pair cannot leave an element open.

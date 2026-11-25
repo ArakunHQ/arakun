@@ -60,9 +60,13 @@ run_worker_first = true
 binding = "CLOUD"
 service = "arakun-cloud"
 
+# The GitHub OAuth App "Arakun Admin" (ArakunHQ), whose callback is
+# https://admin.arakun.dev/auth/github/callback. The ID is public; its secret
+# is the Worker secret GITHUB_CLIENT_SECRET. cloud-deploy.yml skips this Worker
+# while the value is PLACEHOLDER, which a copy without an app of its own keeps.
 [env.production.vars]
 CLOUD_ORIGIN = "https://app.arakun.dev"
-GITHUB_CLIENT_ID = "PLACEHOLDER"
+GITHUB_CLIENT_ID = "Ov23lipWB4v8e5aAC8j9"
 
 [[env.production.ratelimits]]
 name = "SIGN_IN_LIMIT"

@@ -1,7 +1,8 @@
 name: Cloud deploy
 
-# Deploys the hosted cloud Worker (cloud/: the relay and the teams API) and the
-# phone page it serves (phone/) to *.arakun.dev. It ships with the app's
+# Deploys the hosted cloud Worker (cloud/: the relay and the teams API), the
+# phone page it serves (phone/) and the admin Worker (cloud/admin/: the operator
+# panel at admin.arakun.dev) to arakun.dev. It ships with the app's
 # versions: release.yml calls this workflow after it publishes a release, so
 # the Worker that runs is the one from the latest release, and a change merged
 # on main waits for the next version, unless someone deploys main by hand.
@@ -26,7 +27,8 @@ name: Cloud deploy
 #     gh workflow run cloud-deploy.yml --ref cloud-hotfix/v1.2.3
 #
 #   The branch may only change cloud/ and phone/, so what runs is the release
-#   plus the fix. A second hotfix for the same release goes on the same branch.
+#   plus the fix; the admin Worker is under cloud/, so a hotfix can change it too.
+#   A second hotfix for the same release goes on the same branch.
 #   A commit that is not on main gets a warning: the next release deploys
 #   main, and a fix only on the hotfix branch would go away again.
 #
@@ -50,8 +52,12 @@ name: Cloud deploy
 # permission because the deploy applies the migrations); it can
 # also require a reviewer before a deploy. Its deployment rules must let v*
 # tags, cloud-hotfix/* branches and main through. The settings live in
-# cloud/wrangler.toml under [env.production]. The deploy's message names the
-# tag, the hotfix branch and its commit, or main's commit.
+# cloud/wrangler.toml under [env.production] (the admin Worker's, in
+# cloud/admin/wrangler.toml). The deploy's message names the tag, the hotfix
+# branch and its commit, or main's commit. The admin Worker deploys only once
+# its GitHub OAuth App's client ID replaces PLACEHOLDER in its wrangler.toml;
+# until then the step says so and is skipped (see "The admin panel" in
+# cloud/README.md).
 
 on:
   workflow_call:
@@ -88,7 +94,7 @@ jobs:
           exit 1
 
   deploy:
-    name: Deploy the cloud Worker
+    name: Deploy the cloud Worker and the admin Worker
     # Pre-releases don't deploy; a branch other than a hotfix one or main never
     # does, and main only by hand. The step below checks the rest exactly.
     if: >-
@@ -212,7 +218,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: cloud/package-lock.json
+          cache-dependency-path: |
+            cloud/package-lock.json
+            cloud/admin/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -233,6 +241,78 @@ jobs:
 
       # wrangler from package-lock.json, so the version is the one tested.
       - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8
+          MESSAGE: ${{ steps.ref.outputs.message }}
+        run: npx wrangler deploy --env production --message "$MESSAGE"
+
+      # The admin Worker's sign-in needs a GitHub OAuth App that a person
+      # creates (see "The admin panel" in cloud/README.md). Until its client ID
+      # replaces PLACEHOLDER, skip the deploy instead of shipping a Worker that
+      # nobody can sign in to. A missing value is a broken file: fail.
+      - name: Check the admin Worker is set up
+        id: admin
+        working-directory: .
+        run: |
+          file=cloud/admin/wrangler.toml
+          # GITHUB_CLIENT_ID of the [env.production.vars] block, with either
+          # quote style and any spacing. Empty if anything is missing.
+          id=$(awk '
+            /^[[:space:]]*\[/ { inblock = ($0 ~ /^[[:space:]]*\[env\.production\.vars\][[:space:]]*(#.*)?$/) }
+            inblock && /^[[:space:]]*GITHUB_CLIENT_ID[[:space:]]*=/ {
+              v = $0
+              sub(/^[^=]*=[[:space:]]*/, "", v)
+              sub(/[[:space:]]*(#.*)?$/, "", v)
+              gsub(/^["\x27]|["\x27]$/, "", v)
+              print v
+              exit
+            }' "$file") || id=
+          if [ -z "$id" ]; then
+            echo "::error file=$file::No GITHUB_CLIENT_ID found under [env.production.vars]. See \"The admin panel\" in cloud/README.md"
+            exit 1
+          fi
+          if [ "$id" = PLACEHOLDER ]; then
+            echo "::notice file=$file::The admin Worker is not set up (GITHUB_CLIENT_ID is still PLACEHOLDER), so it is not deployed. See \"The admin panel\" in cloud/README.md"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # After the cloud Worker, so the /admin/* routes it proxies to are there
+      # first. The admin Worker has its own dependencies and page build.
+      # If one of these steps fails, the run is red with the cloud Worker
+      # already live and the admin Worker old or absent. Re-run the same tag:
+      # every step is safe to repeat and deploys both again.
+      - name: Install the admin Worker
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        run: npm ci
+
+      # The Cloudflare Vite plugin picks the wrangler environment when it
+      # builds, not when wrangler deploys. Without CLOUDFLARE_ENV the build is
+      # the dev Worker (arakun-admin-dev, no route, the dev service binding)
+      # and `wrangler deploy --env production` would publish that.
+      - name: Build the admin panel
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        env:
+          CLOUDFLARE_ENV: production
+        run: npm run build
+
+      - name: Check the build is production's
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        run: |
+          name=$(node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(c.name)' "$(node -e 'const d = JSON.parse(require("fs").readFileSync(".wrangler/deploy/config.json", "utf8")); console.log(require("path").resolve(".wrangler/deploy", d.configPath))')")
+          if [ "$name" != arakun-admin ]; then
+            echo "::error::The admin build is for the Worker \"$name\", not arakun-admin. Build it with CLOUDFLARE_ENV=production."
+            exit 1
+          fi
+
+      - name: Deploy the admin Worker
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8

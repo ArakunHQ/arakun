@@ -576,6 +576,9 @@ pub struct Shell {
     /// Where the tree's rows sat when the pointer came over it. They stay
     /// there until it leaves, so no row moves from under the pointer.
     tree_held: Option<session_tree::HeldRows>,
+    /// The tree menu's Applies to is on Select projects: the order picked
+    /// goes to the projects ticked in the list beside it.
+    tree_sort_select: bool,
     /// The id of the sidebar's active row under the pointer, which shows
     /// its archive button.
     active_hover: Option<SharedString>,
@@ -1167,6 +1170,7 @@ impl Shell {
             tree_open: std::collections::HashMap::new(),
             tree_hover: None,
             tree_held: None,
+            tree_sort_select: false,
             active_hover: None,
             tree_filter,
             _tree_filter: tree_filter_sub,

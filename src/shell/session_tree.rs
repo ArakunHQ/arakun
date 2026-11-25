@@ -282,6 +282,19 @@ fn move_onto(order: &mut Vec<SharedString>, moved: &SharedString, target: &Share
     order.insert(to, id);
 }
 
+/// The orders after a drag in the tree: the project's own, and the one for
+/// every project when that changes. With project headings only the project
+/// dragged in goes to Manual; without them there is one order for all.
+fn order_after_drag(grouped: bool, all: Sort, own: Option<Sort>) -> (Option<Sort>, Option<Sort>) {
+    if !grouped {
+        return (own, (all != Sort::Manual).then_some(Sort::Manual));
+    }
+    match own.unwrap_or(all) {
+        Sort::Manual => (own, None),
+        _ => (Some(Sort::Manual), None),
+    }
+}
+
 /// The rule between the sessions with an open tab and the rest.
 fn tree_rule(grouped: bool) -> gpui::Div {
     div()
@@ -368,7 +381,7 @@ impl Shell {
             if query.is_some() && rows.is_empty() {
                 continue;
             }
-            sort_rows(&mut rows, layout.sort, held);
+            sort_rows(&mut rows, project.sort.unwrap_or(layout.sort), held);
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
             let user = self.tree_open.get(&project.path).copied();
@@ -409,6 +422,76 @@ impl Shell {
             .collect()
     }
 
+    /// The projects with an order of their own, ticked in the tree menu's
+    /// Select projects list.
+    pub(super) fn tree_sort_picked(&self) -> Vec<usize> {
+        (0..self.projects.len())
+            .filter(|&pi| self.projects[pi].sort.is_some())
+            .collect()
+    }
+
+    /// The order the tree menu shows picked: the one for every project, or,
+    /// on Select projects, the one the ticked projects share. `None` when
+    /// they have different ones.
+    pub(super) fn tree_menu_sort(&self) -> Option<Sort> {
+        let all = crate::tab_layout::current().sort;
+        let picked = self.tree_sort_picked();
+        if !self.tree_sort_select || picked.is_empty() {
+            return Some(all);
+        }
+        let first = self.projects[picked[0]].sort;
+        picked
+            .iter()
+            .all(|&pi| self.projects[pi].sort == first)
+            .then_some(first)
+            .flatten()
+    }
+
+    /// An order picked in the tree menu: for the ticked projects on Select
+    /// projects, else for every project.
+    pub(super) fn set_tree_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        self.drop_pick();
+        let picked = self.tree_sort_picked();
+        if self.tree_sort_select && !picked.is_empty() {
+            for pi in picked {
+                self.projects[pi].sort = Some(sort);
+            }
+            self.save(cx);
+        } else {
+            let layout = crate::tab_layout::current().with(|l| l.sort = sort);
+            self.apply_tab_layout(layout, None, cx);
+        }
+    }
+
+    /// The tree menu's Applies to. All projects takes every project back to
+    /// the one order; what was dragged by hand stays for Manual.
+    pub(super) fn set_tree_sort_scope(&mut self, select: bool, cx: &mut Context<Self>) {
+        self.tree_sort_select = select;
+        if !select && !self.tree_sort_picked().is_empty() {
+            for p in &mut self.projects {
+                p.sort = None;
+            }
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Ticks project `pi` in the Select projects list, giving it the order
+    /// the menu shows, or unticks it back to the order for every project.
+    pub(super) fn toggle_tree_sort_project(&mut self, pi: usize, cx: &mut Context<Self>) {
+        let shown = self
+            .tree_menu_sort()
+            .unwrap_or(crate::tab_layout::current().sort);
+        if let Some(p) = self.projects.get_mut(pi) {
+            p.sort = match p.sort {
+                Some(_) => None,
+                None => Some(shown),
+            };
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
     /// The sessions the tree shows, top to bottom: what Shift+click picks
     /// a range of.
     fn tree_order(&self, cx: &App) -> Vec<SharedString> {
@@ -420,8 +503,10 @@ impl Shell {
     }
 
     /// Session `d` dropped on the tree's row of session `target`, in the
-    /// same project: it takes that row's place. The order becomes Manual,
-    /// starting from what the tree shows, so no other row jumps.
+    /// same project: it takes that row's place. That project's order becomes
+    /// Manual, starting from what the tree shows, so no other row jumps; the
+    /// other projects keep theirs. Without project headings there is one
+    /// order for every project, and it becomes Manual.
     fn drop_session_on_tree_row(
         &mut self,
         d: &super::drag::DraggedSession,
@@ -455,10 +540,11 @@ impl Shell {
         order.extend(rest);
         project.session_order = order;
         let layout = crate::tab_layout::current();
-        if layout.sort == Sort::Manual {
-            self.save(cx);
-        } else {
-            self.apply_tab_layout(layout.with(|l| l.sort = Sort::Manual), None, cx);
+        let (own, all) = order_after_drag(layout.group, layout.sort, project.sort);
+        project.sort = own;
+        match all {
+            Some(sort) => self.apply_tab_layout(layout.with(|l| l.sort = sort), None, cx),
+            None => self.save(cx),
         }
         // The pointer is still over the tree: hold the rows where they are now.
         if self.tree_held.take().is_some() {
@@ -941,6 +1027,8 @@ impl Shell {
                     // The pointer is on the tree's own heading: let go of
                     // the rows, or the order picked would wait for it to leave.
                     this.tree_held = None;
+                    // On Select projects while any project has its own order.
+                    this.tree_sort_select = !this.tree_sort_picked().is_empty();
                     this.open_composer_menu(MenuTarget::TreeSort, ev.position(), cx)
                 })),
             )
@@ -1565,6 +1653,26 @@ mod tests {
                 vec![Pinned, Pinned, Rest, Rest]
             )
         );
+    }
+
+    #[test]
+    fn a_drag_switches_only_its_project_to_manual() {
+        use Sort::*;
+        // With project headings: that project only; the order for all stays.
+        assert_eq!(order_after_drag(true, Recent, None), (Some(Manual), None));
+        assert_eq!(
+            order_after_drag(true, Recent, Some(Name)),
+            (Some(Manual), None)
+        );
+        // Already Manual, by its own order or the one for all: nothing changes.
+        assert_eq!(
+            order_after_drag(true, Recent, Some(Manual)),
+            (Some(Manual), None)
+        );
+        assert_eq!(order_after_drag(true, Manual, None), (None, None));
+        // Without them, one list: the order for every project goes to Manual.
+        assert_eq!(order_after_drag(false, Name, None), (None, Some(Manual)));
+        assert_eq!(order_after_drag(false, Manual, None), (None, None));
     }
 
     #[test]

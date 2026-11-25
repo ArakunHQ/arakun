@@ -1,0 +1,38 @@
+core/src/browser/client.rs
+  s_ad2df0a1dd0e6f::t_3be0d283ecb36b 1258-1275
+  s_ad2df0a1dd0e6f::t_c4187eeceba60e 1276-1277
+src/control.rs
+  s_ad2df0a1dd0e6f::t_68050a6038ac82 105-110
+README.md
+  s_ad2df0a1dd0e6f::t_2abc4f2cc0faa4 222-226
+src/shell/pages.rs
+  s_ad2df0a1dd0e6f::t_68050a6038ac82 169
+  s_ad2df0a1dd0e6f::t_303380aeb92acf 126-128,167-168,807-810
+  s_ad2df0a1dd0e6f::t_06b71fc1205657 811
+core/src/browser/runtime.rs
+  s_ad2df0a1dd0e6f::t_a24df68f7b7202 202-203
+  s_ad2df0a1dd0e6f::t_d5ab90be03ac22 204-205,207
+core/src/browser/view.rs
+  s_ad2df0a1dd0e6f::t_3be0d283ecb36b 392-396,1214
+core/src/browser/mod.rs
+  s_ad2df0a1dd0e6f::t_d5ab90be03ac22 6-7,153,163-165,179-223,280-314
+  s_ad2df0a1dd0e6f::t_3405227f8b3b43 83-84
+examples/browser_demo.rs
+  s_ad2df0a1dd0e6f::t_3405227f8b3b43 178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c96d958de78858a82c57561f2ffd3ef0648bb3b6",
+  "prompts": {},
+  "sessions": {
+    "s_ad2df0a1dd0e6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "569e83e7-4cb9-452e-8cd4-025133c06b32",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

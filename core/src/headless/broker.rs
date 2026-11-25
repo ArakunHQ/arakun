@@ -201,12 +201,79 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     .arg(dir)
     .args(args)
     .env("GIT_TERMINAL_PROMPT", "0");
+    crate::git::unpinned(&mut cmd);
     let out = run_with_timeout(cmd, None, Duration::from_secs(30))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
+}
+
+/// Fetches `branch` from `repo` into the bare repository `tmp` and returns its
+/// commit. Only `git upload-pack` runs in `repo`, and Git keeps that safe in a
+/// repository it can't trust: it runs nothing the repository's config names.
+fn copy_branch(tmp: &Path, repo: &Path, branch: &str) -> Result<String, String> {
+    git(
+        tmp,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "-q",
+            "--no-tags",
+            "--",
+            &repo.to_string_lossy(),
+            &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+    )?;
+    git(
+        tmp,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )
+}
+
+/// The config file of the repository in `dir`, found without running git there:
+/// `dir/.git`, the folder a `.git` file names (and its main repository's, for a
+/// linked worktree), or `dir` itself when it is bare.
+fn config_file(dir: &Path) -> Option<PathBuf> {
+    let dot = dir.join(".git");
+    let gitdir = if dot.is_dir() {
+        dot
+    } else if dot.is_file() {
+        let link = std::fs::read_to_string(&dot).ok()?;
+        dir.join(link.strip_prefix("gitdir:")?.trim())
+    } else if dir.join("HEAD").is_file() {
+        dir.to_path_buf()
+    } else {
+        return None;
+    };
+    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(c) => gitdir.join(c.trim()),
+        Err(_) => gitdir,
+    };
+    Some(common.join("config"))
+}
+
+/// Where `git push <remote>` in `repo` would push: the remote's first `pushurl`,
+/// else its `url`. `git config --file`, run in `tmp`, reads the file as plain
+/// data; it applies none of it and follows no includes.
+fn push_url(tmp: &Path, repo: &Path, remote: &str) -> Option<String> {
+    let file = config_file(repo)?;
+    let file = file.to_string_lossy();
+    ["pushurl", "url"].iter().find_map(|k| {
+        let key = format!("remote.{remote}.{k}");
+        let all = git(tmp, &["config", "--file", &file, "-z", "--get-all", &key]).ok()?;
+        all.split('\0')
+            .next()
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// The flags `gh pr create|comment` may carry, and whether each takes a value.
@@ -307,10 +374,27 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             if remote.starts_with('-') || branch.starts_with('-') {
                 return Err("remote and branch can't start with -".into());
             }
-            git(&repo, &["check-ref-format", "--branch", &branch])
-                .map_err(|_| format!("not a branch name: {branch}"))?;
-            let url = git(&repo, &["remote", "get-url", "--push", "--", &remote])
-                .unwrap_or_else(|_| remote.clone());
+            // The agent can write the config of any repository in the workspace but
+            // the top one, and a host git that loads it may run what it names
+            // (`gpg.program` for a signed commit, and more). So git runs only in a
+            // clean scratch repository here; the agent's is read as data.
+            let tmp = scratch("prepare")?;
+            let found = (|| {
+                git(&tmp, &["init", "--bare", "-q"])?;
+                git(&tmp, &["check-ref-format", "--branch", &branch])
+                    .map_err(|_| format!("not a branch name: {branch}"))?;
+                let url = push_url(&tmp, &repo, &remote).unwrap_or_else(|| remote.clone());
+                let sha = copy_branch(&tmp, &repo, &branch)
+                    .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
+                let subject = git(
+                    &tmp,
+                    &["log", "-1", "--no-show-signature", "--format=%s", &sha],
+                )
+                .unwrap_or_default();
+                Ok::<_, String>((url, sha, subject))
+            })();
+            let _ = std::fs::remove_dir_all(&tmp);
+            let (url, sha, subject) = found?;
             if url.starts_with("ext::") || url.starts_with('-') || url.contains(['\n', '\r']) {
                 return Err(format!("arakun won't push to {url}"));
             }
@@ -323,17 +407,6 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             } else {
                 url
             };
-            let sha = git(
-                &repo,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &format!("refs/heads/{branch}^{{commit}}"),
-                ],
-            )
-            .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
-            let subject = git(&repo, &["log", "-1", "--format=%s", &sha]).unwrap_or_default();
             let v = json!({"action": kind, "repo": repo, "remote": remote, "url": url, "branch": branch, "sha": sha});
             let summary = format!(
                 "Push the branch {branch} ({} \"{}\") to {url}",
@@ -536,20 +609,7 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
             let tmp = scratch("push")?;
             let result = (|| {
                 git(&tmp, &["init", "--bare", "-q"])?;
-                git(
-                    &tmp,
-                    &[
-                        "-c",
-                        "protocol.file.allow=always",
-                        "fetch",
-                        "-q",
-                        "--no-tags",
-                        "--",
-                        &repo,
-                        &format!("+refs/heads/{branch}:refs/heads/{branch}"),
-                    ],
-                )?;
-                let got = git(&tmp, &["rev-parse", &format!("refs/heads/{branch}")])?;
+                let got = copy_branch(&tmp, Path::new(&repo), &branch)?;
                 if got != sha {
                     return Err(format!(
                         "{branch} moved since you approved it ({sha} → {got}); nothing was pushed"
@@ -860,6 +920,147 @@ mod tests {
             "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two",
         );
         assert!(execute(&v, &j.workspace).unwrap_err().contains("moved"));
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_urls_are_read_from_the_config_file() {
+        let ws = tmpdir("urls");
+        let sh = |c: &str| {
+            let out = crate::git::unpinned(&mut Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(&ws)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{c}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        sh("git init -q -b main repo && cd repo \
+            && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m one \
+            && git remote add origin https://example.com/fetch.git \
+            && git remote set-url --add --push origin https://example.com/push.git \
+            && git remote set-url --add --push origin https://example.com/second.git \
+            && git remote add plain https://example.com/plain.git \
+            && git worktree add -q -b side ../linked");
+        let tmp = scratch("urls-test").unwrap();
+        git(&tmp, &["init", "--bare", "-q"]).unwrap();
+        for dir in ["repo", "linked"] {
+            let d = ws.join(dir);
+            assert_eq!(
+                push_url(&tmp, &d, "origin").as_deref(),
+                Some("https://example.com/push.git"),
+                "{dir}"
+            );
+            assert_eq!(
+                push_url(&tmp, &d, "plain").as_deref(),
+                Some("https://example.com/plain.git")
+            );
+            assert_eq!(push_url(&tmp, &d, "nope"), None);
+        }
+        assert_eq!(push_url(&tmp, &ws, "origin"), None);
+        let j = jail(&ws);
+        let v = prepare(
+            &json!({"action": "git_push", "repo": "linked", "remote": "plain", "branch": "side"}),
+            &j,
+        )
+        .unwrap();
+        assert_eq!(v["url"], "https://example.com/plain.git");
+        assert!(
+            prepare(
+                &json!({"action": "git_push", "repo": "repo", "remote": "origin", "branch": "@{-1}"}),
+                &j,
+            )
+            .unwrap_err()
+            .contains("not a branch name")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    /// GHSA-6hrf-j7rv-rjpv: the agent writes the config of a nested repository,
+    /// and the host must not run what it names, before approval or after.
+    #[cfg(unix)]
+    #[test]
+    fn a_nested_repository_config_runs_nothing_on_the_host() {
+        let ws = tmpdir("nested");
+        let sh = |c: &str| {
+            let out = crate::git::unpinned(&mut Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(&ws)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{c}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        sh(
+            "printf '#!/bin/sh\\ntouch \"$(dirname \"$0\")/pwned\"\\nexit 1\\n' > evil.sh && chmod +x evil.sh",
+        );
+        sh(
+            "git init -q --bare remote.git && git init -q -b main sub && cd sub \
+            && git -c user.name=a -c user.email=a@b commit -q --allow-empty -m base \
+            && git remote add origin ../remote.git",
+        );
+        // A commit with a signature, so a host git that checks it runs the program.
+        sh(
+            "cd sub && tree=$(git rev-parse 'HEAD^{tree}') && base=$(git rev-parse HEAD) \
+            && sha=$(printf 'tree %s\\nparent %s\\nauthor a <a@b> 0 +0000\\ncommitter a <a@b> 0 +0000\\n\
+gpgsig -----BEGIN PGP SIGNATURE-----\\n \\n abc\\n -----END PGP SIGNATURE-----\\n\\nsigned\\n' \"$tree\" \"$base\" \
+            | git hash-object -t commit -w --stdin) && git update-ref refs/heads/main \"$sha\"",
+        );
+        let evil = ws.join("evil.sh");
+        let evil = evil.to_str().unwrap();
+        let hostile = [
+            vec![
+                "log.showSignature=true".to_string(),
+                "gpg.format=openpgp".into(),
+                format!("gpg.program={evil}"),
+            ],
+            vec![
+                "log.showSignature=true".into(),
+                "gpg.format=ssh".into(),
+                format!("gpg.ssh.program={evil}"),
+            ],
+            vec![
+                "core.hooksPath=..".into(),
+                format!("core.pager={evil}"),
+                format!("core.sshCommand={evil}"),
+                format!("core.alternateRefsCommand={evil}"),
+                format!("uploadpack.packObjectsHook={evil}"),
+                format!("diff.external={evil}"),
+                format!("credential.helper=!{evil}"),
+            ],
+        ];
+        let j = jail(&ws);
+        for settings in hostile {
+            for s in &settings {
+                let (k, v) = s.split_once('=').unwrap();
+                sh(&format!("git -C sub config {k} '{v}'"));
+            }
+            let v = prepare(
+                &json!({"action": "git_push", "repo": "sub", "remote": "origin", "branch": "main"}),
+                &j,
+            )
+            .unwrap();
+            assert!(
+                v["arakun_summary"].as_str().unwrap().contains("\"signed\""),
+                "{v}"
+            );
+            assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
+            assert!(!ws.join("pwned").exists(), "prepare ran {settings:?}");
+            execute(&v, &j.workspace).unwrap();
+            assert!(!ws.join("pwned").exists(), "execute ran {settings:?}");
+        }
         std::fs::remove_dir_all(&ws).unwrap();
     }
 }

@@ -190,6 +190,22 @@ describe("forwarding", () => {
     expect(await res.json()).toEqual({ github_id: 1001, login: "octocat" });
     expect(seen).toEqual([]);
   });
+
+  it("answers an empty answer with no body, even if the binding hands back a stream", async () => {
+    // The Response constructor refuses a body with a 204, so the fake gives the
+    // proxy a 204 whose body getter is a stream, as a binding may.
+    let cancelled = false;
+    answer = () => {
+      const res = new Response(null, { status: 204, headers: { "Content-Type": "application/json" } });
+      const body = new ReadableStream({ cancel: () => void (cancelled = true) });
+      Object.defineProperty(res, "body", { value: body });
+      return res;
+    };
+    const res = await api("/api/users/2002/block", { method: "DELETE", headers: { Origin: ORIGIN } });
+    expect(res.status).toBe(204);
+    expect(res.body).toBeNull();
+    expect(cancelled).toBe(true);
+  });
 });
 
 describe("pages", () => {

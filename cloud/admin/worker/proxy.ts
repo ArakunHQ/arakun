@@ -54,6 +54,12 @@ export async function proxy(request: Request, env: Env, op: Operator): Promise<R
   const out = new Headers({ "Cache-Control": "no-store" });
   const type = res.headers.get("Content-Type");
   if (type) out.set("Content-Type", type);
+  // The Response constructor throws on a body with these statuses, and a
+  // binding may still hand back a stream. Close it so it is not left open.
+  if (res.status === 204 || res.status === 205 || res.status === 304) {
+    await res.body?.cancel().catch(() => {});
+    return new Response(null, { status: res.status, headers: out });
+  }
   return new Response(res.body, { status: res.status, headers: out });
 }
 

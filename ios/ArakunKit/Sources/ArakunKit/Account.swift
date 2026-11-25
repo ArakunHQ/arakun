@@ -690,18 +690,24 @@ public struct KeychainSessionStore: SessionStore {
 public struct KeychainItem: Sendable {
     public let service: String
     public let account: String
+    /// The Keychain access group the item lives in, when another target of
+    /// the app must read it too. Nil keeps it in the app's own group.
+    public let accessGroup: String?
 
-    public init(service: String, account: String) {
+    public init(service: String, account: String, accessGroup: String? = nil) {
         self.service = service
         self.account = account
+        self.accessGroup = accessGroup
     }
 
     private var query: [String: Any] {
-        [
+        var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        if let accessGroup { q[kSecAttrAccessGroup as String] = accessGroup }
+        return q
     }
 
     public func read() -> Data? {

@@ -30,6 +30,18 @@ export const github = {
   emailCalls: [] as Request[],
   /// The body of each call, read once by the fake.
   bodies: [] as string[],
+  /// GitHub ID → the public profile GET /user/<id> answers with; 404 without one.
+  profiles: new Map<number, Record<string, unknown>>(),
+  /// The requests to GET /user/<id>, apart from `calls`.
+  profileCalls: [] as Request[],
+};
+
+/// The Discord webhook the cloud access tests post to, and what it was sent.
+export const webhook = {
+  url: "https://discord.test/api/webhooks/1/secret",
+  bodies: [] as string[],
+  /// "throw": the network fails; a number: the webhook answers with it.
+  outage: null as "throw" | number | null,
 };
 
 export function fakeGitHub(): void {
@@ -44,10 +56,27 @@ export function fakeGitHub(): void {
   github.calls = [];
   github.emailCalls = [];
   github.bodies = [];
+  github.profiles.clear();
+  github.profileCalls = [];
+  webhook.bodies = [];
+  webhook.outage = null;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     const lookup = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(req.url);
     if (lookup && req.method === "GET") return lookupUser(req, decodeURIComponent(lookup[1]!));
+    const profile = /^https:\/\/api\.github\.com\/user\/([0-9]+)$/.exec(req.url);
+    if (profile && req.method === "GET") {
+      github.profileCalls.push(req);
+      if (github.outage === "throw") throw new TypeError("Network connection lost.");
+      if (github.outage !== null) return new Response("unavailable", { status: github.outage });
+      const found = github.profiles.get(Number(profile[1]));
+      return found ? Response.json(found) : Response.json({ message: "Not Found" }, { status: 404 });
+    }
+    if (req.url === webhook.url && req.method === "POST") {
+      webhook.bodies.push(await req.text());
+      if (webhook.outage === "throw") throw new TypeError("Network connection lost.");
+      return new Response(null, { status: webhook.outage ?? 204 });
+    }
     if (req.url === "https://api.github.com/user/emails" && req.method === "GET") {
       github.emailCalls.push(req);
       if (github.emails === "throw") throw new TypeError("Network connection lost.");
@@ -151,7 +180,7 @@ export async function signIn(
   return res.json();
 }
 
-export function call(method: string, path: string, headers: Record<string, string> = {}, body?: string): Promise<Response> {
+export function call(method: string, path: string, headers: Record<string, string> = {}, body?: BodyInit): Promise<Response> {
   return SELF.fetch(`https://teams.test${path}`, { method, headers, body });
 }
 

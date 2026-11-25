@@ -100,12 +100,17 @@ jobs, the cloud job runs only when `cloud/`, `phone/` or CI itself changes, the 
 the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
 alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
 when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
-`.github/` changes.
+`.github/` changes. Every pull request is scanned for secrets (TruffleHog, failing only
+on a secret it verified as live), and one that changes a manifest, lockfile or workflow
+gets a dependency review that fails on a new high or critical advisory. CodeQL and
+OpenSSF Scorecard run on `main` and weekly, with results in the Security tab.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
 you touched (`cargo test --locked --no-default-features <module>`, for example
-`terminal` or `design_lint` for a UI change). The full test suite, cargo-deny, zizmor
+`terminal` or `design_lint` for a UI change). For `phone/`, run
+`(cd phone && npm ci && npm test && npm run build)` and commit the rebuilt
+`phone/dist`. The full test suite, cargo-deny, zizmor
 and the other platforms can be left to CI on your draft pull request; fix what it
 finds there. These are the commands CI runs:
 
@@ -123,7 +128,8 @@ cargo deny check
 
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npx tsc --noEmit && npx vitest run)
-(cd phone && node --test "test/*.test.mjs")
+(cd cloud/admin && npm ci && npm run check && npm test && npm run build)
+(cd phone && npm ci && npm test && tools/check-dist.sh)
 
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
@@ -181,6 +187,9 @@ Some notes:
 - The phone tests check the phone's encryption against vectors the Rust side writes, and
   so do the Android app's (`android/kit`). If you change the format in
   `core/src/phone`, update every side.
+- The phone page in `phone/` is built: the app embeds `phone/dist` and the Worker in
+  `cloud/` serves it, so `phone/dist` is committed. `npm run build` in `phone/` writes
+  it, and `tools/check-dist.sh` fails when it is not what the build writes now.
 
 ### Git hooks
 
@@ -336,6 +345,8 @@ the README. Use these:
 | **notice** | something Arakun tells you, on the island and in the Inbox | notification, alert. A notice can also show as a desktop notification, and GitHub's notifications keep their name. |
 | **check** | the project's check command, run after a turn that edits files | |
 | **checks** | GitHub's checks on a pull request | CI, when you mean the checks |
+| **Computers** | the tab that lists this computer and your servers | Servers tab. A machine running `arakun server` is still a server, and the program keeps its name. |
+| **Remove** | taking a server out of the Computers tab, and off your account when it is on it | Forget or Disconnect, for a server |
 
 Stored names stay as they are (`palettes.json`, `arakun notices`, `~/arakun-workspaces`).
 A test in `src/words_lint.rs` fails on a retired word in a string of prose; a phrase

@@ -47,7 +47,7 @@ jobs:
           # The app, its examples and build.rs.
           - language: rust
             runner: depot-ubuntu-24.04-8
-          # cloud/ (Cloudflare Worker) and phone/ (the web app).
+          # cloud/ (Cloudflare Worker) and phone/ (the web app; phone/dist is built output).
           - language: javascript-typescript
             runner: depot-ubuntu-24.04
           # The scripts in tools/.
@@ -69,6 +69,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: none
+          # The built page is generated from phone/src; scan the source.
+          config: |
+            paths-ignore:
+              - phone/dist
 
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:

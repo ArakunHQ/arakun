@@ -175,6 +175,12 @@ fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
         jail.workspace.join(raw)
     };
     let real = crate::platform::canonicalize(&p).map_err(|e| format!("{raw}: {e}"))?;
+    allowed(jail, raw, &real)?;
+    Ok(real)
+}
+
+/// [`inside`]'s rules for a path already resolved.
+fn allowed(jail: &Jail, raw: &str, real: &Path) -> Result<(), String> {
     if !real.starts_with(&jail.workspace) {
         return Err(format!(
             "{raw} is not inside the workspace {}",
@@ -186,7 +192,196 @@ fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("{raw} is hidden from the sandbox"));
     }
-    Ok(real)
+    Ok(())
+}
+
+/// Opens an attachment to read, as the file it is now: a link at its last
+/// component is refused, not followed, and the path the open file really has
+/// must pass [`inside`]'s rules. The agent can change the workspace while the
+/// user reads the request, so a path checked earlier proves nothing here.
+fn open_attachment(jail: &Jail, path: &Path) -> Result<(std::fs::File, std::fs::Metadata), String> {
+    let raw = path.display().to_string();
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // O_NONBLOCK: a FIFO put in its place must not hang the host.
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_FLAG_OPEN_REPARSE_POINT: open a link itself, not where it leads.
+        o.custom_flags(0x0020_0000);
+    }
+    let f = o.open(path).map_err(|e| format!("{raw}: {e}"))?;
+    let m = f.metadata().map_err(|e| format!("{raw}: {e}"))?;
+    if !m.is_file() {
+        return Err(format!("{raw} is not a file"));
+    }
+    // A hard link to a file the sandbox hides has a path inside the workspace.
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&m) > 1 {
+        return Err(format!("{raw} has other hard links; arakun won't send it"));
+    }
+    let real = match open_path(&f) {
+        Some(p) => p,
+        None => crate::platform::canonicalize(path).map_err(|e| format!("{raw}: {e}"))?,
+    };
+    allowed(jail, &raw, &real)?;
+    Ok((f, m))
+}
+
+/// Where an open file really is, as the kernel has it.
+#[cfg(target_os = "linux")]
+fn open_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd as _;
+    std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn open_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL included, into buf.
+    let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if r == -1 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_path(_: &std::fs::File) -> Option<PathBuf> {
+    None
+}
+
+/// The device and inode of a file, where the platform has them.
+fn file_id(m: &std::fs::Metadata) -> Value {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        json!([m.dev(), m.ino()])
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        Value::Null
+    }
+}
+
+/// Reads `from` to the end, writing it to `to`, and returns its SHA-256 in hex.
+fn copy_hashed(
+    mut from: impl std::io::Read,
+    mut to: impl std::io::Write,
+) -> std::io::Result<String> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        hash.update(&buf[..n]);
+        to.write_all(&buf[..n])?;
+    }
+    to.flush()?;
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// An attachment as the user approves it: its path, size, identity and
+/// contents' hash, so the send can tell it is still that file.
+fn stamp_attachment(jail: &Jail, raw: &str) -> Result<Value, String> {
+    let path = inside(jail, raw)?;
+    let (f, m) = open_attachment(jail, &path)?;
+    let sha256 = copy_hashed(f, std::io::sink()).map_err(|e| format!("{raw}: {e}"))?;
+    Ok(json!({"path": path, "size": m.len(), "id": file_id(&m), "sha256": sha256}))
+}
+
+fn size_label(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut v = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while v >= 1024.0 && unit + 1 < UNITS.len() {
+        v /= 1024.0;
+        unit += 1;
+    }
+    format!("{v:.1} {}", UNITS[unit])
+}
+
+/// A folder only this user can read, removed with everything in it on drop.
+struct Private(PathBuf);
+
+impl Private {
+    fn new(what: &str) -> Result<Self, String> {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!("arakun-{what}-{}-{t}", std::process::id()));
+        private_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        Ok(Self(d))
+    }
+}
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Makes a new folder, mode 0700 on Unix. It fails if the folder is there:
+/// someone else may have made it.
+fn private_dir(d: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(d)
+    }
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(d)
+}
+
+/// Copies an approved attachment into `dir`, under its own name, and returns
+/// the copy. Refuses if the file is not the one the user approved.
+fn snapshot(jail: &Jail, a: &Value, dir: &Path) -> Result<PathBuf, String> {
+    let path = PathBuf::from(a["path"].as_str().unwrap_or_default());
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file", path.display()))?;
+    let changed = || {
+        format!(
+            "{} changed since you approved it; nothing was sent",
+            path.display()
+        )
+    };
+    let (f, m) = open_attachment(jail, &path).map_err(|e| format!("{}: {e}", changed()))?;
+    if Some(m.len()) != a["size"].as_u64() || file_id(&m) != a["id"] {
+        return Err(changed());
+    }
+    private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let copy = dir.join(name);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let out = o
+        .open(&copy)
+        .map_err(|e| format!("{}: {e}", copy.display()))?;
+    let sha256 = copy_hashed(f, out).map_err(|e| format!("{}: {e}", path.display()))?;
+    if Some(sha256.as_str()) != a["sha256"].as_str() {
+        return Err(changed());
+    }
+    Ok(copy)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -201,12 +396,79 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     .arg(dir)
     .args(args)
     .env("GIT_TERMINAL_PROMPT", "0");
+    crate::git::unpinned(&mut cmd);
     let out = run_with_timeout(cmd, None, Duration::from_secs(30))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
+}
+
+/// Fetches `branch` from `repo` into the bare repository `tmp` and returns its
+/// commit. Only `git upload-pack` runs in `repo`, and Git keeps that safe in a
+/// repository it can't trust: it runs nothing the repository's config names.
+fn copy_branch(tmp: &Path, repo: &Path, branch: &str) -> Result<String, String> {
+    git(
+        tmp,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "-q",
+            "--no-tags",
+            "--",
+            &repo.to_string_lossy(),
+            &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+        ],
+    )?;
+    git(
+        tmp,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("refs/heads/{branch}^{{commit}}"),
+        ],
+    )
+}
+
+/// The config file of the repository in `dir`, found without running git there:
+/// `dir/.git`, the folder a `.git` file names (and its main repository's, for a
+/// linked worktree), or `dir` itself when it is bare.
+fn config_file(dir: &Path) -> Option<PathBuf> {
+    let dot = dir.join(".git");
+    let gitdir = if dot.is_dir() {
+        dot
+    } else if dot.is_file() {
+        let link = std::fs::read_to_string(&dot).ok()?;
+        dir.join(link.strip_prefix("gitdir:")?.trim())
+    } else if dir.join("HEAD").is_file() {
+        dir.to_path_buf()
+    } else {
+        return None;
+    };
+    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(c) => gitdir.join(c.trim()),
+        Err(_) => gitdir,
+    };
+    Some(common.join("config"))
+}
+
+/// Where `git push <remote>` in `repo` would push: the remote's first `pushurl`,
+/// else its `url`. `git config --file`, run in `tmp`, reads the file as plain
+/// data; it applies none of it and follows no includes.
+fn push_url(tmp: &Path, repo: &Path, remote: &str) -> Option<String> {
+    let file = config_file(repo)?;
+    let file = file.to_string_lossy();
+    ["pushurl", "url"].iter().find_map(|k| {
+        let key = format!("remote.{remote}.{k}");
+        let all = git(tmp, &["config", "--file", &file, "-z", "--get-all", &key]).ok()?;
+        all.split('\0')
+            .next()
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// The flags `gh pr create|comment` may carry, and whether each takes a value.
@@ -265,13 +527,8 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 .to_string();
             let attachments = list(args, "attachments")
                 .iter()
-                .map(|a| inside(jail, a))
+                .map(|a| stamp_attachment(jail, a))
                 .collect::<Result<Vec<_>, _>>()?;
-            for a in &attachments {
-                if !a.is_file() {
-                    return Err(format!("{} is not a file", a.display()));
-                }
-            }
             let more = if to.len() > 1 {
                 format!(" and {} more", to.len() - 1)
             } else {
@@ -289,10 +546,12 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 let names: Vec<String> = attachments
                     .iter()
                     .map(|a| {
-                        a.file_name()
+                        let name = Path::new(a["path"].as_str().unwrap_or_default())
+                            .file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
-                            .into_owned()
+                            .into_owned();
+                        format!("{name} ({})", size_label(a["size"].as_u64().unwrap_or(0)))
                     })
                     .collect();
                 summary.push_str(&format!(", attachments: {}", names.join(", ")));
@@ -307,10 +566,27 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             if remote.starts_with('-') || branch.starts_with('-') {
                 return Err("remote and branch can't start with -".into());
             }
-            git(&repo, &["check-ref-format", "--branch", &branch])
-                .map_err(|_| format!("not a branch name: {branch}"))?;
-            let url = git(&repo, &["remote", "get-url", "--push", "--", &remote])
-                .unwrap_or_else(|_| remote.clone());
+            // The agent can write the config of any repository in the workspace but
+            // the top one, and a host git that loads it may run what it names
+            // (`gpg.program` for a signed commit, and more). So git runs only in a
+            // clean scratch repository here; the agent's is read as data.
+            let tmp = scratch("prepare")?;
+            let found = (|| {
+                git(&tmp, &["init", "--bare", "-q"])?;
+                git(&tmp, &["check-ref-format", "--branch", &branch])
+                    .map_err(|_| format!("not a branch name: {branch}"))?;
+                let url = push_url(&tmp, &repo, &remote).unwrap_or_else(|| remote.clone());
+                let sha = copy_branch(&tmp, &repo, &branch)
+                    .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
+                let subject = git(
+                    &tmp,
+                    &["log", "-1", "--no-show-signature", "--format=%s", &sha],
+                )
+                .unwrap_or_default();
+                Ok::<_, String>((url, sha, subject))
+            })();
+            let _ = std::fs::remove_dir_all(&tmp);
+            let (url, sha, subject) = found?;
             if url.starts_with("ext::") || url.starts_with('-') || url.contains(['\n', '\r']) {
                 return Err(format!("arakun won't push to {url}"));
             }
@@ -323,17 +599,6 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             } else {
                 url
             };
-            let sha = git(
-                &repo,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &format!("refs/heads/{branch}^{{commit}}"),
-                ],
-            )
-            .map_err(|e| format!("no branch {branch} in {}: {e}", repo.display()))?;
-            let subject = git(&repo, &["log", "-1", "--format=%s", &sha]).unwrap_or_default();
             let v = json!({"action": kind, "repo": repo, "remote": remote, "url": url, "branch": branch, "sha": sha});
             let summary = format!(
                 "Push the branch {branch} ({} \"{}\") to {url}",
@@ -490,11 +755,12 @@ fn scratch(what: &str) -> Result<PathBuf, String> {
 }
 
 /// Runs an approved action on the host; what comes back goes to the model.
-pub fn execute(v: &Value, workspace: &Path) -> Result<String, String> {
-    execute_with(v, workspace, &crate::agent::which)
+pub fn execute(v: &Value, jail: &Jail) -> Result<String, String> {
+    execute_with(v, jail, &crate::agent::which)
 }
 
-fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, String> {
+fn execute_with(v: &Value, jail: &Jail, find: Find) -> Result<String, String> {
+    let workspace = jail.workspace.as_path();
     let strs = |k: &str| {
         v[k].as_array()
             .into_iter()
@@ -515,15 +781,26 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
                 cmd.arg("--cc").arg(a);
             }
             cmd.arg("--subject").arg(str_of("subject"));
-            for a in strs("attachments") {
-                cmd.arg("--attach").arg(a);
+            // himalaya gets copies the broker made and owns, taken from the files
+            // the user approved: the workspace's paths may lead elsewhere by now.
+            let tmp = Private::new("mail")?;
+            for (i, a) in v["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let copy = snapshot(jail, a, &tmp.0.join(i.to_string()))?;
+                cmd.arg("--attach").arg(copy);
             }
             cmd.arg("--send").current_dir(workspace);
-            finish(run_with_timeout(
+            let out = run_with_timeout(
                 cmd,
                 Some(str_of("body").as_bytes()),
                 Duration::from_secs(120),
-            )?)
+            );
+            drop(tmp);
+            finish(out?)
         }
         "git_push" => {
             let (repo, url, branch, sha) = (
@@ -536,20 +813,7 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
             let tmp = scratch("push")?;
             let result = (|| {
                 git(&tmp, &["init", "--bare", "-q"])?;
-                git(
-                    &tmp,
-                    &[
-                        "-c",
-                        "protocol.file.allow=always",
-                        "fetch",
-                        "-q",
-                        "--no-tags",
-                        "--",
-                        &repo,
-                        &format!("+refs/heads/{branch}:refs/heads/{branch}"),
-                    ],
-                )?;
-                let got = git(&tmp, &["rev-parse", &format!("refs/heads/{branch}")])?;
+                let got = copy_branch(&tmp, Path::new(&repo), &branch)?;
                 if got != sha {
                     return Err(format!(
                         "{branch} moved since you approved it ({sha} → {got}); nothing was pushed"
@@ -681,7 +945,10 @@ mod tests {
                 .unwrap()
                 .starts_with("Send mail to juan@x.com with subject \"Hola\"")
         );
-        assert_eq!(v["attachments"][0], json!(j.workspace.join("report.pdf")));
+        assert_eq!(
+            v["attachments"][0]["path"],
+            json!(j.workspace.join("report.pdf"))
+        );
         let v = prepare(
             &json!({"action": "send_email", "to": "a@x.com, b@y.com", "subject": "S", "body": "b"}),
             &j,
@@ -797,9 +1064,7 @@ mod tests {
         fake(&bin, "himalaya", &log);
         let j = jail(&ws);
         let v = prepare(&json!({"action": "send_email", "to": ["juan@x.com"], "cc": ["ana@y.com"], "subject": "Hola", "body": "cuerpo\n"}), &j).unwrap();
-        let out = execute_with(&v, &j.workspace, &|n| {
-            Some(bin.join(n)).filter(|p| p.exists())
-        });
+        let out = execute_with(&v, &j, &|n| Some(bin.join(n)).filter(|p| p.exists()));
         assert_eq!(out.unwrap().trim(), "sent");
         let logged = std::fs::read_to_string(&log).unwrap();
         assert_eq!(
@@ -843,7 +1108,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["arakun_phrase"], "confirm: git push main to origin");
         assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
-        execute(&v, &j.workspace).unwrap();
+        execute(&v, &j).unwrap();
         assert!(!ws.join("pwned").exists());
         let pushed = crate::git::unpinned(&mut Command::new("git"))
             .args(["-C", "remote.git", "rev-parse", "main"])
@@ -859,7 +1124,292 @@ mod tests {
             &ws,
             "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two",
         );
-        assert!(execute(&v, &j.workspace).unwrap_err().contains("moved"));
+        assert!(execute(&v, &j).unwrap_err().contains("moved"));
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn push_urls_are_read_from_the_config_file() {
+        let ws = tmpdir("urls");
+        let sh = |c: &str| {
+            let out = crate::git::unpinned(&mut Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(&ws)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{c}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        sh("git init -q -b main repo && cd repo \
+            && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m one \
+            && git remote add origin https://example.com/fetch.git \
+            && git remote set-url --add --push origin https://example.com/push.git \
+            && git remote set-url --add --push origin https://example.com/second.git \
+            && git remote add plain https://example.com/plain.git \
+            && git worktree add -q -b side ../linked");
+        let tmp = scratch("urls-test").unwrap();
+        git(&tmp, &["init", "--bare", "-q"]).unwrap();
+        for dir in ["repo", "linked"] {
+            let d = ws.join(dir);
+            assert_eq!(
+                push_url(&tmp, &d, "origin").as_deref(),
+                Some("https://example.com/push.git"),
+                "{dir}"
+            );
+            assert_eq!(
+                push_url(&tmp, &d, "plain").as_deref(),
+                Some("https://example.com/plain.git")
+            );
+            assert_eq!(push_url(&tmp, &d, "nope"), None);
+        }
+        assert_eq!(push_url(&tmp, &ws, "origin"), None);
+        let j = jail(&ws);
+        let v = prepare(
+            &json!({"action": "git_push", "repo": "linked", "remote": "plain", "branch": "side"}),
+            &j,
+        )
+        .unwrap();
+        assert_eq!(v["url"], "https://example.com/plain.git");
+        assert!(
+            prepare(
+                &json!({"action": "git_push", "repo": "repo", "remote": "origin", "branch": "@{-1}"}),
+                &j,
+            )
+            .unwrap_err()
+            .contains("not a branch name")
+        );
+        std::fs::remove_dir_all(&tmp).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    /// GHSA-6hrf-j7rv-rjpv: the agent writes the config of a nested repository,
+    /// and the host must not run what it names, before approval or after.
+    #[cfg(unix)]
+    #[test]
+    fn a_nested_repository_config_runs_nothing_on_the_host() {
+        let ws = tmpdir("nested");
+        let sh = |c: &str| {
+            let out = crate::git::unpinned(&mut Command::new("sh"))
+                .arg("-c")
+                .arg(c)
+                .current_dir(&ws)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{c}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        sh(
+            "printf '#!/bin/sh\\ntouch \"$(dirname \"$0\")/pwned\"\\nexit 1\\n' > evil.sh && chmod +x evil.sh",
+        );
+        sh(
+            "git init -q --bare remote.git && git init -q -b main sub && cd sub \
+            && git -c user.name=a -c user.email=a@b commit -q --allow-empty -m base \
+            && git remote add origin ../remote.git",
+        );
+        // A commit with a signature, so a host git that checks it runs the program.
+        sh(
+            "cd sub && tree=$(git rev-parse 'HEAD^{tree}') && base=$(git rev-parse HEAD) \
+            && sha=$(printf 'tree %s\\nparent %s\\nauthor a <a@b> 0 +0000\\ncommitter a <a@b> 0 +0000\\n\
+gpgsig -----BEGIN PGP SIGNATURE-----\\n \\n abc\\n -----END PGP SIGNATURE-----\\n\\nsigned\\n' \"$tree\" \"$base\" \
+            | git hash-object -t commit -w --stdin) && git update-ref refs/heads/main \"$sha\"",
+        );
+        let evil = ws.join("evil.sh");
+        let evil = evil.to_str().unwrap();
+        let hostile = [
+            vec![
+                "log.showSignature=true".to_string(),
+                "gpg.format=openpgp".into(),
+                format!("gpg.program={evil}"),
+            ],
+            vec![
+                "log.showSignature=true".into(),
+                "gpg.format=ssh".into(),
+                format!("gpg.ssh.program={evil}"),
+            ],
+            vec![
+                "core.hooksPath=..".into(),
+                format!("core.pager={evil}"),
+                format!("core.sshCommand={evil}"),
+                format!("core.alternateRefsCommand={evil}"),
+                format!("uploadpack.packObjectsHook={evil}"),
+                format!("diff.external={evil}"),
+                format!("credential.helper=!{evil}"),
+            ],
+        ];
+        let j = jail(&ws);
+        for settings in hostile {
+            for s in &settings {
+                let (k, v) = s.split_once('=').unwrap();
+                sh(&format!("git -C sub config {k} '{v}'"));
+            }
+            let v = prepare(
+                &json!({"action": "git_push", "repo": "sub", "remote": "origin", "branch": "main"}),
+                &j,
+            )
+            .unwrap();
+            assert!(
+                v["arakun_summary"].as_str().unwrap().contains("\"signed\""),
+                "{v}"
+            );
+            assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
+            assert!(!ws.join("pwned").exists(), "prepare ran {settings:?}");
+            execute(&v, &j).unwrap();
+            assert!(!ws.join("pwned").exists(), "execute ran {settings:?}");
+        }
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    /// A himalaya that logs the path and contents of each attachment it gets.
+    #[cfg(unix)]
+    fn fake_mailer(dir: &Path, log: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let p = dir.join("himalaya");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --attach ]; then\n    \
+                 printf 'path %s\\n' \"$2\" >> '{log}'; cat \"$2\" >> '{log}'; printf '\\n' >> '{log}'; shift\n  \
+                 fi\n  shift\ndone\ncat > /dev/null\necho sent\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn mail_with(j: &Jail, attachment: &str) -> Value {
+        prepare(
+            &json!({"action": "send_email", "to": ["juan@x.com"], "subject": "S", "body": "b", "attachments": [attachment]}),
+            j,
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mail_attaches_a_private_copy_of_the_approved_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let ws = tmpdir("attach");
+        let bin = ws.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = ws.join("log");
+        fake_mailer(&bin, &log);
+        std::fs::write(ws.join("report.pdf"), "approved contents").unwrap();
+        let j = jail(&ws);
+        let v = mail_with(&j, "report.pdf");
+        assert!(
+            v["arakun_summary"]
+                .as_str()
+                .unwrap()
+                .ends_with("attachments: report.pdf (17 B)"),
+            "{v}"
+        );
+        let out = execute_with(&v, &j, &|n| Some(bin.join(n)).filter(|p| p.exists()));
+        assert_eq!(out.unwrap().trim(), "sent");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let (first, rest) = logged.split_once('\n').unwrap();
+        let copy = Path::new(first.strip_prefix("path ").unwrap());
+        assert!(!copy.starts_with(&j.workspace), "{}", copy.display());
+        assert_eq!(copy.file_name().unwrap(), "report.pdf");
+        assert_eq!(rest, "approved contents\n");
+        assert!(!copy.exists(), "the copy outlived the send");
+
+        // The copy and its folder are the user's alone.
+        let dir = scratch("attach-modes").unwrap().join("0");
+        let copy = snapshot(&j, &v["attachments"][0], &dir).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&copy), 0o600);
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mail_refuses_a_link_swapped_in_after_approval() {
+        let ws = tmpdir("attach-link");
+        let away = tmpdir("attach-link-away");
+        let bin = ws.join("bin");
+        std::fs::create_dir_all(ws.join("docs")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = ws.join("log");
+        fake_mailer(&bin, &log);
+        std::fs::write(ws.join("report.pdf"), "approved").unwrap();
+        std::fs::write(ws.join("docs/report.pdf"), "approved").unwrap();
+        std::fs::write(away.join("report.pdf"), "approved").unwrap();
+        std::fs::write(away.join("id_ed25519"), "secret").unwrap();
+        let j = jail(&ws);
+        let find = |n: &str| Some(bin.join(n)).filter(|p| p.exists());
+
+        // The file itself becomes a link to a secret.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::remove_file(ws.join("report.pdf")).unwrap();
+        std::os::unix::fs::symlink(away.join("id_ed25519"), ws.join("report.pdf")).unwrap();
+        let e = execute_with(&v, &j, &find).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // A folder on its path becomes a link out of the workspace.
+        let v = mail_with(&j, "docs/report.pdf");
+        std::fs::rename(ws.join("docs"), ws.join("docs-old")).unwrap();
+        std::os::unix::fs::symlink(&away, ws.join("docs")).unwrap();
+        let e = execute_with(&v, &j, &find).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        assert!(!log.exists(), "himalaya ran");
+        // A hard link to a file outside is refused up front.
+        std::fs::hard_link(away.join("id_ed25519"), ws.join("key")).unwrap();
+        let e = prepare(
+            &json!({"action": "send_email", "to": ["juan@x.com"], "subject": "S", "body": "b", "attachments": ["key"]}),
+            &j,
+        )
+        .unwrap_err();
+        assert!(e.contains("hard links"), "{e}");
+        std::fs::remove_dir_all(&ws).unwrap();
+        std::fs::remove_dir_all(&away).unwrap();
+    }
+
+    #[test]
+    fn mail_refuses_a_file_replaced_after_approval() {
+        let ws = tmpdir("attach-replaced");
+        let j = jail(&ws);
+        let out = scratch("attach-replaced-out").unwrap();
+        std::fs::write(ws.join("report.pdf"), "approved").unwrap();
+
+        // Another file, of the same size, moved over it.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::write(ws.join("other"), "replaced").unwrap();
+        std::fs::rename(ws.join("other"), ws.join("report.pdf")).unwrap();
+        let e = snapshot(&j, &v["attachments"][0], &out.join("0")).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // The same file, rewritten in place to the same size.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::write(ws.join("report.pdf"), "rewrote!").unwrap();
+        let e = snapshot(&j, &v["attachments"][0], &out.join("1")).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // Unchanged, it is copied.
+        let v = mail_with(&j, "report.pdf");
+        let copy = snapshot(&j, &v["attachments"][0], &out.join("2")).unwrap();
+        assert_eq!(std::fs::read_to_string(copy).unwrap(), "rewrote!");
+        std::fs::remove_dir_all(&out).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn sizes_read_as_people_write_them() {
+        assert_eq!(size_label(17), "17 B");
+        assert_eq!(size_label(2048), "2.0 KB");
+        assert_eq!(size_label(5 * 1024 * 1024 + 1024 * 512), "5.5 MB");
     }
 }

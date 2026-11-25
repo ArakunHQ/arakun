@@ -108,9 +108,7 @@ pub fn root() -> PathBuf {
 /// nearest directory with `.git`, else `dir` itself.
 pub fn project_of(dir: &Path) -> PathBuf {
     let common = crate::platform::output_within(
-        crate::platform::command("git")
-            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-            .current_dir(dir),
+        crate::git::git(dir).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
         None,
         crate::platform::GIT_LOCAL,
     )
@@ -752,7 +750,7 @@ pub fn session_draft(
 
 fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     crate::platform::output_within(
-        crate::platform::command("git").args(args).current_dir(dir),
+        crate::git::git(dir).args(args),
         None,
         crate::platform::GIT_LOCAL,
     )
@@ -806,10 +804,15 @@ pub(crate) fn changed_since(top: &Path, since: u64) -> Vec<String> {
             .lines()
             .for_each(|l| add(l.trim()));
     }
-    if let Some(status) = git(
-        top,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    ) {
+    if let Some(status) = crate::platform::output_within(
+        crate::git::git_status(top).args(["--porcelain=v1", "-z", "--untracked-files=all"]),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| o.stdout)
+    {
         let status = String::from_utf8_lossy(&status);
         let mut fields = status.split('\0');
         while let Some(f) = fields.next() {

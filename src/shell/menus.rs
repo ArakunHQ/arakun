@@ -303,6 +303,11 @@ impl Shell {
                 .map(MenuKey::Rail)
                 .chain([MenuKey::OpenUsage])
                 .collect(),
+            MenuTarget::TreeSort => crate::tab_layout::Sort::ALL
+                .into_iter()
+                .map(MenuKey::TreeSort)
+                .chain([MenuKey::TreeGroup, MenuKey::TreeArchived])
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -360,6 +365,18 @@ impl Shell {
             MenuKey::OpenUsage => {
                 self.menu = None;
                 self.open_usage_tab(window, cx);
+            }
+            // The tree's menu stays open: the tree changes beside it, and
+            // the next row is one click away.
+            MenuKey::TreeSort(sort) => self.set_tree_sort(sort, cx),
+            MenuKey::TreeGroup => {
+                self.drop_pick();
+                let layout = crate::tab_layout::current().with(|l| l.group = !l.group);
+                self.apply_tab_layout(layout, None, cx);
+            }
+            MenuKey::TreeArchived => {
+                self.drop_pick();
+                self.show_settled = !self.show_settled;
             }
         }
     }
@@ -493,6 +510,7 @@ impl Shell {
             MenuKey::Choice(agent, s, id, _) => self
                 .agent_choices(*agent, *s, cx)
                 .is_some_and(|(c, _)| c == *id),
+            MenuKey::TreeSort(sort) => self.tree_menu_sort() == Some(*sort),
             _ => false,
         }
     }
@@ -559,6 +577,161 @@ impl Shell {
                         this.menu_run(MenuKey::OpenUsage, window, cx)
                     }),
                 ),
+            )
+    }
+
+    /// The tree's menu: the order of its sessions, the two switches for
+    /// what it lists, and which projects the order goes to. Settings has the
+    /// order and the grouping too, and the end of the tree shows the archived
+    /// sessions as well. On Select projects the list of projects opens beside it.
+    pub(super) fn render_tree_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::tab_layout::Sort;
+        let layout = crate::tab_layout::current();
+        let orders = Sort::ALL.len();
+        let shown = self.tree_menu_sort();
+        let select = self.tree_sort_select && layout.group;
+        let picked = self.tree_sort_picked().len();
+        let menu = ui::menu_panel("tree-sort-menu", 240.)
+            .child(ui::menu_heading("Order sessions by"))
+            .children(Sort::ALL.into_iter().enumerate().map(|(i, sort)| {
+                ui::choice_row(("tree-sort-order", i), sort.label(), shown == Some(sort))
+                    .child(div().flex_1().child(sort.label()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(sort.hint()),
+                    )
+                    .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeSort(sort), window, cx)
+                    }))
+            }))
+            .child(ui::menu_divider())
+            .child(
+                ui::switch_row("tree-sort-group", "Group by project", layout.group)
+                    .when(self.menu_focus(orders), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeGroup, window, cx)
+                    })),
+            )
+            .child(
+                ui::switch_row("tree-sort-archived", "Show archived", self.show_settled)
+                    .when(self.menu_focus(orders + 1), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu_run(MenuKey::TreeArchived, window, cx)
+                    })),
+            )
+            // Without project headings there is one list, so one order.
+            .when(layout.group, |d| {
+                let label = if select && picked > 0 {
+                    format!("{picked} project{}", if picked == 1 { "" } else { "s" })
+                } else {
+                    "Select projects…".to_string()
+                };
+                d.child(ui::menu_divider())
+                    .child(ui::menu_heading("Applies to"))
+                    .child(
+                        div().px(crate::ui::sp(4.)).pb(crate::ui::sp(4.)).child(
+                            ui::segmented()
+                                .w_full()
+                                .child(
+                                    ui::segment("tree-sort-all", None, "All projects", !select)
+                                        .flex_1()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_tree_sort_scope(false, cx)
+                                        })),
+                                )
+                                .child(
+                                    ui::segment("tree-sort-select", None, label, select)
+                                        .flex_1()
+                                        .justify_center()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.set_tree_sort_scope(true, cx)
+                                        })),
+                                ),
+                        ),
+                    )
+            });
+        div()
+            .flex()
+            .items_start()
+            .gap(crate::ui::sp(4.))
+            .child(menu)
+            .when(select, |d| d.child(self.render_tree_sort_projects(cx)))
+    }
+
+    /// The projects Applies to › Select projects… can give an order of
+    /// their own, each with a tick.
+    fn render_tree_sort_projects(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let all = crate::tab_layout::current().sort;
+        let picked = self.tree_sort_picked();
+        let note = match (picked.len(), self.tree_menu_sort()) {
+            (0, _) => "Tick the projects that get the order picked.".to_string(),
+            (n, Some(sort)) => format!(
+                "{n} project{} use{} {}. The rest stay on {}.",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "s" } else { "" },
+                sort.label(),
+                all.label()
+            ),
+            (n, None) => format!(
+                "{n} projects have orders of their own. The rest stay on {}.",
+                all.label()
+            ),
+        };
+        ui::menu_panel("tree-sort-projects", 230.)
+            .child(ui::menu_heading("Select projects"))
+            .children(self.projects.iter().enumerate().map(|(pi, project)| {
+                let on = project.sort.is_some();
+                let logo: Hsla = gpui::rgb(project.logo).into();
+                div()
+                    .id(("tree-sort-project", pi))
+                    .role(gpui::Role::MenuItemCheckBox)
+                    .aria_label(project.name.clone())
+                    .aria_toggled(ui::toggled(on))
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(10.))
+                    .h(px(ui::MENU_ROW_H))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(ui::RADIUS))
+                    .text_size(px(ui::TEXT_MD))
+                    .text_color(theme::text())
+                    .cursor_pointer()
+                    .map(ui::focusable)
+                    .hover(|d| d.bg(theme::fill_hover()))
+                    .child(ui::check_box(on))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(14.))
+                            .child(ui::project_icon(project.icon, 1.25, logo)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(project.name.clone()),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.toggle_tree_sort_project(pi, cx)),
+                    )
+            }))
+            .child(ui::menu_divider())
+            .child(
+                div()
+                    .px(crate::ui::sp(8.))
+                    .py(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child(note),
             )
     }
 
@@ -705,7 +878,7 @@ impl Shell {
                         .cursor_pointer()
                         .hover(|d| d.bg(theme::fill_hover()))
                         .when(agent == shown, |d| d.bg(theme::fill_selected()))
-                        .child(agent_icon(agent, 16.))
+                        .child(agent.icon(16.))
                         // The agent the composer uses now: a dot under its icon.
                         .when(agent == current, |d| {
                             d.child(
@@ -1230,6 +1403,7 @@ impl Shell {
             MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
             MenuTarget::Picked => return self.render_pick_menu(cx),
             MenuTarget::TreePicked => return self.render_tree_pick_menu(cx),
+            MenuTarget::TreeSort => return self.render_tree_sort_menu(cx).into_any_element(),
             MenuTarget::MoreTabs => return self.render_more_menu(cx),
             MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Help => return self.render_help_menu(cx),
@@ -1279,7 +1453,7 @@ impl Shell {
                             })),
                     );
             }
-            // A server's folder: nothing here acts on it but the Servers tab.
+            // A server's folder: nothing here acts on it but the Computers tab.
             MenuTarget::Env(pi, ei)
                 if self
                     .projects
@@ -1328,7 +1502,7 @@ impl Shell {
                             )),
                         )
                         .child(
-                            ui::menu_item("cm-servers", "computer", "Open Servers", false, true)
+                            ui::menu_item("cm-servers", "computer", "Open Computers", false, true)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_servers_tab(window, cx)
                                 })),

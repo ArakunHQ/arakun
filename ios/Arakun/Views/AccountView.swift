@@ -1,11 +1,13 @@
 import ArakunKit
 import SwiftUI
+import UIKit
 
 /// Settings: who is signed in, the computer open, the account's signed-in
 /// devices with Sign out, crash reports, and signing this phone out.
 struct AccountView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var confirmSignOut = false
     @State private var signingOut: SignedInDevice?
 
@@ -34,6 +36,7 @@ struct AccountView: View {
                             }
                         }
                     }
+                    section("Notifications") { notifications }
                     if !(model.me?.notices ?? []).isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Eyebrow("Notices").padding(.horizontal, 4)
@@ -112,6 +115,64 @@ struct AccountView: View {
                     : "It will need to sign in again to reach your computers.")
             }
         }
+    }
+
+    /// The switch for this phone, then which notices the computer open sends,
+    /// as the phone page's Notifications group has them.
+    @ViewBuilder private var notifications: some View {
+        let blocked = model.permission == .denied
+        Toggle(isOn: Binding(get: { model.notifying && !blocked }, set: { model.setNotifying($0) })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Notifications").font(.geist(16, .medium))
+                Text(blocked
+                    ? "Turned off for Arakun in the iPhone's Settings. Allow them there to turn them back on."
+                    : "For permissions, questions, finished turns and errors.")
+                    .font(.small)
+                    .foregroundStyle(Color.textMuted)
+            }
+        }
+        .padding(16)
+        .disabled(blocked)
+        if blocked {
+            divider
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            }
+            .buttonStyle(.outline)
+            .padding(16)
+        } else if model.notifying {
+            if model.notices == nil {
+                divider
+                row(icon: "computer", "Which notices", detail: whichNotices)
+            } else {
+                divider
+                noticeSwitch(.done, "Turn finished")
+                divider
+                noticeSwitch(.input, "Needs permission or answer")
+                divider
+                noticeSwitch(.error, "Something went wrong")
+            }
+        }
+    }
+
+    /// Why the switches for each kind are not there yet.
+    private var whichNotices: String {
+        guard let m = model.machine else { return "Open a computer to pick which notices it sends." }
+        return model.isLinked ? "Asking \(m.name)…" : "Once \(m.name) is connected, pick which notices it sends."
+    }
+
+    /// One kind of notice; each computer keeps its own choice.
+    private func noticeSwitch(_ kind: NoticeKind, _ title: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { model.notices?[kind] ?? true },
+            set: { on in
+                guard var choice = model.notices else { return }
+                choice[kind] = on
+                model.setNotices(choice)
+            }
+        ))
+        .font(.body16)
+        .padding(16)
     }
 
     private func detail(_ d: SignedInDevice) -> String {

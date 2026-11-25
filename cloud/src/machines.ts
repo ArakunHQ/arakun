@@ -77,7 +77,8 @@ async function computerDoor(request: Request, env: Env, url: URL, label: string)
   const kind = url.searchParams.get("kind") ?? "app";
   if (name.length === 0 || name.length > MAX_NAME) return error(400, `name must be 1 to ${MAX_NAME} characters`);
   if (!MACHINE_KINDS.includes(kind)) return error(400, `kind must be one of ${MACHINE_KINDS.join(", ")}`);
-  const [disabled, s] = await Promise.all([disabledReason(env.CONFIG), session(request, env)]);
+  // The one place a cloud session is good for: the door of its own label.
+  const [disabled, s] = await Promise.all([disabledReason(env.CONFIG), session(request, env, { machine: label })]);
   if (disabled) return refuseSocket("pc", "disabled", disabled);
   if (!s) return refuseSocket("pc", "signed_out");
   if (s.blocked) return refuseSocket("pc", "blocked");

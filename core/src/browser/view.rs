@@ -389,20 +389,11 @@ impl BrowserView {
         });
     }
 
-    /// Opens Chromium's DevTools for this page as a new tab (through
-    /// [`BrowserEvent::OpenInNewTab`]).
-    pub fn inspect(&mut self, cx: &mut Context<Self>) {
-        let Some(port) = runtime::cdp_port() else {
-            return;
-        };
-        let info = self.devtools("Target.getTargetInfo", serde_json::json!({}));
-        cx.spawn(async move |this, cx| {
-            let Ok(Ok(info)) = info.await else { return };
-            let Some(id) = info["targetInfo"]["targetId"].as_str() else { return };
-            let url = format!("http://127.0.0.1:{port}/devtools/inspector.html?ws=127.0.0.1:{port}/devtools/page/{id}");
-            let _ = this.update(cx, |_, cx| cx.emit(BrowserEvent::OpenInNewTab(url)));
-        })
-        .detach();
+    /// Opens Chromium's DevTools for this page.
+    pub fn inspect(&mut self, _cx: &mut Context<Self>) {
+        if let Some(host) = self.tab.host() {
+            client::show_dev_tools(&host);
+        }
     }
 
     /// Sends a Chrome DevTools Protocol command to the page; resolves with its `result`.
@@ -418,6 +409,12 @@ impl BrowserView {
             self.devtools_observer = host.add_dev_tools_message_observer(Some(&mut observer));
         }
         self.tab.call(method, params)
+    }
+
+    /// The unique id of a frame's newest main-world script context; known once
+    /// `Runtime.enable` was sent through [`Self::devtools`].
+    pub fn script_context(&self, frame: &str) -> Option<String> {
+        self.tab.contexts.borrow().main_world(frame)
     }
 
     /// What the page logged since it last started loading, oldest first.
@@ -1220,7 +1217,7 @@ impl BrowserView {
             ));
             items.push((MenuCommand::Reload, "Reload", Some("Ctrl+R"), true));
         }
-        let inspect = runtime::cdp_port().is_some();
+        let inspect = self.tab.browser.borrow().is_some();
 
         let page = self.page_bounds.get().size;
         let (w, h) = (

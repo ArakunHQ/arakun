@@ -107,6 +107,10 @@ impl BrowserView {
         rx
     }
 
+    pub fn script_context(&self, _: &str) -> Option<String> {
+        None
+    }
+
     pub fn console(&self) -> Vec<ConsoleLine> {
         Vec::new()
     }

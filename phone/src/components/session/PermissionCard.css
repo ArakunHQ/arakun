@@ -1,0 +1,48 @@
+/* Asked for permission: a card that says it needs you with an amber dot, the
+   command on its own, and Allow only on a hold so a stray tap never lets
+   anything run. */
+.perm {
+  margin: 0 var(--gr) 8px var(--gl); border-radius: var(--radius-xl); max-height: 46vh; display: flex; flex-direction: column;
+  background: var(--color-raised); border: 1px solid var(--color-border);
+}
+.perm .phead { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 14px; text-align: left; flex: none; }
+.perm .label { display: flex; align-items: center; gap: 8px; font-size: var(--text-lg); color: var(--color-text); font-weight: 600; flex: none; }
+.perm .kind { font: var(--text-xs) var(--font-mono); color: var(--color-text-subtle); background: var(--color-fill-selected); border-radius: var(--radius-sm); padding: 2px 6px; flex: none; }
+.perm .peek { flex: 1; min-width: 0; display: none; font: var(--text-sm) var(--font-mono); color: var(--color-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perm .phead svg { width: 16px; height: 16px; color: var(--color-text-subtle); flex: none; margin-left: auto; transition: transform 0.15s; }
+.perm.folded .peek { display: block; }
+.perm.folded .phead svg { transform: rotate(180deg); }
+.perm .pbody { min-height: 0; overflow-y: auto; padding: 0 14px 14px; }
+.perm.folded .pbody { display: none; }
+.perm .what { padding: 10px 12px; border-radius: var(--radius-md); background: var(--color-sunk); box-shadow: inset 0 0 0 1px var(--color-border-subtle); word-break: break-word; }
+.perm .what code { font: var(--text-md) var(--font-mono); }
+.perm .where { font: var(--text-sm) var(--font-mono); color: var(--color-text-faint); margin-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perm .opts { display: flex; gap: 8px; margin-top: 12px; }
+.perm .opts .btn { flex: 1; min-width: 0; height: 48px; font-size: var(--text-m-sub); }
+.perm .opts .btn.outline { flex: 0 1 auto; padding: 0 20px; }
+/* Hold to allow, the view's one primary action: amber fills it left to right
+   while the finger stays down. */
+.btn.hold {
+  position: relative; overflow: hidden; flex: 1 1 auto !important; touch-action: none; user-select: none; -webkit-user-select: none;
+  background: var(--color-raised); color: var(--color-text); box-shadow: inset 0 0 0 1.5px var(--color-accent-ink);
+}
+.btn.hold i { position: absolute; inset: 0; width: 0; background: var(--color-accent); transition: width 0s; }
+.btn.hold.holding i { width: 100%; transition: width 0.7s linear; }
+.btn.hold span { position: relative; }
+.btn.hold.holding span { color: var(--color-on-accent); transition: color 0s 0.35s; }
+.perm .always {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; margin-top: 12px; padding: 10px 2px 0;
+  border-top: 1px solid var(--color-border-subtle); text-align: left;
+}
+.perm .always .warn {
+  width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-size: var(--text-sm); font-weight: 600; color: var(--color-background); background: var(--color-attention);
+}
+.perm .always .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.perm .always .t { font-size: var(--text-lg); font-weight: 500; }
+.perm .always .t.armed { color: var(--color-attention); }
+.perm .always .s { font-size: var(--text-sm); color: var(--color-text-subtle); }
+/* A desktop is used with a mouse: the buttons can be smaller there, and only there. */
+@media (min-width: 1200px) {
+  .perm .opts .btn { height: 36px; font-size: var(--text-lg); }
+}

@@ -64,6 +64,9 @@ pub struct Finding {
     pub summary: String,
     /// What the user says to approve it.
     pub phrase: String,
+    /// What the agent is told in place of `why`, when `why` holds words from a
+    /// file it may not be able to read.
+    pub told: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +82,10 @@ pub enum Level {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
     pub level: Level,
+    /// Why it needs confirmation, for the user.
     pub why: String,
+    /// Why, for the agent: no words from the files the policy read.
+    pub told: String,
     pub summary: String,
     pub phrase: String,
 }
@@ -89,6 +95,7 @@ impl Verdict {
         Verdict {
             level: Level::Allow,
             why: String::new(),
+            told: String::new(),
             summary: String::new(),
             phrase: String::new(),
         }
@@ -135,9 +142,11 @@ pub fn judge_tool(policy: Policy, cx: &Ctx, kind: &str, title: &str, input: &Val
                 .unwrap_or(or)
                 .to_string()
         };
+        let why = s("arakun_why", "action outside the sandbox");
         return Verdict {
             level: Level::Always,
-            why: s("arakun_why", "action outside the sandbox"),
+            told: why.clone(),
+            why,
             summary: s("arakun_summary", title),
             phrase: s("arakun_phrase", "confirm: use tool"),
         };
@@ -186,6 +195,7 @@ pub fn judge_tool(policy: Policy, cx: &Ctx, kind: &str, title: &str, input: &Val
                     why: format!("unreviewed tool: {title}"),
                     summary: format!("Use {title}"),
                     phrase: "confirm: use tool".into(),
+                    told: None,
                 });
             }
         }
@@ -215,9 +225,14 @@ fn decide(policy: Policy, cx: &Ctx, found: Vec<Finding>) -> Verdict {
     }
     hits.sort_by_key(|f| std::cmp::Reverse(f.kind));
     let mut why: Vec<String> = Vec::new();
+    let mut told: Vec<String> = Vec::new();
     for f in &hits {
         if !why.contains(&f.why) {
             why.push(f.why.clone());
+        }
+        let t = f.told.as_ref().unwrap_or(&f.why);
+        if !told.contains(t) {
+            told.push(t.clone());
         }
     }
     let top = &hits[0];
@@ -228,6 +243,7 @@ fn decide(policy: Policy, cx: &Ctx, found: Vec<Finding>) -> Verdict {
             Level::Confirm
         },
         why: why.join("; "),
+        told: told.join("; "),
         summary: top.summary.clone(),
         phrase: top.phrase.clone(),
     }
@@ -243,6 +259,7 @@ fn always(
         why: why.into(),
         summary: summary.into(),
         phrase: phrase.into(),
+        told: None,
     }
 }
 
@@ -257,6 +274,7 @@ fn finding(
         why: why.into(),
         summary: summary.into(),
         phrase: phrase.into(),
+        told: None,
     }
 }
 
@@ -1139,21 +1157,80 @@ thread_local! {
     static DRAFT_FILE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The largest script the policy reads to judge what it runs.
+const SCRIPT_MAX: u64 = 200_000;
+
 /// A script's text: what this line wrote to it, or the file as it is now.
-fn script_text(path: &Path, cx: &Ctx) -> Option<String> {
+/// The flag is set when the text came from disk.
+fn script_text(path: &Path, cx: &Ctx) -> Option<(String, bool)> {
+    let written = WRITTEN.with(|w| {
+        w.borrow()
+            .iter()
+            .rev()
+            .find(|(p, _)| p == path)
+            .map(|(_, b)| b.clone())
+    });
+    if let Some(t) = written {
+        return Some((t, false));
+    }
     let on_disk = match (&cx.tmp, path.strip_prefix("/tmp")) {
         (Some(tmp), Ok(rest)) => tmp.join(rest),
         _ => path.to_path_buf(),
     };
-    WRITTEN
-        .with(|w| {
-            w.borrow()
-                .iter()
-                .rev()
-                .find(|(p, _)| p == path)
-                .map(|(_, b)| b.clone())
-        })
-        .or_else(|| std::fs::read_to_string(on_disk).ok())
+    read_script(&on_disk, cx).map(|t| (t, true))
+}
+
+/// Reads a script the agent could read itself: a regular file in the
+/// workspace or the sandbox's /tmp, once symlinks are followed, and not one
+/// the sandbox hides. The policy runs on the host with the user's access, so
+/// anything else is left unread and the script counts as unreviewed.
+fn read_script(path: &Path, cx: &Ctx) -> Option<String> {
+    use std::io::Read;
+    let real = crate::platform::canonicalize(path).ok()?;
+    let tmp = cx
+        .tmp
+        .as_ref()
+        .and_then(|t| crate::platform::canonicalize(t).ok());
+    let root = [Some(&cx.workspace), tmp.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|r| real.starts_with(r))?;
+    // A hidden folder that holds the whole root doesn't count: the sandbox
+    // shows the workspace and its /tmp even there (the sessions live in one).
+    let hidden = super::sandbox::hidden(&cx.home, &[]);
+    if hidden
+        .iter()
+        .any(|h| real.starts_with(&h.path) && !root.starts_with(&h.path))
+    {
+        return None;
+    }
+    let meta = std::fs::metadata(&real).ok()?;
+    if !meta.is_file() || meta.len() >= SCRIPT_MAX {
+        return None;
+    }
+    let file = std::fs::File::open(&real).ok()?;
+    // A path swapped between the check and the open reads another file.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let opened = file.metadata().ok()?;
+        if (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
+            return None;
+        }
+    }
+    let mut text = String::new();
+    file.take(SCRIPT_MAX).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// Findings from a script read from disk: the agent is told only which script
+/// needs approval, never words taken from inside it.
+fn from_file(file: &str, found: Vec<Finding>, out: &mut Vec<Finding>) {
+    let told = format!("runs the script {file}, which needs approval");
+    out.extend(found.into_iter().map(|f| Finding {
+        told: Some(told.clone()),
+        ..f
+    }));
 }
 
 fn judge_command(src: &str, cx: &Ctx, out: &mut Vec<Finding>) {
@@ -1794,7 +1871,12 @@ fn shell(c: &Call, out: &mut Vec<Finding>) {
             .to_string();
         let text = expand(&file, c.cwd, c.cx).and_then(|p| script_text(&p, c.cx));
         match text {
-            Some(t) if t.len() < 200_000 => c.nested(&t, out),
+            Some((t, false)) if t.len() < SCRIPT_MAX as usize => c.nested(&t, out),
+            Some((t, true)) if t.len() < SCRIPT_MAX as usize => {
+                let mut found = Vec::new();
+                c.nested(&t, &mut found);
+                from_file(&file, found, out);
+            }
             _ => out.push(finding(
                 Kind::External,
                 format!("runs {file}, which could not be reviewed"),
@@ -2404,11 +2486,17 @@ fn unknown(c: &Call, first: &str, out: &mut Vec<Finding>) {
     ));
     // A script run by its path (`./send.sh`): what it does is what's inside.
     if first.contains('/')
-        && let Some(text) = expand(first, c.cwd, c.cx)
+        && let Some((text, disk)) = expand(first, c.cwd, c.cx)
             .and_then(|p| script_text(&p, c.cx))
-            .filter(|t| t.starts_with("#!") && t.len() < 200_000)
+            .filter(|(t, _)| t.starts_with("#!") && t.len() < SCRIPT_MAX as usize)
     {
-        c.nested(&text, out);
+        if disk {
+            let mut found = Vec::new();
+            c.nested(&text, &mut found);
+            from_file(first, found, out);
+        } else {
+            c.nested(&text, out);
+        }
     }
     paths_in(c.args, c.cwd, c.cx, out, c.line);
     if let Some(body) = &c.cmd.heredoc {
@@ -3841,5 +3929,101 @@ mod tests {
             Level::Always
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A home with a credentials file, and a workspace in it.
+    fn secret_home(tag: &str) -> (PathBuf, Ctx) {
+        let home = std::env::temp_dir().join(format!("policy-{tag}-{}", std::process::id()));
+        let ws = home.join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+        let home = crate::platform::canonicalize(&home).unwrap();
+        std::fs::write(
+            home.join(".git-credentials"),
+            "https://user:ghp_TOKEN@github.com\n",
+        )
+        .unwrap();
+        let mut c = cx();
+        c.home = home.clone();
+        c.workspace = home.join("proj");
+        (home, c)
+    }
+
+    #[track_caller]
+    fn unread(c: &Ctx, cmd: &str) {
+        let v = judge(Policy::ReadOnly, c, cmd);
+        assert_ne!(v.level, Level::Allow, "{cmd}");
+        for text in [&v.why, &v.told, &v.summary] {
+            assert!(!text.contains("ghp_TOKEN"), "{cmd}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_script_outside_the_workspace_is_not_read() {
+        let (home, c) = secret_home("outside");
+        unread(&c, "sh ~/.git-credentials");
+        unread(&c, "bash ../.git-credentials");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_hidden_file_is_not_read() {
+        let (home, c) = secret_home("link");
+        std::os::unix::fs::symlink(home.join(".git-credentials"), c.workspace.join("creds"))
+            .unwrap();
+        unread(&c, "sh creds");
+        unread(&c, "./creds");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn a_hidden_file_in_the_workspace_is_not_read() {
+        let (home, mut c) = secret_home("hidden");
+        // The workspace is the home itself, so the file is inside it.
+        c.workspace = home.clone();
+        unread(&c, "sh .git-credentials");
+        unread(&c, "bash ./.git-credentials");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn the_agent_is_not_told_what_a_script_holds() {
+        let (home, c) = secret_home("told");
+        std::fs::write(
+            c.workspace.join("run.sh"),
+            "#!/bin/sh\nuser:ghp_TOKEN@github.com\ngit push origin main\n",
+        )
+        .unwrap();
+        for cmd in ["sh run.sh", "./run.sh"] {
+            let v = judge(Policy::ReadOnly, &c, cmd);
+            // Still reviewed: the push inside asks, and the user sees it.
+            assert_eq!(v.level, Level::Always, "{cmd}");
+            assert!(v.why.contains("push"), "{cmd}: {}", v.why);
+            assert!(!v.told.contains("ghp_TOKEN"), "{cmd}: {}", v.told);
+            assert!(!v.told.contains("push"), "{cmd}: {}", v.told);
+        }
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn a_workspace_script_is_still_reviewed() {
+        let (home, c) = secret_home("review");
+        std::fs::write(c.workspace.join("ok.sh"), "#!/bin/sh\nls\ncat README.md\n").unwrap();
+        std::fs::write(
+            c.workspace.join("bad.sh"),
+            "#!/bin/sh\ngit push origin main\n",
+        )
+        .unwrap();
+        assert_eq!(judge(Policy::Workspace, &c, "sh ok.sh").level, Level::Allow);
+        assert_eq!(judge(Policy::Workspace, &c, "./ok.sh").level, Level::Allow);
+        assert_eq!(
+            judge(Policy::Workspace, &c, "bash bad.sh").level,
+            Level::Always
+        );
+        assert_eq!(
+            judge(Policy::Workspace, &c, "./bad.sh").level,
+            Level::Always
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 }

@@ -33,9 +33,7 @@ pub(super) fn repo_slug(dir: &Path) -> Option<String> {
         return Some(r);
     }
     let out = crate::platform::output_within(
-        crate::platform::command("git")
-            .args(["remote", "get-url", "origin"])
-            .current_dir(dir),
+        crate::git::git(dir).args(["remote", "get-url", "origin"]),
         None,
         crate::platform::GIT_LOCAL,
     )

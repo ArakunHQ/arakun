@@ -25,11 +25,6 @@ use super::view::BrowserView;
 pub static CONTEXT_READY: AtomicBool = AtomicBool::new(false);
 static CDP_PORT: AtomicU16 = AtomicU16::new(0);
 
-/// Preferred CDP port; a free one is picked when it is taken. `ARAKUN_CDP_PORT` overrides
-/// it (0 disables remote debugging). The port in use is also written by Chromium to
-/// `<profile>/DevToolsActivePort`.
-const DEFAULT_CDP_PORT: u16 = 9339;
-
 /// CEF never asks for more than this delay to be honoured exactly; longer requests are
 /// clamped so a lost wake-up costs at most this much latency.
 const MAX_DELAY: Duration = Duration::from_secs(1);
@@ -204,21 +199,12 @@ pub fn register(tab: &Rc<TabState>, view: WeakEntity<BrowserView>) {
     kick();
 }
 
+/// The remote debugging port, off unless `ARAKUN_CDP_PORT` names one. Chromium serves the
+/// whole DevTools Protocol there with no token, and any process that can reach loopback
+/// could use it to drive the signed-in profile and read local files: a sandboxed agent, or
+/// another user on the machine. Inspect talks to the page in process and needs no port.
 fn pick_cdp_port() -> u16 {
-    if let Some(p) = std::env::var("ARAKUN_CDP_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-    {
-        return p;
-    }
-    let bind = |port| std::net::TcpListener::bind(("127.0.0.1", port));
-    if bind(DEFAULT_CDP_PORT).is_ok() {
-        return DEFAULT_CDP_PORT;
-    }
-    bind(0)
-        .ok()
-        .and_then(|l| l.local_addr().ok())
-        .map_or(0, |a| a.port())
+    super::cdp_port_from(std::env::var("ARAKUN_CDP_PORT").ok().as_deref())
 }
 
 /// Windows: `arakun-helper.exe` next to arakun.exe (src/bin/arakun-helper.rs), so CEF's
@@ -391,7 +377,6 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     let port = pick_cdp_port();
     let mut app = client::app(AppState {
         pump: Some(signal.clone()),
-        cdp_port: port,
     });
 
     let runtime = loader::runtime_dir();
@@ -410,6 +395,10 @@ fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     // CEF compares the resolved root_cache_path with cache_path as given: under a link
     // (macOS' /tmp is one to /private/tmp) they differ and the profile is dropped for memory.
     let profile = crate::platform::canonicalize(&profile).unwrap_or(profile);
+    // CEF starts cef.log afresh on every launch. A failed Chromium check takes the app
+    // down with its reason as the last line there, and the restart that follows would
+    // erase it, so the last run's log is kept beside the new one.
+    let _ = std::fs::rename(profile.join("cef.log"), profile.join("cef.previous.log"));
     let spanish = std::env::var("LANG").is_ok_and(|l| l.starts_with("es"));
     let path = |p: PathBuf| cef::CefString::from(p.to_string_lossy().as_ref());
     // macOS reads the resources and locales from inside the framework.

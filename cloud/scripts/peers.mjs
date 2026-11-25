@@ -68,7 +68,7 @@ async function main() {
     const pc = await Peer.open(`${wsBase}/machines/${me.label}/pc?name=peers&kind=app`, parsePcFrame, bearer(pcSession));
     const challenge = await pc.control("challenge");
     const nonce = fromB64url(challenge.nonce);
-    const sig = await sign(me.key, concat(nonce, utf8(me.label)));
+    const sig = await sign(me.key, concat(utf8("arakun-relay-claim-v1\0"), nonce, utf8(me.label)));
     pc.send(pcControl({ type: "claim", pub: me.pubB64, sig: b64url(sig) }));
     const claimed = await pc.control();
     step("computer claims", claimed.type === "claimed", JSON.stringify(claimed));

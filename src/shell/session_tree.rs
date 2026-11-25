@@ -8,6 +8,11 @@ use crate::tab_layout::{LongTitles, Quiet, Sort, StateMark, TabLayout};
 /// Height of a session row whose title fits on one line.
 const ROW_H: f32 = 30.;
 
+/// How strong the title and mark of a session with no tab open are drawn,
+/// over the faint gray: about a quarter of full text, so the sessions in
+/// use stand out. The theme has no gray that far back.
+const DIMMED: f32 = 0.67;
+
 /// What a row says about its session, the session's own state first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowState {
@@ -112,14 +117,29 @@ impl RowState {
         }
     }
 
+    /// Something the user has to see to: it stays lit and keeps its word
+    /// whatever else the row would do.
+    fn wants(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Failed | Self::CiFailed)
+    }
+
+    /// Whether a row in this state is drawn at full strength even when its
+    /// session has no tab open: the state wins over the dimming.
+    fn stays_lit(self) -> bool {
+        self.wants() || self == Self::Working
+    }
+
     /// What the end of a row says: the state when it wants the user (or
-    /// always, when states show as words), else the pull request.
-    fn end(self, style: StateMark, pr: Option<u64>) -> Option<String> {
-        let wants = matches!(self, Self::NeedsYou | Self::Failed | Self::CiFailed);
-        if (wants || style == StateMark::Word)
+    /// always, when states show as words); else, under the pointer, how
+    /// long ago the session moved (`age`); else the pull request.
+    fn end(self, style: StateMark, pr: Option<u64>, age: Option<&str>) -> Option<String> {
+        if (self.wants() || style == StateMark::Word)
             && let Some(word) = self.word()
         {
             return Some(word.into());
+        }
+        if let Some(age) = age {
+            return Some(age.into());
         }
         pr.map(|n| format!("#{n}"))
     }
@@ -185,16 +205,109 @@ struct Row {
     /// Not working, not archived yet and not on a server: the same rule as
     /// the context menu's Archive.
     can_archive: bool,
+    /// It has a tab open. Without one the row is drawn dimmed.
+    tab: bool,
+    /// Its tab is pinned to the title bar: the row goes first in its
+    /// project and shows a pin.
+    pinned: bool,
+    /// The part of the tree it sits in, a rule between one and the next
+    /// (`sort_rows` sets it).
+    band: Band,
+    /// Its place in the order the user dragged its project's sessions into;
+    /// `None` for a session that came since.
+    manual: Option<usize>,
 }
 
+/// The parts of a project's sessions in the tree, top to bottom, with a rule
+/// between one part and the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Band {
+    /// Pinned to the title bar, in every order.
+    Pinned,
+    /// With a tab open, in the orders that set them apart.
+    Open,
+    #[default]
+    Rest,
+}
+
+/// Where each session sat when the pointer came over the tree: its place in
+/// its list, and the part of the tree it was in.
+pub(super) type HeldRows = std::collections::HashMap<SharedString, (usize, Band)>;
+
 /// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
-/// that tie keep the environments' order.
-fn sort_rows(rows: &mut [Row], sort: Sort) {
+/// that tie keep the environments' order. Pinned sessions go first in every
+/// order; an order that moves sessions puts the ones with an open tab next,
+/// each part in that order. With the pointer over the tree (`held`), every
+/// row stays where it was instead: a row never leaves from under the
+/// pointer. A session that came since goes first.
+fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     match sort {
-        Sort::Latest => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
-        Sort::Title => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
-        Sort::Environment => {}
+        Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
+        Sort::Name => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
+        // Project by project without project headings; a session that
+        // came since goes first, where the user sees it.
+        Sort::Manual => rows.sort_by_key(|r| (r.pi, r.manual.map_or(0, |m| m + 1))),
     }
+    let split = sort.open_tabs_first();
+    for r in rows.iter_mut() {
+        r.band = if r.pinned {
+            Band::Pinned
+        } else if split && r.tab {
+            Band::Open
+        } else {
+            Band::Rest
+        };
+    }
+    rows.sort_by_key(|r| r.band);
+    if let Some(held) = held {
+        for r in rows.iter_mut() {
+            if let Some((_, band)) = held.get(&r.id) {
+                r.band = *band;
+            }
+        }
+        rows.sort_by_key(|r| held.get(&r.id).map_or(0, |(place, _)| place + 1));
+    }
+}
+
+/// `order` with `moved` put in `target`'s place: the rows between them move
+/// up or down one to make room, as when a card is put down on another.
+fn move_onto(order: &mut Vec<SharedString>, moved: &SharedString, target: &SharedString) {
+    let (Some(from), Some(to)) = (
+        order.iter().position(|id| id == moved),
+        order.iter().position(|id| id == target),
+    ) else {
+        return;
+    };
+    let id = order.remove(from);
+    order.insert(to, id);
+}
+
+/// The orders after a drag in the tree: the project's own, and the one for
+/// every project when that changes. With project headings only the project
+/// dragged in goes to Manual; without them there is one order for all.
+fn order_after_drag(grouped: bool, all: Sort, own: Option<Sort>) -> (Option<Sort>, Option<Sort>) {
+    if !grouped {
+        return (own, (all != Sort::Manual).then_some(Sort::Manual));
+    }
+    match own.unwrap_or(all) {
+        Sort::Manual => (own, None),
+        _ => (Some(Sort::Manual), None),
+    }
+}
+
+/// The rule between the sessions with an open tab and the rest.
+fn tree_rule(grouped: bool) -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(1.))
+        .my(crate::ui::sp(4.))
+        .mr(crate::ui::sp(8.))
+        .ml(if grouped {
+            px(14.) + crate::ui::sp(8.)
+        } else {
+            crate::ui::sp(8.)
+        })
+        .bg(theme::border_subtle())
 }
 
 impl Shell {
@@ -228,6 +341,10 @@ impl Shell {
                     pr,
                     updated: s.updated,
                     can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
+                    tab: self.strip.session_tab(&s.id).is_some(),
+                    pinned: self.is_pinned(&s.id),
+                    band: Band::Rest,
+                    manual: project.session_order.iter().position(|id| *id == s.id),
                 });
             }
         }
@@ -240,6 +357,7 @@ impl Shell {
     /// narrows to the titles it matches and opens every project.
     fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
         let layout = crate::tab_layout::current();
+        let held = self.tree_held.as_ref();
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             if let Some(q) = query {
@@ -249,7 +367,7 @@ impl Shell {
         };
         if !layout.group {
             let mut rows: Vec<Row> = (0..self.projects.len()).flat_map(rows_of).collect();
-            sort_rows(&mut rows, layout.sort);
+            sort_rows(&mut rows, layout.sort, held);
             return vec![TreeProject {
                 pi: None,
                 rows,
@@ -263,7 +381,7 @@ impl Shell {
             if query.is_some() && rows.is_empty() {
                 continue;
             }
-            sort_rows(&mut rows, layout.sort);
+            sort_rows(&mut rows, project.sort.unwrap_or(layout.sort), held);
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
             let user = self.tree_open.get(&project.path).copied();
@@ -290,6 +408,90 @@ impl Shell {
         out
     }
 
+    /// Where every session sits now, to hold it there while the pointer is
+    /// over the tree.
+    fn tree_places(&self, cx: &App) -> HeldRows {
+        self.tree_listing(None, cx)
+            .into_iter()
+            .flat_map(|p| {
+                p.rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(place, r)| (r.id, (place, r.band)))
+            })
+            .collect()
+    }
+
+    /// The projects with an order of their own, ticked in the tree menu's
+    /// Select projects list.
+    pub(super) fn tree_sort_picked(&self) -> Vec<usize> {
+        (0..self.projects.len())
+            .filter(|&pi| self.projects[pi].sort.is_some())
+            .collect()
+    }
+
+    /// The order the tree menu shows picked: the one for every project, or,
+    /// on Select projects, the one the ticked projects share. `None` when
+    /// they have different ones.
+    pub(super) fn tree_menu_sort(&self) -> Option<Sort> {
+        let all = crate::tab_layout::current().sort;
+        let picked = self.tree_sort_picked();
+        if !self.tree_sort_select || picked.is_empty() {
+            return Some(all);
+        }
+        let first = self.projects[picked[0]].sort;
+        picked
+            .iter()
+            .all(|&pi| self.projects[pi].sort == first)
+            .then_some(first)
+            .flatten()
+    }
+
+    /// An order picked in the tree menu: for the ticked projects on Select
+    /// projects, else for every project.
+    pub(super) fn set_tree_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
+        self.drop_pick();
+        let picked = self.tree_sort_picked();
+        if self.tree_sort_select && !picked.is_empty() {
+            for pi in picked {
+                self.projects[pi].sort = Some(sort);
+            }
+            self.save(cx);
+        } else {
+            let layout = crate::tab_layout::current().with(|l| l.sort = sort);
+            self.apply_tab_layout(layout, None, cx);
+        }
+    }
+
+    /// The tree menu's Applies to. All projects takes every project back to
+    /// the one order; what was dragged by hand stays for Manual.
+    pub(super) fn set_tree_sort_scope(&mut self, select: bool, cx: &mut Context<Self>) {
+        self.tree_sort_select = select;
+        if !select && !self.tree_sort_picked().is_empty() {
+            for p in &mut self.projects {
+                p.sort = None;
+            }
+            self.save(cx);
+        }
+        cx.notify();
+    }
+
+    /// Ticks project `pi` in the Select projects list, giving it the order
+    /// the menu shows, or unticks it back to the order for every project.
+    pub(super) fn toggle_tree_sort_project(&mut self, pi: usize, cx: &mut Context<Self>) {
+        let shown = self
+            .tree_menu_sort()
+            .unwrap_or(crate::tab_layout::current().sort);
+        if let Some(p) = self.projects.get_mut(pi) {
+            p.sort = match p.sort {
+                Some(_) => None,
+                None => Some(shown),
+            };
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
     /// The sessions the tree shows, top to bottom: what Shift+click picks
     /// a range of.
     fn tree_order(&self, cx: &App) -> Vec<SharedString> {
@@ -298,6 +500,57 @@ impl Shell {
             .filter(|p| p.open)
             .flat_map(|p| p.rows.into_iter().map(|r| r.id))
             .collect()
+    }
+
+    /// Session `d` dropped on the tree's row of session `target`, in the
+    /// same project: it takes that row's place. That project's order becomes
+    /// Manual, starting from what the tree shows, so no other row jumps; the
+    /// other projects keep theirs. Without project headings there is one
+    /// order for every project, and it becomes Manual.
+    fn drop_session_on_tree_row(
+        &mut self,
+        d: &super::drag::DraggedSession,
+        target: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.lifted = None;
+        let place = |id: &SharedString| self.session_place(id).map(|(pi, _)| pi);
+        let pi = match (place(&d.id), place(&target)) {
+            (Some(a), Some(b)) if a == b && d.id != target => a,
+            _ => return cx.notify(),
+        };
+        // What the tree shows now, rows held under the pointer and all.
+        let mut order: Vec<SharedString> = self
+            .tree_listing(None, cx)
+            .into_iter()
+            .flat_map(|p| p.rows)
+            .filter(|r| r.pi == pi)
+            .map(|r| r.id)
+            .collect();
+        move_onto(&mut order, &d.id, &target);
+        // Sessions the tree doesn't show now, archived ones, keep their
+        // places after the rest.
+        let project = &mut self.projects[pi];
+        let rest: Vec<SharedString> = project
+            .session_order
+            .iter()
+            .filter(|id| !order.contains(id))
+            .cloned()
+            .collect();
+        order.extend(rest);
+        project.session_order = order;
+        let layout = crate::tab_layout::current();
+        let (own, all) = order_after_drag(layout.group, layout.sort, project.sort);
+        project.sort = own;
+        match all {
+            Some(sort) => self.apply_tab_layout(layout.with(|l| l.sort = sort), None, cx),
+            None => self.save(cx),
+        }
+        // The pointer is still over the tree: hold the rows where they are now.
+        if self.tree_held.take().is_some() {
+            self.tree_held = Some(self.tree_places(cx));
+        }
+        cx.notify();
     }
 
     /// A tree row clicked with Ctrl (Cmd) or Shift: Ctrl adds the session to
@@ -646,6 +899,12 @@ impl Shell {
             .on_drop(cx.listener(|this, d: &super::drag::DraggedTab, _, cx| {
                 this.lifted_tab = None;
                 this.unpin_tab(d.id, cx)
+            }))
+            // The rows hold their places while the pointer is over the
+            // tree, and take the order's again once it leaves.
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                this.tree_held = over.then(|| this.tree_places(cx));
+                cx.notify();
             }));
         if heading {
             list = list.child(self.render_tree_heading(cx));
@@ -668,7 +927,12 @@ impl Shell {
                 ));
             }
             if open {
+                let mut band = None;
                 for row in rows {
+                    if band.is_some_and(|b| b != row.band) {
+                        list = list.child(tree_rule(layout.group));
+                    }
+                    band = Some(row.band);
                     let selected = open_id.as_ref() == Some(&row.id);
                     list = list.child(self.render_tree_row(row, selected, &layout, cx));
                 }
@@ -732,25 +996,42 @@ impl Shell {
             )
     }
 
-    /// Switches the tree to the next order. It says the order in use, as
-    /// the icon alone can't.
-    pub(super) fn tree_sort_button(
-        &self,
-        id: &'static str,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let layout = crate::tab_layout::current();
-        let next = layout.with(|l| l.sort = l.sort.next());
-        super::rail::heading_icon_button(
-            id,
-            "sorting01",
-            format!("Sort sessions: {}", layout.sort.label()),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-            cx.stop_propagation();
-            this.drop_pick();
-            this.apply_tab_layout(next, None, cx)
-        }))
+    /// The order in use, which the icon alone can't say, and the button
+    /// that opens the menu to pick another (`render_tree_sort_menu`).
+    pub(super) fn tree_sort_button(&self, id: &'static str, cx: &mut Context<Self>) -> gpui::Div {
+        let sort = crate::tab_layout::current().sort;
+        let open = matches!(
+            self.menu.as_ref().map(|m| m.target),
+            Some(MenuTarget::TreeSort)
+        );
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(4.))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_subtle())
+                    .child(sort.label()),
+            )
+            .child(
+                super::rail::heading_icon_button(
+                    id,
+                    "preference-horizontal",
+                    format!("Sort sessions: {}", sort.label()),
+                )
+                .when(open, |d| d.bg(theme::fill_selected()))
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    // The pointer is on the tree's own heading: let go of
+                    // the rows, or the order picked would wait for it to leave.
+                    this.tree_held = None;
+                    // On Select projects while any project has its own order.
+                    this.tree_sort_select = !this.tree_sort_picked().is_empty();
+                    this.open_composer_menu(MenuTarget::TreeSort, ev.position(), cx)
+                })),
+            )
     }
 
     fn render_tree_project(
@@ -879,25 +1160,36 @@ impl Shell {
             agent,
             state,
             pr,
-            updated: _,
+            updated,
             can_archive,
+            tab,
+            pinned,
+            band: _,
+            manual: _,
         } = row;
-        let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
         let picked = self.tree_pick.contains(&id);
         let dragged =
-            super::drag::DraggedSession::new(env_path.clone(), id.clone(), title.clone(), agent);
+            super::drag::DraggedSession::row(env_path.clone(), id.clone(), title.clone(), agent);
         let shell = cx.entity();
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the end of the row gives up.
-        let archive_shown = can_archive && self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
+        let under_pointer = self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
+        let archive_shown = can_archive && under_pointer;
         let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
         } else {
             title
         };
-        let end = state.end(layout.state, pr);
+        // The age shows only under the pointer, so the title has the row's
+        // whole width the rest of the time.
+        let age = under_pointer.then(|| model::age(updated));
+        let end = state.end(layout.state, pr, age.as_deref());
+        // A session with no tab open is a click away, not in use: its row
+        // steps back, unless something runs in it or it wants the user. It
+        // comes back under the pointer, to be read before it is opened.
+        let dimmed = !tab && !selected && !under_pointer && !state.stays_lit();
         let two_lines = layout.titles == LongTitles::TwoLines;
         let label = match state.word() {
             Some(word) => format!("{title}, {word}"),
@@ -908,6 +1200,8 @@ impl Shell {
         let opens = id.clone();
         let picks = id.clone();
         let archives = id.clone();
+        let onto = id.clone();
+        let lifted = self.lifted_session(cx) == Some(&id);
         div()
             .id(SharedString::from(format!("tree-session-{id}")))
             .relative()
@@ -925,6 +1219,8 @@ impl Shell {
             .text_size(px(ui::TEXT_MD))
             .text_color(if selected || state == RowState::NeedsYou {
                 theme::content()
+            } else if dimmed {
+                theme::text_faint()
             } else {
                 theme::text_muted()
             })
@@ -932,7 +1228,13 @@ impl Shell {
             .when(!selected, |d| {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
-            .children(state.mark(layout.state))
+            .children(state.mark(layout.state).map(|mark| {
+                div()
+                    .flex()
+                    .flex_none()
+                    .when(dimmed, |d| d.opacity(DIMMED))
+                    .child(mark)
+            }))
             // Without project headings, each row says its project.
             .when(!layout.group, |d| {
                 d.child(
@@ -956,28 +1258,37 @@ impl Shell {
                             d.truncate()
                         }
                     })
-                    // Room for the archive button, so it never covers the title.
-                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
+                    .when(dimmed, |d| d.opacity(DIMMED))
                     .child(title),
             )
-            .children(end.filter(|_| !archive_shown).map(|text| {
+            .child(
                 div()
+                    .flex()
                     .flex_none()
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(state.word_color())
-                    .child(text)
-            }))
-            // Small and faint: the tab in the bar already says it.
-            .when(pinned && !archive_shown, |d| {
-                d.child(
-                    div()
-                        .id(SharedString::from(format!("tree-pinned-{id}")))
-                        .flex_none()
-                        .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
-                        .child(icon("pin", 11.).text_color(theme::text_faint())),
-                )
-            })
-            // On hover, what the row ends with gives way to an archive button.
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    // Room for the archive button, so it never covers the
+                    // end of the row.
+                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
+                    .children(end.map(|text| {
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(state.word_color())
+                            .child(text)
+                    }))
+                    // Small and faint, and there under the pointer too: it
+                    // says why the row is first.
+                    .when(pinned, |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tree-pinned-{id}")))
+                                .flex()
+                                .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
+                                .child(icon("pin", 11.).text_color(theme::text_faint())),
+                        )
+                    }),
+            )
+            // On hover, an archive button comes after what the row ends with.
             .when(archive_shown, |d| {
                 d.child(
                     div().absolute().right(crate::ui::sp(4.)).child(
@@ -1017,12 +1328,19 @@ impl Shell {
                 this.drop_pick();
                 this.open_session_at(pi, ei, opens.clone(), window, cx)
             }))
-            // Dragged up to the title bar, it pins.
-            .when(layout.pinned_bar(), |d| {
-                d.on_drag(dragged, move |d, offset, _, cx| {
-                    shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
-                })
+            // Dropped on another row, it takes that row's place; up on a bar
+            // of pinned tabs, it pins.
+            .on_drag(dragged, move |d, offset, _, cx| {
+                shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
             })
+            .drag_over::<super::drag::DraggedSession>(|s, _, _, _| s.bg(theme::hover()))
+            .on_drop(
+                cx.listener(move |this, d: &super::drag::DraggedSession, _, cx| {
+                    cx.stop_propagation();
+                    this.drop_session_on_tree_row(d, onto.clone(), cx)
+                }),
+            )
+            .when(lifted, |d| d.opacity(0.5))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -1062,29 +1380,72 @@ mod tests {
     fn the_end_of_a_row_names_what_wants_you_else_the_pull_request() {
         use RowState::*;
         assert_eq!(
-            NeedsYou.end(StateMark::Icon, Some(5)).as_deref(),
+            NeedsYou.end(StateMark::Icon, Some(5), None).as_deref(),
             Some("Needs you")
         );
         assert_eq!(
-            CiFailed.end(StateMark::Icon, None).as_deref(),
+            CiFailed.end(StateMark::Icon, None, None).as_deref(),
             Some("CI failed")
         );
         assert_eq!(
-            Working.end(StateMark::Icon, Some(677)).as_deref(),
+            Working.end(StateMark::Icon, Some(677), None).as_deref(),
             Some("#677")
         );
         assert_eq!(
-            Passed.end(StateMark::Dot, Some(682)).as_deref(),
+            Passed.end(StateMark::Dot, Some(682), None).as_deref(),
             Some("#682")
         );
-        assert_eq!(Idle.end(StateMark::Icon, None), None);
+        assert_eq!(Idle.end(StateMark::Icon, None, None), None);
         // As words, every state but idle says itself.
         assert_eq!(
-            Working.end(StateMark::Word, Some(677)).as_deref(),
+            Working.end(StateMark::Word, Some(677), None).as_deref(),
             Some("Working")
         );
-        assert_eq!(Idle.end(StateMark::Word, Some(9)).as_deref(), Some("#9"));
+        assert_eq!(
+            Idle.end(StateMark::Word, Some(9), None).as_deref(),
+            Some("#9")
+        );
         assert!(Working.mark(StateMark::Word).is_none());
+    }
+
+    #[test]
+    fn under_the_pointer_a_row_says_its_age_unless_it_wants_you() {
+        use RowState::*;
+        // The age takes the pull request's place, or the empty end.
+        assert_eq!(
+            Working
+                .end(StateMark::Icon, Some(677), Some("1h"))
+                .as_deref(),
+            Some("1h")
+        );
+        assert_eq!(
+            Idle.end(StateMark::Dot, None, Some("3d")).as_deref(),
+            Some("3d")
+        );
+        // What wants the user keeps saying so.
+        assert_eq!(
+            NeedsYou
+                .end(StateMark::Icon, Some(5), Some("1h"))
+                .as_deref(),
+            Some("Needs you")
+        );
+        assert_eq!(
+            Failed.end(StateMark::Icon, None, Some("1h")).as_deref(),
+            Some("Failed")
+        );
+        assert_eq!(
+            CiFailed.end(StateMark::Dot, None, Some("2m")).as_deref(),
+            Some("CI failed")
+        );
+        // As words the state is the row's only mark, so it stays too.
+        assert_eq!(
+            Working.end(StateMark::Word, None, Some("1h")).as_deref(),
+            Some("Working")
+        );
+        assert_eq!(
+            Idle.end(StateMark::Word, None, Some("1h")).as_deref(),
+            Some("1h")
+        );
     }
 
     #[test]
@@ -1104,9 +1465,8 @@ mod tests {
         assert_eq!(pick_range(&ids, None, &id("b")), vec![id("b")]);
     }
 
-    #[test]
-    fn sessions_sort_latest_first_by_title_or_as_listed() {
-        let row = |id: &str, title: &str, updated: u64| Row {
+    fn row(id: &str, title: &str, updated: u64, tab: bool) -> Row {
+        Row {
             pi: 0,
             ei: 0,
             si: 0,
@@ -1117,24 +1477,244 @@ mod tests {
             pr: None,
             updated,
             can_archive: true,
-        };
+            tab,
+            pinned: false,
+            band: Band::Rest,
+            manual: None,
+        }
+    }
+
+    /// The ids in order, and the part of the tree each sits in.
+    fn placed(rows: &[Row]) -> (Vec<String>, Vec<Band>) {
+        (
+            rows.iter().map(|r| r.id.to_string()).collect(),
+            rows.iter().map(|r| r.band).collect(),
+        )
+    }
+
+    #[test]
+    fn sessions_sort_latest_first_by_title_or_as_listed() {
+        // Every session has a tab open, so none is set apart.
         let rows = || {
             vec![
-                row("a", "zebra", 10),
-                row("b", "mango", 30),
-                row("c", "Apple", 20),
-                row("d", "kiwi", 30),
+                row("a", "zebra", 10, true),
+                row("b", "mango", 30, true),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 30, true),
             ]
         };
         let ids = |sort| {
             let mut r = rows();
-            sort_rows(&mut r, sort);
-            r.into_iter().map(|r| r.id.to_string()).collect::<Vec<_>>()
+            sort_rows(&mut r, sort, None);
+            placed(&r).0
         };
         // A tie keeps the listed order.
-        assert_eq!(ids(Sort::Latest), ["b", "d", "c", "a"]);
-        assert_eq!(ids(Sort::Title), ["c", "d", "b", "a"]);
-        assert_eq!(ids(Sort::Environment), ["a", "b", "c", "d"]);
+        assert_eq!(ids(Sort::Recent), ["b", "d", "c", "a"]);
+        assert_eq!(ids(Sort::Name), ["c", "d", "b", "a"]);
+        assert_eq!(ids(Sort::Manual), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn sessions_with_an_open_tab_go_above_the_rest_in_the_same_order() {
+        let rows = || {
+            vec![
+                row("a", "zebra", 10, true),
+                row("b", "mango", 30, false),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 30, false),
+            ]
+        };
+        let sorted = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort, None);
+            placed(&r)
+        };
+        let split = vec![Band::Open, Band::Open, Band::Rest, Band::Rest];
+        let (ids, top) = sorted(Sort::Recent);
+        assert_eq!(ids, ["c", "a", "b", "d"]);
+        assert_eq!(top, split);
+        let (ids, top) = sorted(Sort::Name);
+        assert_eq!(ids, ["c", "a", "d", "b"]);
+        assert_eq!(top, split);
+        // Manual keeps every session where it is, and nothing is set apart.
+        let (ids, top) = sorted(Sort::Manual);
+        assert_eq!(ids, ["a", "b", "c", "d"]);
+        assert_eq!(top, vec![Band::Rest; 4]);
+    }
+
+    #[test]
+    fn rows_hold_their_places_while_the_pointer_is_over_the_tree() {
+        let mut rows = vec![
+            row("a", "zebra", 10, true),
+            row("b", "mango", 30, false),
+            row("c", "Apple", 20, true),
+            row("d", "kiwi", 30, false),
+        ];
+        sort_rows(&mut rows, Sort::Recent, None);
+        let held: HeldRows = rows
+            .iter()
+            .enumerate()
+            .map(|(place, r)| (r.id.clone(), (place, r.band)))
+            .collect();
+        // Under the pointer: "a" loses its tab, "d" is opened and moves,
+        // and a new session starts.
+        let now = || {
+            vec![
+                row("a", "zebra", 10, false),
+                row("b", "mango", 30, false),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 99, true),
+                row("e", "new", 50, true),
+            ]
+        };
+        let mut rows = now();
+        sort_rows(&mut rows, Sort::Recent, Some(&held));
+        let (ids, top) = placed(&rows);
+        // The new one comes first; the others stay put, rule and all.
+        assert_eq!(ids, ["e", "c", "a", "b", "d"]);
+        assert_eq!(
+            top,
+            [Band::Open, Band::Open, Band::Open, Band::Rest, Band::Rest]
+        );
+        // Once the pointer leaves, the order is the chosen one again.
+        let mut rows = now();
+        sort_rows(&mut rows, Sort::Recent, None);
+        let (ids, top) = placed(&rows);
+        assert_eq!(ids, ["d", "e", "c", "b", "a"]);
+        assert_eq!(
+            top,
+            [Band::Open, Band::Open, Band::Open, Band::Rest, Band::Rest]
+        );
+    }
+
+    #[test]
+    fn manual_follows_the_dragged_order_with_new_sessions_first() {
+        let placed_at = |id: &str, pi: usize, manual: Option<usize>, tab: bool| Row {
+            pi,
+            manual,
+            ..row(id, id, 0, tab)
+        };
+        let mut rows = vec![
+            placed_at("a", 0, Some(2), true),
+            placed_at("b", 0, Some(0), false),
+            placed_at("new", 0, None, false),
+            placed_at("c", 0, Some(1), true),
+        ];
+        sort_rows(&mut rows, Sort::Manual, None);
+        let (ids, top) = placed(&rows);
+        assert_eq!(ids, ["new", "b", "c", "a"]);
+        // No rule: open tabs stay where the user put them.
+        assert_eq!(top, vec![Band::Rest; 4]);
+        // Without project headings, project by project, each in its order.
+        let mut rows = vec![
+            placed_at("q", 1, Some(0), true),
+            placed_at("a", 0, Some(1), true),
+            placed_at("p", 1, Some(1), true),
+            placed_at("b", 0, Some(0), true),
+        ];
+        sort_rows(&mut rows, Sort::Manual, None);
+        assert_eq!(placed(&rows).0, ["b", "a", "q", "p"]);
+    }
+
+    #[test]
+    fn pinned_sessions_go_first_in_every_order() {
+        let pinned = |id: &str, updated: u64| Row {
+            pinned: true,
+            ..row(id, id, updated, true)
+        };
+        let rows = || {
+            vec![
+                row("a", "a", 40, true),
+                pinned("p", 10),
+                row("b", "b", 30, false),
+                pinned("q", 20),
+            ]
+        };
+        let sorted = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort, None);
+            placed(&r)
+        };
+        use Band::*;
+        // Recent: the pinned ones, then the open tab, then the rest.
+        assert_eq!(
+            sorted(Sort::Recent),
+            (
+                vec!["q".into(), "p".into(), "a".into(), "b".into()],
+                vec![Pinned, Pinned, Open, Rest]
+            )
+        );
+        assert_eq!(sorted(Sort::Name).0, ["p", "q", "a", "b"]);
+        // Manual keeps its order under the pinned ones, with one rule.
+        assert_eq!(
+            sorted(Sort::Manual),
+            (
+                vec!["p".into(), "q".into(), "a".into(), "b".into()],
+                vec![Pinned, Pinned, Rest, Rest]
+            )
+        );
+    }
+
+    #[test]
+    fn a_drag_switches_only_its_project_to_manual() {
+        use Sort::*;
+        // With project headings: that project only; the order for all stays.
+        assert_eq!(order_after_drag(true, Recent, None), (Some(Manual), None));
+        assert_eq!(
+            order_after_drag(true, Recent, Some(Name)),
+            (Some(Manual), None)
+        );
+        // Already Manual, by its own order or the one for all: nothing changes.
+        assert_eq!(
+            order_after_drag(true, Recent, Some(Manual)),
+            (Some(Manual), None)
+        );
+        assert_eq!(order_after_drag(true, Manual, None), (None, None));
+        // Without them, one list: the order for every project goes to Manual.
+        assert_eq!(order_after_drag(false, Name, None), (None, Some(Manual)));
+        assert_eq!(order_after_drag(false, Manual, None), (None, None));
+    }
+
+    #[test]
+    fn a_dropped_session_takes_the_place_of_the_row_it_lands_on() {
+        let ids = |list: &[&str]| -> Vec<SharedString> {
+            list.iter()
+                .map(|s| SharedString::from(s.to_string()))
+                .collect()
+        };
+        let moved = |list: &[&str], from: &str, onto: &str| {
+            let mut order = ids(list);
+            move_onto(
+                &mut order,
+                &from.to_string().into(),
+                &onto.to_string().into(),
+            );
+            order
+        };
+        // Down: the rows between move up one.
+        assert_eq!(
+            moved(&["a", "b", "c", "d"], "a", "c"),
+            ids(&["b", "c", "a", "d"])
+        );
+        // Up: they move down one.
+        assert_eq!(
+            moved(&["a", "b", "c", "d"], "d", "b"),
+            ids(&["a", "d", "b", "c"])
+        );
+        // Onto itself, or onto a session not in the list: nothing moves.
+        assert_eq!(moved(&["a", "b"], "a", "a"), ids(&["a", "b"]));
+        assert_eq!(moved(&["a", "b"], "a", "gone"), ids(&["a", "b"]));
+    }
+
+    #[test]
+    fn a_state_that_wants_you_or_runs_stays_lit_without_a_tab() {
+        use RowState::*;
+        for s in [NeedsYou, Failed, CiFailed, Working] {
+            assert!(s.stays_lit(), "{s:?}");
+        }
+        for s in [Idle, Passed] {
+            assert!(!s.stays_lit(), "{s:?}");
+        }
     }
 
     #[test]

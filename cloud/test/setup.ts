@@ -8,6 +8,9 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 
 beforeEach(async () => {
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM admin_log"),
+    env.DB.prepare("DELETE FROM beta_signups"),
+    env.DB.prepare("DELETE FROM cloud_access_requests"),
     env.DB.prepare("DELETE FROM notice_reads"),
     env.DB.prepare("DELETE FROM notices"),
     env.DB.prepare("DELETE FROM machines"),

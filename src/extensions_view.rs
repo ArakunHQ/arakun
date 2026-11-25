@@ -9,6 +9,7 @@
 //! (`sidebar::Extensions`).
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use crate::agent::claude_ext::{self, ClaudeExtensions, Health, RuleKind, Scope, 
 use crate::agent::extensions::{self, Extensions};
 use crate::agent::plugins::{self, Plugins, Runtime};
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::logos;
 use crate::sidebar::{self, View};
 use crate::subnav::{Entry, Lead, Line};
@@ -212,11 +214,11 @@ pub struct ExtensionsView {
     /// Groups showing every row (`skills:<source>`, `rules`).
     unfolded: HashSet<String>,
 
-    claude: Option<ClaudeExtensions>,
+    /// What Claude Code loads here. Reading it has no error of its own: a
+    /// server that fails shows so in the answer.
+    claude: Loadable<ClaudeExtensions, Infallible>,
     claude_at: Option<Instant>,
-    claude_loading: bool,
     plugin_busy: Option<String>,
-    _claude_task: Option<Task<()>>,
     /// The server a fix is running on.
     op: Option<String>,
     /// The server whose new token is being typed.
@@ -269,7 +271,7 @@ impl ExtensionsView {
         });
         let poll = crate::poll::poll_every(cx, WATCH_EVERY, WATCH_EVERY, |this, cx| {
             let watching = this.watch_until.is_some_and(|t| Instant::now() < t);
-            if watching && !this.claude_loading && this.op.is_none() {
+            if watching && !this.claude.loading() && this.op.is_none() {
                 this.load_claude(cx);
             }
         });
@@ -284,11 +286,9 @@ impl ExtensionsView {
             error: None,
             open: None,
             unfolded: HashSet::new(),
-            claude: None,
+            claude: Loadable::default(),
             claude_at: None,
-            claude_loading: false,
             plugin_busy: None,
-            _claude_task: None,
             op: None,
             token_for: None,
             token,
@@ -341,7 +341,8 @@ impl ExtensionsView {
         self.cwd = Some(cwd);
         self.ms.repo_has = None;
         self.load_repo_has(cx);
-        self.claude = None;
+        // The last folder's read would be dropped when it came; this one starts now.
+        self.claude.reset();
         self.claude_at = None;
         self.droid = None;
         self.droid_at = None;
@@ -352,13 +353,18 @@ impl ExtensionsView {
 
     /// MCP servers of Claude Code failing or waiting for a sign-in, as last read.
     pub fn problems(&self) -> usize {
-        self.claude.as_ref().map_or(0, ClaudeExtensions::problems)
+        self.claude
+            .data
+            .as_ref()
+            .map_or(0, ClaudeExtensions::problems)
     }
 
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         let stale = |at: Option<Instant>| at.is_none_or(|t| t.elapsed() > STALE);
         match self.which {
-            Which::Claude if stale(self.claude_at) && !self.claude_loading => self.load_claude(cx),
+            Which::Claude if stale(self.claude_at) && !self.claude.loading() => {
+                self.load_claude(cx)
+            }
             Which::Droid
                 if stale(self.droid_at)
                     && self.droid_busy.is_none()
@@ -379,7 +385,7 @@ impl ExtensionsView {
             // Asked for, a failed load is tried again at once.
             self.ms.failed_at = None;
             // A failed skills.sh search too, for the same words.
-            self.ms.skills_error = None;
+            self.ms.skills.error = None;
             self.open_market(cx);
         }
         match self.which {
@@ -390,41 +396,40 @@ impl ExtensionsView {
 
     fn load_claude(&mut self, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd.clone() else { return };
-        self.claude_loading = true;
-        let first = self.claude.is_none();
-        if let Some(c) = &mut self.claude {
+        let first = self.claude.data.is_none();
+        if let Some(c) = &mut self.claude.data {
             c.checking = true;
         }
-        self._claude_task = Some(cx.spawn(async move |this, cx| {
+        // Asked again (a fix ran, Retry), the read on its way is old: start over.
+        self.claude.cancel();
+        let dir = cwd.clone();
+        self.claude.start_streaming(
+            cx,
+            |this| &mut this.claude,
             // The files and the last check first, at once; the slow check after.
-            if first {
-                let dir = cwd.clone();
-                let quick = cx
-                    .background_spawn(crate::guard::task_or_default(async move {
-                        claude_ext::load_quick(&dir)
-                    }))
-                    .await;
-                let ok = this.update(cx, |this, cx| {
-                    if this.cwd.as_ref() == Some(&cwd) && this.claude.is_none() {
-                        this.claude = Some(quick);
-                        cx.notify();
-                    }
-                });
-                if ok.is_err() {
-                    return;
+            move |early| async move {
+                if first {
+                    let quick =
+                        crate::guard::task_or_default(async { claude_ext::load_quick(&dir) }).await;
+                    let _ = early.unbounded_send(quick);
                 }
-            }
-            let dir = cwd.clone();
-            let found = cx
-                .background_spawn(crate::guard::task_or_default(async move {
-                    claude_ext::load(&dir)
-                }))
-                .await;
-            let _ = this.update(cx, |this, cx| {
+                Some(claude_ext::load(&dir))
+            },
+            {
+                let cwd = cwd.clone();
+                move |this, quick, _| {
+                    if this.cwd.as_ref() == Some(&cwd) && this.claude.data.is_none() {
+                        this.claude.data = Some(quick);
+                    }
+                }
+            },
+            move |this, found, cx| {
                 if this.cwd.as_ref() != Some(&cwd) {
                     return;
                 }
-                this.claude_loading = false;
+                // A panic in the check shows nothing found, as a panic in the
+                // quick read does.
+                let found = found.unwrap_or_default();
                 // A sign-in finished while watching (it runs in a terminal):
                 // the servers get it now, not at the next install.
                 let waiting = |c: &ClaudeExtensions| {
@@ -433,16 +438,14 @@ impl ExtensionsView {
                         .filter(|s| s.health == claude_ext::Health::NeedsAuth)
                         .count()
                 };
-                let signed_in = this.claude.as_ref().map(waiting) > Some(waiting(&found));
-                this.claude = Some(found);
+                let signed_in = this.claude.data.as_ref().map(waiting) > Some(waiting(&found));
+                this.claude.data = Some(found);
                 if signed_in {
                     cx.emit(ExtensionsEvent::Mirror);
                 }
                 this.claude_at = Some(Instant::now());
-                cx.notify();
-            });
-        }));
-        cx.notify();
+            },
+        );
     }
 
     /// Rereads Claude's files only, keeping the health already checked.
@@ -459,8 +462,8 @@ impl ExtensionsView {
                 if this.cwd.as_ref() != Some(&cwd) {
                     return;
                 }
-                quick.checking = this.claude_loading;
-                this.claude = Some(quick);
+                quick.checking = this.claude.loading();
+                this.claude.data = Some(quick);
                 cx.notify();
             });
         })
@@ -607,6 +610,7 @@ impl ExtensionsView {
         };
         let Some(s) = self
             .claude
+            .data
             .as_ref()
             .and_then(|x| x.servers.iter().find(|s| s.name == name))
         else {
@@ -1025,7 +1029,7 @@ impl ExtensionsView {
     fn server_row(&self, s: &Server, cx: &mut Context<Self>) -> Div {
         let key = format!("mcp:{}", s.name);
         let open = self.open.as_ref() == Some(&key);
-        let checking = self.claude.as_ref().is_some_and(|c| c.checking);
+        let checking = self.claude.data.as_ref().is_some_and(|c| c.checking);
         let (word, tone) = if checking && s.health == Health::Unknown {
             ("Checking…", Tone::Neutral)
         } else {
@@ -2634,7 +2638,7 @@ impl ExtensionsView {
         };
         let rows: Vec<(Kind, &str, &str, Option<usize>)> = match which {
             Which::Claude => {
-                let x = self.claude.as_ref();
+                let x = self.claude.data.as_ref();
                 vec![
                     (
                         Kind::Servers,
@@ -2859,7 +2863,7 @@ impl Render for ExtensionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let which = self.which;
         let busy = match which {
-            Which::Claude => self.claude_loading || self.plugin_busy.is_some(),
+            Which::Claude => self.claude.loading() || self.plugin_busy.is_some(),
             Which::Droid => {
                 self._droid_task.is_some() || self.plugins.is_none() && self.droid_at.is_some()
             }
@@ -2880,7 +2884,7 @@ impl Render for ExtensionsView {
         let body: AnyElement = match which {
             _ if self.kind == Kind::Arakun => self.render_views(cx).into_any_element(),
             Which::Claude if market => div().into_any_element(),
-            Which::Claude => match &self.claude {
+            Which::Claude => match &self.claude.data {
                 Some(x) => self.render_claude(x, cx).into_any_element(),
                 None => ui::loading("Reading Claude Code and checking its MCP servers…")
                     .into_any_element(),

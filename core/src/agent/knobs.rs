@@ -398,13 +398,7 @@ pub const GREEN_REMINDER_REPEAT: &str = "<system-reminder>Tests already passed a
 pub fn tree_mark(cwd: &std::path::Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let out = crate::platform::output_within(
-        crate::platform::command("git").arg("-C").arg(cwd).args([
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "-uall",
-            "--no-renames",
-        ]),
+        crate::git::git_status(cwd).args(["--porcelain=v1", "-z", "-uall", "--no-renames"]),
         None,
         crate::platform::GIT_LOCAL,
     )
@@ -608,9 +602,7 @@ impl ReadBudget {
             .ok()
             .filter(|u| !u.trim().is_empty())?;
         let diff = crate::platform::output_within(
-            crate::platform::command("git")
-                .args(["diff", "-U1"])
-                .current_dir(cwd),
+            crate::git::git_diff(cwd).arg("-U1"),
             None,
             crate::platform::GIT_LOCAL,
         )

@@ -1,0 +1,47 @@
+/* Sign in: the line, one amber button, the install line, and the mascot
+   cropped at the right edge. One raccoon on the page, no second mark. */
+.signin { overflow-x: hidden; overflow-y: auto; padding: var(--top) max(24px, var(--gr)) var(--bot) max(24px, var(--gl)); }
+.sitop { font-size: var(--text-title); font-weight: 600; letter-spacing: -0.04em; flex: none; }
+.simain { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 32px 0; }
+.sicopy { position: relative; z-index: 1; max-width: 470px; display: flex; flex-direction: column; align-items: flex-start; }
+.sieyebrow { font: var(--text-sm) var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); }
+.sicopy h1 { margin: 16px 0 0; font-size: var(--text-m-large); line-height: 1.08; font-weight: 600; letter-spacing: -0.03em; }
+.sicopy p { margin: 20px 0 0; font-size: var(--text-page-body); line-height: 1.55; color: var(--color-text-subtle); }
+.sicopy .btn { margin-top: 28px; }
+.sierr { margin-top: 12px; font-size: var(--text-md); color: var(--color-error); }
+.siinstall { align-self: stretch; margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--color-border-subtle); }
+.silabel { display: flex; align-items: center; gap: 10px; font-size: var(--text-lg); color: var(--color-text-subtle); }
+.silabel svg { color: var(--color-text-faint); }
+.siline {
+  display: flex; align-items: center; gap: 4px; margin-top: 12px; padding: 0 4px 0 14px; min-height: 40px;
+  background: var(--color-sunk); border: 1px solid var(--color-border); border-radius: var(--radius-md);
+}
+.siline code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; font: var(--text-sm) var(--font-mono); color: var(--color-text-muted); padding: 10px 0; }
+.siline code::-webkit-scrollbar { display: none; }
+.siprompt { color: var(--color-text-faint); }
+.siurl { color: var(--color-accent-ink); }
+.sicopybtn { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--color-text-faint); }
+.sicopybtn:active { background: var(--color-fill-hover); color: var(--color-text); }
+.sicopybtn svg { width: 14px; height: 14px; }
+.sifoot { display: flex; flex-wrap: wrap; gap: 4px 24px; flex: none; font: var(--text-sm) var(--font-mono); color: var(--color-text-faint); }
+/* Narrow: the line in a smaller size so it fits a phone without scrolling. */
+@media (max-width: 420px) {
+  .signin { padding-left: max(20px, var(--gl)); padding-right: max(20px, var(--gr)); }
+  .siline { gap: 0; padding: 0 2px 0 8px; }
+  .siline code { font-size: var(--text-xs); }
+  .sicopybtn { width: 28px; }
+}
+/* Narrow: the mascot sits over the title at 160 px. */
+.simascot { width: 160px; height: auto; margin-bottom: 28px; align-self: flex-start; }
+
+@media (min-width: 768px) {
+  .signin { padding: 28px 40px; }
+  .simain { padding: 0 0 0 max(0px, calc(8vw - 40px)); }
+  .sicopy h1 { font-size: var(--text-page-section); }
+  .siline code { font-size: var(--text-lg); }
+  /* Wide: the mascot fills the right side and runs off the edge. */
+  .simascot {
+    position: absolute; z-index: 0; margin: 0; pointer-events: none;
+    width: min(70vw, 1000px); left: max(39vw, 560px); top: max(24vh, 120px);
+  }
+}

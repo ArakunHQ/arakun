@@ -5,7 +5,7 @@
 //!
 //! The app is the phone here. To a server with a socket of its own it pairs
 //! over HTTP and then talks JSON on a WebSocket, as the page does. To a server
-//! of the same account it goes through the relay as `phone/relay.js` does:
+//! of the same account it goes through the relay as `phone/public/relay.js` does:
 //! one WebSocket to the relay with the app's sign-in, a handshake that proves
 //! the other end holds the key the account lists for it (`phone::e2e`), and
 //! every message sealed from then on.
@@ -46,7 +46,7 @@ pub const PAIRED_BY_LINK: &str = "Paired by link before 0.19, which the relay no
 pub const ACCOUNT_UNREACHABLE: &str = "Could not reach your account. Trying again.";
 /// A server's status once the account answered without it.
 pub const NOT_LISTED: &str =
-    "Your account no longer lists this server. Sign in on the server again, or forget it here.";
+    "Your account no longer lists this server. Sign in on the server again, or remove it here.";
 /// The longest operator's text a refusal passes on.
 const MAX_MESSAGE: usize = 300;
 
@@ -301,7 +301,7 @@ struct Link {
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
-    /// This client's name to the relay, as `phone/relay.js` has one per page.
+    /// This client's name to the relay, as `phone/public/relay.js` has one per page.
     /// It stays the same across reconnects, so the relay replaces the socket
     /// a sleep or a network switch left behind instead of counting it as one
     /// more phone until it is full.
@@ -848,7 +848,7 @@ fn write_alone<S: std::io::Read + std::io::Write>(
 
 /// What a server reached through the account says when its user removed
 /// this app there.
-pub const UNPAIRED_BY_SERVER: &str = "The server removed this app from its devices. It does not connect again by itself: forget it here, then connect it again from Your servers.";
+pub const UNPAIRED_BY_SERVER: &str = "The server removed this app from its devices. It does not connect again by itself: remove it here, then run `arakun-server login` on the server again.";
 
 /// What the relay or the server said as it hung up, in the app's terms.
 fn hung_up(reason: &str, code: Option<u16>) -> Ended {

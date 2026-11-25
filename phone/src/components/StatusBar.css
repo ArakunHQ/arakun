@@ -1,0 +1,10 @@
+.statusbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: var(--top) var(--gr) 8px var(--gl);
+  font-size: var(--text-sm); color: var(--color-text-subtle);
+}
+/* Connected, the bar is only the room under the phone's own status bar. */
+.statusbar:not(.off) { padding: var(--top) 0 0; }
+.statusbar:not(.off) > * { display: none; }
+.statusbar .dot { background: var(--color-error); }
+.statusbar .spacer { flex: 1; }

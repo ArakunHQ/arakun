@@ -12,7 +12,7 @@ use gpui::{
     point, px,
 };
 
-use super::{Shell, agent_icon};
+use super::Shell;
 use crate::agent::AgentKind;
 use crate::agent::Entry;
 use crate::state;
@@ -42,6 +42,9 @@ pub(super) struct DraggedSession {
     pub agent: AgentKind,
     /// Where the pointer grabbed the card, so the preview stays under it.
     offset: Point<Pixels>,
+    /// Lifted from the sidebar's tree: the preview is a row like the one
+    /// it came from, not a card that covers the rows it moves between.
+    row: bool,
 }
 
 impl DraggedSession {
@@ -52,6 +55,15 @@ impl DraggedSession {
             title,
             agent,
             offset: Point::default(),
+            row: false,
+        }
+    }
+
+    /// One lifted from the sidebar's tree.
+    pub fn row(env: PathBuf, id: SharedString, title: SharedString, agent: AgentKind) -> Self {
+        DraggedSession {
+            row: true,
+            ..Self::new(env, id, title, agent)
         }
     }
 }
@@ -63,6 +75,33 @@ impl Render for DraggedSession {
         } else {
             self.title.clone()
         };
+        if self.row {
+            return div()
+                .relative()
+                .left(-self.offset.x)
+                .top(-self.offset.y)
+                .max_w(px(232.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::dialog())
+                .shadow_md()
+                .font_family(theme::FONT_SANS)
+                .text_size(px(crate::ui::TEXT_MD))
+                .text_color(theme::content())
+                .child(div().min_w_0().truncate().child(title))
+                .with_animation(
+                    "session-lift",
+                    Animation::new(crate::ui::motion::FAST)
+                        .with_easing(crate::ui::motion::ease_out),
+                    |el, t| el.opacity(0.55 + 0.45 * t),
+                )
+                .into_any_element();
+        }
         div()
             .relative()
             .left(-self.offset.x)
@@ -85,7 +124,7 @@ impl Render for DraggedSession {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(6.))
-                    .child(agent_icon(self.agent, 14.))
+                    .child(self.agent.icon(14.))
                     .child(
                         div()
                             .text_size(px(crate::ui::TEXT_XS))
@@ -105,6 +144,7 @@ impl Render for DraggedSession {
                 Animation::new(crate::ui::motion::FAST).with_easing(crate::ui::motion::ease_out),
                 |el, t| el.opacity(0.55 + 0.45 * t),
             )
+            .into_any_element()
     }
 }
 

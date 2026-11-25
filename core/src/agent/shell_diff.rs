@@ -48,8 +48,9 @@ fn git_with_input(
     args: &[&str],
     input: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
-    let mut cmd = crate::platform::command("git");
-    cmd.args(args).current_dir(dir);
+    // Pinned and without hooks where the agent is sandboxed (`git::git`).
+    let mut cmd = crate::git::git(dir);
+    cmd.args(args);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }

@@ -1616,11 +1616,13 @@ impl Host {
             return;
         }
         if self.meta.unattended {
+            // The agent reads this reason: `told`, never `why`, which may quote
+            // files the agent can't read.
             let why = format!(
                 "nobody can approve it in this unattended run: {}",
-                verdict.why
+                verdict.told
             );
-            eprintln!("arakun: declined: {} ({why})", verdict.summary);
+            eprintln!("arakun: declined: {} ({})", verdict.summary, verdict.why);
             self.meta.declined += 1;
             self.thread
                 .update(cx, |t, cx| t.decline_permission(&why, cx));

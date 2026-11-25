@@ -14,10 +14,10 @@ export { Channel } from "./channel";
 export { Relay } from "./relay/relay";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     if (labelFrom(url.hostname, env)) return oldHost(request, env, url.pathname);
     if (env.ACCOUNT_HOST && url.hostname !== env.ACCOUNT_HOST.toLowerCase()) return error(404, "not found");
-    return teamsFetch(request, env);
+    return teamsFetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

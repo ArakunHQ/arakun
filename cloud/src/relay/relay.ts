@@ -4,8 +4,8 @@
 //
 // The Worker lets a socket in only with a session of the right account, and
 // tells us who it is in headers (see machines.ts). The computer connects at
-// /pc and is challenged: it signs the nonce and its label with the key its
-// label derives from. Only then is it the computer, and only one computer is:
+// /pc and is challenged: it signs a tag, the nonce and its label with the key
+// its label derives from. Only then is it the computer, and only one computer is:
 // a later claim replaces the earlier socket. The claim registers the label to
 // the account in D1, unless another account has it. Nothing is stored before
 // the claim but the channel counter, and a socket that does not claim in time
@@ -83,6 +83,11 @@ export const CLOSE_UNAVAILABLE = 4503;
 
 /// How long the computer has to answer the challenge.
 const CLAIM_TIMEOUT_MS = 30_000;
+
+/// Starts what the computer signs to claim its label. The same key signs the
+/// end-to-end handshake, which starts with a different tag, so a claim can
+/// never be read as a handshake.
+const CLAIM_TAG = utf8("arakun-relay-claim-v1\0");
 
 /// How often each socket's session and account are checked again. A sign-out
 /// or a block also asks at once; this catches what that call missed.
@@ -210,7 +215,8 @@ export class Relay extends DurableObject<Env> {
     phone.send(phoneFrame(frame.type, frame.payload));
   }
 
-  /// `claim{pub, sig}`: the signature of `nonce ‖ label` by the key the label derives from.
+  /// `claim{pub, sig}`: the signature of `"arakun-relay-claim-v1\0" ‖ nonce ‖ label`
+  /// by the key the label derives from.
   private async claim(ws: WebSocket, tag: Tag & { role: "pc" }, msg: Record<string, unknown>): Promise<void> {
     const pub = typeof msg["pub"] === "string" ? fromB64url(msg["pub"]) : null;
     const sig = typeof msg["sig"] === "string" ? fromB64url(msg["sig"]) : null;
@@ -218,7 +224,11 @@ export class Relay extends DurableObject<Env> {
     if (!pub || !sig || pub.length !== 65 || sig.length !== 64) return this.bye(ws, "bad claim", CLOSE_BAD_FRAME);
     if ((await labelOf(pub)) !== label) return this.bye(ws, "wrong_label", CLOSE_FORBIDDEN);
     const nonce = fromB64url(tag.nonce) ?? new Uint8Array();
-    if (!(await verify(pub, sig, concat(nonce, utf8(label))))) return this.bye(ws, "bad_signature", CLOSE_UNAUTHORIZED);
+    // Computers from before the tag sign `nonce ‖ label`. Accepting that too
+    // is safe: the risk was the computer signing untagged, not us checking
+    // it. Drop it once no supported app version sends it.
+    const tagged = await verify(pub, sig, concat(CLAIM_TAG, nonce, utf8(label)));
+    if (!tagged && !(await verify(pub, sig, concat(nonce, utf8(label))))) return this.bye(ws, "bad_signature", CLOSE_UNAUTHORIZED);
     const known = await this.ctx.storage.get<string>("pub");
     const pubB64 = msg["pub"] as string;
     if (known && known !== pubB64) return this.bye(ws, "key_mismatch", CLOSE_FORBIDDEN);
@@ -260,6 +270,8 @@ export class Relay extends DurableObject<Env> {
   /// its plan allows (a label it has already does not count again). One
   /// statement, so two claims at once cannot both get the last place, and a
   /// sign-out or block cannot slip in between the check and the write.
+  /// A cloud session counts as signed out at any label but its own. The
+  /// Worker refuses it first; this holds should a door ever forget.
   private async register(
     tag: Tag & { role: "pc" },
     pub: string,
@@ -274,7 +286,8 @@ export class Relay extends DurableObject<Env> {
          WHERE (EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND github_id = ?2)
                 OR (SELECT COUNT(*) FROM machines WHERE github_id = ?2) < ?7)
            AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.github_id = s.github_id
-                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL)
+                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL
+                         AND (s.machine_label IS NULL OR s.machine_label = ?1))
          ON CONFLICT (label) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at
          WHERE machines.github_id = excluded.github_id`,
       )
@@ -285,9 +298,9 @@ export class Relay extends DurableObject<Env> {
       db
         .prepare(
           `SELECT u.blocked_at IS NOT NULL AS blocked FROM sessions s JOIN users u ON u.github_id = s.github_id
-           WHERE s.token_hash = ? AND s.github_id = ? AND s.expires_at > ?`,
+           WHERE s.token_hash = ?1 AND s.github_id = ?2 AND s.expires_at > ?3 AND (s.machine_label IS NULL OR s.machine_label = ?4)`,
         )
-        .bind(tag.session, tag.account, now),
+        .bind(tag.session, tag.account, now, tag.label),
       db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(tag.label),
     ]);
     const row = session!.results[0] as { blocked: number } | undefined;
@@ -340,7 +353,8 @@ export class Relay extends DurableObject<Env> {
   /// one read of its session, its account's block and the machine's account.
   /// D1 lets other events in while it answers. A recheck among them was asked
   /// for by a sign-out or a block that this read may have missed, and it did
-  /// not see this socket, so the read is made again.
+  /// not see this socket, so the read is made again. A cloud session is never
+  /// a device's, whatever the Worker let through.
   private async standing(admitted: Admitted): Promise<string | null> {
     for (;;) {
       const before = this.rechecks;
@@ -348,7 +362,7 @@ export class Relay extends DurableObject<Env> {
         `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
                 (SELECT github_id FROM machines WHERE label = ?2) AS owner
          FROM sessions s JOIN users u ON u.github_id = s.github_id
-         WHERE s.token_hash = ?1 AND s.expires_at > ?3`,
+         WHERE s.token_hash = ?1 AND s.expires_at > ?3 AND s.machine_label IS NULL`,
       )
         .bind(admitted.session, admitted.label, seconds(Date.now()))
         .first<SessionRow & { owner: number | null }>();

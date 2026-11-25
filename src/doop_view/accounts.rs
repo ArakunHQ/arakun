@@ -432,7 +432,8 @@ impl DoopView {
                     ),
             );
         }
-        if let Some(Error::SignedOut(why)) = self.list_error.as_ref().or(self.error.as_ref()) {
+        if let Some(Error::SignedOut(why)) = self.list_error.as_ref().or(self.canvas.error.as_ref())
+        {
             list = list.child(notice("alert-circle", Tone::Warning, why.clone()));
         }
         div()

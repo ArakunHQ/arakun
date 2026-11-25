@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.arakun.kit.Account
@@ -29,6 +30,7 @@ import com.arakun.kit.RelayLink
 import com.arakun.kit.SessionCheck
 import com.arakun.kit.SignedIn
 import com.arakun.kit.SignedInDevice
+import com.arakun.kit.WebPush
 import com.arakun.kit.bool
 import com.arakun.kit.get
 import com.arakun.kit.parseJson
@@ -149,6 +151,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** A session asked for before the link was up (from a started session). */
     private var openWhenLinked: String? = null
 
+    /** A notification tapped while no computer was open: its session opens on the one opened last. */
+    private var tappedSession: String? = null
+
+    /** The app is on screen, so the session it shows needs no notification. */
+    private var foreground by mutableStateOf(false)
+
     /** A start sent and not yet answered with `started` or `error`. */
     var starting by mutableStateOf(false)
         private set
@@ -184,6 +192,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** The link's own thread: the main one, posted to in order. */
     private val linkScope = CoroutineScope(viewModelScope.coroutineContext + Dispatchers.Main)
+
+    init {
+        viewModelScope.launch {
+            snapshotFlow { if (foreground) session?.id else null }.collect { id ->
+                Push.onScreen = id
+                if (id != null && demo == null) Push.seen(app, id)
+            }
+        }
+        // FCM's new token goes to the computer linked now; the others get it when they link.
+        viewModelScope.launch {
+            Push.newToken.collect { token -> if (token != null) link?.let { tellPush(it, token) } }
+        }
+    }
 
     /** Once, when the first screen comes up. */
     fun begin(demo: Demo?) {
@@ -339,6 +360,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     (list.singleOrNull() ?: list.firstOrNull { it.label == last })?.let(::pick)
                 }
                 this@AppModel.reopen = false
+                // Not opened on a computer the person picks later: it may not be that one's.
+                tappedSession = null
             } catch (e: AccountError) {
                 if (account == s) accountFailed(e)
             }
@@ -369,6 +392,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** Opens one of the account's computers, offline ones too: the relay says when it comes back. */
     fun pick(m: Machine) {
         reopen = false
+        val tapped = tappedSession
+        tappedSession = null
         if (machine?.label != m.label) dropMachine()
         machine = m
         accountSaid = null
@@ -382,6 +407,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         retry = 500
         limitTries = 0
         connect()
+        tapped?.let(::open)
     }
 
     private fun forgetPicked() {
@@ -420,6 +446,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         reopen = false
         cancelSignIn()
         account = null
+        // Notices for this sign-in stop here; the next sign-in's first link gets a new token.
+        if (demo == null) Push.dropToken()
         // The demo's account is not the one kept on this phone.
         if (demo == null && !keeper.save(null)) {
             // Left on disk, the next launch would be signed in again.
@@ -666,6 +694,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     session?.let { send("type" to "open", "session" to it.id) }
                 }
+                link?.let { tellPush(it) }
             }
             is RelayLink.Event.Message -> parseJson(event.bytes)?.let(::receive)
             is RelayLink.Event.Computer -> {
@@ -816,6 +845,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** The computer skips the push for the session on screen while the app shows it. */
     fun visible(yes: Boolean) {
+        foreground = yes
         send("type" to "visible", "visible" to yes)
         if (!yes) return
         // Coming back on screen is not the person asking: a limit is waited out.
@@ -823,6 +853,74 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (limit == null || System.currentTimeMillis() >= limit.until) reconnectNow()
         // The list's online states, fresh.
         if (machine == null) loadAccount()
+    }
+
+    // ---- notifications -------------------------------------------------------
+
+    /**
+     * A tap on a notification. The notice does not say which computer it
+     * came from, so as on the phone page the session opens on the computer
+     * open, or on the one opened last.
+     */
+    fun openFromNotice(id: String) {
+        if (account == null) return
+        if (machine != null || demo != null) return open(id)
+        tappedSession = id
+        loadAccount(reopen = true)
+    }
+
+    /**
+     * Tells the computer behind `l` where to send notices and which, while
+     * notifications are on: at every link, so a computer the phone links to
+     * later and a token that changed are covered alike.
+     */
+    private fun tellPush(l: RelayLink, token: String? = null) {
+        val s = account ?: return
+        if (demo != null || !Push.on || !Push.available) return
+        linkScope.launch {
+            val keys = io { Push.keys() } ?: return@launch
+            val t = token ?: Push.token() ?: return@launch
+            val endpoint = WebPush.fcmEndpoint(s.host, t) ?: return@launch
+            if (link !== l || account != s || !Push.on) return@launch
+            ask(l, WebPush.subscribeBody(endpoint, keys, Push.wanted))
+        }
+    }
+
+    /** `POST /push` to the computer behind `l`; whether it took it. */
+    private suspend fun ask(l: RelayLink, body: String): Boolean = try {
+        l.isReady && l.fetch("/push", "POST", body).first == 200
+    } catch (_: RelayLink.ClosedException) {
+        false
+    }
+
+    /** Notifications on or off, from the account sheet; Android's permission is already asked for. */
+    fun notifications(on: Boolean) {
+        if (demo != null || !Push.available) return
+        val l = link
+        if (!on) {
+            Push.turnOff()
+            if (l != null) linkScope.launch { ask(l, WebPush.unsubscribeBody()) }
+            return
+        }
+        Push.turnOn()
+        viewModelScope.launch {
+            val keys = io { Push.keys() }
+            val token = Push.token()
+            if (keys == null || token == null) {
+                Push.turnOff()
+                notice = "Could not turn notifications on. Check the connection and try again."
+                return@launch
+            }
+            link?.let { tellPush(it, token) }
+        }
+    }
+
+    /** Which notices to be told about; the computer open hears now, the others when they link. */
+    fun want(w: WebPush.Wanted) {
+        if (demo != null) return
+        Push.want(w)
+        val l = link ?: return
+        if (Push.on) linkScope.launch { ask(l, WebPush.wantedBody(w)) }
     }
 
     override fun onCleared() {

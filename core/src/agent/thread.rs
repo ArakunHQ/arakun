@@ -4302,7 +4302,7 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
     }
     let git = |dir: &Path, args: &[&str]| -> Option<String> {
         let out = crate::platform::output_within(
-            crate::platform::command("git").args(args).current_dir(dir),
+            crate::git::git(dir).args(args),
             None,
             crate::platform::GIT_LOCAL,
         )

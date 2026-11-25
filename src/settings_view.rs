@@ -1172,12 +1172,12 @@ impl SettingsDialog {
                             row(
                                 "Agents drive any web page",
                                 "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.",
-                                switch(crate::shell::pages::drive_any_page()).into_any_element(),
+                                switch(crate::page_drive::any_page()).into_any_element(),
                             )
                             .id("set-drive-pages")
                             .cursor_pointer()
                             .on_click(cx.listener(|_, _, _, cx| {
-                                crate::shell::pages::set_drive_any_page(!crate::shell::pages::drive_any_page());
+                                crate::page_drive::set_any_page(!crate::page_drive::any_page());
                                 cx.notify();
                             }))
                             .into_any_element(),
@@ -2310,7 +2310,7 @@ impl SettingsDialog {
                 dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
                 dim(
                     layout.applies(Opt::Sort),
-                    row("Sort sessions", "In the sidebar tree; Latest puts the last used on top", sort),
+                    row("Sort sessions", "In the sidebar tree; Recent puts the last one that moved on top", sort),
                 ),
                 dim(
                     layout.applies(Opt::Quiet),

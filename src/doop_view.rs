@@ -25,6 +25,7 @@ use gpui::{
 use crate::agent::AgentKind;
 use crate::doop::{self, Canvas, CanvasRef, Error, Frame, Session, Shown, Tool};
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 
@@ -68,17 +69,15 @@ pub struct DoopView {
     /// Canvases added by link on this instance.
     pins: Vec<CanvasRef>,
     picked: Option<String>,
-    canvas: Option<Canvas>,
+    /// The picked canvas, and why it couldn't be read.
+    canvas: Loadable<Canvas, Error>,
     /// The frames of the canvas that show: a page of it, or all of them.
     shown: Shown,
     thumbs: HashMap<String, Thumb>,
-    loading: bool,
     /// The instance's tools and canvases are being read.
     listing: bool,
-    /// Why the picked canvas couldn't be read.
-    error: Option<Error>,
     /// Why the instance's tools and canvases couldn't be read. Kept apart
-    /// from `error` so a failed list never hides a canvas that did load.
+    /// from the canvas's error so a failed list never hides a canvas that did load.
     list_error: Option<Error>,
     /// Unix seconds of the last full read.
     read_at: u64,
@@ -104,7 +103,6 @@ pub struct DoopView {
     focus: FocusHandle,
     scroll: ScrollHandle,
     _load: Option<Task<()>>,
-    _canvas: Option<Task<()>>,
     _thumbs: Option<Task<()>>,
     _connect: Option<Task<()>>,
     _inputs: [Subscription; 3],
@@ -163,12 +161,10 @@ impl DoopView {
             listed: None,
             pins,
             picked: None,
-            canvas: None,
+            canvas: Loadable::default(),
             shown: Shown::All,
             thumbs: HashMap::new(),
-            loading: false,
             listing: false,
-            error: None,
             list_error: None,
             read_at: 0,
             epoch: 0,
@@ -186,7 +182,6 @@ impl DoopView {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _load: None,
-            _canvas: None,
             _thumbs: None,
             _connect: None,
             _inputs: inputs,
@@ -250,16 +245,13 @@ impl DoopView {
         self.listed = None;
         self.picked = None;
         self.shown = Shown::All;
-        self.canvas = None;
+        self.canvas.reset();
         self.thumbs.clear();
-        self.error = None;
         self.list_error = None;
         self.add_note = None;
-        self.loading = false;
         self.read_at = 0;
         self.menu = None;
         self._load = None;
-        self._canvas = None;
         self._thumbs = None;
         self.pins = self
             .session()
@@ -279,7 +271,7 @@ impl DoopView {
             return;
         };
         self.listing = true;
-        self.error = None;
+        self.canvas.error = None;
         self.list_error = None;
         self.list_epoch += 1;
         let list_epoch = self.list_epoch;
@@ -308,7 +300,7 @@ impl DoopView {
                             this.epoch += 1;
                             this.picked = all.first().map(|(c, _)| c.id.clone());
                             this.shown = Shown::All;
-                            this.canvas = None;
+                            this.canvas.data = None;
                             this.thumbs.clear();
                         }
                         this.read_canvas(renders, cx);
@@ -331,24 +323,22 @@ impl DoopView {
             self.tools.clone(),
             self.picked.clone(),
         ) else {
-            self.loading = false;
+            self.canvas.cancel();
             return;
         };
-        self.loading = true;
-        self.error = None;
+        // A new read replaces the one under way, which is for an older pick.
+        self.canvas.cancel();
+        self.canvas.error = None;
         let epoch = self.epoch;
-        self._canvas = Some(cx.spawn(async move |this, cx| {
-            let wanted = id.clone();
-            let got = cx
-                .background_spawn(crate::guard::task(async move {
-                    doop::canvas(&s, &tools, &wanted)
-                }))
-                .await;
-            this.update(cx, |this, cx| {
+        let wanted = id.clone();
+        self.canvas.start(
+            cx,
+            |this| &mut this.canvas,
+            async move { doop::canvas(&s, &tools, &wanted) },
+            move |this, got, cx| {
                 if this.epoch != epoch || this.picked.as_ref() != Some(&id) {
                     return;
                 }
-                this.loading = false;
                 match got {
                     Ok(canvas) => {
                         this.name_pin(&canvas);
@@ -358,16 +348,13 @@ impl DoopView {
                             this.shown =
                                 groups.into_iter().next().map_or(Shown::All, |(g, _, _)| g);
                         }
-                        this.canvas = Some(canvas);
+                        this.canvas.settle(Ok(canvas));
                         this.read_thumbs(renders, cx);
                     }
-                    Err(e) => this.error = Some(e),
+                    Err(e) => this.canvas.settle(Err(e)),
                 }
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
+            },
+        );
     }
 
     /// A canvas added by link is known only by its id until it is read.
@@ -397,9 +384,11 @@ impl DoopView {
     /// Shows the renders on disk and downloads the missing and the old ones
     /// (all of them when `force`), a few at a time.
     fn read_thumbs(&mut self, force: bool, cx: &mut Context<Self>) {
-        let (Some(s), Some(tools), Some(canvas)) =
-            (self.session().cloned(), self.tools.clone(), &self.canvas)
-        else {
+        let (Some(s), Some(tools), Some(canvas)) = (
+            self.session().cloned(),
+            self.tools.clone(),
+            &self.canvas.data,
+        ) else {
             return;
         };
         // Only the page shown: a canvas can hold hundreds of frames.
@@ -481,7 +470,7 @@ impl DoopView {
         self.epoch += 1;
         self.picked = Some(id);
         self.shown = Shown::All;
-        self.canvas = None;
+        self.canvas.data = None;
         self.thumbs.clear();
         self._thumbs = None;
         self.read_canvas(false, cx);
@@ -542,14 +531,11 @@ impl DoopView {
         if self.picked.as_ref() == Some(&id) {
             // Whatever was being read for it no longer has a place to land.
             self.epoch += 1;
-            self.loading = false;
-            self._canvas = None;
+            self.canvas.reset();
             self._thumbs = None;
             self.picked = None;
             self.shown = Shown::All;
-            self.canvas = None;
             self.thumbs.clear();
-            self.error = None;
             if let Some((next, _)) = self.canvases().into_iter().next() {
                 self.pick(next.id, cx);
             }
@@ -642,11 +628,12 @@ impl DoopView {
         };
         let updated = self
             .canvas
+            .data
             .as_ref()
             .map(|c| crate::memory::ago(c.fetched_at, now));
         let refresh = ui::refresh_control(
             "doop-refresh",
-            self.loading || self.listing,
+            self.canvas.loading() || self.listing,
             updated,
             cx.listener(|this, _, _, cx| this.refresh(true, cx)),
         );
@@ -803,6 +790,7 @@ impl DoopView {
                     .clone()
                     .or_else(|| {
                         self.canvas
+                            .data
                             .is_some()
                             .then(|| self.list_error.as_ref().map(Error::message))
                             .flatten()
@@ -908,14 +896,14 @@ impl DoopView {
 
     /// The frames of the picked canvas.
     fn render_canvas(&self, cx: &mut Context<Self>) -> AnyElement {
-        let list_error = (self.canvas.is_none() && !self.loading)
+        let list_error = (self.canvas.data.is_none() && !self.canvas.loading())
             .then_some(self.list_error.as_ref())
             .flatten();
-        if let Some(e) = self.error.as_ref().or(list_error) {
+        if let Some(e) = self.canvas.error.as_ref().or(list_error) {
             return self.render_error(e, cx);
         }
-        let Some(canvas) = &self.canvas else {
-            if self.loading || self.listing {
+        let Some(canvas) = &self.canvas.data else {
+            if self.canvas.loading() || self.listing {
                 return ui::loading("Reading the canvas…").into_any_element();
             }
             return ui::empty_state(
@@ -999,7 +987,7 @@ impl DoopView {
         }
         // Nothing read yet: the tools come before anything else can show.
         if self.tools.is_none() {
-            return match self.list_error.as_ref().or(self.error.as_ref()) {
+            return match self.list_error.as_ref().or(self.canvas.error.as_ref()) {
                 Some(e) => self.render_error(e, cx),
                 None => ui::loading("Reading Doop…").into_any_element(),
             };

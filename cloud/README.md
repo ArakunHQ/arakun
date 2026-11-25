@@ -40,8 +40,21 @@ cloud/
                         DELETE /admin/users/<github_id>/sessions,
                         PUT|DELETE /admin/users/<github_id>/block,
                         PUT /admin/users/<github_id>/plan, GET /admin/machines,
-                        POST /admin/notices, DELETE /admin/notices/<id>
+                        POST /admin/notices, DELETE /admin/notices/<id>,
+                        GET /admin/cloud/requests,
+                        PUT /admin/cloud/requests/<github_id>/grant|decline,
+                        GET /admin/beta/signups,
+                        PUT /admin/beta/signups/<github_id>/<platform>/admit|decline,
+                        GET /admin/log
+  src/admin_lists.ts    GET /admin/users, GET /admin/users/<github_id>,
+                        GET /admin/notices, GET /admin/plans
+  src/admin_log.ts      the admin log: record() and GET /admin/log
+  src/beta.ts           sign-ups for the phone app betas: GET /beta, POST /beta/<platform>,
+                        and the operator's side of them
+  src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
+                        operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
+  src/push.ts           the native apps' push service: POST /push/v1/<service>/<token>
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets
   src/wire.ts           the shapes of PROTOCOL.md and their signature checks
@@ -50,6 +63,8 @@ cloud/
                         Objects, real P-256 keys and a fake GitHub
   test/relay/           the relay's tests
   scripts/peers.mjs     one fake computer and two fake devices against a running Worker
+  admin/                the admin Worker: the operator panel at admin.arakun.dev (see
+                        "The admin panel"); its own package, wrangler.toml and tests
 ```
 
 ## Teams
@@ -103,6 +118,17 @@ A session lasts 90 days and is extended on use, at most once a day, but never pa
 180 days; the session's row decides when it ends. The database holds only the SHA-256
 of the session token. An account keeps at most 100 sessions: a sign-in past that ends
 the one used longest ago.
+
+A session has a kind: `app`, `server`, `phone`, `ios` or `android`, as the sign-in
+says, or `cloud`. No sign-in makes a `cloud` session: the Worker makes one for a
+machine it runs in a container, bound to that machine's label. An agent in the
+container could leak the token, so it is good only at `/machines/<label>/pc` of its
+own label. Everywhere else, the other labels and every device door included, it counts
+as no session (`401`, or `signed_out` on a socket). A machine has one cloud session at
+a time, and a new one ends the one before. Cloud sessions do not count toward the 100,
+and a sign-in never ends one to make room. They expire and renew like any session,
+`GET /sessions` lists them with kind `cloud`, and `DELETE /sessions/<id>`, a block
+and signing out everywhere end them.
 
 Users are keyed by their numeric GitHub ID, which stays when they rename their account.
 Flags are set per user on the server, and every team endpoint checks the `teams`
@@ -174,7 +200,7 @@ the account host. Do these once, in this order:
 3. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
    grant it if it lacks it, since the deploy applies the migrations. The environment's
    deployment rules must let `cloud-hotfix/*` branches through, where they named
-   `relay-hotfix/*` before.
+   `relay-hotfix/*` before, and `main`, for a manual deploy of `main`.
 4. Set the secrets on the new Worker (see Deploying, step 3):
 
    ```sh
@@ -237,7 +263,16 @@ A published release deploys the production Worker by itself:
 `npx wrangler deploy --env production` from the release's tag, so a change on `main`
 waits for the next version. A hotfix without a new version goes on a
 `cloud-hotfix/v<version>` branch made from the latest release's tag; the steps are at
-the top of that workflow. The deploy's message names the release or the hotfix. The
+the top of that workflow. To ship what is on `main` without a new version, run the
+workflow by hand on `main`:
+
+```sh
+gh workflow run cloud-deploy.yml --ref main
+```
+
+It deploys only if `main` contains the latest release's tag. A later redeploy of that
+tag, or a hotfix made from it, goes back to the release without `main`'s changes. The
+deploy's message names the release, the hotfix or `main`'s commit. The
 commands below do the same by hand. They use `--env production`,
 which deploys the Worker `arakun-cloud`. Without it, wrangler deploys the top-level
 Worker `arakun-cloud-dev`, a separate Worker with its own database, rate-limit
@@ -277,6 +312,26 @@ admin secret cannot grant flags or make sessions in production.
 
    ```sh
    npx wrangler secret put GITHUB_CLIENT_SECRET --env production
+   ```
+
+   Optionally, a Discord webhook URL that hears of each new request for cloud
+   access (see Cloud access). Without it, nothing is posted:
+
+   ```sh
+   npx wrangler secret put CLOUD_REQUESTS_WEBHOOK --env production
+   ```
+
+   Optionally, the keys that let the iOS and Android apps get notices (see Push to
+   the apps). Without them, `/push` answers 503 and the apps get none:
+
+   ```sh
+   # Apple: the .p8 file's text and its key ID (developer.apple.com → Keys, with
+   # Apple Push Notifications service). The team and bundle ID are in wrangler.toml.
+   npx wrangler secret put APNS_KEY --env production < AuthKey_XXXXXXXXXX.p8
+   npx wrangler secret put APNS_KEY_ID --env production
+   # Google: a service account's JSON key from the Firebase project, with the
+   # Firebase Cloud Messaging API Admin role.
+   npx wrangler secret put FCM_SERVICE_ACCOUNT --env production < service-account.json
    ```
 
 4. Deploy:
@@ -371,7 +426,7 @@ Worker, not one per computer.
    that issued it, so with only `relay_base` set the relay stays signed out. The app
    reads the client ID from `/auth/config` and signs in there.
 
-The free plan's limits apply until you set `plans` in KV (see below).
+The built-in plans' limits apply until you set `plans` in KV (see below).
 
 If you hosted the old relay, you have one Worker per computer, each named after its
 label and deployed from the old `relay/` folder. One Worker now serves them all, so
@@ -388,7 +443,7 @@ Everything is tuned in KV without redeploying:
 
 | Key | Value | Effect |
 |---|---|---|
-| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan; a plan KV does not have is the free plan |
+| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
 | `disabled` | `true` or a message | Both sockets close with `bye` `disabled` and the message (`message`); a plain request to them answers 503 with it |
 
 ```sh
@@ -424,6 +479,34 @@ auth | curl -fsS -X POST -H @- -H "Content-Type: application/json" \
   "https://<host>/admin/notices"
 # take a notice back, with the reads of it
 auth | curl -fsS -X DELETE -H @- "https://<host>/admin/notices/<id>"
+# accounts, last seen first: {"users": [...], "next": "<cursor>" or null}.
+# q is a login prefix or a GitHub ID, limit is 1 to 100 (default 50), after is the last next
+auth | curl -fsS -H @- "https://<host>/admin/users?q=octo&limit=20"
+# one account: user, sessions (no token hashes), machines, cloud_request and notices
+auth | curl -fsS -H @- "https://<host>/admin/users/<github_id>"
+# every notice, newest first, at most 500, each with how many accounts read it
+auth | curl -fsS -H @- "https://<host>/admin/notices"
+# the built-in plans and those in the KV `plans`, `free` first: {"plans": ["free", "internal", "pro"]}
+auth | curl -fsS -H @- "https://<host>/admin/plans"
+# what was changed and by whom, newest first: {"entries": [...], "next": "<cursor>" or null}.
+# github_id narrows it to one account, limit is 1 to 100, before is the last next
+auth | curl -fsS -H @- "https://<host>/admin/log?github_id=<github_id>&limit=20"
+```
+
+Every admin route that changes something adds one row to the `admin_log` table:
+when, which operator, what was done, which account and a short detail. The Worker
+only appends to it and has no route that edits or deletes a row, and a row stays
+after its account is deleted. The reads above change nothing and write no row.
+
+The admin panel names the operator in the record with two optional headers,
+`X-Arakun-Operator-Id` (a GitHub ID) and `X-Arakun-Operator-Login`. The Worker reads
+them only after the bearer check. A call without them, such as the curl above, is
+recorded with no operator. Add them to a call to name yourself:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X PUT -H @- \
+  -H "X-Arakun-Operator-Id: <your GitHub ID>" -H "X-Arakun-Operator-Login: <your login>" \
+  "https://<host>/admin/users/<github_id>/flags/teams"
 ```
 
 `GET /me` lists an account's unread notices, oldest first, at most 5, as
@@ -504,12 +587,214 @@ printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
   curl -fsS -X DELETE -H @- "https://<host>/admin/users/<id>/sessions"
 ```
 
+## The admin panel
+
+`admin/` is a second Worker, `arakun-admin`, with its own package. It serves a React page
+for operators (users, cloud access, phone betas, machines, notices, the activity log) and signs them
+in with GitHub, using its own OAuth App, not the desktop app's. The browser never holds
+`ADMIN_SECRET`: the admin Worker checks the sign-in, then forwards `/api/*` to this
+Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
+session is a signed cookie, `__Host-arakun_admin`, that lasts 12 hours.
+
+Every change made in the panel is recorded in `admin_log` with the operator's name, and
+the panel shows it under Activity.
+
+### Running both Workers locally
+
+The two Workers find each other through wrangler's dev registry, so they must run with
+the same wrangler version and the same registry path. `cloud/` and `cloud/admin/` pin
+different wrangler versions that use different default paths, so run the cloud Worker
+with the admin package's wrangler and set `WRANGLER_REGISTRY_PATH` for both:
+
+```sh
+(cd cloud/admin && npm ci)
+export WRANGLER_REGISTRY_PATH=/tmp/arakun-dev-registry
+
+# terminal 1, in cloud/: the cloud Worker (see Development above for the migrations)
+admin/node_modules/.bin/wrangler dev
+
+# terminal 2, in cloud/admin/: the panel, on http://localhost:5173
+npm run dev
+```
+
+`cloud/.dev.vars` has `ADMIN_SECRET`. `cloud/admin/.dev.vars` (git-ignored) has the same
+`ADMIN_SECRET`, plus:
+
+```sh
+ADMIN_SECRET=dev-secret
+SESSION_SECRET=<any long random string>
+ADMIN_GITHUB_IDS=<github_id>
+GITHUB_CLIENT_ID=<your OAuth App's client ID>
+GITHUB_CLIENT_SECRET=<your OAuth App's secret>
+```
+
+For a real sign-in, create a personal OAuth App on GitHub (Settings, Developer
+settings) whose callback is `http://localhost:5173/auth/github/callback`; use the port
+vite prints. Without an OAuth App, print a session cookie for the local
+`SESSION_SECRET` and send it from your browser's developer tools or with curl:
+
+```sh
+node scripts/dev-cookie.mjs <github_id> <login>   # in cloud/admin
+```
+
+The Worker still checks the ID against `ADMIN_GITHUB_IDS`. The dev server logs one
+content-security-policy error per page load, from Vite's reload script. It is harmless
+and does not happen in a build.
+
+`npm run check`, `npm test` and `npm run build` in `cloud/admin` are the checks CI runs.
+
+### First production deploy of the admin panel
+
+For arakun.dev, the GitHub OAuth App "Arakun Admin" exists and its client ID is already
+in `cloud/admin/wrangler.toml`. Do not create another app: its secret would not match
+that ID, and sign-in would fail with no hint why. What is left is the four secrets, set
+once in `cloud/admin`. `ADMIN_SECRET` is the value the cloud Worker has;
+`GITHUB_CLIENT_SECRET` is the secret of the "Arakun Admin" app; `SESSION_SECRET` is 32
+random bytes (`openssl rand -base64 32`); `ADMIN_GITHUB_IDS` is the operators' numeric
+GitHub IDs, comma-separated (find one at `https://api.github.com/users/<login>`).
+Each command asks for the value, so it is never on the command line:
+
+```sh
+cd cloud/admin
+npx wrangler secret put GITHUB_CLIENT_SECRET --env production
+npx wrangler secret put ADMIN_SECRET --env production
+npx wrangler secret put ADMIN_GITHUB_IDS --env production
+npx wrangler secret put SESSION_SECRET --env production
+```
+
+If no deploy came first, the Worker does not exist yet, and wrangler asks whether to
+create it with the secrets. Answer yes. The Worker deploys with the next release, or
+at once with a manual run of the deploy workflow on `main`:
+
+```sh
+gh workflow run cloud-deploy.yml --ref main
+```
+
+By hand, `npm run deploy` in `cloud/admin` does the same; it builds with
+`CLOUDFLARE_ENV=production`, which a production build needs. Until the secrets are set,
+the Worker fails closed: nobody can sign in.
+
+#### A copy of the repository with its own domain
+
+A copy needs an OAuth App of its own, because the committed client ID belongs to
+arakun.dev.
+
+1. On GitHub, create an OAuth App named "Arakun Admin" with the callback
+   `https://<your admin host>/auth/github/callback`.
+2. In `cloud/admin/wrangler.toml`, put the app's client ID under
+   `[env.production.vars]`, and set the host under `routes`.
+3. Set the four secrets as above, with the new app's secret, then merge the change.
+
+While `GITHUB_CLIENT_ID` is `PLACEHOLDER`, the deploy workflow prints a notice and skips
+the admin Worker, so a release still ships the cloud Worker.
+
+### Operators
+
+Who may sign in is the secret `ADMIN_GITHUB_IDS`, so no ID is in the repository. To add
+or remove an operator, put the new list and the secret takes effect at once:
+
+```sh
+cd cloud/admin
+npx wrangler secret put ADMIN_GITHUB_IDS --env production   # e.g. <github_id>,<github_id>
+```
+
+The ID is checked on every request, so removing one ends that operator's access at
+once, even with a valid cookie. Unset or empty, nobody gets in. Changing
+`SESSION_SECRET` signs everyone out.
+
+If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators stay signed in but
+the panel's calls fail with "unauthorized" errors (a missing one answers "the admin
+secret is not set"). Set it again to the cloud Worker's value.
+
+## Cloud access
+
+Cloud environments run on CPU we pay for, so they need the `cloud` flag, and an
+account asks for it rather than getting it at sign-in. The app calls
+`POST /cloud/access`; the request keeps what GitHub's public profile said about the
+account then (when it was made, public repositories, followers, following) for the
+review. One request per GitHub account. A declined account may ask again after
+30 days (`DECLINE_COOLDOWN_DAYS` in `src/cloud_access.ts`). Revoking the `cloud`
+flag of a granted account lets it ask again; to keep someone out, block the account.
+
+With `CLOUD_REQUESTS_WEBHOOK` set, each new request is posted to that Discord
+webhook: the login, the GitHub ID, the account's age, public repositories and
+followers. Never the reason the person wrote, an email or a token.
+
+```sh
+read -rs ADMIN_SECRET
+auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
+# the requests: pending first, oldest first, then the decided ones. ?status=pending for only those
+auth | curl -fsS -H @- "https://<host>/admin/cloud/requests"
+# grant one: the request and the `cloud` flag. "by" is optional, at most 100 characters
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/cloud/requests/<github_id>/grant"
+# decline a pending one
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/cloud/requests/<github_id>/decline"
+```
+
+## Phone app betas
+
+The iOS app is tested through TestFlight and the Android app through a Play testing
+track. Both invite testers by email and cap how many there are, so testers are
+admitted by hand. The desktop app's Phone tab calls `POST /beta/ios` or
+`POST /beta/android` with the email to invite: an Apple ID for TestFlight, a Google
+account for Play. With no email it takes the account's verified GitHub email. One
+sign-up per GitHub account and platform. Sent again while pending, it changes the
+email. A declined account may sign up again after 30 days.
+
+Admitting invites no one. To admit someone:
+
+1. List the pending sign-ups and look at the account (age, repositories, followers).
+2. Add the email as a tester: in App Store Connect under TestFlight → External
+   Testing (or Internal), or in Play Console under Testing → the track's testers list.
+3. Mark it admitted, so the app says the invite is on its way.
+
+To remove a tester, remove them in the store, then decline the sign-up.
+
+The admin panel's **Phone betas** screen does this: it lists sign-ups by status and
+platform, copies one platform's emails at once to paste into the store, and asks
+before it admits or declines. Without the panel, use curl as below.
+
+With `BETA_REQUESTS_WEBHOOK` set, each new sign-up is posted to that Discord webhook,
+with the platform and the same public facts as a cloud access request. Never the
+email or a token.
+
+```sh
+read -rs ADMIN_SECRET
+auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
+# the sign-ups: pending first, oldest first. ?platform=ios|android and ?status=pending|admitted|declined
+auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pending"
+# the pending iOS emails, one a line, to paste into App Store Connect
+auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pending" | jq -r '.[].email'
+# admit one after adding the email in the store. "by" is optional, at most 100 characters
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/beta/signups/<github_id>/ios/admit"
+# decline one, pending or admitted
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/beta/signups/<github_id>/android/decline"
+```
+
 To see who has which flag:
 
 ```sh
 npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
   SELECT u.github_id, u.login, f.flag FROM user_flags f JOIN users u USING (github_id)"
 ```
+
+## Push to the apps
+
+The phone page gets its notices from the browser's own push service. The iOS and
+Android apps can only be woken through Apple (APNs) and Google (FCM), with Arakun's
+keys, so this Worker is their push service. An app makes its own P-256 key and
+auth secret, and gives each computer a Web Push subscription whose endpoint is
+here: `https://<host>/push/v1/apns/<token>` (`apns-sandbox` for a development
+build) or `https://<host>/push/v1/fcm/<token>`. The computer sends what it sends a
+browser's service: an RFC 8291 aes128gcm body with a VAPID token. The Worker
+checks the token's signature and audience, and passes the ciphertext on as `e`:
+in a mutable alert to Apple, which the app's notification service opens, and in
+a data message to Google. Neither the Worker, Apple nor Google can read the
+notice. Each token gets 30 messages a minute.
 
 ## API
 
@@ -526,6 +811,16 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |
 | `DELETE /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Takes it away: `200 {github_id, flags}`. |
 | `DELETE /admin/users/<github_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {github_id, closed}`, with how many ended. |
+| `GET /cloud/access` with the session | `200 {status, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `granted` or `declined`; a time is `null` where it does not apply, and `retry_at` is set only for `declined`: when the account may ask again. `401` without a session. |
+| `POST /cloud/access` with the session, `{"reason"?: "..."}` | Asks for cloud access: `201` with the same shape, `pending`. `400` for a reason over 500 characters, `401` without a session, `403 {error: "blocked"}` for a blocked account, `409 {error, status, requested_at, decided_at, retry_at}` when the account has asked already (`already pending`), has access (`already granted`) or was declined less than 30 days ago (`declined recently`), `429` after 5 a minute. |
+| `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
+| `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
+| `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
+| `GET /beta` with the session | `200 {email, ios, android}`: `email` is the account's verified GitHub email or `null`, and each platform is `{status, email, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `admitted` or `declined`; `retry_at` is set only for `declined`. `401` without a session. |
+| `POST /beta/<ios\|android>` with the session, `{"email"?: "..."}` | Signs up: `201` with the platform's shape, `pending`. While pending, changes the email: `200`. `400` for an address that does not look like one or is over 254 characters, or no email when GitHub gave none. `401`, `403 {error: "blocked"}`, `404` for another platform, `409 {error, ...}` when `already admitted` or `declined recently`, `429` after 5 a minute. |
+| `GET /admin/beta/signups[?platform=][&status=]` with `ADMIN_SECRET` | `200 [{github_id, login, platform, email, status, requested_at, decided_at, decided_by, retry_at, blocked, github: {...}}]`, pending first. |
+| `PUT /admin/beta/signups/<github_id>/<platform>/admit\|decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Marks it admitted or declined, from any state: `200` with the sign-up. The same decision again keeps its first time and name. `404` without a sign-up. |
+| `POST /push/v1/{apns,apns-sandbox,fcm}/<token>` with a Web Push request (`Content-Encoding: aes128gcm`, `Authorization: vapid t=..., k=...`, `TTL`, `Urgency`) | `201` once Apple or Google took it. `401` for a missing or bad VAPID token (wrong signature, audience or expiry), `404` for a token that is not one, `410` when Apple or Google say the token is gone, `413` for a body over 2800 bytes, `415` without `aes128gcm`, `429` after 30 a minute for one token or when the service is busy, `502` when it refuses or cannot be reached, `503` without its keys. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

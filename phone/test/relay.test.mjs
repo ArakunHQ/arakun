@@ -1,4 +1,4 @@
-// phone/relay.js joining the pieces of a message the computer split for the
+// phone/public/relay.js joining the pieces of a message the computer split for the
 // relay (`say` in core/src/phone/relay.rs), against the pieces Rust wrote
 // (vectors/part.json). Run with `node --test phone/test/`.
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", file), "utf8"), { filename: file });
+for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", "public", file), "utf8"), { filename: file });
 const { E2E, RELAY } = globalThis;
 const vectors = JSON.parse(readFileSync(join(here, "vectors", "part.json"), "utf8"));
 

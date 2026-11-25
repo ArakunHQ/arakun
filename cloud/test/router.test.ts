@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { createExecutionContext, env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 
@@ -48,18 +48,19 @@ describe("the one Worker", () => {
     expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
     // Its script and service worker too.
-    for (const path of ["/app.js", "/sw.js"]) {
+    for (const path of ["/assets/app.js", "/sw.js"]) {
       const file = await SELF.fetch(`https://app.arakun.dev${path}`);
       expect(file.headers.get("Content-Security-Policy"), path).toBe(csp);
     }
   });
 
   it("serves the page's script on the account host", async () => {
-    const res = await SELF.fetch("https://app.arakun.dev/app.js");
+    const res = await SELF.fetch("https://app.arakun.dev/assets/app.js");
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toMatch(/javascript/);
     expect(res.headers.get("Cache-Control")).not.toBe("no-store");
-    expect(await res.text()).toContain("RELAY.detect()");
+    // The bundle reads the globals relay.js sets.
+    expect(await res.text()).toContain("RELAY");
   });
 
   it("keeps unknown API paths JSON", async () => {
@@ -86,7 +87,7 @@ describe("the one Worker", () => {
 });
 
 describe("the account host", () => {
-  const withHost = (url: string) => worker.fetch(new Request(url), { ...env, ACCOUNT_HOST: "app.arakun.dev" });
+  const withHost = (url: string) => worker.fetch(new Request(url), { ...env, ACCOUNT_HOST: "app.arakun.dev" }, createExecutionContext());
 
   it("is any host that is not a label while ACCOUNT_HOST is unset", async () => {
     for (const host of ["app.arakun.dev", "other.arakun.dev", "arakun-cloud.someone.workers.dev"]) {

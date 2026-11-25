@@ -17,7 +17,32 @@ use crate::platform::{GIT_LOCAL, GIT_LONG, GIT_REMOTE};
 /// Git's well-known empty tree, the diff base for repositories without commits.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+/// Git in `dir`. In a sandboxed project's folders it runs no hooks and no
+/// fsmonitor: the agent can write what those run (a hooks folder in the
+/// checkout, as husky sets it), and most of these calls run by themselves.
 pub fn git(dir: &Path) -> Command {
+    guarded(dir, false).0
+}
+
+/// Git for what the user asked for that runs their hooks (commit, push, pull,
+/// merge, a new worktree): pinned like [`git`], but hooks run as they would in
+/// a terminal.
+fn git_hooked(dir: &Path) -> Command {
+    guarded(dir, true).0
+}
+
+/// [`git`], and whether `dir` is in a sandboxed project's folders, where a read
+/// of the work tree adds [`STATUS_GUARD`] or [`DIFF_GUARD`].
+fn guarded(dir: &Path, hooks: bool) -> (Command, bool) {
+    use crate::agent::sandbox::GitPin;
+    let pin = crate::agent::sandbox::git_pin(dir);
+    if let GitPin::Refused(why) = &pin {
+        // Fails the way git does, with the reason, whatever arguments follow.
+        let mut cmd = crate::platform::command("sh");
+        cmd.current_dir(dir)
+            .args(["-c", "printf '%s\\n' \"$0\" >&2; exit 128", why]);
+        return (cmd, true);
+    }
     let mut cmd = crate::platform::command("git");
     cmd.current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -28,6 +53,56 @@ pub fn git(dir: &Path) -> Command {
     // few seconds. A fork of a 1.7 GB arakun stalled the window for up to seconds.
     // `dir` picks the repository, not a GIT_DIR inherited from whatever started arakun.
     unpinned(&mut cmd);
+    let GitPin::Pinned {
+        git_dir,
+        common,
+        work_tree,
+    } = pin
+    else {
+        return (cmd, false);
+    };
+    // GIT_COMMON_DIR wins over a `commondir` file, GIT_DIR over a `.git` file.
+    cmd.env("GIT_DIR", git_dir)
+        .env("GIT_COMMON_DIR", common)
+        .env("GIT_WORK_TREE", work_tree)
+        .args(["-c", "core.fsmonitor=false"]);
+    if !hooks {
+        cmd.args(["-c", "core.hooksPath=/dev/null"]);
+    }
+    (cmd, true)
+}
+
+/// After `status` in a sandboxed folder: a submodule's dirt is not looked at.
+/// To see it git runs `git status` in the submodule, with that submodule's own
+/// config, which the agent can write (a nested repository it added is one), and
+/// a filter there runs a command even with hooks and fsmonitor off.
+pub const STATUS_GUARD: &[&str] = &["--ignore-submodules=dirty"];
+
+/// After `diff` in a sandboxed folder: [`STATUS_GUARD`], and no external diff
+/// or text conversion, whose drivers the agent picks with `.gitattributes`.
+pub const DIFF_GUARD: &[&str] = &[
+    "--ignore-submodules=dirty",
+    "--no-ext-diff",
+    "--no-textconv",
+];
+
+/// `git status` in `dir`, with [`STATUS_GUARD`] where it applies.
+pub fn git_status(dir: &Path) -> Command {
+    let (mut cmd, guard) = guarded(dir, false);
+    cmd.arg("status");
+    if guard {
+        cmd.args(STATUS_GUARD);
+    }
+    cmd
+}
+
+/// `git diff` in `dir`, with [`DIFF_GUARD`] where it applies.
+pub fn git_diff(dir: &Path) -> Command {
+    let (mut cmd, guard) = guarded(dir, false);
+    cmd.arg("diff");
+    if guard {
+        cmd.args(DIFF_GUARD);
+    }
     cmd
 }
 
@@ -283,7 +358,7 @@ pub fn add_worktree(
             ]),
             GIT_LOCAL,
         );
-    let mut cmd = git(repo);
+    let mut cmd = git_hooked(repo);
     cmd.args(["worktree", "add"]);
     if exists {
         cmd.arg(path).arg(branch);
@@ -621,8 +696,7 @@ struct Head {
 }
 
 fn read_status(dir: &Path) -> Result<(Vec<Change>, Head)> {
-    let text = stdout(git(dir).args([
-        "status",
+    let text = stdout(git_status(dir).args([
         "--porcelain=v2",
         "-z",
         "--branch",
@@ -632,7 +706,7 @@ fn read_status(dir: &Path) -> Result<(Vec<Change>, Head)> {
     let (mut changes, head) = parse_status(&text);
     if changes.iter().any(|c| c.kind != ChangeKind::Untracked) {
         let base = if head.born { "HEAD" } else { EMPTY_TREE };
-        let numstat = stdout(git(dir).args(["diff", base, "--numstat", "-z", "--no-renames"]))
+        let numstat = stdout(git_diff(dir).args([base, "--numstat", "-z", "--no-renames"]))
             .unwrap_or_default();
         let mut counts = HashMap::new();
         for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
@@ -803,13 +877,13 @@ pub fn ls_files(dir: &Path) -> Result<Vec<String>> {
 pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
     if untracked {
         let out = output(
-            git(dir).args(["diff", "--no-color", "--no-index", "--", "/dev/null", path]),
+            git_diff(dir).args(["--no-color", "--no-index", "--", "/dev/null", path]),
             GIT_LOCAL,
         )?;
         // --no-index exits 1 when the files differ, which is the expected case.
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
+    stdout(git_diff(dir).args(["--no-color", diff_base(dir)?, "--", path]))
 }
 
 /// What a commit would hold, for a model to describe: `git diff --stat` and
@@ -820,14 +894,14 @@ pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String,
     let base = diff_base(dir)?;
     let range: &[&str] = if all { &[base] } else { &["--cached", base] };
     let args = |extra: &[&'static str]| {
-        let mut a = vec!["diff", "--no-color"];
+        let mut a = vec!["--no-color"];
         a.extend_from_slice(extra);
         a.extend_from_slice(range);
         a.push("--");
         a
     };
-    let mut stat = read(dir, &args(&["--stat=200"]))?;
-    let mut diff = read(dir, &args(&[]))?;
+    let mut stat = stdout(git_diff(dir).args(args(&["--stat=200"])))?;
+    let mut diff = stdout(git_diff(dir).args(args(&[])))?;
     // Counted in characters, as `cut_at_line` cuts.
     let mut chars = diff.chars().count();
     let mut skipped = false;
@@ -1054,13 +1128,8 @@ fn remotes(dir: &Path) -> Result<Vec<(String, String)>> {
 
 /// Where the checked-out branch stands against its remote, without the changes.
 pub fn sync(dir: &Path) -> Result<Sync> {
-    let text = stdout(git(dir).args([
-        "status",
-        "--porcelain=v2",
-        "-z",
-        "--branch",
-        "--untracked-files=no",
-    ]))?;
+    let text =
+        stdout(git_status(dir).args(["--porcelain=v2", "-z", "--branch", "--untracked-files=no"]))?;
     sync_from(dir, parse_status(&text).1)
 }
 
@@ -1120,7 +1189,10 @@ pub fn commit(dir: &Path, message: &str, all: bool) -> Result<()> {
         run_loud(git(dir).args(["add", "-A"]), GIT_LONG)?;
     }
     // Commit hooks may run checks that take minutes.
-    if let Err(e) = run_loud(git(dir).args(["commit", "-q", "-m", message]), GIT_LONG) {
+    if let Err(e) = run_loud(
+        git_hooked(dir).args(["commit", "-q", "-m", message]),
+        GIT_LONG,
+    ) {
         let text = e.to_string();
         // Git's own wording here is a page of `git status` advice.
         if text.contains("nothing to commit") || text.contains("no changes added to commit") {
@@ -1139,12 +1211,15 @@ pub fn commit(dir: &Path, message: &str, all: bool) -> Result<()> {
 }
 
 pub fn push(dir: &Path, remote: &str, branch: &str) -> Result<()> {
-    run_loud(git(dir).args(["push", "-u", remote, branch]), GIT_LONG)?;
+    run_loud(
+        git_hooked(dir).args(["push", "-u", remote, branch]),
+        GIT_LONG,
+    )?;
     Ok(())
 }
 
 pub fn pull(dir: &Path) -> Result<()> {
-    run_loud(git(dir).args(["pull", "--ff-only"]), GIT_LONG)?;
+    run_loud(git_hooked(dir).args(["pull", "--ff-only"]), GIT_LONG)?;
     Ok(())
 }
 
@@ -1256,7 +1331,7 @@ impl MergePlan {
 }
 
 fn dirty_tracked(dir: &Path) -> Result<usize> {
-    let text = stdout(git(dir).args(["status", "--porcelain=v1", "-z", "--untracked-files=no"]))?;
+    let text = stdout(git_status(dir).args(["--porcelain=v1", "-z", "--untracked-files=no"]))?;
     Ok(text
         .split('\0')
         .filter(|s| s.len() > 3 && !s.starts_with("??"))
@@ -1298,7 +1373,7 @@ pub fn merge_into_main(main: &Path, branch: &str) -> Result<()> {
         bail!("{why}");
     }
     if let Err(e) = run_loud(
-        git(main).args(["merge", "--no-ff", "--no-edit", branch]),
+        git_hooked(main).args(["merge", "--no-ff", "--no-edit", branch]),
         GIT_LONG,
     ) {
         // Long too: an abort stopped halfway would leave the checkout worse off.
@@ -1325,7 +1400,7 @@ pub fn read(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// `git revert --no-edit <sha>` in a checkout; a revert that conflicts is aborted.
 pub fn revert(dir: &Path, sha: &str) -> Result<()> {
-    if let Err(e) = run_loud(git(dir).args(["revert", "--no-edit", sha]), GIT_LONG) {
+    if let Err(e) = run_loud(git_hooked(dir).args(["revert", "--no-edit", sha]), GIT_LONG) {
         abort(dir, "revert").map_err(|abort| anyhow!("{e}\n{abort}"))?;
         bail!("{e}\nThe revert was aborted; nothing changed.");
     }
@@ -1367,7 +1442,10 @@ pub fn add_branch_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()>
         GIT_REMOTE,
     );
     run_loud(
-        git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+        git_hooked(repo)
+            .args(["worktree", "add"])
+            .arg(path)
+            .arg(branch),
         GIT_LONG,
     )?;
     Ok(())
@@ -1427,7 +1505,10 @@ pub fn add_pull_worktree(
         GIT_LOCAL,
     ) {
         run_loud(
-            git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+            git_hooked(repo)
+                .args(["worktree", "add"])
+                .arg(path)
+                .arg(branch),
             GIT_LONG,
         )?;
         return Ok(());
@@ -1444,7 +1525,10 @@ pub fn add_pull_worktree(
         GIT_REMOTE,
     )?;
     run_loud(
-        git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+        git_hooked(repo)
+            .args(["worktree", "add"])
+            .arg(path)
+            .arg(branch),
         GIT_LONG,
     )?;
     if track {

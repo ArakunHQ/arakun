@@ -12,10 +12,11 @@ main = "src/index.ts"
 # itself (src/channel.ts relies on it).
 compatibility_date = "2026-11-01"
 
-# The phone page, straight from the repo: the Worker runs first and hands the
-# rest to the assets.
+# The phone page, as built into phone/dist (`npm run build` in phone/ writes
+# it, and it is committed): the Worker runs first and hands the rest to the
+# assets.
 [assets]
-directory = "../phone"
+directory = "../phone/dist"
 binding = "ASSETS"
 run_worker_first = true
 
@@ -42,11 +43,16 @@ migrations_dir = "migrations"
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 # The old relay hosts are `<label>.<BASE_DOMAIN>`.
 BASE_DOMAIN = "arakun.dev"
+# Who Apple delivers the iOS app's notices for (src/push.ts). The key itself
+# is `wrangler secret put APNS_KEY` and `APNS_KEY_ID`.
+APNS_TEAM_ID = "V9JGU28UV7"
+APNS_TOPIC = "com.arakun.ios"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
-# so every id here is used once: this Worker has 1003, 1004 and 1005,
-# production 1001, 1002 and 1006.
+# so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
+# 1011 and 1013, production 1001, 1002, 1006, 1008, 1012 and 1014. cloud/admin
+# has 1009 and 1010.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -69,6 +75,35 @@ namespace_id = "1004"
 [[ratelimits]]
 name = "INVITE_LIMIT"
 namespace_id = "1005"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# Each request for cloud access asks GitHub about the account: 5 a minute per
+# user is room for retries and none for a script.
+[[ratelimits]]
+name = "CLOUD_ACCESS_LIMIT"
+namespace_id = "1007"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+# Each beta sign-up asks GitHub about the account, like a cloud access request.
+[[ratelimits]]
+name = "BETA_LIMIT"
+namespace_id = "1011"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+# Notices pushed to one native app's token: a busy computer sends a few a
+# minute; 30 leaves room for several computers and none for a flood.
+[[ratelimits]]
+name = "PUSH_LIMIT"
+namespace_id = "1013"
 
   [ratelimits.simple]
   limit = 30
@@ -97,9 +132,10 @@ tag = "v2"
 new_sqlite_classes = ["Channel"]
 
 # The hosted Worker (`npx wrangler deploy --env production`), which
-# .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET and
-# GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings,
-# so they are all here again. The one route covers the account host
+# .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET,
+# GITHUB_CLIENT_SECRET, CLOUD_REQUESTS_WEBHOOK, BETA_REQUESTS_WEBHOOK,
+# APNS_KEY, APNS_KEY_ID and FCM_SERVICE_ACCOUNT stay Worker secrets. An
+# environment inherits no bindings, so they are all here again. The one route covers the account host
 # app.arakun.dev and the old label hosts, which tell old apps to update.
 [env.production]
 name = "arakun-cloud"
@@ -136,6 +172,30 @@ namespace_id = "1006"
   limit = 30
   period = 60
 
+[[env.production.ratelimits]]
+name = "CLOUD_ACCESS_LIMIT"
+namespace_id = "1008"
+
+  [env.production.ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[env.production.ratelimits]]
+name = "BETA_LIMIT"
+namespace_id = "1012"
+
+  [env.production.ratelimits.simple]
+  limit = 5
+  period = 60
+
+[[env.production.ratelimits]]
+name = "PUSH_LIMIT"
+namespace_id = "1014"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60
+
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL"
 class_name = "Channel"
@@ -158,7 +218,7 @@ binding = "CONFIG"
 id = "c6b6881faa8941e7aac00b98dbe0b45d"
 
 [env.production.assets]
-directory = "../phone"
+directory = "../phone/dist"
 binding = "ASSETS"
 run_worker_first = true
 
@@ -167,3 +227,5 @@ GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 BASE_DOMAIN = "arakun.dev"
 # The route takes every host under arakun.dev; only this one is the account's.
 ACCOUNT_HOST = "app.arakun.dev"
+APNS_TEAM_ID = "V9JGU28UV7"
+APNS_TOPIC = "com.arakun.ios"

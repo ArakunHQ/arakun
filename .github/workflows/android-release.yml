@@ -161,6 +161,13 @@ jobs:
           ORG_GRADLE_PROJECT_uploadStorePassword: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           ORG_GRADLE_PROJECT_uploadKeyAlias: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           ORG_GRADLE_PROJECT_uploadKeyPassword: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          # The Firebase app push notifications come through. These end up in
+          # the app, so they are variables, not secrets; unset, the app has no
+          # notifications.
+          ARAKUN_FCM_PROJECT_ID: ${{ vars.ARAKUN_FCM_PROJECT_ID }}
+          ARAKUN_FCM_APP_ID: ${{ vars.ARAKUN_FCM_APP_ID }}
+          ARAKUN_FCM_API_KEY: ${{ vars.ARAKUN_FCM_API_KEY }}
+          ARAKUN_FCM_SENDER_ID: ${{ vars.ARAKUN_FCM_SENDER_ID }}
         run: |
           ./gradlew :app:bundleRelease
           aab=app/build/outputs/bundle/release/app-release.aab

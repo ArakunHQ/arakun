@@ -57,34 +57,54 @@ pub enum Quiet {
 }
 
 /// The order of the sessions in the sidebar tree, within each project or,
-/// without project headings, across all of them.
+/// without project headings, across all of them. The state file keeps the
+/// names these orders had first: a build that meets a name it doesn't know
+/// can't read the file at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sort {
-    /// The session used last on top.
+    /// The session that moved last on top, whether its agent or the user
+    /// moved it.
     #[default]
-    Latest,
+    #[serde(rename = "latest")]
+    Recent,
     /// By title, A to Z.
-    Title,
-    /// Environment by environment, as the projects list shows them.
-    Environment,
+    #[serde(rename = "title")]
+    Name,
+    /// The order the user drags the sessions into (`Project::session_order`).
+    /// It starts as the projects list shows them, environment by environment,
+    /// which is what this order was before it could be dragged.
+    #[serde(rename = "environment")]
+    Manual,
 }
 
 impl Sort {
-    pub const ALL: [Sort; 3] = [Sort::Latest, Sort::Title, Sort::Environment];
+    pub const ALL: [Sort; 3] = [Sort::Recent, Sort::Name, Sort::Manual];
 
     pub fn label(self) -> &'static str {
         match self {
-            Sort::Latest => "Latest",
-            Sort::Title => "A–Z",
-            Sort::Environment => "By environment",
+            Sort::Recent => "Recent",
+            Sort::Name => "Name",
+            Sort::Manual => "Manual",
         }
     }
 
-    /// The order after this one, for the tree heading's button.
-    pub fn next(self) -> Self {
-        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+    /// What the order does, beside its name in the tree's menu.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Sort::Recent => "Latest first",
+            Sort::Name => "A to Z",
+            Sort::Manual => "Drag to order",
+        }
+    }
+
+    /// Whether the sessions with an open tab go above the rest, a rule
+    /// between them. Manual leaves every session where the user put it.
+    pub fn open_tabs_first(self) -> bool {
+        match self {
+            Sort::Recent | Sort::Name => true,
+            Sort::Manual => false,
+        }
     }
 }
 
@@ -136,7 +156,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Folded,
                 titles: LongTitles::Cut,
-                sort: Sort::Latest,
+                sort: Sort::Recent,
             },
             Preset::Classic => TabLayout {
                 sessions_in: SessionsIn::TitleBar,
@@ -145,7 +165,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Open,
                 titles: LongTitles::Cut,
-                sort: Sort::Latest,
+                sort: Sort::Recent,
             },
             Preset::Everything => TabLayout {
                 sessions_in: SessionsIn::Both,
@@ -154,7 +174,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Open,
                 titles: LongTitles::Cut,
-                sort: Sort::Latest,
+                sort: Sort::Recent,
             },
         }
     }
@@ -314,7 +334,7 @@ mod tests {
         assert_eq!(read.bar_shows, BarShows::Project);
         assert_eq!(read.sessions_in, SessionsIn::Sidebar);
         // A file from before sorting puts the latest session on top.
-        assert_eq!(read.sort, Sort::Latest);
+        assert_eq!(read.sort, Sort::Recent);
     }
 
     #[test]
@@ -337,13 +357,37 @@ mod tests {
     }
 
     #[test]
-    fn the_sort_button_goes_round_every_order() {
-        let mut s = Sort::default();
-        assert_eq!(s, Sort::Latest);
-        for _ in 0..Sort::ALL.len() {
-            s = s.next();
+    fn the_orders_keep_the_names_the_state_file_already_holds() {
+        let read = |name: &str| -> Sort {
+            serde_json::from_str::<TabLayout>(&format!(r#"{{"sort":"{name}"}}"#))
+                .unwrap()
+                .sort
+        };
+        assert_eq!(read("latest"), Sort::Recent);
+        assert_eq!(read("title"), Sort::Name);
+        assert_eq!(read("environment"), Sort::Manual);
+        // And writes them back the same, for a build from before the menu.
+        for (sort, name) in [
+            (Sort::Recent, "latest"),
+            (Sort::Name, "title"),
+            (Sort::Manual, "environment"),
+        ] {
+            assert_eq!(serde_json::to_value(sort).unwrap(), name);
         }
-        assert_eq!(s, Sort::Latest);
-        assert_eq!(Sort::Latest.next(), Sort::Title);
+        assert_eq!(Sort::default(), Sort::Recent);
+    }
+
+    #[test]
+    fn every_order_has_a_name_and_a_hint_for_the_menu() {
+        let labels: Vec<_> = Sort::ALL.into_iter().map(Sort::label).collect();
+        assert_eq!(labels, ["Recent", "Name", "Manual"]);
+        assert!(Sort::ALL.into_iter().all(|s| !s.hint().is_empty()));
+    }
+
+    #[test]
+    fn only_the_orders_that_move_sessions_put_open_tabs_first() {
+        assert!(Sort::Recent.open_tabs_first());
+        assert!(Sort::Name.open_tabs_first());
+        assert!(!Sort::Manual.open_tabs_first());
     }
 }

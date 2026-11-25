@@ -52,11 +52,14 @@ mod lab;
 mod loadable;
 mod logos;
 mod look;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod mallinfo;
 mod memory;
 mod memory_view;
 mod model;
 mod notices;
 mod onboarding;
+mod page_drive;
 mod palette;
 mod palettes;
 mod phone_view;

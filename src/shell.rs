@@ -251,6 +251,9 @@ enum MenuTarget {
     Picked,
     /// Several sessions of the tree picked at once (`tree_pick`).
     TreePicked,
+    /// The order of the tree's sessions and what it lists, from the button
+    /// in its heading.
+    TreeSort,
     /// The pinned tabs that don't fit the title bar.
     MoreTabs,
     /// The tree of sessions, from the title bar while the sidebar is hidden.
@@ -291,6 +294,12 @@ enum MenuKey {
     /// Shows or hides a provider in the rail's usage card.
     Rail(AgentKind),
     OpenUsage,
+    /// Puts the tree's sessions in this order.
+    TreeSort(crate::tab_layout::Sort),
+    /// Whether each project heads its own sessions in the tree.
+    TreeGroup,
+    /// Whether the tree lists archived sessions too.
+    TreeArchived,
 }
 
 /// Opens a view, once what it needs is there (`Shell::pick_project_for`).
@@ -525,7 +534,7 @@ pub struct Shell {
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
     /// The connections to the machines running `arakun server`, once the
-    /// Servers tab was opened.
+    /// Computers tab was opened.
     servers: Option<servers::ServersLink>,
     servers_view: Entity<crate::servers_view::ServersView>,
     _servers_view: Subscription,
@@ -574,6 +583,12 @@ pub struct Shell {
     /// Look once more when the one under way ends.
     running_again: bool,
     running_checked: Option<Instant>,
+    /// Where the tree's rows sat when the pointer came over it. They stay
+    /// there until it leaves, so no row moves from under the pointer.
+    tree_held: Option<session_tree::HeldRows>,
+    /// The tree menu's Applies to is on Select projects: the order picked
+    /// goes to the projects ticked in the list beside it.
+    tree_sort_select: bool,
     /// The id of the sidebar's active row under the pointer, which shows
     /// its archive button.
     active_hover: Option<SharedString>,
@@ -1168,6 +1183,8 @@ impl Shell {
             running_scanning: false,
             running_again: false,
             running_checked: None,
+            tree_held: None,
+            tree_sort_select: false,
             active_hover: None,
             tree_filter,
             _tree_filter: tree_filter_sub,
@@ -1261,8 +1278,9 @@ impl Shell {
         .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
-        // The compositor's close (Super+W, Alt+F4) hides too when the setting is on.
-        window.on_window_should_close(cx, |window, _| crate::background::should_close(window));
+        // The system close (the title bar's X, Alt+F4, Super+W) goes through the
+        // same hide-or-quit as Arakun's own close button.
+        window.on_window_should_close(cx, crate::background::should_close);
         this.watch_headless(window, cx);
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);
@@ -1898,7 +1916,7 @@ impl Shell {
         self.sync_teams_project(cx);
         self.settle_strip(cx);
         self.unfloat_github(cx);
-        // Its Servers tab went with it; a no-op while one is left elsewhere.
+        // Its Computers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
         self.save(cx);
@@ -4079,7 +4097,11 @@ impl Shell {
                 self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
-            Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
+            Some(TabKind::Servers) => {
+                // This computer's sessions start and stop all the time; its row follows them.
+                self.sync_this_computer(cx);
+                self.servers_view.clone().into_any_element()
+            }
             Some(TabKind::Teams) => {
                 // @bot reads the visible environment's code.
                 let dir = env.path.clone();
@@ -4111,7 +4133,7 @@ impl Shell {
                 .gap(crate::ui::sp(10.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(agent_icon(env.agent, 22.))
+                .child(env.agent.icon(22.))
                 .child("New session")
                 .child(
                     div()
@@ -4773,22 +4795,6 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
-    match agent {
-        AgentKind::Claude => img("providers/claude.svg")
-            .size(px(size))
-            .flex_none()
-            .into_any_element(),
-        AgentKind::Droid => ui::factory_logo(size).into_any_element(),
-        AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
-        AgentKind::Codex
-        | AgentKind::Devin
-        | AgentKind::Cursor
-        | AgentKind::Antigravity
-        | AgentKind::WorkersAi => agent.icon(size),
-    }
-}
-
 impl Shell {
     /// The Notes tab: the active project's scratch list.
     fn render_notes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5167,5 +5173,50 @@ mod tests {
         assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
         assert!(in_modal(&[ctx("Shell"), ctx(ui::MODAL_CONTEXT)]));
         assert!(!in_modal(&[ctx("Shell"), ctx("ThreadView")]));
+    }
+
+    /// `shell` sits at the top: it shows every other module, and none of them
+    /// reaches back into it. A path back makes a cycle, which keeps any of
+    /// them from moving into a crate of its own (#614). Put what they share
+    /// in that module, `ui` or a small module of its own instead.
+    #[test]
+    fn nothing_outside_the_shell_depends_on_it() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(
+            files.len() > 50,
+            "found only {} files in {}",
+            files.len(),
+            src.display()
+        );
+        let mut found = Vec::new();
+        for file in files {
+            let rel = file.strip_prefix(&src).unwrap();
+            if rel == std::path::Path::new("shell.rs") || rel.starts_with("shell") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if line.contains("crate::shell") {
+                    found.push(format!("{}:{}: {}", rel.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these reach into `shell`:\n{}",
+            found.join("\n")
+        );
     }
 }

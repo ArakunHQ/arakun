@@ -25,6 +25,19 @@ android {
         val posthogKey = providers.gradleProperty("posthogKey").getOrElse("phc_kXKrLfaWumKa3mfXcFVBCRpyKa6DZiUv7hCkQW2epLQZ")
         buildConfigField("String", "POSTHOG_KEY", "\"$posthogKey\"")
         buildConfigField("String", "POSTHOG_HOST", "\"https://us.i.posthog.com\"")
+        // Push notifications come through Firebase Cloud Messaging, set up by
+        // hand from these rather than from a google-services.json kept in the
+        // repository. Each is a Gradle property (-PfcmProjectId=…) or an
+        // ARAKUN_FCM_* variable; without them the app builds and says
+        // notifications are not available.
+        // Only the characters they hold, so a stray quote cannot break BuildConfig.
+        fun fcm(property: String, env: String): String =
+            providers.gradleProperty(property).orElse(providers.environmentVariable(env)).getOrElse("")
+                .filter { it.isLetterOrDigit() || it in "-_:.@" }
+        buildConfigField("String", "FCM_PROJECT_ID", "\"${fcm("fcmProjectId", "ARAKUN_FCM_PROJECT_ID")}\"")
+        buildConfigField("String", "FCM_APP_ID", "\"${fcm("fcmAppId", "ARAKUN_FCM_APP_ID")}\"")
+        buildConfigField("String", "FCM_API_KEY", "\"${fcm("fcmApiKey", "ARAKUN_FCM_API_KEY")}\"")
+        buildConfigField("String", "FCM_SENDER_ID", "\"${fcm("fcmSenderId", "ARAKUN_FCM_SENDER_ID")}\"")
     }
 
     // The upload key Google Play knows the app by, for a bundle that goes
@@ -144,6 +157,7 @@ dependencies {
     implementation(libs.core.ktx)
     implementation(libs.coroutines.android)
     implementation(libs.posthog.android)
+    implementation(libs.firebase.messaging)
     testImplementation(libs.kotlin.test.junit5)
     testRuntimeOnly(libs.junit.launcher)
 }

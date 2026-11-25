@@ -203,14 +203,14 @@ impl ExtensionsView {
     /// The plugins Discover lists: this computer's, or the picked server's.
     pub(super) fn plugin_catalog(&self) -> Option<&Vec<PluginEntry>> {
         match &self.targets.target {
-            None => self.ms.catalog.as_ref(),
+            None => self.ms.catalog.data.as_ref(),
             Some(_) => self.target_market()?.catalog.as_ref(),
         }
     }
 
     pub(super) fn catalog_loading(&self) -> bool {
         match &self.targets.target {
-            None => self.ms.catalog_loading,
+            None => self.ms.catalog.loading(),
             Some(_) => self.target_market().is_some_and(|r| r.loading),
         }
     }
@@ -218,7 +218,7 @@ impl ExtensionsView {
     /// Why the plugins could not be read, or why a server cannot be asked.
     pub(super) fn catalog_error(&self) -> Option<SharedString> {
         if self.targets.target.is_none() {
-            return self.ms.catalog_error.clone();
+            return self.ms.catalog.error.clone();
         }
         self.server_refused()
             .or_else(|| self.target_market().and_then(|r| r.error.clone()))

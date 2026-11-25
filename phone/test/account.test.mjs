@@ -1,4 +1,4 @@
-// phone/relay.js on the account host: which way in the page takes, what it
+// phone/public/relay.js on the account host: which way in the page takes, what it
 // shows first after sign-in, the socket it opens to a computer, and the
 // sentence for each reason the relay gives. Run with `node --test phone/test/`.
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", file), "utf8"), { filename: file });
+for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", "public", file), "utf8"), { filename: file });
 const { E2E, RELAY } = globalThis;
 
 /// A fetch that answers each path from `routes`: a status, or [status, body].
@@ -188,7 +188,7 @@ test("the signed-in devices are listed escaped, this phone marked, the others wi
   assert.doesNotMatch(rows[0], /data-signout/);
   assert.match(rows[1], new RegExp(`data-signout="${id}"`));
   assert.match(rows[1], /&lt;img src=x onerror=&quot;x&quot;&gt;/);
-  assert.doesNotMatch(rows.join(""), /<img|<script|<b>/);
+  assert.doesNotMatch(rows.join(""), /<img|<script|<b>/i);
   assert.match(rows[1], /Device · used 2h ago/);
   // An id that is not one gets no button at all.
   assert.doesNotMatch(rows[2], /data-signout/);

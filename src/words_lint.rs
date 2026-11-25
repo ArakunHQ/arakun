@@ -20,6 +20,7 @@ const RETIRED: &[(&str, &str)] = &[
     ("notifications", "notices"),
     ("go to…", "the palette"),
     ("find anything", "the palette"),
+    ("servers tab", "Computers tab"),
 ];
 
 /// Phrases that keep a retired word on purpose, because they name something
@@ -187,6 +188,11 @@ fn the_word_lint_catches_what_it_should() {
     );
     assert_eq!(retired("Find in chat").len(), 1);
     assert_eq!(retired("No notifications yet").len(), 1);
+    assert_eq!(
+        retired("Open the Servers tab"),
+        ["\"servers tab\": say \"Computers tab\""]
+    );
+    assert!(retired("your servers show up here").is_empty());
     // Not prose, part of a longer word, or a phrase that names something else.
     assert!(retired("worktree").is_empty());
     assert!(retired("worktree ").is_empty());

@@ -102,7 +102,12 @@ fn shim_path_for(state: Option<std::ffi::OsString>, runtime: impl FnOnce() -> Pa
 /// Whether a sandboxed agent may send `req`: only commands that show it things
 /// or tell the user, never one that runs or opens something outside.
 pub fn sandbox_allows(req: &Request) -> Result<(), String> {
-    let web = |u: &str| u.starts_with("http://") || u.starts_with("https://");
+    // Not the browser's debugging port, when one is open: a page there could drive the
+    // browser outside the sandbox.
+    let web = |u: &str| {
+        (u.starts_with("http://") || u.starts_with("https://"))
+            && !crate::browser::is_debug_endpoint(u)
+    };
     let arg = |i: usize| req.args.get(i).map_or("", String::as_str);
     let ok = match req.cmd.as_str() {
         "logs" | "notify" | "ls" | "rename" | "show" | "focus" => true,

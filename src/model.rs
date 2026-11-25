@@ -1090,6 +1090,13 @@ pub struct Project {
     /// state so they come back when the feature does.
     pub monos: Vec<Snippet>,
     pub automations: Vec<Automation>,
+    /// The order the user dragged its sessions into in the sidebar's tree
+    /// (`tab_layout::Sort::Manual`), by id. A session not in it goes first.
+    pub session_order: Vec<SharedString>,
+    /// The order of its sessions in the sidebar's tree when it has one of its
+    /// own (the tree menu's Applies to); `None` follows the order for every
+    /// project.
+    pub sort: Option<crate::tab_layout::Sort>,
     /// CoderSpace project (`rp<id>`) this project works on; set the first time
     /// one of its tasks starts a session here.
     #[cfg(feature = "coderlabs")]

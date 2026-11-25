@@ -13,6 +13,7 @@ android/
     RelayLink.kt     the WebSocket to the relay, pings, {req}/{res}, {part} (phone/relay.js)
     Pairing.kt       why a channel ended, and what an opened link gets told
     Models.kt        inbox, session, entries, state (core/src/phone/wire.rs)
+    WebPush.kt       this phone's push keys, opening a sealed notice (core/src/phone/push.rs)
   app/               the app: sign-in, computers, inbox, a live session, new session
   tools/vectors.py   the brand's SVG icons and the raccoon as vector drawables
 ```
@@ -106,6 +107,28 @@ profiles. Debug builds send nothing; `-PposthogKey=` builds a release that never
 Release builds are shrunk but not obfuscated, so stack traces read without a mapping
 file.
 
+## Notifications
+
+The computer tells the app when a turn finishes, the agent needs a permission or an
+answer, or a turn fails, as it tells the phone page. Turn them on under Account in the
+inbox's menu (Android 13 and later ask for the permission then), and pick which of the
+three you want. Each computer the app opens while they are on gets an endpoint on the
+account host, `/push/v1/fcm/<token>`, and this phone's own P-256 key and auth secret,
+which the Keystore seals (`Push.kt`, `CredentialStore.kt`). The computer seals each
+notice for those keys (RFC 8291, `core/src/phone/push.rs`); the account host forwards it
+through Firebase Cloud Messaging without reading it, and `PushService.kt` opens it and
+shows one notification per session. Tapping it opens the session on the computer open,
+or on the one opened last. A notice for the session on screen is not shown. Turning
+notifications off, or signing out, deletes the FCM token.
+
+Firebase is set up in code, not with `google-services.json`: a build gets the Firebase
+app's options from `-PfcmProjectId= -PfcmAppId= -PfcmApiKey= -PfcmSenderId=` or the
+`ARAKUN_FCM_PROJECT_ID`, `ARAKUN_FCM_APP_ID`, `ARAKUN_FCM_API_KEY` and
+`ARAKUN_FCM_SENDER_ID` variables (android-release.yml reads the repository variables of
+those names). Without them the app builds and the Account sheet says it cannot get
+notifications. Firebase's automatic start and data collection are off, so nothing is
+sent to Google until notifications are turned on.
+
 ## Signing in
 
 Tap "Sign in with GitHub". The app shows a code: copy it, open GitHub, and enter it
@@ -158,7 +181,7 @@ says "Relay links are no longer used. Sign in to reach your computers."
   one-time allow is held, an allow for the session asks twice), answer the agent's
   questions, load older entries.
 - Start a session in any place the computer offers.
+- Notifications when a turn finishes, the agent needs you, or something goes wrong.
 
-Not yet: photos, diffs, session settings, plan limits, pairing on Same Wi-Fi or
-Tailscale inside the app, and push notifications (the phone page's push is Web Push;
-native push needs FCM support on the computer).
+Not yet: photos, diffs, session settings, plan limits, and pairing on Same Wi-Fi or
+Tailscale inside the app.

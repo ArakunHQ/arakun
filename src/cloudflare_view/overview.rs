@@ -211,7 +211,7 @@ impl CloudflareView {
                             .text_color(theme::text())
                             .child("Cloudflare"),
                     )
-                    .children(self.snap.as_ref().map(|s| {
+                    .children(self.snap.data.as_ref().map(|s| {
                         div()
                             .truncate()
                             .ty(Type::Caption)
@@ -242,14 +242,17 @@ impl CloudflareView {
             })
             .child(ui::refresh_control(
                 "cf-refresh",
-                self.loading,
-                self.snap.as_ref().map(|s| cloudflare::ago(s.fetched, now)),
+                self.snap.loading(),
+                self.snap
+                    .data
+                    .as_ref()
+                    .map(|s| cloudflare::ago(s.fetched, now)),
                 cx.listener(|this, _, _, cx| {
-                    this.error = None;
+                    this.snap.error = None;
                     this.refresh(cx)
                 }),
             ))
-            .when(self.snap.is_some(), |d| {
+            .when(self.snap.data.is_some(), |d| {
                 d.child(
                     ui::button_with(
                         "cf-dash",
@@ -266,7 +269,7 @@ impl CloudflareView {
     /// The pages, for the sidebar (`crate::subnav`), each with what needs a
     /// look. Empty until the account was read once.
     pub fn nav(&self) -> Vec<Line> {
-        let Some(s) = self.snap.as_ref() else {
+        let Some(s) = self.snap.data.as_ref() else {
             return Vec::new();
         };
         let issues = s.issues();
@@ -585,7 +588,7 @@ impl CloudflareView {
             true,
         )
         .on_click(cx.listener(|this, _, _, cx| {
-            if let Some(s) = &this.snap {
+            if let Some(s) = &this.snap.data {
                 cx.emit(CloudflareEvent::Ask(
                     s.review(this.mcp(), crate::model::unix_now()),
                 ));
@@ -1694,6 +1697,7 @@ impl CloudflareView {
         }
         let account = self
             .snap
+            .data
             .as_ref()
             .map(|s| s.account_id.clone())
             .unwrap_or_default();

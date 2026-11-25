@@ -6,6 +6,7 @@
 // The operator's side (`POST /admin/notices`, `DELETE /admin/notices/<id>`) is
 // in admin.ts and uses the functions here.
 
+import { record, type Operator } from "./admin_log";
 import { session } from "./auth";
 import { error, hex, isObject, jsonBody, now, type Env } from "./util";
 
@@ -65,7 +66,7 @@ export async function unreadNotices(env: Env, githubId: number): Promise<Notice[
 /// `{ github_id?, text, url?, expires_at? }` from the operator. The text is
 /// plain, and the URL is https and stored as the URL parser writes it
 /// (`https://host/...`), so a client can open it without a check.
-export async function createNotice(request: Request, env: Env): Promise<Response> {
+export async function createNotice(request: Request, env: Env, op: Operator): Promise<Response> {
   const body = await jsonBody(request, MAX_BODY);
   if (!isObject(body)) return error(400, "expected a JSON object");
   const { github_id: githubId, text, url, expires_at: expiresAt } = body;
@@ -85,16 +86,20 @@ export async function createNotice(request: Request, env: Env): Promise<Response
   await env.DB.prepare("INSERT INTO notices (id, github_id, text, url, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
     .bind(id, githubId ?? null, text, typeof url === "string" ? new URL(url).href : null, now(), expiresAt ?? null)
     .run();
+  await record(env, op, "notice.create", typeof githubId === "number" ? githubId : null, { notice_id: id });
   return Response.json({ id });
 }
 
-export async function deleteNotice(env: Env, id: string): Promise<Response> {
+export async function deleteNotice(env: Env, id: string, op: Operator): Promise<Response> {
+  // Read first for the log: the row is gone after the delete.
+  const notice = await env.DB.prepare("SELECT github_id FROM notices WHERE id = ?").bind(id).first<{ github_id: number | null }>();
   // Its reads go with it, in one transaction.
   const [, result] = await env.DB.batch([
     env.DB.prepare("DELETE FROM notice_reads WHERE notice_id = ?").bind(id),
     env.DB.prepare("DELETE FROM notices WHERE id = ?").bind(id),
   ]);
   if (result!.meta.changes === 0) return error(404, "no such notice");
+  await record(env, op, "notice.delete", notice?.github_id ?? null, { notice_id: id });
   return new Response(null, { status: 204 });
 }
 

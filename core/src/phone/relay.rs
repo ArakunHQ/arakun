@@ -43,6 +43,13 @@ use super::{ClientId, ClientMsg, Effect, Head, Incoming, Seen, Shared, wire};
 pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
 pub const CONTROL: u8 = 0x03;
+/// Starts every claim, so the identity key never signs a claim that could
+/// also be read as another message it signs, such as the handshake
+/// transcript (`e2e::transcript`).
+const CLAIM_TAG: &[u8] = b"arakun-relay-claim-v1\0";
+/// The relay's challenge nonce is always this long. Any other length is
+/// refused before signing: a relay must not choose how much we sign.
+const CLAIM_NONCE_LEN: usize = 16;
 
 /// How much of a message or a response body goes in one piece: with base64
 /// and the envelope a piece stays under `WHOLE`.
@@ -643,8 +650,9 @@ impl Link {
         Ok(ws)
     }
 
-    /// Answers the challenge with the signature of `nonce ‖ label`. A refusal
-    /// at the door comes instead of the challenge, as a `bye`.
+    /// Answers the challenge with the signature of `CLAIM_TAG ‖ nonce ‖ label`
+    /// (`claim_message`). A refusal at the door comes instead of the
+    /// challenge, as a `bye`.
     fn claim(&mut self, ws: &mut Socket) -> Result<(), Ended> {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         let nonce = loop {
@@ -670,9 +678,9 @@ impl Link {
                 None => {}
             }
         };
-        let label = self.identity.label();
-        let mut signed = nonce;
-        signed.extend_from_slice(label.as_bytes());
+        let signed = claim_message(&nonce, &self.identity.label()).ok_or_else(|| {
+            Ended::Retry("The relay sent a challenge with a nonce of the wrong length".into())
+        })?;
         let claim = json!({
             "type": "claim",
             "pub": B64.encode(self.identity.public_raw()),
@@ -1211,7 +1219,7 @@ fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Resu
 /// Joins the `{part}` pieces of [`parts`] back into the message they carry,
 /// for the desktop app when it is the one a server talks to: arakun-server
 /// sends through this same client, so its big messages come in pieces too.
-/// The phone's page does the same in `phone/relay.js` (`joiner`).
+/// The phone's page does the same in `phone/public/relay.js` (`joiner`).
 #[derive(Default)]
 pub struct Joiner {
     bytes: Vec<u8>,
@@ -1252,7 +1260,7 @@ impl Joiner {
 }
 
 /// `text` as `{part: {body, more}}` messages that each carry `chunk` of its
-/// bytes; `phone/relay.js` joins them (`joiner`), and [`Joiner`] does here.
+/// bytes; `phone/public/relay.js` joins them (`joiner`), and [`Joiner`] does here.
 pub fn parts(text: &str, chunk: usize) -> Vec<String> {
     let last = text.len().div_ceil(chunk).saturating_sub(1);
     text.as_bytes()
@@ -1429,6 +1437,19 @@ fn parse_url(url: &str) -> Option<(String, u16, bool)> {
         _ => (host_port, if secure { 443 } else { 80 }),
     };
     Some((host.trim_matches(['[', ']']).to_string(), port, secure))
+}
+
+/// What the computer signs to claim its label: `CLAIM_TAG ‖ nonce ‖ label`,
+/// or nothing when the nonce is not the length the relay issues.
+pub(super) fn claim_message(nonce: &[u8], label: &str) -> Option<Vec<u8>> {
+    if nonce.len() != CLAIM_NONCE_LEN {
+        return None;
+    }
+    let mut out = Vec::with_capacity(CLAIM_TAG.len() + CLAIM_NONCE_LEN + label.len());
+    out.extend_from_slice(CLAIM_TAG);
+    out.extend_from_slice(nonce);
+    out.extend_from_slice(label.as_bytes());
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1620,7 +1641,8 @@ mod tests {
             assert_eq!(claim["type"], "claim");
             assert_eq!(B64.decode(claim["pub"].as_str().unwrap()).unwrap(), public);
             let sig = B64.decode(claim["sig"].as_str().unwrap()).unwrap();
-            let mut signed = nonce.to_vec();
+            let mut signed = b"arakun-relay-claim-v1\0".to_vec();
+            signed.extend_from_slice(&nonce);
             signed.extend_from_slice(self.label.as_bytes());
             signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public)
                 .verify(&signed, &sig)
@@ -2392,7 +2414,7 @@ mod tests {
         assert!(parts(&text, CHUNK).iter().all(|p| p.len() <= WHOLE));
     }
 
-    /// What `phone/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
+    /// What `phone/public/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
     /// phone::relay::tests::part_vectors` writes it; the plain run checks Rust
     /// still splits the same way, so a change on either side shows up.
     const PART_VECTORS: &str = "../phone/test/vectors/part.json";
@@ -2673,5 +2695,41 @@ mod tests {
         assert_eq!(wait_text(Duration::from_millis(200)), "1 s");
         assert_eq!(wait_text(Duration::from_secs(60)), "60 s");
         assert_eq!(wait_text(Duration::from_secs(600)), "10 min");
+    }
+
+    #[test]
+    fn a_claim_signs_only_a_nonce_of_the_relays_length() {
+        let label = "abcdefghijklmnop";
+        for len in [0, 15, 17, 32, 181] {
+            assert_eq!(claim_message(&vec![1u8; len], label), None, "{len} bytes");
+        }
+        let signed = claim_message(&[1u8; CLAIM_NONCE_LEN], label).unwrap();
+        assert!(signed.starts_with(b"arakun-relay-claim-v1\0"));
+        assert_eq!(
+            signed.len(),
+            CLAIM_TAG.len() + CLAIM_NONCE_LEN + label.len()
+        );
+        assert!(signed.ends_with(label.as_bytes()));
+    }
+
+    #[test]
+    fn a_challenge_with_a_long_nonce_is_not_signed() {
+        let me = Identity::generate();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept();
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        tell(
+            &mut ws,
+            json!({"type": "challenge", "nonce": B64.encode([1u8; 181])}),
+        );
+        // The computer hangs up instead of answering with a claim.
+        loop {
+            match ws.read() {
+                Ok(Message::Binary(b)) => panic!("the computer answered: {b:?}"),
+                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
     }
 }

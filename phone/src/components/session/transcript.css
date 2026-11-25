@@ -1,0 +1,111 @@
+/* The transcript: what you sent, what the agent wrote and did. */
+.logwrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.newpill {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); height: 40px; padding: 0 16px;
+  display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; font-size: var(--text-lg); font-weight: 500;
+  background: var(--color-raised); color: var(--color-text); border: 1px solid var(--color-border); box-shadow: 0 6px 18px var(--color-scrim);
+}
+.newpill[hidden] { display: none; }
+.newpill svg { width: 16px; height: 16px; color: var(--color-text-muted); }
+.log { flex: 1; position: relative; overflow-y: auto; overflow-anchor: none; -webkit-overflow-scrolling: touch; }
+.log .spacer { position: relative; width: 100%; }
+/* No will-change: a layer per entry costs the compositor every frame of a fling, and entries only move on a remeasure. */
+.entry { position: absolute; left: 0; right: 0; padding: 4px var(--gr) 4px var(--gl); }
+.entry.user { display: flex; flex-direction: column; align-items: flex-end; padding-top: 10px; }
+.entry.user .bubble {
+  max-width: 82%; background: var(--color-fill-selected); border-radius: var(--radius-xl) var(--radius-xl) var(--radius-md) var(--radius-xl); padding: 10px 14px;
+  font-size: var(--text-m-body); white-space: pre-wrap; word-break: break-word; line-height: 1.4;
+}
+/* The agent writes on the page itself, no box: full width, roomy lines, and
+   its name over the first words after yours so each turn reads as its own. */
+.entry.agent .md { line-height: 1.5; font-size: var(--text-m-body); color: var(--color-text); }
+.entry.lead { padding-top: 16px; }
+.entry .who { height: 20px; font-size: var(--text-sm); font-weight: 600; letter-spacing: 0.02em; text-transform: capitalize; color: var(--color-text-subtle); }
+
+/* Under the prompt: when it was sent, how long the turn took, and what it changed. */
+.entry.user .meta {
+  width: 100%; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  font-size: var(--text-xs); color: var(--color-text-faint); margin-top: 4px;
+}
+.tchip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 999px;
+  background: var(--color-raised); border: 1px solid var(--color-border-subtle); color: var(--color-text-muted); font-size: var(--text-xs);
+}
+.tchip:active { background: var(--color-fill-hover); }
+.tchip svg { width: 12px; height: 12px; color: var(--color-text-subtle); }
+.tchip .stats { font-family: var(--font-mono); }
+/* Pictures and pasted blocks keep a fixed height: the bubble is measured before they load. */
+.entry.user .pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; white-space: normal; }
+.entry.user .text + .pics, .entry.user .text + .paste, .entry.user .pics + .paste { margin-top: 8px; }
+.entry.user .pics img { display: block; height: 120px; max-width: 48%; border-radius: var(--radius-lg); overflow: hidden; object-fit: cover; }
+.entry.user .pics.one img { height: 220px; max-width: 100%; }
+
+.entry.user .paste { white-space: normal; font-size: var(--text-sm); }
+.entry.user .paste summary { cursor: pointer; color: var(--color-text-muted); padding: 4px 0; list-style: none; }
+.entry.user .paste summary::-webkit-details-marker { display: none; }
+.entry.user .paste summary::before { content: "▸ "; color: var(--color-text-faint); }
+.entry.user .paste[open] summary::before { content: "▾ "; }
+.entry.user .paste pre {
+  margin: 4px 0 0; padding: 8px; background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg);
+  font: var(--text-xs)/1.4 var(--font-mono); white-space: pre-wrap; word-break: break-word; color: var(--color-text-muted); max-height: 220px; overflow: auto;
+}
+/* The entry around a tool call shares its class; only the card draws a frame. */
+.entry.tool { background: none; border: 0; border-radius: 0; overflow: visible; box-shadow: none; max-width: none; }
+/* What the agent does: each step a quiet line on an elbow off one shared rail,
+   like the desktop's trail. Tap a step for its output. */
+.entry.step { padding: 0 var(--gr) 0 calc(var(--gl) + 20px); }
+.entry.step::before, .entry.step::after { content: ""; position: absolute; pointer-events: none; border: 0 solid var(--color-border-strong); }
+/* One rail down the whole branch: every step but the last carries it top to bottom. */
+.entry.step::before { left: calc(var(--gl) + 5px); top: 0; bottom: 0; border-left-width: 1px; }
+/* A short tick from the rail to each step's line. */
+.entry.step::after { left: calc(var(--gl) + 6px); top: 19px; width: 8px; border-top-width: 1px; }
+/* The last step ends the rail in the curve. */
+.entry.step.last::before { bottom: auto; height: 13px; }
+.entry.step.last::after { left: calc(var(--gl) + 5px); top: 13px; width: 9px; height: 7px; border-width: 0 0 1px 1px; border-bottom-left-radius: var(--radius-md); }
+.entry.step.first { padding-top: 4px; }
+.entry.step.first::before { top: 4px; }
+.entry.step.first::after { top: 23px; }
+.entry.step.first.last::before { height: 13px; }
+.entry.step.first.last::after { top: 17px; }
+/* Under the agent's name the rail starts below it. */
+.entry.step.lead { padding-top: 16px; }
+.entry.step.lead::before { top: 38px; }
+.entry.step.lead::after { top: 55px; }
+.entry.step.lead.last::after { top: 49px; }
+.entry.step.lead .who { margin-left: -20px; }
+.tool { background: none; }
+.tool > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 2px; font-size: var(--text-lg); color: var(--color-text-subtle); }
+.tool > summary::-webkit-details-marker { display: none; }
+.tool .ttitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .ttitle code { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--color-text-muted); }
+.tool[open] .ttitle { white-space: normal; }
+.tool .st { width: 14px; height: 14px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: var(--text-xs); font-weight: 600; }
+.tool.completed .st, .tool.thought .st { display: none; }
+.tool.failed > summary { color: var(--color-error); }
+.tool.failed .st { background: color-mix(in srgb, var(--color-error) 14%, transparent); color: var(--color-error); }
+.tool.failed .st::after { content: "!"; }
+.tool.in_progress .st, .tool.pending .st { border: 2px solid var(--color-border); border-top-color: var(--color-link); animation: spin 0.8s linear infinite; }
+.tool.in_progress .ttitle, .tool.pending .ttitle { color: var(--color-text); }
+.tool .stats { font-family: var(--font-mono); font-size: var(--text-xs); flex: none; }
+.tool.thought .body { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--radius-lg); background: var(--color-raised); font-size: var(--text-md); line-height: 1.5; color: var(--color-text-subtle); white-space: pre-wrap; font-style: normal; }
+.tool pre {
+  margin: 0 0 8px; padding: 8px 12px; border-radius: var(--radius-lg); background: var(--color-raised);
+  font: var(--text-xs)/1.4 var(--font-mono); white-space: pre-wrap; word-break: break-word; color: var(--color-text-muted); max-height: 260px; overflow: auto;
+}
+.tool .files { padding: 0 2px 8px; font-size: var(--text-sm); color: var(--color-text-subtle); display: flex; gap: 8px; flex-wrap: wrap; }
+.tool .files code { font-family: var(--font-mono); font-size: var(--text-xs); }
+.entry.plan ul { list-style: none; padding: 0; margin: 0; background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
+.entry.plan li { display: flex; gap: 8px; padding: 6px 10px; font-size: var(--text-md); border-top: 1px solid var(--color-border-subtle); }
+.entry.plan li:first-child { border-top: 0; }
+.entry.plan li .box { width: 14px; height: 14px; border-radius: var(--radius-sm); border: 1px solid var(--color-border); flex: none; margin-top: 3px; display: grid; place-items: center; font-size: var(--text-xs); }
+.entry.plan li.completed { color: var(--color-text-subtle); text-decoration: line-through; }
+.entry.plan li.completed .box { background: var(--color-success); border-color: var(--color-success); color: var(--color-background); }
+.entry.plan li.in_progress .box { border-color: var(--color-link); }
+.entry.notice { font-size: var(--text-sm); color: var(--color-text-subtle); }
+.entry.notice.error { color: var(--color-error); }
+.entry.compacted { text-align: center; font-size: var(--text-sm); color: var(--color-text-faint); }
+.older { text-align: center; padding: 8px; font-size: var(--text-sm); color: var(--color-text-faint); }
+/* What was sent and the computer has not shown yet. */
+.pending { padding-bottom: 8px; }
+.pending .entry { position: static; }
+.pending .bubble { opacity: 0.7; }

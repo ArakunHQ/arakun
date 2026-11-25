@@ -10,6 +10,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -26,6 +27,7 @@ use crate::agent::AgentKind;
 use crate::branch_history::{self, History, People, Source};
 use crate::branches::{self, Branch, Checks, Commit, Map, Status, Who};
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::model::Status as SessionStatus;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
@@ -118,8 +120,8 @@ pub enum BranchesEvent {
 pub struct BranchesView {
     root: Option<PathBuf>,
     envs: Vec<EnvInfo>,
-    map: Option<Rc<Map>>,
-    loading: bool,
+    /// The project's map; reading it never fails, so it has no error.
+    map: Loadable<Rc<Map>, Infallible>,
     loaded_at: Option<std::time::Instant>,
     selected: Option<String>,
     /// The row under the pointer, and the one the arrow keys moved to.
@@ -147,7 +149,6 @@ pub struct BranchesView {
     repo: gpui::Entity<TextInput>,
     repo_error: Option<String>,
     _repo: gpui::Subscription,
-    _load: Option<Task<()>>,
     /// Who is who among the authors of `map`, worked out with it.
     people: Rc<People>,
     /// GitHub pictures by lower-case login; None while one downloads or
@@ -196,8 +197,7 @@ impl BranchesView {
             _repo: sub,
             root: None,
             envs: Vec::new(),
-            map: None,
-            loading: false,
+            map: Loadable::default(),
             loaded_at: None,
             selected: None,
             hovered: None,
@@ -215,7 +215,6 @@ impl BranchesView {
             more_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             folded_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             scroll: ScrollHandle::new(),
-            _load: None,
         }
     }
 
@@ -233,14 +232,12 @@ impl BranchesView {
     ) {
         if self.root != root {
             self.root = root;
-            self.map = None;
+            self.map.reset();
             self.selected = None;
             self.hovered = None;
             self.cursor = None;
             self.show_all = false;
             self.loaded_at = None;
-            self._load = None;
-            self.loading = false;
             cx.notify();
         }
         self.envs = envs;
@@ -263,7 +260,7 @@ impl BranchesView {
     }
 
     fn checks_running(&self) -> bool {
-        self.map.as_ref().is_some_and(|m| {
+        self.map.data.as_ref().is_some_and(|m| {
             m.branches
                 .iter()
                 .filter_map(|b| b.pr.as_ref())
@@ -273,7 +270,7 @@ impl BranchesView {
 
     /// Each branch with how far it is ahead of the default one, for the palette.
     pub fn branch_ahead(&self) -> Vec<(String, u64, u64)> {
-        self.map.as_ref().map_or_else(Vec::new, |m| {
+        self.map.data.as_ref().map_or_else(Vec::new, |m| {
             m.branches
                 .iter()
                 .map(|b| (b.name.clone(), b.ahead, b.behind))
@@ -283,7 +280,7 @@ impl BranchesView {
 
     /// Every branch read, with its PR's number and title: what Ctrl+K can jump to.
     pub fn branch_list(&self) -> Vec<(String, Option<(u64, String)>)> {
-        self.map.as_ref().map_or_else(Vec::new, |m| {
+        self.map.data.as_ref().map_or_else(Vec::new, |m| {
             m.branches
                 .iter()
                 .map(|b| {
@@ -298,7 +295,7 @@ impl BranchesView {
 
     /// Branches that need someone now: conflicts or failing checks.
     pub fn alarms(&self) -> usize {
-        let Some(map) = &self.map else { return 0 };
+        let Some(map) = &self.map.data else { return 0 };
         let now = crate::model::unix_now();
         map.branches
             .iter()
@@ -316,43 +313,42 @@ impl BranchesView {
         let Some(root) = self.root.clone() else {
             return;
         };
-        if self.loading {
+        if self.map.loading() {
             return;
         }
-        self.loading = true;
         self.loaded_at = Some(std::time::Instant::now());
-        cx.notify();
-        self._load = Some(cx.spawn(async move |this, cx| {
-            let r = root.clone();
-            let (map, people) = cx
-                .background_spawn(crate::guard::task_or_default(async move {
-                    let map = branches::load(&r);
-                    let people = branch_history::people(&map);
-                    (map, people)
-                }))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.root.as_ref() == Some(&root) {
-                    if let Some(old) = &this.map {
-                        for (title, body, failed) in finished_checks(old, &map) {
-                            cx.emit(BranchesEvent::ChecksDone {
-                                title,
-                                body,
-                                failed,
-                            });
-                        }
-                    }
-                    this.map = Some(Rc::new(map));
-                    this.people = Rc::new(people);
-                    this.fetch_avatars(cx);
-                    // Rows moved: the card would describe another commit.
-                    this.hovered = None;
-                    this.cursor = None;
+        let r = root.clone();
+        self.map.start(
+            cx,
+            |this| &mut this.map,
+            async move {
+                let map = branches::load(&r);
+                let people = branch_history::people(&map);
+                Some((map, people))
+            },
+            move |this, got, cx| {
+                // A read that panicked still lands, as an empty map.
+                let (map, people) = got.unwrap_or_default();
+                if this.root.as_ref() != Some(&root) {
+                    return;
                 }
-                this.loading = false;
-                cx.notify();
-            });
-        }));
+                if let Some(old) = &this.map.data {
+                    for (title, body, failed) in finished_checks(old, &map) {
+                        cx.emit(BranchesEvent::ChecksDone {
+                            title,
+                            body,
+                            failed,
+                        });
+                    }
+                }
+                this.map.settle(Ok(Rc::new(map)));
+                this.people = Rc::new(people);
+                this.fetch_avatars(cx);
+                // Rows moved: the card would describe another commit.
+                this.hovered = None;
+                this.cursor = None;
+            },
+        );
     }
     /// Pictures of the people with a GitHub login that aren't asked for yet:
     /// from the GitHub tab's cache on disk, else downloaded, in the
@@ -540,7 +536,9 @@ impl BranchesView {
 
     /// Selects the branch of row `r`, the way a click on it does.
     fn activate(&mut self, r: usize, cx: &mut Context<Self>) {
-        let Some(map) = self.map.clone() else { return };
+        let Some(map) = self.map.data.clone() else {
+            return;
+        };
         let h = self.history(&map, crate::model::unix_now());
         if r >= h.rows.len() {
             return;
@@ -562,7 +560,9 @@ impl BranchesView {
         {
             return;
         }
-        let Some(map) = self.map.clone() else { return };
+        let Some(map) = self.map.data.clone() else {
+            return;
+        };
         let h = self.history(&map, crate::model::unix_now());
         let n = self.shown_rows(&h);
         if n == 0 {
@@ -713,7 +713,7 @@ impl BranchesView {
             })
             .child(ui::refresh_control(
                 "branches-refresh",
-                self.loading,
+                self.map.loading(),
                 map.filter(|_| !compact)
                     .map(|m| crate::account::ago(m.fetched, now)),
                 cx.listener(|this, _, _, cx| this.refresh(cx)),
@@ -975,7 +975,7 @@ impl BranchesView {
                                 .flex_none()
                                 .items_center()
                                 .gap(crate::ui::sp(4.))
-                                .child(crate::shell::agent_icon(s.agent, 12.))
+                                .child(s.agent.icon(12.))
                                 .child(
                                     div()
                                         .text_size(px(ui::TEXT_SM))
@@ -1366,7 +1366,7 @@ impl BranchesView {
                             .cursor_pointer()
                             .hover(|st| st.bg(theme::fill_hover()))
                             .text_size(px(ui::TEXT_SM))
-                            .child(crate::shell::agent_icon(s.agent, 12.))
+                            .child(s.agent.icon(12.))
                             .child(div().min_w_0().truncate().child(s.title.clone()))
                             .when(matches!(s.status, SessionStatus::Working), |d| {
                                 d.child(ui::spinner(10., theme::working()))
@@ -1494,7 +1494,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(4.))
-                .child(crate::shell::agent_icon(s.agent, 12.))
+                .child(s.agent.icon(12.))
                 .child(ui::spinner(10., session_color(s.status)))
                 .into_any_element(),
         );
@@ -1817,7 +1817,7 @@ fn face(c: &Commit, name: &str, picture: Option<&std::path::Path>, size: f32) ->
                     .size(px(b))
                     .rounded_full()
                     .bg(theme::background())
-                    .child(crate::shell::agent_icon(agent, b * 0.72)),
+                    .child(agent.icon(b * 0.72)),
             )
         })
 }
@@ -2058,7 +2058,7 @@ impl Render for BranchesView {
         .absolute()
         .size_full();
         let compact = self.width.get() < COMPACT_W;
-        let map = self.map.clone();
+        let map = self.map.data.clone();
         let header = self.render_header(map.as_deref(), compact, now, cx);
 
         let detail = map.as_ref().and_then(|m| {

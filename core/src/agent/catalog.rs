@@ -915,9 +915,10 @@ fn read_claude_session(path: &Path) -> Option<AgentSession> {
 }
 
 /// What the user typed in a transcript message: a string, or its text parts.
-/// Tool results and commands' wrappers (`<command-name>…`) are not prompts.
+/// Tool results and commands' wrappers (`<command-name>…`) are not prompts,
+/// and the hint Arakun sent with the prompt is not the user's.
 fn user_text(content: &Value) -> Option<String> {
-    let text = match content {
+    let mut text = match content {
         Value::String(s) => s.clone(),
         Value::Array(parts) => parts
             .iter()
@@ -927,6 +928,7 @@ fn user_text(content: &Value) -> Option<String> {
             .join(" "),
         _ => return None,
     };
+    crate::agent::chart::strip_hint(&mut text);
     let text = text.trim();
     (!text.is_empty() && !text.starts_with('<')).then(|| text.to_string())
 }
@@ -1087,6 +1089,17 @@ mod tests {
         )
         .unwrap();
         assert!(read_claude_session(&path).is_none());
+        // Sessions from before Claude read the hint in its system prompt have
+        // it as a text part of their first prompt.
+        let hinted = json!({"type": "user", "cwd": "/w", "message": {"content": [
+            {"type": "text", "text": "Arregla el login"},
+            {"type": "text", "text": crate::agent::chart::hint(crate::agent::chart::DRAW_NOTE).trim_start()},
+        ]}});
+        std::fs::write(&path, format!("{}\n{hinted}\n", lines[0])).unwrap();
+        assert_eq!(
+            read_claude_session(&path).unwrap().title,
+            "Arregla el login"
+        );
         // No prompt of the user's: nothing to import.
         std::fs::write(&path, format!("{}\n", lines[0])).unwrap();
         assert!(read_claude_session(&path).is_none());

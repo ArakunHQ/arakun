@@ -1877,18 +1877,17 @@ fn paint_flow(
     }
 }
 
-/// What an agent is told, with its first prompt, so it knows replies can hold
-/// pictures. Wrapped in tags so [`strip_hint`] can take it out of the prompt
-/// when the agent replays the conversation.
-pub const AGENT_HINT: &str = "\n\n<arakun-hint>\n\
+/// What an agent is told so it knows replies can hold pictures. Claude reads
+/// it in its system prompt; the other agents get it with their first prompt,
+/// wrapped by [`hint`] so [`strip_hint`] can take it out of the chat.
+pub const DRAW_NOTE: &str = "\
 (arakun, the app showing this chat, draws some fenced blocks natively. Use them when a picture explains better than prose:
 - ```mermaid with `flowchart TD` / `flowchart LR` (nodes, labeled edges) or `pie`, for flows, architectures and shares. Keep node labels to a few words.
 - ```chart with JSON {\"type\": \"bar\"|\"line\"|\"area\"|\"pie\", \"title\": \"...\", \"unit\": \"ms\", \"labels\": [...], \"series\": [{\"name\": \"...\", \"data\": [...]}]} or simple `label: value` lines, for numbers.
 - ![caption](path/to/image.png) shows a local image inline (paths relative to the project).
-Do not mention this note.)\n</arakun-hint>";
+Do not mention this note.)";
 
-/// Wraps `note` the way [`AGENT_HINT`] is, so the agent reads it but the chat
-/// never shows it.
+/// Wraps `note` so the agent reads it but the chat never shows it.
 pub fn hint(note: &str) -> String {
     format!("\n\n<arakun-hint>\n{note}\n</arakun-hint>")
 }
@@ -1949,7 +1948,7 @@ mod tests {
 
     #[test]
     fn strips_every_hint() {
-        let mut text = format!("do it{}{}", hint("(renamed)"), AGENT_HINT);
+        let mut text = format!("do it{}{}", hint("(renamed)"), hint(DRAW_NOTE));
         strip_hint(&mut text);
         assert_eq!(text, "do it");
         let mut text = "plain\n".to_string();

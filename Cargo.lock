@@ -313,6 +313,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "smallvec",
+ "sysinfo",
  "tiny-skia 0.12.0",
  "ttf-parser",
  "tungstenite",

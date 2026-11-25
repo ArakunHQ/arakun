@@ -205,6 +205,14 @@ copy of it, rename it back, and start a version that can read it.
   (`%LOCALAPPDATA%\arakun\` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
+- **Running servers.** While a local server runs in one of your projects, the status
+  bar says how many do and the memory they hold (**2 running · 780 MB**). A click
+  lists them by project: the port, the command, who started it (a dock terminal, an
+  agent, or something outside Arakun whose folder is in an environment), its memory
+  and how long it has run. Under the pointer a row can open the port in the browser,
+  show its terminal or stop it. Stopping ends that process and what it started,
+  never the terminal's shell or the agent. The **Running** piece (Customize ›
+  Sidebar) opens the same list from the sidebar, with the count on its icon.
 - **Built-in browser.** Browser tabs based on CEF (Chromium Embedded Framework), behind
   the optional `browser` cargo feature. Agents can drive pages on localhost through
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a

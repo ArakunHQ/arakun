@@ -319,6 +319,8 @@ pub enum Piece {
     Usage,
     /// Feedback forms and a link to the docs, in a menu.
     Help,
+    /// The local servers that run, in a menu, with their count.
+    Running,
     Settings,
     /// The raccoon, whose mood follows the agents.
     Mascot,
@@ -387,6 +389,7 @@ impl Piece {
             Piece::User => "User".into(),
             Piece::Usage => "Usage card".into(),
             Piece::Help => "Help".into(),
+            Piece::Running => "Running".into(),
             Piece::Settings => "Settings".into(),
             Piece::Mascot => "Mascot".into(),
             Piece::Separator => "Separator".into(),
@@ -411,6 +414,7 @@ impl Piece {
             Piece::User => "user",
             Piece::Usage => "dashboard-square01",
             Piece::Help => "help-circle",
+            Piece::Running => "server-stack01",
             Piece::Settings => "settings01",
             Piece::Mascot => "smile-plus",
             Piece::Separator => "minus-sign",

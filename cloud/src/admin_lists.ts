@@ -4,6 +4,8 @@
 //   GET /admin/users?q=&after=&limit=  → { users, next }, last seen first
 //   GET /admin/users/<github_id>       → one account with its sessions, machines,
 //                                        cloud request and notices
+//   GET /admin/notices                 → every notice, newest first, at most 500
+//   GET /admin/plans                   → { plans }, the plan names in the KV `plans`
 //
 // A session's token hash never leaves the Worker.
 
@@ -12,6 +14,9 @@ import { GITHUB_ID, GITHUB_LOGIN, error, type Env } from "./util";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+const MAX_NOTICES = 500;
+/// A plan's name, as in admin.ts.
+const PLAN = /^[a-z][a-z0-9_]{0,31}$/;
 const CURSOR = /^(0|[1-9][0-9]{0,15})_([1-9][0-9]{0,15})$/;
 
 export interface NoticeRow {
@@ -106,4 +111,23 @@ export async function getUser(env: Env, idText: string): Promise<Response> {
     cloud_request: await requestFor(env, id),
     notices: notices!.results as unknown as NoticeRow[],
   });
+}
+
+export async function listNotices(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT n.id, n.github_id, u.login, n.text, n.url, n.created_at, n.expires_at,
+       (SELECT count(*) FROM notice_reads r WHERE r.notice_id = n.id) AS reads
+     FROM notices n LEFT JOIN users u ON u.github_id = n.github_id
+     ORDER BY n.created_at DESC, n.id LIMIT ?`,
+  )
+    .bind(MAX_NOTICES)
+    .all<NoticeRow>();
+  return Response.json(rows.results);
+}
+
+export async function listPlans(env: Env): Promise<Response> {
+  // A KV that cannot be read must not hide `free`, which every account can fall back to.
+  const plans = await env.CONFIG.get<Record<string, unknown>>("plans", "json").catch(() => null);
+  const names = plans && typeof plans === "object" ? Object.keys(plans).filter((name) => PLAN.test(name) && name !== "free") : [];
+  return Response.json({ plans: ["free", ...names.sort()] });
 }

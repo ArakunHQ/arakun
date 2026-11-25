@@ -9,6 +9,8 @@
 //   PUT    /admin/users/<github_id>/plan          → puts it on a plan, { plan }
 //   GET    /admin/users                           → accounts, last seen first (admin_lists.ts)
 //   GET    /admin/users/<github_id>               → one account in full (admin_lists.ts)
+//   GET    /admin/notices                         → every notice with its read count, newest first (admin_lists.ts)
+//   GET    /admin/plans                           → the plan names, free first (admin_lists.ts)
 //   GET    /admin/machines                        → every registered machine
 //   POST   /admin/notices                         → a notice for one account or all, { github_id?, text, url?, expires_at? }
 //   DELETE /admin/notices/<id>                    → takes it back
@@ -27,7 +29,7 @@
 // operator named by the X-Arakun-Operator-* headers (null for curl).
 
 import { listLog, operator, record, type Operator } from "./admin_log";
-import { getUser, listUsers } from "./admin_lists";
+import { getUser, listNotices, listPlans, listUsers } from "./admin_lists";
 import { decideRequest, listRequests } from "./cloud_access";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
@@ -59,6 +61,8 @@ export async function admin(request: Request, env: Env, url: URL): Promise<Respo
   if (path === "/admin/notices" && request.method === "POST") return createNotice(request, env, op);
   const notice = /^\/admin\/notices\/([^/]+)$/.exec(path);
   if (notice && request.method === "DELETE") return deleteNotice(env, notice[1]!, op);
+  if (path === "/admin/notices" && request.method === "GET") return listNotices(env);
+  if (path === "/admin/plans" && request.method === "GET") return listPlans(env);
   if (path === "/admin/log" && request.method === "GET") return listLog(env, url);
   if (path === "/admin/cloud/requests" && request.method === "GET") return listRequests(env, url);
   const decide = /^\/admin\/cloud\/requests\/([^/]+)\/(grant|decline)$/.exec(path);

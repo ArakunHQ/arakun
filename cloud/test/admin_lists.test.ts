@@ -164,3 +164,43 @@ describe("GET /admin/users/<id>", () => {
     for (const id of ["abc", "0", "-1", "1e3"]) expect((await call("GET", `/admin/users/${id}`, ADMIN)).status, id).toBe(400);
   });
 });
+
+describe("GET /admin/notices", () => {
+  it("lists notices newest first with read counts", async () => {
+    await add(1001, "octocat");
+    await add(1002, "other");
+    await env.DB.prepare(
+      `INSERT INTO notices (id, github_id, text, url, created_at, expires_at) VALUES
+       ('all', NULL, 'for all', 'https://example.com', 20, NULL), ('mine', 1001, 'for me', NULL, 10, NULL), ('old', NULL, 'gone', NULL, 5, 6)`,
+    ).run();
+    await env.DB.prepare("INSERT INTO notice_reads (github_id, notice_id) VALUES (1001, 'all'), (1002, 'all')").run();
+    const res = await call("GET", "/admin/notices", ADMIN);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { id: "all", github_id: null, login: null, text: "for all", url: "https://example.com", created_at: 20, expires_at: null, reads: 2 },
+      { id: "mine", github_id: 1001, login: "octocat", text: "for me", url: null, created_at: 10, expires_at: null, reads: 0 },
+      { id: "old", github_id: null, login: null, text: "gone", url: null, created_at: 5, expires_at: 6, reads: 0 },
+    ]);
+  });
+
+  it("needs the secret", async () => {
+    expect((await call("GET", "/admin/notices")).status).toBe(401);
+  });
+});
+
+describe("GET /admin/plans", () => {
+  it("lists plan names with free first", async () => {
+    await env.CONFIG.put("plans", JSON.stringify({ pro: {}, free: {}, "Bad Name": {} }));
+    const res = await call("GET", "/admin/plans", ADMIN);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ plans: ["free", "pro"] });
+  });
+
+  it("answers free alone without the KV key", async () => {
+    expect(await (await call("GET", "/admin/plans", ADMIN)).json()).toEqual({ plans: ["free"] });
+  });
+
+  it("needs the secret", async () => {
+    expect((await call("GET", "/admin/plans")).status).toBe(401);
+  });
+});

@@ -13,12 +13,13 @@ use gpui::{App, AppContext as _, Context, SharedString, Task, Window};
 use serde_json::json;
 
 use super::Shell;
-use super::sessions::{Notice, summary};
+use super::sessions::summary;
 use crate::agent::AgentKind;
 use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::cloud;
 use crate::island::AlertKind;
 use crate::model::TabKind;
+use crate::phone::notify::Kind;
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
     self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
@@ -2006,9 +2007,11 @@ impl Shell {
     pub(super) fn notify_phones(
         &mut self,
         id: &SharedString,
-        kind: Notice,
+        kind: Kind,
         title: &str,
         body: &str,
+        env: &str,
+        secs: Option<u64>,
         cx: &mut Context<Self>,
     ) {
         let Some(link) = &self.phone else {
@@ -2022,9 +2025,9 @@ impl Shell {
             .filter_map(|(client, _)| link.server.device_of(*client))
             .collect();
         let wanted = |d: &phone::Device| match kind {
-            Notice::Finished => d.notices.done,
-            Notice::Input => d.notices.input,
-            Notice::Error => d.notices.error,
+            Kind::Done => d.notices.done,
+            Kind::Input => d.notices.input,
+            Kind::Error => d.notices.error,
         };
         let targets: Vec<(String, push::Subscription)> = link
             .access
@@ -2038,12 +2041,7 @@ impl Shell {
         if targets.is_empty() {
             return;
         }
-        let kind = match kind {
-            Notice::Finished => "done",
-            Notice::Input => "input",
-            Notice::Error => "error",
-        };
-        let payload = push::notice(kind, id, title, body, "", None);
+        let payload = push::notice(kind.as_str(), id, title, body, env, secs);
         let (vapid, access) = (link.vapid.clone(), link.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx

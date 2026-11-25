@@ -17,6 +17,7 @@ use crate::agent::{
     ThreadStatus, ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
+use crate::phone::notify::{self, Kind};
 use crate::state;
 
 /// Sends an agent's error to crash reports with where it failed. The folder
@@ -2147,31 +2148,21 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let t = thread.read(cx);
-        let (kind, body): (Notice, String) = match ev {
+        let (kind, body): (Kind, String) = match ev {
             ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
                 "cancelled" => return,
-                "error" => (Notice::Error, error_text(t)),
-                _ => (Notice::Finished, "Finished its turn.".into()),
+                "error" => (Kind::Error, error_text(t)),
+                _ => (Kind::Done, notify::finished_body(t.entries())),
             },
-            ThreadEvent::NeedsPermission => {
-                let body = if let Some(p) = t.pending_permission() {
-                    if p.plan.is_some() {
-                        "Has a plan ready for your approval.".to_string()
-                    } else {
-                        format!("Needs permission: {}", p.title)
-                    }
-                } else if t.pending_question().is_some() {
-                    "Has a question for you.".into()
-                } else {
-                    "Needs your input.".into()
-                };
-                (Notice::Input, body)
-            }
+            ThreadEvent::NeedsPermission => (
+                Kind::Input,
+                notify::input_body(t.entries(), t.pending_permission(), t.pending_question()),
+            ),
             ThreadEvent::StatusChanged if t.needs_install().is_some() => {
-                (Notice::Input, error_text(t))
+                (Kind::Input, error_text(t))
             }
             ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
-                (Notice::Error, error_text(t))
+                (Kind::Error, error_text(t))
             }
             ThreadEvent::StatusChanged => {
                 // Back at work: the next turn end or question notifies again.
@@ -2197,7 +2188,19 @@ impl Shell {
         let at_computer = window.is_window_active();
         if !at_computer {
             let pid = self.phone_id(env_path, id);
-            self.notify_phones(&pid, kind, &title, &body, cx);
+            let env = self.find_env(env_path).map(|e| e.name.to_string());
+            let secs = (kind == Kind::Done)
+                .then(|| notify::turn_secs(t.entries()))
+                .flatten();
+            self.notify_phones(
+                &pid,
+                kind,
+                &title,
+                &body,
+                &env.unwrap_or_default(),
+                secs,
+                cx,
+            );
         }
         let visible = at_computer
             && self.has_projects()
@@ -2209,7 +2212,7 @@ impl Shell {
         // The island says more (model, last reply); the desktop only stands in for it.
         let alert = self.session_alert(id, thread, kind, &title, cx);
         if !self.show_alert(alert, cx) {
-            send_notification(id, &title, &body, kind == Notice::Error, cx);
+            send_notification(id, &title, &body, kind == Kind::Error, cx);
         }
     }
 
@@ -2460,17 +2463,9 @@ impl Shell {
     }
 }
 
-/// What a session did that deserves a word: on the desktop, and on the phones.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Notice {
-    Finished,
-    Input,
-    Error,
-}
-
 thread_local! {
     /// The last desktop notice per session, so one event is announced once.
-    static NOTIFIED: RefCell<HashMap<String, Notice>> = RefCell::new(HashMap::new());
+    static NOTIFIED: RefCell<HashMap<String, Kind>> = RefCell::new(HashMap::new());
     /// The AskUser question last read aloud per session, by tool call id.
     static SPOKEN: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
 }

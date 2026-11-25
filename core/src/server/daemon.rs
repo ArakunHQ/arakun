@@ -36,7 +36,8 @@ use crate::clone_source;
 use crate::model::{Status, unix_now};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
-    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
+    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, notify, push, tailscale,
+    wire,
 };
 
 /// Entry changes wait this long for more before they go out, so a streaming
@@ -93,13 +94,6 @@ impl Address {
             Address::Problem(what) => format!("unreachable: {what}"),
         }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Notice {
-    Finished,
-    Input,
-    Error,
 }
 
 struct Live {
@@ -195,7 +189,7 @@ pub struct Daemon {
     reading_meta: bool,
     uploads: phone::Uploads,
     /// The last thing each session notified about, so one turn says it once.
-    notified: HashMap<String, Notice>,
+    notified: HashMap<String, notify::Kind>,
     writer: Writer,
     /// The saved transcript a device read last, for the pages after the first.
     last_read: agent::saved::LastRead,
@@ -908,6 +902,21 @@ fn summary(text: &str) -> String {
         .unwrap_or("")
         .trim();
     agent::log::head(line, 80)
+}
+
+/// The notice a phone gets. Only a finished turn says how long it took.
+fn notice_payload(
+    kind: notify::Kind,
+    id: &str,
+    title: &str,
+    env: &str,
+    body: &str,
+    entries: &[Entry],
+) -> String {
+    let secs = (kind == notify::Kind::Done)
+        .then(|| notify::turn_secs(entries))
+        .flatten();
+    push::notice(kind.as_str(), id, title, body, env, secs)
 }
 
 fn error_text(t: &Thread) -> String {
@@ -3831,28 +3840,18 @@ impl Daemon {
         cx: &mut Context<Self>,
     ) {
         let t = thread.read(cx);
-        let (kind, body): (Notice, String) = match ev {
+        let (kind, body): (notify::Kind, String) = match ev {
             ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
                 "cancelled" => return,
-                "error" => (Notice::Error, error_text(t)),
-                _ => (Notice::Finished, "Finished its turn.".into()),
+                "error" => (notify::Kind::Error, error_text(t)),
+                _ => (notify::Kind::Done, notify::finished_body(t.entries())),
             },
-            ThreadEvent::NeedsPermission => {
-                let body = if let Some(p) = t.pending_permission() {
-                    if p.plan.is_some() {
-                        "Has a plan ready for your approval.".to_string()
-                    } else {
-                        format!("Needs permission: {}", p.title)
-                    }
-                } else if t.pending_question().is_some() {
-                    "Has a question for you.".into()
-                } else {
-                    "Needs your input.".into()
-                };
-                (Notice::Input, body)
-            }
+            ThreadEvent::NeedsPermission => (
+                notify::Kind::Input,
+                notify::input_body(t.entries(), t.pending_permission(), t.pending_question()),
+            ),
             ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
-                (Notice::Error, error_text(t))
+                (notify::Kind::Error, error_text(t))
             }
             ThreadEvent::StatusChanged => {
                 // Back at work: the next turn end or question notifies again.
@@ -3883,9 +3882,9 @@ impl Daemon {
             .filter_map(|(client, _)| self.transport.device_of(*client))
             .collect();
         let wanted = |d: &phone::Device| match kind {
-            Notice::Finished => d.notices.done,
-            Notice::Input => d.notices.input,
-            Notice::Error => d.notices.error,
+            notify::Kind::Done => d.notices.done,
+            notify::Kind::Input => d.notices.input,
+            notify::Kind::Error => d.notices.error,
         };
         let targets: Vec<(String, push::Subscription)> = self
             .access
@@ -3899,12 +3898,13 @@ impl Daemon {
         if targets.is_empty() {
             return;
         }
-        let kind = match kind {
-            Notice::Finished => "done",
-            Notice::Input => "input",
-            Notice::Error => "error",
-        };
-        let payload = push::notice(kind, id, &title, &body, "", None);
+        let env = self
+            .store
+            .session(id)
+            .and_then(|s| s.place.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let payload = notice_payload(kind, id, &title, &env, &body, t.entries());
         let (vapid, access) = (self.vapid.clone(), self.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -6624,6 +6624,47 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         assert_eq!(device_setting("autonomyLevel"), None);
         assert_eq!(device_setting("fastMode"), None);
         assert_eq!(device_setting("nonsense"), None);
+    }
+
+    #[test]
+    fn a_finished_notice_carries_the_agents_words_and_the_place() {
+        let entries = vec![
+            Entry::User {
+                text: "go".into(),
+                at: 1,
+                elapsed_ms: Some(65_000),
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: "Done: 3 files".into(),
+            },
+        ];
+        let body = notify::finished_body(&entries);
+        let n: serde_json::Value = serde_json::from_str(&notice_payload(
+            notify::Kind::Done,
+            "s1",
+            "Fix",
+            "app",
+            &body,
+            &entries,
+        ))
+        .unwrap();
+        assert_eq!(n["body"], "Done: 3 files");
+        assert_eq!(n["env"], "app");
+        assert_eq!(n["secs"], 65);
+        // Only a finished turn says how long it took.
+        let n: serde_json::Value = serde_json::from_str(&notice_payload(
+            notify::Kind::Error,
+            "s1",
+            "Fix",
+            "app",
+            "x",
+            &entries,
+        ))
+        .unwrap();
+        assert!(n.get("secs").is_none());
     }
 
     #[test]

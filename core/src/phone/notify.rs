@@ -59,6 +59,26 @@ pub fn permission_body(p: &PermissionRequest, tool: Option<&ToolCall>) -> String
     }
 }
 
+/// What a session waiting for the user says: the permission it asks, with the
+/// tool it is for found in `entries`, or its question. Both senders use it.
+pub fn input_body(
+    entries: &[Entry],
+    permission: Option<&PermissionRequest>,
+    question: Option<&AskUserRequest>,
+) -> String {
+    if let Some(p) = permission {
+        let tool = entries.iter().find_map(|e| match e {
+            Entry::Tool(tc) if tc.id == p.tool_call_id => Some(tc),
+            _ => None,
+        });
+        return permission_body(p, tool);
+    }
+    match question {
+        Some(q) => question_body(q),
+        None => "Needs your input.".into(),
+    }
+}
+
 /// The first question, and how many more there are.
 pub fn question_body(q: &AskUserRequest) -> String {
     let Some(first) = q.questions.first() else {
@@ -281,5 +301,19 @@ mod tests {
         let entries = [user(Some(1000)), agent("x"), user(None)];
         assert_eq!(turn_secs(&entries), None);
         assert_eq!(turn_secs(&[agent("x")]), None);
+    }
+
+    #[test]
+    fn input_body_finds_the_tool_and_falls_back() {
+        let mut p = permission("Run command", None);
+        p.tool_call_id = "t".into();
+        let mut tc = call("execute", "Run command");
+        tc.raw_input = Some(serde_json::json!({ "command": "cargo test" }));
+        let entries = [Entry::Tool(tc)];
+        assert_eq!(
+            input_body(&entries, Some(&p), None),
+            "Run command: cargo test"
+        );
+        assert_eq!(input_body(&[], None, None), "Needs your input.");
     }
 }

@@ -39,20 +39,49 @@ const TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const FILES: usize = 50_000;
 
 /// Folders whose files are all secrets.
-const SECRET_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws"];
+const SECRET_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws", ".kube", ".azure"];
+/// Folders of secrets that only count under their parent: `gcloud` or
+/// `docker` alone is a common name for code.
+const SECRET_SUBDIRS: &[[&str; 2]] = &[[".config", "gcloud"]];
 /// File names that hold credentials.
-const SECRET_NAMES: &[&str] = &[".netrc", ".npmrc", ".pypirc", ".git-credentials"];
+const SECRET_NAMES: &[&str] = &[
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".pgpass",
+    ".htpasswd",
+    "kubeconfig",
+    "credentials.json",
+];
+/// Files that hold credentials only in their own folder.
+const SECRET_FILES: &[[&str; 2]] = &[[".docker", "config.json"]];
+/// How the JSON key files of cloud accounts start: `service-account.json`,
+/// `service_account-prod.json`, `client_secret_123.json`.
+const SECRET_JSON: &[&str] = &[
+    "service-account",
+    "service_account",
+    "serviceaccount",
+    "client_secret",
+];
+/// What a name ends with when Terraform wrote state or variables there:
+/// state holds every secret of what it manages, in the clear.
+const SECRET_ENDINGS: &[&str] = &[".tfstate.backup", ".tfvars.json"];
 /// SSH key files, as `ssh-keygen` names them. A name that goes on from one
 /// with `_` or `.` (`id_rsa_github`, `id_ed25519.old`) is a key as well.
 const SSH_KEYS: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 /// Endings of key and certificate store files.
-const SECRET_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore"];
+const SECRET_EXTENSIONS: &[&str] = &[
+    "pem", "key", "p12", "pfx", "jks", "keystore", "ppk", "kdbx", "tfstate", "tfvars",
+];
 
 /// Whether a path in the project looks like it holds secrets: `.env`,
 /// `.env.*`, `.env-*`, `.env_*`, `.envrc*` and `.envs/`, `*.pem`, `*.key`
 /// and other key stores, SSH keys (`id_rsa`, `id_rsa_github`,
-/// `id_ed25519.pub`), credential files, and anything under `.ssh/`,
-/// `.gnupg/` or `.aws/`. Case doesn't matter.
+/// `id_ed25519.pub`), credential files (`.netrc`, `.pgpass`, `kubeconfig`,
+/// `credentials.json`, a service account's JSON key, `.dev.vars`),
+/// Terraform state and variables, and anything under `.ssh/`, `.gnupg/`,
+/// `.aws/`, `.kube/`, `.azure/` or `.config/gcloud/`. Case doesn't matter.
 pub fn is_secret_path(rel: &Path) -> bool {
     let parts: Vec<String> = rel
         .components()
@@ -72,6 +101,9 @@ pub fn is_secret_path(rel: &Path) -> bool {
             || n == ".envs"
             || n.starts_with(".envrc")
             || [".env.", ".env-", ".env_"].iter().any(|p| n.starts_with(p))
+            // Wrangler's `.env`: `.dev.vars` and `.dev.vars.staging`.
+            || n == ".dev.vars"
+            || n.starts_with(".dev.vars.")
     };
     let ssh = |n: &str| {
         SSH_KEYS.iter().any(|k| {
@@ -82,12 +114,19 @@ pub fn is_secret_path(rel: &Path) -> bool {
     if dirs
         .iter()
         .any(|d| SECRET_DIRS.contains(&d.as_str()) || env(d))
+        || dirs
+            .windows(2)
+            .any(|w| SECRET_SUBDIRS.iter().any(|s| w == s))
     {
         return true;
     }
+    let in_dir = |f: &[&str; 2]| dirs.last().is_some_and(|d| d == f[0]) && name == f[1];
     env(name)
         || ssh(name)
         || SECRET_NAMES.contains(&name.as_str())
+        || SECRET_FILES.iter().any(in_dir)
+        || SECRET_ENDINGS.iter().any(|e| name.ends_with(e))
+        || (name.ends_with(".json") && SECRET_JSON.iter().any(|p| name.starts_with(p)))
         || Path::new(name)
             .extension()
             .and_then(|e| e.to_str())
@@ -105,6 +144,9 @@ pub struct Mirror {
     /// Files that could not be read or written, as when the temp folder is
     /// full.
     pub failed: usize,
+    /// Files that are not text: [`redact`] cannot read them, so they are
+    /// left out.
+    pub binary: usize,
     /// Submodules and nested repositories, which git lists as one folder
     /// and the copy leaves out.
     pub nested: Vec<PathBuf>,
@@ -132,6 +174,14 @@ impl Mirror {
                 files(self.failed)
             ));
         }
+        if self.binary > 0 {
+            let verb = if self.binary == 1 { "is" } else { "are" };
+            notes.push(format!(
+                "{} {verb} not text and {} not read.",
+                files(self.binary),
+                if self.binary == 1 { "was" } else { "were" }
+            ));
+        }
         if !self.nested.is_empty() {
             let names: Vec<String> = self
                 .nested
@@ -149,10 +199,12 @@ impl Mirror {
 
 /// Copies `project` into the empty folder `into`, without secret-looking
 /// files and, in a git checkout, without what git ignores. Symbolic links
-/// are left out, so nothing in the copy leads outside it. Text files go
+/// are left out, so nothing in the copy leads outside it. Every file goes
 /// through [`redact`] on the way: the chat can ask for a key in a form the
 /// answer's check does not know, spelled out or reversed, so the run must
-/// not see it at all. Fails with "stopped" once `stop` is set.
+/// not see it at all. A file that is not text can't be checked that way (a
+/// database or an archive can hold a key), so it is left out and counted.
+/// Fails with "stopped" once `stop` is set.
 pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, String> {
     let root = crate::platform::canonicalize(project)
         .map_err(|e| format!("could not open the project: {e}"))?;
@@ -190,26 +242,50 @@ pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, 
             out.too_big += 1;
             continue;
         }
-        if copy_redacted(&from, &into.join(&rel)).is_ok() {
-            total += meta.len();
-            out.files += 1;
-        } else {
-            out.failed += 1;
+        match copy_redacted(&from, &into.join(&rel)) {
+            Ok(true) => {
+                total += meta.len();
+                out.files += 1;
+            }
+            Ok(false) => out.binary += 1,
+            Err(_) => out.failed += 1,
         }
     }
     Ok(out)
 }
 
-/// Copies one file, with the secrets in a text file replaced.
-fn copy_redacted(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Copies one file with its secrets replaced, or answers `false` and
+/// copies nothing when it is not text.
+fn copy_redacted(from: &Path, to: &Path) -> std::io::Result<bool> {
+    let bytes = std::fs::read(from)?;
+    let Some(text) = text_of(&bytes) else {
+        return Ok(false);
+    };
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let bytes = std::fs::read(from)?;
-    match std::str::from_utf8(&bytes) {
-        Ok(text) => std::fs::write(to, redact(text)),
-        Err(_) => std::fs::write(to, &bytes),
-    }
+    std::fs::write(to, redact(&text))?;
+    Ok(true)
+}
+
+/// The text of a file: UTF-8, or UTF-16 with a byte order mark, as Windows
+/// tools write settings. The copy of the second is UTF-8. `None` for
+/// anything else, and for text with a NUL in it, which is a binary file
+/// that happens to decode.
+fn text_of(bytes: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let (pairs, odd) = rest.as_chunks::<2>();
+        let units: Vec<u16> = pairs.iter().map(|c| unit(*c)).collect();
+        odd.is_empty()
+            .then(|| String::from_utf16(&units).ok())
+            .flatten()
+    };
+    let text: std::borrow::Cow<'_, str> = match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes)?.into(),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes)?.into(),
+        _ => std::str::from_utf8(bytes).ok()?.into(),
+    };
+    (!text.contains('\0')).then_some(text)
 }
 
 /// Removes copies a run left behind when Arakun quit in the middle of it.
@@ -307,14 +383,24 @@ static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         // GitLab and npm tokens.
         r"\bglpat-[A-Za-z0-9_-]{20,}",
         r"\bnpm_[A-Za-z0-9]{36}\b",
-        // Slack tokens.
-        r"\bxox[abposr]-[A-Za-z0-9-]{10,}",
+        // Slack tokens, and a webhook's URL, which posts for whoever has it.
+        r"\b(?:xox[abposr]|xapp)-[A-Za-z0-9-]{10,}",
+        r"\bhttps://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9_/-]+",
         // AWS access key IDs.
         r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
         // Google API keys.
         r"\bAIza[0-9A-Za-z_-]{35}",
-        // Stripe keys.
+        // Stripe keys and webhook signing secrets.
         r"\b[rsp]k_(?:live|test)_[0-9A-Za-z]{16,}",
+        r"\bwhsec_[A-Za-z0-9+/=]{24,}",
+        // Hugging Face, SendGrid, PyPI, DigitalOcean and Shopify tokens.
+        r"\bhf_[A-Za-z0-9]{30,}",
+        r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}",
+        r"\bpypi-[A-Za-z0-9_-]{50,}",
+        r"\bdo[opr]_v1_[a-f0-9]{64}\b",
+        r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b",
+        // Google OAuth access tokens.
+        r"\bya29\.[A-Za-z0-9_-]{20,}",
         // JSON Web Tokens.
         r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
     ]
@@ -334,6 +420,24 @@ static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
 static BEARER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b([Bb]earer[ \t]+)([A-Za-z0-9._~+/=-]+)").expect("bearer pattern")
 });
+
+/// What follows `Basic` in an `Authorization` header: `user:password` in
+/// base64, which anyone can decode.
+static BASIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([Bb]asic[ \t]+)([A-Za-z0-9+/]{12,}={0,2})").expect("basic pattern")
+});
+
+/// Whether what follows `Basic` is base64 and not a word: "Basic
+/// authentication" is prose. Base64 of `user:password` has a digit, padding
+/// or both cases in it.
+fn is_basic_credentials(v: &str) -> bool {
+    v.ends_with('=')
+        || v.chars().any(|c| c.is_ascii_digit())
+        || (v.chars().any(|c| c.is_ascii_uppercase())
+            && v.chars().skip(1).any(|c| c.is_ascii_uppercase())
+            && v.chars().any(|c| c.is_ascii_lowercase())
+            && entropy(v) >= 3.5)
+}
 
 /// `name = value`, `name: value` and `"name": "value"`. Group 1 is the name,
 /// 2 what stands between, and the value is double, single or back quoted
@@ -451,6 +555,15 @@ pub fn redact(text: &str) -> String {
             // "Bearer authentication" is prose; a token has digits or is
             // long and random-looking.
             if v.chars().any(|c| c.is_ascii_digit()) || (v.len() >= 20 && entropy(v) >= 3.5) {
+                format!("{}{REDACTED}", &c[1])
+            } else {
+                c[0].to_string()
+            }
+        })
+        .into_owned();
+    out = BASIC
+        .replace_all(&out, |c: &Captures| {
+            if is_basic_credentials(&c[2]) {
                 format!("{}{REDACTED}", &c[1])
             } else {
                 c[0].to_string()
@@ -681,6 +794,25 @@ mod tests {
             ".aws/credentials",
             ".netrc",
             "web/.npmrc",
+            "gcp/credentials.json",
+            "service-account.json",
+            "keys/Service_Account-prod.json",
+            "client_secret_1234.apps.json",
+            "infra/terraform.tfstate",
+            "infra/terraform.tfstate.backup",
+            "infra/prod.tfvars",
+            "infra/prod.auto.tfvars.json",
+            "kubeconfig",
+            ".kube/config",
+            "home/.docker/config.json",
+            ".pgpass",
+            "web/.htpasswd",
+            ".dev.vars",
+            ".dev.vars.staging",
+            "putty/deploy.ppk",
+            "vault.kdbx",
+            ".azure/accessTokens.json",
+            ".config/gcloud/application_default_credentials.json",
         ] {
             assert!(is_secret_path(Path::new(p)), "{p} should be left out");
         }
@@ -698,6 +830,15 @@ mod tests {
             "id_generator.py",
             "id_map.go",
             ".environment/setup.md",
+            "docker/config.json",
+            "src/config.json",
+            "gcloud/deploy.sh",
+            ".config/settings.json",
+            "src/credentials.rs",
+            "src/service_account.rs",
+            "infra/main.tf",
+            "infra/variables.tf",
+            "src/dev.vars.md",
             "src/.envoy.yaml",
         ] {
             assert!(!is_secret_path(Path::new(p)), "{p} should stay");
@@ -814,6 +955,7 @@ mod tests {
             files: 10,
             too_big: 1,
             failed: 3,
+            binary: 2,
             nested: vec![PathBuf::from("vendor/lib")],
         };
         assert_eq!(
@@ -821,6 +963,7 @@ mod tests {
             [
                 "1 file of the project was too large to read.",
                 "3 files of the project could not be copied to read.",
+                "2 files of the project are not text and were not read.",
                 "Submodules and nested repositories were not read: vendor/lib.",
             ]
         );
@@ -869,6 +1012,87 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(redact(input), want, "{input}");
         }
+    }
+
+    /// Tokens of other services, by their shape. Each is put together here
+    /// so no scanner takes this file for a leak.
+    #[test]
+    fn redacts_tokens_of_more_services() {
+        let hex = |n: usize| "0a1b2c3d4e5f6789".repeat(n / 16 + 1)[..n].to_string();
+        let mixed = |n: usize| "aB3dE5gH7jK9mN1p".repeat(n / 16 + 1)[..n].to_string();
+        let tokens = [
+            format!(
+                "https://hooks.slack.com/services/T{}/B{}/{}",
+                "0A1B2C3D",
+                "4E5F6G7H",
+                mixed(24)
+            ),
+            format!("xapp-1-A{}-{}-{}", "0123ABCD", "1234567890", hex(32)),
+            format!("hf_{}", mixed(34)),
+            format!("SG.{}.{}", mixed(22), mixed(43)),
+            format!("whsec_{}", mixed(32)),
+            format!("pypi-{}", mixed(70)),
+            format!("dop_v1_{}", hex(64)),
+            format!("ya29.{}", mixed(40)),
+            format!("shpat_{}", hex(32)),
+        ];
+        for token in tokens {
+            assert_eq!(
+                redact(&format!("use {token} here")),
+                "use [redacted] here",
+                "{token}"
+            );
+        }
+        let cases = [
+            (
+                "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+                "Authorization: Basic [redacted]",
+            ),
+            (
+                "curl -H 'Authorization: Basic YWRtaW46aHVudGVyMjI'",
+                "curl -H 'Authorization: Basic [redacted]'",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_left_out_of_the_copy() {
+        let base = std::env::temp_dir().join(format!("arakun-guard-binary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (project, copy) = (base.join("project"), base.join("copy"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&copy).unwrap();
+        std::fs::write(project.join("notes.md"), "password=hunter22\n").unwrap();
+        // A database with a key in it: no pattern would find it there.
+        let mut db = b"SQLite format 3\0".to_vec();
+        db.extend_from_slice(&[0xFF, 0x00, 0x80]);
+        db.extend_from_slice(b"password=hunter22");
+        std::fs::write(project.join("app.db"), &db).unwrap();
+        // Text with a NUL decodes as UTF-8 and is still not text.
+        std::fs::write(project.join("blob.bin"), b"abc\0password=hunter22").unwrap();
+        // Settings as Windows tools write them: UTF-16 with a mark.
+        let mut utf16 = vec![0xFF, 0xFE];
+        for unit in "password=hunter22\r\n".encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+        std::fs::write(project.join("app.config"), &utf16).unwrap();
+
+        let m = mirror(&project, &copy, &AtomicBool::new(false)).unwrap();
+        assert_eq!((m.files, m.binary, m.failed), (2, 2, 0));
+        assert!(!copy.join("app.db").exists());
+        assert!(!copy.join("blob.bin").exists());
+        assert_eq!(
+            std::fs::read_to_string(copy.join("app.config")).unwrap(),
+            "password=[redacted]\r\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(copy.join("notes.md")).unwrap(),
+            "password=[redacted]\n"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -989,6 +1213,13 @@ mod tests {
             "primary_key = id",
             "Use Bearer authentication for the API.",
             "https://user@example.com/repo",
+            "Use Basic authentication for the API.",
+            "Basic configuration of the server",
+            "Basic TypeScript setup",
+            "https://hooks.slack.com/ is where webhooks live",
+            "the hf_hub_download helper",
+            "pypi-publish runs on a tag",
+            "SG.fn is the namespace",
         ] {
             assert_eq!(redact(text), text, "{text}");
         }

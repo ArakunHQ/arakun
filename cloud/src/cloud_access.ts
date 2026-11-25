@@ -288,6 +288,8 @@ interface RequestRow {
   blocked: number;
 }
 
+export type RequestJson = ReturnType<typeof requestJson>;
+
 function requestJson(r: RequestRow) {
   return {
     github_id: r.github_id,
@@ -310,6 +312,12 @@ function requestJson(r: RequestRow) {
       following: r.gh_following,
     },
   };
+}
+
+/// The request as GET /admin/cloud/requests lists it, or null.
+export async function requestFor(env: Env, githubId: number): Promise<RequestJson | null> {
+  const row = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} WHERE r.github_id = ?2`).bind(CLOUD_FLAG, githubId).first<RequestRow>();
+  return row ? requestJson(row) : null;
 }
 
 export async function listRequests(env: Env, url: URL): Promise<Response> {

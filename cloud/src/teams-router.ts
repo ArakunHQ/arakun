@@ -75,7 +75,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   const url = new URL(request.url);
   const { pathname } = url;
   try {
-    if (pathname.startsWith("/admin/")) return await admin(request, env, url);
+    if (pathname === "/admin/users" || pathname.startsWith("/admin/")) return await admin(request, env, url);
     const cloud = await cloudAccess(request, env, url, ctx);
     if (cloud) return cloud;
     const machine = await machines(request, env, url);

@@ -11,6 +11,12 @@ fn main() {
     // libcef.dll (~200 MB) is only needed once a browser tab opens. Delay-loading it keeps
     // it out of startup, and lets the `arakun <command>` copy in %LOCALAPPDATA%\arakun\bin,
     // which has no CEF next to it, start at all. core/src/browser/loader.rs loads it by path.
+    // src/mallinfo.rs: exported so libcef.so binds to it instead of glibc's.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "linux" && target_env == "gnu" {
+        println!("cargo::rustc-link-arg-bin=arakun=-Wl,--export-dynamic-symbol=mallinfo");
+    }
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc");
     if msvc && browser {
         println!("cargo::rustc-link-arg=/DELAYLOAD:libcef.dll");

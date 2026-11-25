@@ -33,8 +33,8 @@ pub enum EventsEvent {
 
 pub struct EventsTab {
     target: Option<Target>,
-    defs: Option<Defs>,
-    defs_loading: bool,
+    /// A failed read is dropped: the picker keeps the last definitions.
+    defs: Loadable<Defs>,
     filter: Filter,
     events: Vec<Event>,
     page: Paging,
@@ -63,7 +63,6 @@ pub struct EventsTab {
     scroll: ScrollHandle,
     _load: Option<Task<()>>,
     _more: Option<Task<()>>,
-    _defs: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -113,8 +112,7 @@ impl EventsTab {
         ];
         Self {
             target: None,
-            defs: None,
-            defs_loading: false,
+            defs: Loadable::default(),
             filter: Filter::default(),
             events: Vec::new(),
             page: Paging::first(PAGE),
@@ -140,7 +138,6 @@ impl EventsTab {
             scroll: ScrollHandle::new(),
             _load: None,
             _more: None,
-            _defs: None,
             _subs: subs,
         }
     }
@@ -150,7 +147,8 @@ impl EventsTab {
         if self.target == target {
             return;
         }
-        self.defs = target.as_ref().and_then(|t| defs::cached(&t.project));
+        self.defs.reset();
+        self.defs.data = target.as_ref().and_then(|t| defs::cached(&t.project));
         self.target = target;
         self.filter = Filter::default();
         self.events.clear();
@@ -162,9 +160,7 @@ impl EventsTab {
         self.adding = false;
         self.debounce.bump();
         self._more = None;
-        self._defs = None;
         self.loading_more = false;
-        self.defs_loading = false;
         self.more = false;
         self.keys.clear();
         for input in [&self.search, &self.person, &self.prop_key, &self.prop_value] {
@@ -184,6 +180,7 @@ impl EventsTab {
         let now = crate::model::unix_now();
         if self
             .defs
+            .data
             .as_ref()
             .is_none_or(|d| now.saturating_sub(d.fetched_at) >= defs::STALE)
         {
@@ -324,33 +321,25 @@ impl EventsTab {
 
     fn load_defs(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.target.clone() else { return };
-        if self.defs_loading {
-            return;
-        }
-        self.defs_loading = true;
-        self._defs = Some(cx.spawn(async move |this, cx| {
-            let project = t.project.clone();
-            let got = cx
-                .background_spawn(crate::guard::task(async move {
-                    defs::load(&t.session, &t.project)
-                }))
-                .await;
-            this.update(cx, |this, cx| {
-                this.defs_loading = false;
+        let project = t.project.clone();
+        self.defs.start(
+            cx,
+            |this| &mut this.defs,
+            async move { defs::load(&t.session, &t.project) },
+            move |this, got, _| {
                 if this.target.as_ref().is_some_and(|t| t.project == project)
                     && let Ok(d) = got
                 {
-                    this.defs = Some(d);
+                    this.defs.data = Some(d);
                 }
-                cx.notify();
-            })
-            .ok();
-        }));
+            },
+        );
     }
 
     fn matching_events(&self, cx: &gpui::App) -> Vec<&defs::EventDef> {
         let needle = self.search.read(cx).text().trim().to_lowercase();
         self.defs
+            .data
             .iter()
             .flat_map(|d| d.events.iter())
             .filter(|d| needle.is_empty() || d.name.to_lowercase().contains(&needle))
@@ -498,7 +487,7 @@ impl EventsTab {
                 this.picker = !this.picker;
                 this.adding = false;
                 if this.picker {
-                    let total = this.defs.as_ref().map_or(0, |d| d.events.len());
+                    let total = this.defs.data.as_ref().map_or(0, |d| d.events.len());
                     this.search.update(cx, |i, cx| {
                         i.set_text("", cx);
                         i.set_placeholder(format!("Search {total} event definitions"), cx);
@@ -586,7 +575,7 @@ impl EventsTab {
         }
         let typed = self.prop_key.read(cx).text().trim().to_lowercase();
         let mut keys: Vec<String> = self.keys.clone();
-        for k in self.defs.iter().flat_map(|d| d.props.iter()) {
+        for k in self.defs.data.iter().flat_map(|d| d.props.iter()) {
             if !keys.contains(k) {
                 keys.push(k.clone());
             }
@@ -625,7 +614,7 @@ impl EventsTab {
 
     fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = crate::model::unix_now();
-        let total = self.defs.as_ref().map_or(0, |d| d.events.len());
+        let total = self.defs.data.as_ref().map_or(0, |d| d.events.len());
         let events: Vec<(String, Option<u64>, Option<u64>)> = self
             .matching_events(cx)
             .into_iter()
@@ -650,6 +639,7 @@ impl EventsTab {
         let current = self.filter.event.clone();
         let missing = self
             .defs
+            .data
             .as_ref()
             .and_then(|d| d.missing.iter().find(|s| s.contains("definition")).cloned());
         let mut list = div()
@@ -729,7 +719,7 @@ impl EventsTab {
                     ),
             )
             .child(list)
-            .when(self.defs_loading && total == 0, |d| {
+            .when(self.defs.loading() && total == 0, |d| {
                 d.child(quiet("Reading the event definitions…").px(ui::sp(10.)))
             })
             .when_some(missing, |d, scope| {

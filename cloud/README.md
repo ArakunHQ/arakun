@@ -58,6 +58,8 @@ cloud/
                         Objects, real P-256 keys and a fake GitHub
   test/relay/           the relay's tests
   scripts/peers.mjs     one fake computer and two fake devices against a running Worker
+  admin/                the admin Worker: the operator panel at admin.arakun.dev (see
+                        "The admin panel"); its own package, wrangler.toml and tests
 ```
 
 ## Teams
@@ -566,6 +568,106 @@ read -rs ADMIN_SECRET
 printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
   curl -fsS -X DELETE -H @- "https://<host>/admin/users/<id>/sessions"
 ```
+
+## The admin panel
+
+`admin/` is a second Worker, `arakun-admin`, with its own package. It serves a React page
+for operators (users, cloud access, machines, notices, the activity log) and signs them
+in with GitHub, using its own OAuth App, not the desktop app's. The browser never holds
+`ADMIN_SECRET`: the admin Worker checks the sign-in, then forwards `/api/*` to this
+Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
+session is a signed cookie, `__Host-arakun_admin`, that lasts 12 hours.
+
+Every change made in the panel is recorded in `admin_log` with the operator's name, and
+the panel shows it under Activity.
+
+### Running both Workers locally
+
+The two Workers find each other through wrangler's dev registry, so they must run with
+the same wrangler version and the same registry path. `cloud/` and `cloud/admin/` pin
+different wrangler versions that use different default paths, so run the cloud Worker
+with the admin package's wrangler and set `WRANGLER_REGISTRY_PATH` for both:
+
+```sh
+(cd cloud/admin && npm ci)
+export WRANGLER_REGISTRY_PATH=/tmp/arakun-dev-registry
+
+# terminal 1, in cloud/: the cloud Worker (see Development above for the migrations)
+admin/node_modules/.bin/wrangler dev
+
+# terminal 2, in cloud/admin/: the panel, on http://localhost:5173
+npm run dev
+```
+
+`cloud/.dev.vars` has `ADMIN_SECRET`. `cloud/admin/.dev.vars` (git-ignored) has the same
+`ADMIN_SECRET`, plus:
+
+```sh
+ADMIN_SECRET=dev-secret
+SESSION_SECRET=<any long random string>
+ADMIN_GITHUB_IDS=<github_id>
+GITHUB_CLIENT_ID=<your OAuth App's client ID>
+GITHUB_CLIENT_SECRET=<your OAuth App's secret>
+```
+
+For a real sign-in, create a personal OAuth App on GitHub (Settings, Developer
+settings) whose callback is `http://localhost:5173/auth/github/callback`; use the port
+vite prints. Without an OAuth App, print a session cookie for the local
+`SESSION_SECRET` and send it from your browser's developer tools or with curl:
+
+```sh
+node scripts/dev-cookie.mjs <github_id> <login>   # in cloud/admin
+```
+
+The Worker still checks the ID against `ADMIN_GITHUB_IDS`. The dev server logs one
+content-security-policy error per page load, from Vite's reload script. It is harmless
+and does not happen in a build.
+
+`npm run check`, `npm test` and `npm run build` in `cloud/admin` are the checks CI runs.
+
+### First production deploy of the admin panel
+
+Do this once. Until the client ID is set, the deploy workflow prints a notice and skips
+the admin Worker, so a release still ships the cloud Worker.
+
+1. On GitHub, create an OAuth App named "Arakun Admin" with the callback
+   `https://admin.arakun.dev/auth/github/callback`.
+2. In `cloud/admin/wrangler.toml`, replace `PLACEHOLDER` under
+   `[env.production.vars]` with the app's client ID, and merge that.
+3. In `cloud/admin`, set the four secrets. `ADMIN_SECRET` is the value the cloud Worker
+   has; `SESSION_SECRET` is 32 random bytes (`openssl rand -base64 32`);
+   `ADMIN_GITHUB_IDS` is the operators' numeric GitHub IDs, comma-separated
+   (find one at `https://api.github.com/users/<login>`):
+
+   ```sh
+   cd cloud/admin
+   npx wrangler secret put GITHUB_CLIENT_SECRET --env production
+   npx wrangler secret put ADMIN_SECRET --env production
+   npx wrangler secret put ADMIN_GITHUB_IDS --env production
+   npx wrangler secret put SESSION_SECRET --env production
+   ```
+
+   A secret can only be set once the Worker exists. If the first deploy has not run,
+   run `npm run deploy` in `cloud/admin` once, then set them.
+4. The next release deploys the panel to `https://admin.arakun.dev`.
+
+### Operators
+
+Who may sign in is the secret `ADMIN_GITHUB_IDS`, so no ID is in the repository. To add
+or remove an operator, put the new list and the secret takes effect at once:
+
+```sh
+cd cloud/admin
+npx wrangler secret put ADMIN_GITHUB_IDS --env production   # e.g. <github_id>,<github_id>
+```
+
+The ID is checked on every request, so removing one ends that operator's access at
+once, even with a valid cookie. Unset or empty, nobody gets in. Changing
+`SESSION_SECRET` signs everyone out.
+
+If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators stay signed in but
+the panel's calls fail with "unauthorized" errors (a missing one answers "the admin
+secret is not set"). Set it again to the cloud Worker's value.
 
 ## Cloud access
 

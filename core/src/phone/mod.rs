@@ -545,6 +545,9 @@ pub struct Settings {
     /// under another account they are dropped (`relay_owner`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_account: Option<u64>,
+    /// The sidebar's card that invites to the phone app beta was closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub beta_card_closed: bool,
 }
 
 impl Default for Settings {
@@ -558,6 +561,7 @@ impl Default for Settings {
             relay_base: default_relay_base(),
             devices: Vec::new(),
             relay_account: None,
+            beta_card_closed: false,
         }
     }
 }

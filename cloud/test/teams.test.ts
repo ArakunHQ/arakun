@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";
 import { deviceSigned, sigKey, verify } from "../src/wire";
 import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
-import { github, nowSeconds, onGitHub } from "./helpers";
+import { ADMIN, call, github, nowSeconds, onGitHub } from "./helpers";
 
 /// The same bytes in base64url with the last character's lowest bit flipped.
 /// A 65-byte key leaves its two lowest bits unused, so the bytes do not change.
@@ -138,7 +138,7 @@ describe("devices", () => {
 });
 
 describe("the gate", () => {
-  it("answers 401 without a session and 403 without the teams flag", async () => {
+  it("answers 401 without a session and 403 without the teams flag or to a blocked account", async () => {
     const t = await team();
     const noFlag = await user(1009, "no-flag", false);
     const d = await makeDevice();
@@ -164,6 +164,18 @@ describe("the gate", () => {
       expect(res.status, `${method} ${path}`).toBe(403);
       expect(await res.json()).toEqual({ error: "teams is not enabled for this account" });
     }
+    // A blocked account is told so, with the flag or without.
+    const flagged = await user(1010, "blocked");
+    for (const u of [flagged, noFlag]) {
+      expect((await call("PUT", `/admin/users/${u.id}/block`, ADMIN)).status).toBe(204);
+      for (const [method, path] of paths) {
+        const res = await api(u, method, path, { device: d, body: method === "POST" ? {} : undefined });
+        expect(res.status, `${method} ${path}`).toBe(403);
+        expect(await res.json()).toEqual({ error: "blocked" });
+      }
+    }
+    expect((await call("DELETE", `/admin/users/${flagged.id}/block`, ADMIN)).status).toBe(204);
+    await expectJson(api(flagged, "GET", "/teams"), 200);
     // The owner loses the flag: the team is closed to them too.
     await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ?").bind(t.owner.user.id).run();
     await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}`), 403);

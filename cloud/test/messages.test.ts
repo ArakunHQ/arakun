@@ -120,6 +120,28 @@ describe("channel sockets", () => {
     a.ws.close();
   });
 
+  it("close a blocked account's socket before it gets anything, and take no message from it", async () => {
+    const t = await team();
+    const blocked = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(blocked.user, blocked.device, t.teamId, t.channelId);
+    expect((await call("PUT", `/admin/users/${blocked.user.id}/block`, ADMIN)).status).toBe(204);
+
+    b.send(await message(t.teamId, t.channelId, blocked.device, 1, t.keys.get(1)!, "still here"));
+    expect((await refused(b)).error).toBe("not a member of this team");
+    expect(await b.inbox.closedWith()).toEqual({ code: 4403, reason: "not a member of this team" });
+    // A new socket is refused, and so is the history.
+    await expect(openChannel(blocked.user, blocked.device, t.teamId, t.channelId)).rejects.toThrow();
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "only for members"));
+    await stored(a);
+    const history = await expectJson<{ message: { device_id: string } }[]>(
+      api(t.owner.user, "GET", `/teams/${t.teamId}/channels/${t.channelId}/messages`, { device: t.owner.device }),
+      200,
+    );
+    expect(history.map((m) => m.message.device_id)).toEqual([t.owner.device.id]);
+    a.ws.close();
+  });
+
   it("check a socket admitted while a send checks the others, so a logout in between is not missed", async () => {
     const t = await team();
     const m = await join(t);

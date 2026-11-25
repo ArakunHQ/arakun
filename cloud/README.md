@@ -515,7 +515,10 @@ one: `204`, also on a second read; `404` for one that is not the caller's, has e
 or does not exist. A `github_id` with no account answers `404`.
 
 A blocked account can still sign in and read `/me`; `GET /machines` answers it
-`403 { "error": "blocked", "reason": … }` with the reason given.
+`403 { "error": "blocked", "reason": … }` with the reason given. The teams API
+answers it `403 { "error": "blocked" }`, and a channel closes its socket at the next
+message there. Its teams stay as they are: block a team's only owner and nobody can
+approve a join or make the next key until the block is lifted.
 
 Each object checks its sockets' sessions and account in D1 every 15 minutes, and at
 once when the Worker asks after a sign-out, a block, a plan change or a forgotten

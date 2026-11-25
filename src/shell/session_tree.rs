@@ -8,6 +8,11 @@ use crate::tab_layout::{LongTitles, Quiet, Sort, StateMark, TabLayout};
 /// Height of a session row whose title fits on one line.
 const ROW_H: f32 = 30.;
 
+/// How strong the title and mark of a session with no tab open are drawn,
+/// over the faint gray: about a quarter of full text, so the sessions in
+/// use stand out. The theme has no gray that far back.
+const DIMMED: f32 = 0.67;
+
 /// What a row says about its session, the session's own state first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowState {
@@ -840,7 +845,7 @@ impl Shell {
             .child(
                 super::rail::heading_icon_button(
                     id,
-                    "sorting01",
+                    "preference-horizontal",
                     format!("Sort sessions: {}", sort.label()),
                 )
                 .when(open, |d| d.bg(theme::fill_selected()))
@@ -1006,8 +1011,9 @@ impl Shell {
         let age = under_pointer.then(|| model::age(updated));
         let end = state.end(layout.state, pr, age.as_deref());
         // A session with no tab open is a click away, not in use: its row
-        // steps back, unless something runs in it or it wants the user.
-        let dimmed = !tab && !selected && !state.stays_lit();
+        // steps back, unless something runs in it or it wants the user. It
+        // comes back under the pointer, to be read before it is opened.
+        let dimmed = !tab && !selected && !under_pointer && !state.stays_lit();
         let two_lines = layout.titles == LongTitles::TwoLines;
         let label = match state.word() {
             Some(word) => format!("{title}, {word}"),
@@ -1036,7 +1042,7 @@ impl Shell {
             .text_color(if selected || state == RowState::NeedsYou {
                 theme::content()
             } else if dimmed {
-                theme::text_subtle()
+                theme::text_faint()
             } else {
                 theme::text_muted()
             })
@@ -1048,7 +1054,7 @@ impl Shell {
                 div()
                     .flex()
                     .flex_none()
-                    .when(dimmed, |d| d.opacity(0.5))
+                    .when(dimmed, |d| d.opacity(DIMMED))
                     .child(mark)
             }))
             // Without project headings, each row says its project.
@@ -1074,6 +1080,7 @@ impl Shell {
                             d.truncate()
                         }
                     })
+                    .when(dimmed, |d| d.opacity(DIMMED))
                     .child(title),
             )
             .children(end.map(|text| {

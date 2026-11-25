@@ -29,6 +29,11 @@ impl LinearView {
                     }
                     // A new key for the same workspace reads its list again.
                     this.read_at = None;
+                    // A read still running with the old key would end as
+                    // "sign-in no longer works" right after this good one,
+                    // and would keep the read below from starting.
+                    this.assigned.cancel();
+                    this.assigned.error = None;
                     this.page = Page::Main;
                 }
                 let signed_in = got.is_ok();

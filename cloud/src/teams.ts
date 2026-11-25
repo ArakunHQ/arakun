@@ -89,6 +89,8 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["POST", /^\/teams\/([^/]+)\/pending\/([^/]+)\/reject$/, reject],
   ["PUT", /^\/teams\/([^/]+)\/envelopes$/, putEnvelopes],
   ["GET", /^\/teams\/([^/]+)\/envelopes$/, getEnvelopes],
+  ["GET", /^\/teams\/([^/]+)\/envelopes\/stale$/, staleEnvelopes],
+  ["PUT", /^\/teams\/([^/]+)\/members\/([^/]+)$/, setRole],
   ["DELETE", /^\/teams\/([^/]+)\/members\/([^/]+)$/, removeMember],
   ["POST", /^\/teams\/([^/]+)\/channels$/, createChannel],
   ["PUT", /^\/teams\/([^/]+)\/channels\/([^/]+)$/, renameChannel],
@@ -114,6 +116,8 @@ export async function teams(request: Request, env: Env, url: URL): Promise<Respo
 
 const notFound = () => error(404, "not found");
 const notAdmin = () => error(403, "only an owner or admin can do this");
+const notOwner = () => error(403, "only an owner can change roles");
+const ROLES: readonly string[] = ["owner", "admin", "member"];
 
 function isAdmin(role: Role): boolean {
   return role === "owner" || role === "admin";
@@ -579,11 +583,12 @@ async function remind(c: Ctx, teamId: string): Promise<Response> {
 }
 
 /// SQL that holds while the session `session` is live at time `t`, its user
-/// has the flag, and is an owner or admin of team `team`. For a write that
-/// must not commit after the caller lost any of them while it ran.
-function stillAdmin(team: string, session: string, t: string): string {
+/// has the flag, and is an owner or admin of team `team` (only an owner, with
+/// `roles` "'owner'"). For a write that must not commit after the caller lost
+/// any of them while it ran.
+function stillAdmin(team: string, session: string, t: string, roles = "'owner', 'admin'"): string {
   return `EXISTS (SELECT 1 FROM sessions s
-    JOIN members a ON a.github_id = s.github_id AND a.team_id = ${team} AND a.role IN ('owner', 'admin')
+    JOIN members a ON a.github_id = s.github_id AND a.team_id = ${team} AND a.role IN (${roles})
     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = '${FLAG}'
     JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
     WHERE s.token_hash = ${session} AND s.expires_at > ${t})`;
@@ -778,9 +783,16 @@ function insertEnvelope(extra: string): string {
     SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
       SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2) ${extra}
     ON CONFLICT DO UPDATE SET body = excluded.body
-    WHERE json_extract(envelopes.body, '$.from') = json_extract(excluded.body, '$.from') OR NOT EXISTS (
-      SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = envelopes.team_id
-      WHERE d.device_id = json_extract(envelopes.body, '$.from') AND m.role IN ('owner', 'admin'))`;
+    WHERE json_extract(envelopes.body, '$.from') = json_extract(excluded.body, '$.from') OR NOT ${senderIsAdmin("envelopes")}`;
+}
+
+/// SQL that holds while the stored envelope `row` was sent by a device of an
+/// owner or admin of its team now. Recipients refuse one that fails it, so an
+/// upload may replace it and `GET .../envelopes/stale` lists it. Both use this
+/// one test, so every envelope listed there can be replaced.
+function senderIsAdmin(row: string): string {
+  return `EXISTS (SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ${row}.team_id
+    WHERE d.device_id = json_extract(${row}.body, '$.from') AND m.role IN ('owner', 'admin'))`;
 }
 
 /// Whether this upload made the new key: the update in the same batch set
@@ -903,7 +915,65 @@ async function getEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   return Response.json(results.map((r) => ({ ...JSON.parse(r.body), made_at: r.made_at })));
 }
 
+/// Where the envelopes of current members' devices sit whose sender is no
+/// longer a device of an owner or admin: one who was demoted, left or was
+/// removed. Their recipients refuse them, so an admin's device seals those
+/// epochs again. Only the device and epoch of each, never the envelope.
+/// Newest epochs first, at most one upload's worth; the rest show once these
+/// are replaced.
+async function staleEnvelopes(c: Ctx, teamId: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (!isAdmin(team.role)) return notAdmin();
+  const { results } = await c.env.DB.prepare(
+    `SELECT e.device_id, e.epoch FROM envelopes e
+     JOIN devices r ON r.device_id = e.device_id
+     JOIN members rm ON rm.team_id = e.team_id AND rm.github_id = r.github_id
+     WHERE e.team_id = ? AND NOT ${senderIsAdmin("e")}
+     ORDER BY e.epoch DESC, e.device_id LIMIT ${MAX_ENVELOPES}`,
+  )
+    .bind(teamId)
+    .all<{ device_id: string; epoch: number }>();
+  return Response.json(results);
+}
+
 // ---- members -------------------------------------------------------------------
+
+/// Gives a member another role. Only an owner may: to make someone an admin
+/// or a member, add an owner, or step down. Handing the team over is two
+/// calls, the other person to owner and then the caller to admin, so a
+/// failure in between leaves two owners, never none.
+async function setRole(c: Ctx, teamId: string, id: string): Promise<Response> {
+  const team = await teamOf(c, teamId);
+  if (!team) return notFound();
+  if (team.role !== "owner") return notOwner();
+  if (!GITHUB_ID.test(id)) return error(404, "no such member");
+  const body = await jsonBody(c.request, 4096);
+  const role = isObject(body) ? body["role"] : null;
+  if (typeof role !== "string" || !ROLES.includes(role)) return error(400, 'expected {"role": "..."}: owner, admin or member');
+  const target = Number(id);
+  const db = c.env.DB;
+  // The caller still an owner with a live session and the flag, and the
+  // owner count, are read in the update, not before it: two owners who step
+  // down at once cannot both pass and leave the team with none, and an owner
+  // demoted meanwhile changes nothing. SQLite counts a row set to the role it
+  // has as changed, so a retry answers 200.
+  const [result, allowed, row] = await db.batch([
+    db
+      .prepare(
+        `UPDATE members SET role = ?3 WHERE team_id = ?1 AND github_id = ?2
+           AND ${stillAdmin("?1", "?4", "unixepoch()", "'owner'")}
+           AND (?3 = 'owner' OR role <> 'owner' OR (SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner') > 1)`,
+      )
+      .bind(teamId, target, role, c.me.hash),
+    db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "unixepoch()", "'owner'")}`).bind(teamId, c.me.hash),
+    db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
+  ]);
+  if (result!.meta.changes === 1) return Response.json({ github_id: target, role });
+  if (allowed!.results.length === 0) return notOwner();
+  if (row!.results.length === 0) return error(404, "no such member");
+  return error(409, "a team needs an owner: make someone else an owner first");
+}
 
 async function removeMember(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);

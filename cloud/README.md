@@ -518,7 +518,8 @@ A blocked account can still sign in and read `/me`; `GET /machines` answers it
 `403 { "error": "blocked", "reason": … }` with the reason given. The teams API
 answers it `403 { "error": "blocked" }`, and a channel closes its socket at the next
 message there. Its teams stay as they are: block a team's only owner and nobody can
-approve a join or make the next key until the block is lifted.
+change a role, and while no admin is left, nobody can approve a join or make the
+next key until the block is lifted.
 
 Each object checks its sockets' sessions and account in D1 every 15 minutes, and at
 once when the Worker asks after a sign-out, a block, a plan change or a forgotten
@@ -858,6 +859,8 @@ devices: `400` without it, `403` if it is someone else's.
 | `POST /teams/<team_id>/pending/<github_id>/reject` `{request_id}` | admin | `204`; `409` if the request changed. |
 | `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |
 | `GET /teams/<team_id>/envelopes` | member, device | `200 [Envelope + made_at]`, the device's own; `made_at` is when the epoch's key first reached the team. |
+| `GET /teams/<team_id>/envelopes/stale` | admin | `200 [{device_id, epoch}]`: members' envelopes whose sender is no longer an owner's or admin's device, newest epoch first, at most 500. |
+| `PUT /teams/<team_id>/members/<github_id>` `{role}` | owner | `200 {github_id, role}`; `role` is `owner`, `admin` or `member`, the caller's own included. `404` if not a member, `409` if the team would have no owner. `403` if the caller lost the owner role, the session or the flag meanwhile. |
 | `DELETE /teams/<team_id>/members/<github_id>` | admin, or the member themselves | `200 {epoch, rotation_pending: true}`. Their sockets close. `409` for the last owner. |
 | `POST /teams/<team_id>/channels` `{channel_id, name_ct}` | admin | `201 {channel_id}`. `409` for an ID in use or past 500 channels. |
 | `PUT /teams/<team_id>/channels/<channel_id>` `{name_ct}` | admin | `200 {channel_id}`: the name sealed again with the newest key, or a new name. `409` if that key changed meanwhile. |

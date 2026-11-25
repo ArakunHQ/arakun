@@ -647,8 +647,9 @@ the admin Worker, so a release still ships the cloud Worker.
 
    The Worker does not exist yet, so wrangler asks whether to create it with the
    secrets; answer yes. A Worker without its secrets fails closed: nobody can sign in.
-3. Last, in `cloud/admin/wrangler.toml`, replace `PLACEHOLDER` under
-   `[env.production.vars]` with the app's client ID, and merge that.
+3. Last, in `cloud/admin/wrangler.toml`, put the app's client ID under
+   `[env.production.vars]` and merge that. While it is `PLACEHOLDER`, a release
+   skips the admin Worker.
 4. The next release deploys the panel to `https://admin.arakun.dev`. By hand,
    `npm run deploy` in `cloud/admin` does the same; it builds with
    `CLOUDFLARE_ENV=production`, which a production build needs.

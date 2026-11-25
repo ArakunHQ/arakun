@@ -2152,12 +2152,9 @@ impl Shell {
             ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
                 "cancelled" => return,
                 "error" => (Kind::Error, error_text(t)),
-                _ => (Kind::Done, notify::finished_body(t.entries())),
+                _ => (Kind::Done, "Finished its turn.".into()),
             },
-            ThreadEvent::NeedsPermission => (
-                Kind::Input,
-                notify::input_body(t.entries(), t.pending_permission(), t.pending_question()),
-            ),
+            ThreadEvent::NeedsPermission => (Kind::Input, desktop_input_text(t)),
             ThreadEvent::StatusChanged if t.needs_install().is_some() => {
                 (Kind::Input, error_text(t))
             }
@@ -2468,6 +2465,21 @@ thread_local! {
     static NOTIFIED: RefCell<HashMap<String, Kind>> = RefCell::new(HashMap::new());
     /// The AskUser question last read aloud per session, by tool call id.
     static SPOKEN: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// The short line the desktop shows for a session that waits for the user.
+fn desktop_input_text(t: &Thread) -> String {
+    if let Some(p) = t.pending_permission() {
+        if p.plan.is_some() {
+            "Has a plan ready for your approval.".to_string()
+        } else {
+            format!("Needs permission: {}", p.title)
+        }
+    } else if t.pending_question().is_some() {
+        "Has a question for you.".into()
+    } else {
+        "Needs your input.".into()
+    }
 }
 
 fn error_text(t: &Thread) -> String {

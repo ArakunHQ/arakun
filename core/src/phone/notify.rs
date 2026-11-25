@@ -73,9 +73,9 @@ pub fn input_body(
         });
         return permission_body(p, tool);
     }
-    match question {
-        Some(q) => question_body(q),
-        None => "Needs your input.".into(),
+    match question.map(question_body) {
+        Some(text) if !text.is_empty() => text,
+        _ => "Needs your input.".into(),
     }
 }
 
@@ -315,5 +315,7 @@ mod tests {
             "Run command: cargo test"
         );
         assert_eq!(input_body(&[], None, None), "Needs your input.");
+        let empty = AskUserRequest::for_test(Vec::new());
+        assert_eq!(input_body(&[], None, Some(&empty)), "Needs your input.");
     }
 }

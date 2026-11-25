@@ -1,6 +1,7 @@
 package com.arakun.android
 
 import android.content.Intent
+import com.arakun.kit.DiffRef
 import com.arakun.kit.Machine
 import com.arakun.kit.Notice
 import com.arakun.kit.SessionStatus
@@ -73,6 +74,34 @@ data class Demo(val signIn: Boolean, val machines: Boolean, val open: String?, v
           {"type":"plan","entries":[{"content":"Check the limit before spending the code","status":"completed"},{"content":"Add a test for a refused phone that retries","status":"in_progress"},{"content":"Run the relay tests","status":"pending"}]},
           {"type":"tool","id":"t3","title":"Edit cloud/src/relay/relay.ts","kind":"edit","status":"completed","diffs":[{"path":"cloud/src/relay/relay.ts","added":12,"removed":5}],"added":12,"removed":5}],
          "permission":{"tool_call_id":"p1","title":"cargo test -p arakun relay","options":[{"id":"a","name":"Allow","kind":"allow_once"},{"id":"b","name":"Always allow","kind":"allow_always"},{"id":"c","name":"Deny","kind":"reject_once"}]}}
+        """
+
+        /** What the sample session changed, as the computer would list it. */
+        fun changes(at: Long) = """
+        {"turns":[
+         {"entry":0,"text":"Pairing links fail with limit:phones. Find out why and fix it.","at":$at,"files":[
+          {"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[6,1]]},
+          {"path":"cloud/test/relay.test.ts","name":"relay.test.ts","added":28,"removed":0,"diffs":[[7,0]]},
+          {"path":"README.md","name":"README.md","added":2,"removed":2,"diffs":[[8,0]]}]}]}
+        """
+
+        /** One of the sample diffs; they differ only in where they are. */
+        fun diff(ref: DiffRef) = """
+        {"entry":${ref.entry},"index":${ref.index},"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":4,"removed":3,
+         "new_file":false,"deleted":false,"cut":0,"lines":[
+          "@@ -409,9 +409,10 @@ export class Relay {",
+          [" ",409,"  acceptPhone(phone: Phone, code: string) {"],
+          [" ",410,"    const pairing = this.pairings.get(code);"],
+          [" ",411,"    if (!pairing) return refuse(phone, \"no_pairing\");"],
+          ["-",412,"    this.admit(phone);"],
+          ["-",413,"    this.pairings.delete(code);"],
+          ["-",414,"    if (this.phones.size > this.limit) return refuse(phone, \"limit:phones\");"],
+          ["+",412,"    // A refused phone keeps its code, so it can try again when there is room."],
+          ["+",413,"    if (this.phones.size >= this.limit) return refuse(phone, \"limit:phones\");"],
+          ["+",414,"    this.pairings.delete(code);"],
+          ["+",415,"    this.admit(phone);"],
+          [" ",416,"    return welcome(phone, pairing.host);"],
+          [" ",417,"  }"]]}
         """
     }
 }

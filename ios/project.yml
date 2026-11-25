@@ -55,6 +55,13 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.arakun.pair
             CFBundleURLSchemes: [arakun]
+        # Answers App Store Connect's export compliance question for every
+        # build, so a new upload doesn't wait on someone to answer it by hand.
+        # The only encryption is HTTPS and the end-to-end encryption in
+        # ArakunKit's E2E.swift, both from Apple's own CryptoKit and
+        # URLSession, which Apple counts as exempt. Revisit this if the app
+        # ships its own cryptography.
+        ITSAppUsesNonExemptEncryption: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arakun.ios

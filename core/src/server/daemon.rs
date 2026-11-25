@@ -154,6 +154,9 @@ pub struct Daemon {
     hidden: HashSet<ClientId>,
     /// What the apps following this server said of the person's idle time.
     heard_idle: HeardIdle,
+    /// The desktop apps among the devices: what they follow says nothing
+    /// about whether the person looked.
+    desktops: Desktops,
     /// Places whose worktree is being deleted: nothing new starts in them.
     deleting: HashSet<PathBuf>,
     /// How many worktrees were deleted so far: a folder looked at before one
@@ -954,6 +957,41 @@ impl HeardIdle {
     }
 }
 
+/// The clients that are desktop apps following this server. An app follows
+/// every session it shows (`open` with `keep`) and never says it left the
+/// screen, so its watching is no sign the person saw a session. Only the
+/// desktop app opens with `keep` or tells its idle time; phones do neither.
+#[derive(Default)]
+struct Desktops(HashSet<ClientId>);
+
+impl Desktops {
+    fn heard(&mut self, client: ClientId, msg: &ClientMsg) {
+        if matches!(
+            msg,
+            ClientMsg::Open { keep: true, .. } | ClientMsg::Idle { .. }
+        ) {
+            self.0.insert(client);
+        }
+    }
+
+    fn forget(&mut self, client: ClientId) {
+        self.0.remove(&client);
+    }
+}
+
+/// Whether a phone has the session `id` on a screen it shows. Desktop apps
+/// don't count: they follow a session whether or not the person looks at it.
+fn phone_seen(
+    watching: &HashMap<ClientId, Vec<String>>,
+    hidden: &HashSet<ClientId>,
+    desktops: &Desktops,
+    id: &str,
+) -> bool {
+    watching.iter().any(|(client, w)| {
+        w.iter().any(|w| w == id) && !hidden.contains(client) && !desktops.0.contains(client)
+    })
+}
+
 /// Whether the person is at the computer, as the server can tell: what the
 /// apps following it said, else the host's idle time (none on a server), and
 /// no window to have focus.
@@ -1142,6 +1180,7 @@ impl Daemon {
             watching: HashMap::new(),
             hidden: HashSet::new(),
             heard_idle: HeardIdle::default(),
+            desktops: Desktops::default(),
             deleting: HashSet::new(),
             deletions: 0,
             installed_for: HashSet::new(),
@@ -2727,6 +2766,7 @@ impl Daemon {
         self.stop_watching(id, cx);
         self.hidden.remove(&id);
         self.heard_idle.forget(id);
+        self.desktops.forget(id);
         self.readers.remove(&id);
         self.asked.retain(|_, c| *c != id);
         self.rewinds.retain(|_, r| r.client != id);
@@ -2740,6 +2780,7 @@ impl Daemon {
 
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
         let gone = |session: &str| session_error(session, "that session is gone");
+        self.desktops.heard(client, &msg);
         match msg {
             ClientMsg::Open { session, keep } => {
                 let Some(record) = self.store.session(&session) else {
@@ -4019,10 +4060,11 @@ impl Daemon {
     }
 
     /// Whether a session is still in the state its notice is about: still
-    /// waiting for an answer, or not at work again. One a device has on
-    /// screen is seen.
+    /// waiting for an answer, or not at work again. One a phone has on
+    /// screen is seen; a desktop app following it is not a sign of that.
     fn still_notice(&self, id: &str, kind: notify::Kind, cx: &App) -> bool {
-        if self.seen(id) || self.store.session(id).is_none() {
+        let seen = phone_seen(&self.watching, &self.hidden, &self.desktops, id);
+        if seen || self.store.session(id).is_none() {
             return false;
         }
         // A retired session is neither working nor asking anything.
@@ -6896,6 +6938,84 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         // The newest word from a client replaces its last.
         heard.heard(1, 900, made);
         assert_eq!(heard.idle(made), Some(Duration::from_secs(500)));
+    }
+
+    #[test]
+    fn a_desktop_following_a_session_does_not_hold_back_its_question() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        let (desktop, phone_client) = (1, 2);
+        let mut watching: HashMap<ClientId, Vec<String>> = HashMap::new();
+        let hidden = HashSet::new();
+        let mut desktops = Desktops::default();
+        let mut heard = HeardIdle::default();
+        let made = Instant::now();
+        // The desktop app follows the session, as `shell::servers` opens it,
+        // and says the person is at the desk.
+        let open = read(r#"{"type":"open","session":"s1","keep":true}"#);
+        desktops.heard(desktop, &open);
+        watching.insert(desktop, vec!["s1".into()]);
+        let idle = read(r#"{"type":"idle","secs":5}"#);
+        desktops.heard(desktop, &idle);
+        let ClientMsg::Idle { secs } = idle else {
+            unreachable!()
+        };
+        heard.heard(desktop, secs, made);
+
+        let devices = vec![relay_device("p1", true)];
+        let mut notifier = notify::Notifier::default();
+        let asking = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Input,
+            turn_secs: None,
+            payload: "permission".into(),
+        };
+        let now = offer_notice(
+            &mut notifier,
+            asking,
+            &devices,
+            &HashSet::new(),
+            &heard,
+            made,
+        );
+        assert!(now.is_empty(), "at the desk, a question waits");
+        assert!(notifier.has_pending());
+
+        // The person walks away; the desktop still follows the session.
+        let later = made + Duration::from_secs(150);
+        heard.heard(desktop, 150, later);
+        let still = |s: &str, _: notify::Kind| !phone_seen(&watching, &hidden, &desktops, s);
+        let sent = due_notices(&mut notifier, &devices, still, &heard, later);
+        assert_eq!(
+            sent.len(),
+            1,
+            "the question goes out once the person is away"
+        );
+        assert_eq!(sent[0].payload, "permission");
+
+        // A phone that has the session on screen did see it.
+        let mut notifier = notify::Notifier::default();
+        let asking = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Input,
+            turn_secs: None,
+            payload: "permission".into(),
+        };
+        heard.heard(desktop, 5, later);
+        offer_notice(
+            &mut notifier,
+            asking,
+            &devices,
+            &HashSet::new(),
+            &heard,
+            later,
+        );
+        desktops.heard(phone_client, &read(r#"{"type":"open","session":"s1"}"#));
+        watching.insert(phone_client, vec!["s1".into()]);
+        let after = later + Duration::from_secs(150);
+        heard.heard(desktop, 150, after);
+        let still = |s: &str, _: notify::Kind| !phone_seen(&watching, &hidden, &desktops, s);
+        assert!(due_notices(&mut notifier, &devices, still, &heard, after).is_empty());
+        assert!(!notifier.has_pending());
     }
 
     #[test]

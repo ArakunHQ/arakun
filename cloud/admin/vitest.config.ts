@@ -5,8 +5,6 @@ import { defineConfig } from "vitest/config";
 // panel's in jsdom.
 export default defineConfig({
   test: {
-    // The panel has no tests yet.
-    passWithNoTests: true,
     projects: [
       {
         plugins: [

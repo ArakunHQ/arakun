@@ -1,0 +1,55 @@
+// The one way the panel talks to its Worker. The Worker answers /api/me itself
+// and forwards the rest of /api/* to the cloud Worker, so every error comes as
+// JSON { error } from one of the two, or from Cloudflare in front of them.
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+let onSignedOut: () => void = () => {};
+
+/// Called on every 401: the session cookie expired or was signed out
+/// elsewhere. The panel uses it to leave for the sign-in screen.
+export function setOnSignedOut(handler: () => void): void {
+  onSignedOut = handler;
+}
+
+/// Calls /api/<path>. Throws ApiError with the server's `error` text; for a 401 it also calls onSignedOut.
+export async function api<T>(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(`/api/${path}`, {
+    method,
+    // The session is a same-origin cookie; nothing else carries it.
+    credentials: "same-origin",
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const error = new ApiError(res.status, await errorText(res));
+    if (res.status === 401) onSignedOut();
+    throw error;
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+/// The server's `error` text, or the status when the body is not ours (a
+/// proxy's HTML page, say).
+async function errorText(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    if (typeof body === "object" && body !== null && typeof (body as { error?: unknown }).error === "string") {
+      return (body as { error: string }).error;
+    }
+  } catch {
+    // Not JSON: fall through to the status.
+  }
+  return `the server answered ${res.status}`;
+}

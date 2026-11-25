@@ -301,6 +301,19 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler secret put CLOUD_REQUESTS_WEBHOOK --env production
    ```
 
+   Optionally, the keys that let the iOS and Android apps get notices (see Push to
+   the apps). Without them, `/push` answers 503 and the apps get none:
+
+   ```sh
+   # Apple: the .p8 file's text and its key ID (developer.apple.com → Keys, with
+   # Apple Push Notifications service). The team and bundle ID are in wrangler.toml.
+   npx wrangler secret put APNS_KEY --env production < AuthKey_XXXXXXXXXX.p8
+   npx wrangler secret put APNS_KEY_ID --env production
+   # Google: a service account's JSON key from the Firebase project, with the
+   # Firebase Cloud Messaging API Admin role.
+   npx wrangler secret put FCM_SERVICE_ACCOUNT --env production < service-account.json
+   ```
+
 4. Deploy:
 
    ```sh
@@ -560,6 +573,20 @@ npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
   SELECT u.github_id, u.login, f.flag FROM user_flags f JOIN users u USING (github_id)"
 ```
 
+## Push to the apps
+
+The phone page gets its notices from the browser's own push service. The iOS and
+Android apps can only be woken through Apple (APNs) and Google (FCM), with Arakun's
+keys, so this Worker is their push service. An app makes its own P-256 key and
+auth secret, and gives each computer a Web Push subscription whose endpoint is
+here: `https://<host>/push/v1/apns/<token>` (`apns-sandbox` for a development
+build) or `https://<host>/push/v1/fcm/<token>`. The computer sends what it sends a
+browser's service: an RFC 8291 aes128gcm body with a VAPID token. The Worker
+checks the token's signature and audience, and passes the ciphertext on as `e`:
+in a mutable alert to Apple, which the app's notification service opens, and in
+a data message to Google. Neither the Worker, Apple nor Google can read the
+notice. Each token gets 30 messages a minute.
+
 ## API
 
 Times are Unix seconds. The request and answer bodies of the team endpoints, and
@@ -580,6 +607,7 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
 | `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
 | `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
+| `POST /push/v1/{apns,apns-sandbox,fcm}/<token>` with a Web Push request (`Content-Encoding: aes128gcm`, `Authorization: vapid t=..., k=...`, `TTL`, `Urgency`) | `201` once Apple or Google took it. `401` for a missing or bad VAPID token (wrong signature, audience or expiry), `404` for a token that is not one, `410` when Apple or Google say the token is gone, `413` for a body over 2800 bytes, `415` without `aes128gcm`, `429` after 30 a minute for one token or when the service is busy, `502` when it refuses or cannot be reached, `503` without its keys. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

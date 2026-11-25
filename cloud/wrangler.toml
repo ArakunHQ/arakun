@@ -42,11 +42,15 @@ migrations_dir = "migrations"
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 # The old relay hosts are `<label>.<BASE_DOMAIN>`.
 BASE_DOMAIN = "arakun.dev"
+# Who Apple delivers the iOS app's notices for (src/push.ts). The key itself
+# is `wrangler secret put APNS_KEY` and `APNS_KEY_ID`.
+APNS_TEAM_ID = "V9JGU28UV7"
+APNS_TOPIC = "com.arakun.ios"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
-# so every id here is used once: this Worker has 1003, 1004, 1005 and 1007,
-# production 1001, 1002, 1006 and 1008.
+# so every id here is used once: this Worker has 1003, 1004, 1005, 1007 and
+# 1009, production 1001, 1002, 1006, 1008 and 1010.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -84,6 +88,16 @@ namespace_id = "1007"
   limit = 5
   period = 60
 
+# Notices pushed to one native app's token: a busy computer sends a few a
+# minute; 30 leaves room for several computers and none for a flood.
+[[ratelimits]]
+name = "PUSH_LIMIT"
+namespace_id = "1009"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
 # One SQLite-backed object per channel: its messages, their seq and the live
 # sockets.
 [[durable_objects.bindings]]
@@ -108,7 +122,8 @@ new_sqlite_classes = ["Channel"]
 
 # The hosted Worker (`npx wrangler deploy --env production`), which
 # .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET,
-# GITHUB_CLIENT_SECRET and CLOUD_REQUESTS_WEBHOOK stay Worker secrets. An environment inherits no bindings,
+# GITHUB_CLIENT_SECRET, CLOUD_REQUESTS_WEBHOOK, APNS_KEY, APNS_KEY_ID and
+# FCM_SERVICE_ACCOUNT stay Worker secrets. An environment inherits no bindings,
 # so they are all here again. The one route covers the account host
 # app.arakun.dev and the old label hosts, which tell old apps to update.
 [env.production]
@@ -154,6 +169,14 @@ namespace_id = "1008"
   limit = 5
   period = 60
 
+[[env.production.ratelimits]]
+name = "PUSH_LIMIT"
+namespace_id = "1010"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60
+
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL"
 class_name = "Channel"
@@ -185,3 +208,5 @@ GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 BASE_DOMAIN = "arakun.dev"
 # The route takes every host under arakun.dev; only this one is the account's.
 ACCOUNT_HOST = "app.arakun.dev"
+APNS_TEAM_ID = "V9JGU28UV7"
+APNS_TOPIC = "com.arakun.ios"

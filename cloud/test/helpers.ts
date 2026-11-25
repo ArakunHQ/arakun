@@ -180,7 +180,7 @@ export async function signIn(
   return res.json();
 }
 
-export function call(method: string, path: string, headers: Record<string, string> = {}, body?: string): Promise<Response> {
+export function call(method: string, path: string, headers: Record<string, string> = {}, body?: BodyInit): Promise<Response> {
   return SELF.fetch(`https://teams.test${path}`, { method, headers, body });
 }
 

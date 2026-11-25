@@ -36,15 +36,12 @@ pub struct PeopleTab {
     debounce: Debounce,
     /// (person_id, distinct_id) of the open profile.
     selected: Option<(String, String)>,
-    profile: Option<Profile>,
-    profile_loading: bool,
-    profile_error: Option<ApiError>,
+    profile: Loadable<Profile, ApiError>,
     all_props: bool,
     timeline: Option<Kind>,
     list_scroll: ScrollHandle,
     _load: Option<Task<()>>,
     _more: Option<Task<()>>,
-    _profile: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -75,15 +72,12 @@ impl PeopleTab {
             spent: 0,
             debounce: Debounce::default(),
             selected: None,
-            profile: None,
-            profile_loading: false,
-            profile_error: None,
+            profile: Loadable::default(),
             all_props: false,
             timeline: None,
             list_scroll: ScrollHandle::new(),
             _load: None,
             _more: None,
-            _profile: None,
             _subs: subs,
         }
     }
@@ -92,10 +86,9 @@ impl PeopleTab {
         if self.target == target {
             return;
         }
-        self._profile = None;
+        self.profile.reset();
         self._more = None;
         self.loading_more = false;
-        self.profile_loading = false;
         self.more = false;
         // Another project's cutoff would hide this one's newest people.
         self.until = 0;
@@ -105,8 +98,6 @@ impl PeopleTab {
         self.error = None;
         self.loaded = false;
         self.selected = None;
-        self.profile = None;
-        self.profile_error = None;
         self.debounce.bump();
         // Not set_text: its Changed event would schedule a read for a tab
         // that is not open; show() starts the first one when People opens.
@@ -143,10 +134,7 @@ impl PeopleTab {
         self.people.clear();
         self.total = None;
         self.selected = None;
-        self.profile = None;
-        self.profile_error = None;
-        self._profile = None;
-        self.profile_loading = false;
+        self.profile.reset();
         let generation = self.debounce.bump();
         self.loading = true;
         cx.notify();
@@ -278,35 +266,28 @@ impl PeopleTab {
         let Some(t) = self.target.clone() else { return };
         let key = (pid.clone(), did.clone());
         if self.selected.as_ref() != Some(&key) {
-            self.profile = None;
+            self.profile.data = None;
             self.all_props = false;
         }
         self.selected = Some(key.clone());
-        self.profile_loading = true;
-        self.profile_error = None;
-        cx.notify();
-        self._profile = Some(cx.spawn(async move |this, cx| {
-            let got = cx
-                .background_spawn(crate::guard::task(async move {
-                    pp::load_profile(&t.session, &t.project, &pid, &did, fresh)
-                }))
-                .await;
-            this.update(cx, |this, cx| {
+        self.profile.error = None;
+        // Another person, or a refresh past the cache, replaces the read
+        // under way instead of waiting for it.
+        self.profile.cancel();
+        self.profile.start(
+            cx,
+            |this| &mut this.profile,
+            async move { pp::load_profile(&t.session, &t.project, &pid, &did, fresh) },
+            move |this, got, _| {
                 if this.selected.as_ref() != Some(&key) {
                     return;
                 }
-                this.profile_loading = false;
-                match got {
-                    Ok(p) => {
-                        this.spent = p.spent;
-                        this.profile = Some(p);
-                    }
-                    Err(e) => this.profile_error = Some(e),
+                if let Ok(p) = &got {
+                    this.spent = p.spent;
                 }
-                cx.notify();
-            })
-            .ok();
-        }));
+                this.profile.settle(got);
+            },
+        );
     }
 
     fn open(&self, path: &str, cx: &mut Context<Self>) {
@@ -317,7 +298,7 @@ impl PeopleTab {
 
     /// The scope a part of the tab was refused for.
     fn missing(&self) -> Option<&str> {
-        [&self.error, &self.profile_error]
+        [&self.error, &self.profile.error]
             .into_iter()
             .find_map(|e| match e {
                 Some(ApiError::MissingScope(s)) => Some(s.as_str()),
@@ -902,14 +883,14 @@ impl Render for PeopleTab {
                     cx.listener(move |_, _, _, cx| cx.emit(PeopleEvent::Open(url.clone()))),
                     cx.listener(|this, _, _, cx| {
                         this.error = None;
-                        this.profile_error = None;
+                        this.profile.error = None;
                         this.selected = None;
                         this.load(0, cx);
                     }),
                 ))
                 .into_any_element();
         }
-        let note: Option<AnyElement> = [&self.error, &self.profile_error]
+        let note: Option<AnyElement> = [&self.error, &self.profile.error]
             .into_iter()
             .flatten()
             .next()
@@ -924,9 +905,9 @@ impl Render for PeopleTab {
                 ),
                 e => notice("alert-circle", Tone::Warning, e.message()),
             });
-        let profile: AnyElement = match &self.profile {
+        let profile: AnyElement = match &self.profile.data {
             Some(p) => self.render_profile(&p.clone(), cx),
-            None if self.profile_loading => ui::loading("Reading the profile…")
+            None if self.profile.loading() => ui::loading("Reading the profile…")
                 .flex_1()
                 .into_any_element(),
             None => div().flex_1().into_any_element(),

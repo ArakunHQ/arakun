@@ -1,0 +1,235 @@
+/* The old page's look for the screens ported so far, copied from
+   public/app.css. It goes when the tokens arrive (Task 8). */
+@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("/fonts/Geist-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("/fonts/Geist-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("/fonts/Geist-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("/fonts/GeistMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("/fonts/GeistMono-Medium.woff2") format("woff2"); }
+
+:root {
+  --bg: #0b0b0b;
+  --card: #161616;
+  --group: #111111;
+  --raised: #1f1f1f;
+  --bubble-me: #2b2b2b;
+  --bubble-agent: #161616;
+  --text: #f2f2f2;
+  --muted: #c4c4c4;
+  --subtle: #a3a3a3;
+  --faint: #737373;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.1);
+  --fill: rgba(255, 255, 255, 0.04);
+  --fill-hover: rgba(255, 255, 255, 0.08);
+  --primary: #f2f2f2;
+  --on-primary: #0b0b0b;
+  --accent: #ffb547;
+  --accent-soft: rgba(255, 181, 71, 0.12);
+  --success: #3fb950;
+  --success-soft: rgba(63, 185, 80, 0.14);
+  --error: #f85149;
+  --error-soft: rgba(248, 81, 73, 0.14);
+  --attention: #ffb547;
+  --link: #86a6f2;
+  --add: #3fb950;
+  --del: #f85149;
+  --claude: #e8875f;
+  --claude-soft: #2a1d17;
+  --rail: #2b2b2b;
+  --mono: "Geist Mono", ui-monospace, monospace;
+  --sans: "Geist", system-ui, sans-serif;
+  --r: 8px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  /* The safe areas, never thinner than what keeps a thumb off the hardware:
+     the top clears the status bar, notch, Dynamic Island or a punch-hole
+     camera (iOS reports its inset; Android standalone often reports 0, so a
+     floor stays); the sides keep everything you tap away from curved edges
+     (iOS and Material both ask 16 or more); the bottom clears the home bar. */
+  --top: calc(max(var(--sat), 12px) + 8px);
+  --gl: max(16px, env(safe-area-inset-left, 0px));
+  --gr: max(16px, env(safe-area-inset-right, 0px));
+  --bot: max(var(--sab), 16px);
+  /* A floating card sits close over the home bar, as iOS's own bars do; the
+     bar is a thin line near the very bottom, not the whole inset. */
+  --float: max(calc(var(--sab) - 16px), 12px);
+}
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --card: #f7f7f7;
+  --group: #f2f2f2;
+  --raised: #fff;
+  --bubble-me: #fff;
+  --bubble-agent: #f2f2f2;
+  --text: #0b0b0b;
+  --muted: #3a3a3a;
+  --subtle: #595959;
+  --faint: #757575;
+  --border: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.1);
+  --fill: rgba(0, 0, 0, 0.04);
+  --fill-hover: rgba(0, 0, 0, 0.07);
+  --primary: #0b0b0b;
+  --on-primary: #fff;
+  --accent: #995c00;
+  --accent-soft: #fff1db;
+  --success: #1a7f37;
+  --success-soft: #e6f4ea;
+  --error: #cf222e;
+  --error-soft: #fbe4e1;
+  --attention: #9a6700;
+  --add: #1a7f37;
+  --del: #cf222e;
+  --claude-soft: #fbe7dd;
+  --rail: #dcdcdc;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: var(--vvh, 100%); margin: 0; overscroll-behavior: none; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+b, strong { font-weight: 600; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+a { color: var(--link); }
+#app { height: 100%; display: flex; flex-direction: column; }
+
+/* ---- shared chrome ---- */
+.screen { height: 100%; display: flex; flex-direction: column; position: relative; }
+.statusbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: var(--top) var(--gr) 8px var(--gl);
+  font-size: 12px; color: var(--subtle);
+}
+/* Connected, the bar is only the room under the phone's own status bar. */
+.statusbar:not(.off) { padding: var(--top) 0 0; }
+.statusbar:not(.off) > * { display: none; }
+.statusbar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+.statusbar.off .dot { background: var(--error); }
+.statusbar .spacer { flex: 1; }
+.hdr { display: flex; align-items: center; gap: 10px; padding: 4px var(--gr) 12px var(--gl); }
+.hdr h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.03em; }
+.hdr .sub { font-size: 12px; color: var(--subtle); margin-top: 1px; }
+.hdr .grow { flex: 1; min-width: 0; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  background: var(--fill); color: var(--subtle); border: 1px solid var(--border);
+}
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.badge.working { color: var(--success); background: var(--success-soft); border-color: transparent; }
+.badge.working .dot { background: var(--success); animation: pulse 1.2s ease-in-out infinite; }
+.badge.needs_input { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.badge.needs_input .dot { background: var(--attention); }
+.badge.error { color: var(--error); background: rgba(248, 81, 73, 0.12); border-color: transparent; }
+.badge.error .dot { background: var(--error); }
+.badge.idle .dot { background: var(--success); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.btn {
+  height: 42px; padding: 0 18px; border-radius: 999px;
+  font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--primary); color: var(--on-primary);
+}
+.btn:disabled { opacity: 0.4; }
+.btn.outline { background: var(--raised); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong); }
+.btn.ghost { background: transparent; color: var(--muted); }
+.btn.danger { background: var(--error-soft); color: var(--error); }
+.btn:active { filter: brightness(1.1); }
+a.btn { text-decoration: none; }
+
+.empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; color: var(--subtle); text-align: center; padding: 40px 24px;
+}
+.empty .big { font-size: 40px; }
+.empty .hint { font-size: 13px; color: var(--faint); max-width: 280px; }
+
+/* ---- pairing ---- */
+.pair {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; text-align: center; padding: calc(var(--top) + 32px) max(24px, var(--gl)) calc(var(--bot) + 40px) max(24px, var(--gr));
+}
+.pair .big { font-size: 44px; }
+.pair h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.03em; }
+.pair p { margin: 0; color: var(--subtle); font-size: 14px; max-width: 300px; }
+.pair form { display: flex; gap: 8px; margin-top: 12px; }
+.pair input {
+  width: 150px; height: 44px; border-radius: var(--r-lg); text-align: center;
+  font: 500 22px/1 var(--mono); letter-spacing: 0.25em; color: var(--text);
+  background: var(--card); border: 1px solid var(--border-strong); outline: none;
+}
+.pair input:focus { border-color: rgba(255, 181, 71, 0.5); }
+.pair input::placeholder { color: var(--faint); letter-spacing: 0.25em; }
+.pair .btn { height: 44px; }
+.pair .err { min-height: 20px; font-size: 13px; color: var(--error); max-width: 300px; }
+.pair .hint { font-size: 12px; color: var(--faint); max-width: 300px; }
+/* Why the list of computers is shown again: the relay sent the page back. */
+.settings .err { font-size: 13px; color: var(--error); padding: 0 4px; }
+
+/* ---- the cards that get the app on the home screen and notifications on ---- */
+.setup {
+  display: flex; gap: 12px; align-items: center; margin: 10px 0 0;
+  padding: 12px 10px 12px 12px; border-radius: var(--r-xl);
+  background: rgba(255, 181, 71, 0.08); border: 1px solid rgba(255, 181, 71, 0.22);
+}
+.setup .sicon { width: 22px; height: 22px; flex: none; color: var(--accent); }
+.setup .sicon svg { width: 100%; height: 100%; }
+.setup .body { flex: 1; min-width: 0; }
+.setup .t { font-weight: 500; font-size: 14px; }
+.setup .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
+.setup .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.setup .x { width: 44px; height: 44px; margin: -8px -8px -8px 0; flex: none; color: var(--faint); display: flex; align-items: center; justify-content: center; }
+.setup .x svg { width: 16px; height: 16px; }
+
+/* ---- phone: grouped settings rows ---- */
+.settings { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 18px; }
+.settings .group { margin-top: 0; background: none; padding: 0; border-radius: 0; }
+.glabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); padding: 0 4px 6px; }
+.gbox { background: var(--fill); border: 1px solid var(--border); border-radius: var(--r-xl); overflow: hidden; }
+.prow {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 14px; border-top: 1px solid var(--border);
+}
+.prow:first-child { border-top: 0; }
+.prow .ricon { width: 20px; height: 20px; flex: none; color: var(--subtle); }
+.prow .ricon svg { width: 100%; height: 100%; }
+.prow .rbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.prow .rt { font-size: 14px; font-weight: 500; }
+.prow .rs { font-size: 12px; line-height: 16px; color: var(--subtle); }
+.prow .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.prow.danger .rt, .prow.danger .ricon { color: var(--error); }
+button.prow:active { background: var(--fill-hover); }
+/* A row with two buttons: the pick takes the room, the action sits at the end. */
+.prow.mrow { padding: 0 14px 0 0; }
+.prow.mrow .mpick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; padding: 12px 0 12px 14px; }
+.prow.mrow .mpick:active { background: var(--fill-hover); }
+
+/* The session while the computer is out of reach. */
+.offline {
+  display: flex; align-items: center; gap: 10px; margin: 0 var(--gr) 8px var(--gl); padding: 10px 12px;
+  border-radius: var(--r-lg); background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4);
+}
+.offline > svg { width: 18px; height: 18px; flex: none; color: var(--error); }
+.offline .grow { flex: 1; min-width: 0; }
+.offline .t { font-size: 14px; font-weight: 500; }
+.offline .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
+.offline .btn.small { height: 36px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--bot) + 110px); transform: translateX(-50%);
+  background: var(--card); border: 1px solid var(--border-strong); color: var(--text);
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* Waiting on something that is not here yet. */
+.pair .wait { display: inline-flex; align-items: center; gap: 8px; }
+.spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

@@ -338,12 +338,9 @@ pub fn remember_repo_install(dir: &Path, shared: bool, item: RepoItem) {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = std::process::Command::new("git");
     // The folder picks the repository, not one inherited from a git hook.
-    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
-        cmd.env_remove(var);
-    }
-    cmd.arg("-C").arg(dir).args(args);
+    let mut cmd = crate::git::git(dir);
+    cmd.args(args);
     let out = crate::platform::output_within(&mut cmd, None, crate::platform::GIT_LOCAL).ok()?;
     out.status
         .success()

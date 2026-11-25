@@ -4,7 +4,8 @@
 //! Unlike a headless run, the whole agent program is inside, so it keeps what it
 //! needs to work: the network, its own login and settings, the toolchains and
 //! their caches. It can write the workspace, the repository's Git folder (but not
-//! its config or hooks), those caches and the temporary folders, and nothing else.
+//! its config, its hooks, or what leads git to another Git folder), those caches
+//! and the temporary folders, and nothing else.
 //! Credentials of other tools stay hidden, and so do the workspace's secret files.
 //! It reaches arakun only through a socket that refuses commands which would run
 //! something outside (the app's `control::sandbox_allows`).
@@ -17,8 +18,8 @@ use anyhow::{Result, anyhow};
 use super::AgentKind;
 use super::launch::LaunchSpec;
 use crate::headless::sandbox::{
-    self as hs, Hidden, READ, Runner, sbpl_list, sbpl_pin, sbpl_regex_escape, sbpl_secret_names,
-    sbpl_str, sbpl_subpath,
+    self as hs, Hidden, READ, Runner, bwrap_freeze, sbpl_freeze, sbpl_list, sbpl_pin,
+    sbpl_regex_escape, sbpl_secret_names, sbpl_str, sbpl_subpath,
 };
 
 /// The folders of every project and environment, as the shell last saved
@@ -78,6 +79,98 @@ pub fn wanted(cwd: &Path) -> Result<bool, String> {
     }))
 }
 
+/// How arakun's own git may run in a folder ([`git_pin`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum GitPin {
+    /// As git finds the repository.
+    Open,
+    /// On this repository only: a sandboxed agent can write the folders git
+    /// would otherwise follow (`.git` as a file, `commondir`), so git is told
+    /// where they are instead.
+    Pinned {
+        git_dir: PathBuf,
+        common: PathBuf,
+        work_tree: PathBuf,
+    },
+    /// Not at all: the Git metadata leads somewhere it can't be trusted.
+    Refused(String),
+}
+
+/// Where arakun's own git runs for `dir`. In a sandboxed project's folders it is
+/// pinned to the repository [`git_dirs`] trusts, so a `commondir` or `.git` file
+/// an agent wrote never leads it to config or hooks the agent wrote: those run
+/// commands on the host, and the Changes panel runs `git status` by itself.
+///
+/// Elsewhere git finds the repository as usual, but for a `.git` folder that
+/// holds a `commondir`: git makes one only in a linked worktree's folder, so
+/// there it can only lead away from the config the sandbox kept read-only.
+pub fn git_pin(dir: &Path) -> GitPin {
+    // No sandbox on Windows, so nothing there writes what git follows.
+    if cfg!(windows) {
+        return GitPin::Open;
+    }
+    let Ok(real) = crate::platform::canonicalize(dir) else {
+        return GitPin::Open;
+    };
+    // The checkout git would find: the nearest folder with a `.git` that is a
+    // file, or a folder with a HEAD (a sandbox's empty stand-in is skipped).
+    let Some(root) = real.ancestors().find(|a| {
+        let dot = a.join(".git");
+        std::fs::symlink_metadata(&dot).is_ok_and(|m| !m.is_dir() || dot.join("HEAD").exists())
+    }) else {
+        return GitPin::Open;
+    };
+    let folders = PROJECTS.read().unwrap();
+    // The folder whose project answers: the deepest one the shell knows.
+    let known = folders
+        .iter()
+        .filter(|f| real.starts_with(&f.path))
+        .max_by_key(|f| f.path.components().count());
+    let dirs = || git_dirs(root);
+    let sandboxed = match known {
+        Some(f) => f.sandbox.then_some(f.path.as_path()),
+        // Another worktree of a sandboxed project's repository.
+        None if folders.iter().any(|f| f.sandbox) => {
+            let common = dirs().ok().flatten().map(|(c, _)| c);
+            folders
+                .iter()
+                .find(|f| f.sandbox && common.is_some() && f.git == common)
+                .map(|_| root)
+        }
+        None => None,
+    };
+    let Some(top) = sandboxed else {
+        let dot = root.join(".git");
+        return if dot.is_dir() && std::fs::symlink_metadata(dot.join("commondir")).is_ok() {
+            GitPin::Refused(format!(
+                "{}: a main checkout's Git folder holds a commondir, which only a linked \
+                 worktree's has; arakun won't run git here until it is gone",
+                dot.display()
+            ))
+        } else {
+            GitPin::Open
+        };
+    };
+    // A repository inside the sandboxed folder is the agent's to write, all of it.
+    if root != top && root.starts_with(top) {
+        return GitPin::Refused(format!(
+            "{}: a repository inside a sandboxed folder; arakun runs git only on the folder's own",
+            root.display()
+        ));
+    }
+    match dirs() {
+        Ok(Some((common, git_dir))) => GitPin::Pinned {
+            git_dir,
+            common,
+            work_tree: root.to_path_buf(),
+        },
+        Ok(None) => GitPin::Open,
+        Err(e) => GitPin::Refused(format!(
+            "{e}. Its agents run sandboxed, so arakun won't run git where that leads."
+        )),
+    }
+}
+
 /// The repository's shared Git folder and this checkout's own: `.git` itself
 /// for both, or for a worktree the folders its `.git` file leads to. None
 /// without one; an error when `.git` leads somewhere the repository doesn't
@@ -97,6 +190,10 @@ fn git_dirs(ws: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
     if meta.is_dir() {
         // A link to a folder elsewhere would make that folder writable.
         return match real(&dot) {
+            // No repository to git either: a sandbox's stand-in for one it may not make.
+            Some(d) if real(ws).is_some_and(|w| d.starts_with(w)) && !d.join("HEAD").exists() => {
+                Ok(None)
+            }
             Some(d) if real(ws).is_some_and(|w| d.starts_with(w)) => Ok(Some((d.clone(), d))),
             _ => bad("a link to a Git folder outside it"),
         };
@@ -364,8 +461,16 @@ pub struct Session {
     /// Shown again and writable after the hide list: the memory store, `tmp`.
     pub shown_rw: Vec<PathBuf>,
     pub hidden: Vec<Hidden>,
-    /// Read-only even inside what is writable: the Git config and hooks.
+    /// Read-only even inside what is writable: the Git metadata
+    /// ([`hs::git_freeze`]) and the agent's own settings that run commands.
     pub frozen: Vec<PathBuf>,
+    /// Writable again inside a frozen folder, or bound over itself so it can't
+    /// be renamed: the checkout's own Git folder.
+    pub thawed: Vec<PathBuf>,
+    /// Read-only by name only (Seatbelt): the shared Git folder's `commondir`,
+    /// which must stay absent; bubblewrap has nothing to bind over it, and an
+    /// empty one would break git.
+    pub absent: Vec<PathBuf>,
     /// The session's TMPDIR.
     pub tmp: PathBuf,
     /// An empty file, bound over hidden files (bubblewrap).
@@ -414,34 +519,41 @@ impl Session {
         let git = git_dirs(&workspace).map_err(|e| {
             anyhow!("{e}. The sandbox won't open a Git folder it can't trust; turn off Sandbox agents in Settings › Project to run this agent without it.")
         })?;
-        let mut frozen = Vec::new();
-        if let Some((g, own_git)) = &git {
-            if !g.starts_with(&workspace) {
-                writable.push(g.clone());
-            }
-            // With extensions.worktreeConfig, a checkout's own config counts too.
-            frozen.extend([
-                g.join("config"),
-                g.join("hooks"),
-                own_git.join("config.worktree"),
-            ]);
+        if let Some((g, _)) = &git
+            && !g.starts_with(&workspace)
+        {
+            writable.push(g.clone());
         }
-        // Only where the agent could write it: its folder is there.
-        frozen.extend(
-            own_frozen(kind, &home)
-                .into_iter()
-                .filter(|p| p.parent().is_some_and(Path::is_dir)),
+        let (git_frozen, thawed) = hs::git_freeze(
+            &workspace,
+            git.as_ref().map(|(g, o)| (g.as_path(), o.as_path())),
         );
+        let absent = git.iter().map(|(g, _)| g.join("commondir")).collect();
+        // Only where the agent could write it: its folder is there.
+        let settings: Vec<PathBuf> = own_frozen(kind, &home)
+            .into_iter()
+            .filter(|p| p.parent().is_some_and(Path::is_dir))
+            .collect();
         if matches!(runner, Runner::Bwrap(_)) {
             // bubblewrap binds over a path, so it must be there; without that, no
             // sandbox rather than a hole in it.
-            for p in &frozen {
-                materialize(p).map_err(|e| {
+            let made = git_frozen
+                .iter()
+                .map(|(p, kind)| (p, hs::stand_in(p, *kind)))
+                .chain(settings.iter().map(|p| (p, materialize(p))));
+            for (p, r) in made {
+                r.map_err(|e| {
                     anyhow!("{}: {e}; the sandbox can't keep it read-only", p.display())
                 })?;
             }
         }
-        let frozen: Vec<PathBuf> = frozen.into_iter().map(real).collect();
+        let frozen: Vec<PathBuf> = git_frozen
+            .into_iter()
+            .map(|(p, _)| p)
+            .chain(settings)
+            .map(real)
+            .collect();
+        let thawed: Vec<PathBuf> = thawed.into_iter().map(real).collect();
         for p in CACHES.iter().map(|r| home.join(r)).chain(mine) {
             if p.exists() {
                 writable.push(real(p));
@@ -518,6 +630,8 @@ impl Session {
             shown_rw,
             hidden,
             frozen,
+            thawed,
+            absent,
             tmp,
             empty,
             socket,
@@ -678,7 +792,8 @@ impl Session {
         for p in &self.shown_rw {
             a.extend(["--bind".into(), s(p), s(p)]);
         }
-        for p in self.frozen.iter().chain(&self.extra_ro) {
+        a.extend(bwrap_freeze(&self.frozen, &self.thawed));
+        for p in &self.extra_ro {
             a.extend(["--ro-bind".into(), s(p), s(p)]);
         }
         if let Some(dir) = self.socket.parent() {
@@ -738,14 +853,16 @@ impl Session {
         }
         out.push_str(&sbpl_secret_names(&self.workspace));
         // The workspace's Git config and hooks also when they are not there yet:
-        // a deny names a path, so `git init` can't plant what the user's git runs.
+        // a deny names a path, so `git init` can't plant what the user's git
+        // runs, nor a `commondir` that leads it to config elsewhere.
         let git = self.workspace.join(".git");
-        let git_own = [git.join("config"), git.join("hooks")];
+        let git_own = [git.join("config"), git.join("hooks"), git.join("commondir")];
         let mut frozen = paths(&self.frozen);
         frozen.extend(git_own.iter().map(PathBuf::as_path));
+        frozen.extend(paths(&self.absent));
         frozen.sort();
         frozen.dedup();
-        out.push_str(&format!("(deny file-write* {})\n", sbpl_list(&frozen)));
+        out.push_str(&sbpl_freeze(&frozen, &paths(&self.thawed)));
         // Folders above a hidden or read-only path can't be renamed out from under
         // its rule (`mv ~/.claude ~/.cache/c` to edit its settings).
         let roots: Vec<&Path> = writable
@@ -796,6 +913,206 @@ fn paths(ps: &[PathBuf]) -> Vec<&Path> {
 mod tests {
     use super::*;
 
+    /// The tests that set the project list, one at a time: it is the process's.
+    static PROJECTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn projects_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `script` run by `sh` in `dir` on the host, with git as a test sets it up.
+    #[cfg(unix)]
+    fn host_sh(dir: &Path, script: &str) -> bool {
+        crate::git::unpinned(&mut std::process::Command::new("sh"))
+            .args(["-c", script])
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// A repository at `<d>/proj` with a linked worktree at `<d>/env-a`, and
+    /// the agent's Git folder at `<d>/proj/evil`: its own objects and refs (the
+    /// repository's), and a config whose fsmonitor and hook touch `<d>/MARKER`.
+    #[cfg(unix)]
+    fn repo_with_evil(d: &Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
+        let proj = d.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        if !host_sh(&proj, "git --version > /dev/null") {
+            return None;
+        }
+        assert!(host_sh(
+            &proj,
+            "git init -q -b main && git commit -q --allow-empty -m one \
+             && git worktree add -q -b env-a ../env-a",
+        ));
+        let marker = d.join("MARKER");
+        let planted = host_sh(
+            &proj,
+            &format!(
+                "mkdir -p evil/hooks && ln -s ../.git/objects evil/objects \
+                 && ln -s ../.git/refs evil/refs \
+                 && printf '#!/bin/sh\\ntouch {m}\\n' > x.sh && chmod +x x.sh \
+                 && cp x.sh evil/hooks/post-index-change \
+                 && printf '[core]\\n\\trepositoryformatversion = 0\\n\\tfsmonitor = {x}\\n' > evil/config",
+                m = marker.display(),
+                x = proj.join("x.sh").display(),
+            ),
+        );
+        assert!(planted);
+        Some((proj, d.join("env-a"), marker))
+    }
+
+    /// GHSA-j7mx-57q4-r2g5: a `commondir` the agent wrote led the app's own
+    /// `git status` to the agent's config, which ran its command on the host.
+    #[cfg(unix)]
+    #[test]
+    fn the_hosts_git_never_follows_what_an_agent_wrote() {
+        let _one = projects_lock();
+        let d = crate::platform::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("arakun-sbx-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let _rm = RemoveOnDrop(Some(d.clone()));
+        let Some((proj, env_a, marker)) = repo_with_evil(&d) else {
+            return;
+        };
+        let fired = || std::fs::remove_file(&marker).is_ok();
+        // The main checkout's `commondir`: git as the user runs it falls for it.
+        std::fs::write(proj.join(".git/commondir"), "../evil\n").unwrap();
+        assert!(host_sh(&proj, "git status --porcelain=v2 > /dev/null"));
+        assert!(fired(), "the planted fsmonitor should run for unpinned git");
+        // Sandboxed, arakun's git stays on the repository and runs nothing.
+        set_projects([(proj.clone(), true), (env_a.clone(), true)]);
+        std::fs::write(proj.join("new.txt"), "x").unwrap();
+        let changes = crate::git::status(&proj).unwrap();
+        assert!(changes.iter().any(|c| c.path == "new.txt"));
+        assert!(crate::git::diff(&proj, "new.txt", true).is_ok());
+        assert!(!fired());
+        // Not sandboxed: a main checkout's `commondir` stops git, as it was not git's.
+        set_projects([(proj.clone(), false)]);
+        let e = crate::git::status(&proj).unwrap_err().to_string();
+        assert!(e.contains("commondir"), "{e}");
+        assert!(!fired());
+        std::fs::remove_file(proj.join(".git/commondir")).unwrap();
+        // A linked worktree's `commondir`, led away: it no longer belongs to
+        // the repository, so git does not run there at all.
+        let own = proj.join(".git/worktrees/env-a/commondir");
+        std::fs::write(&own, "../../../evil\n").unwrap();
+        assert!(host_sh(&env_a, "git status --porcelain=v2 > /dev/null"));
+        assert!(fired(), "the planted fsmonitor should run for unpinned git");
+        set_projects([(proj.clone(), true), (env_a.clone(), true)]);
+        assert!(crate::git::status(&env_a).is_err());
+        assert!(!fired());
+        std::fs::write(&own, "../..\n").unwrap();
+        assert!(crate::git::status(&env_a).is_ok());
+        // A worktree the shell doesn't list, of the same repository, is pinned too.
+        set_projects([(proj.clone(), true)]);
+        assert!(matches!(git_pin(&env_a), GitPin::Pinned { .. }));
+        // A repository the agent made inside, with a filter in its own config
+        // that `git status` would run to see whether it is dirty.
+        assert!(host_sh(
+            &proj,
+            &format!(
+                "mkdir sub && cd sub && git init -q && echo a > f && git add f \
+                 && git commit -q -m s && cd .. && git add sub && git commit -q -m sub \
+                 && printf '[filter \"x\"]\\n\\tclean = \"{x}; cat\"\\n' >> sub/.git/config \
+                 && echo '* filter=x' > sub/.gitattributes && sleep 1 && echo b > sub/f",
+                x = proj.join("x.sh").display(),
+            ),
+        ));
+        assert!(host_sh(&proj, "git status --porcelain=v2 > /dev/null"));
+        assert!(
+            fired(),
+            "the nested repository's filter should run for plain git"
+        );
+        assert!(crate::git::status(&proj).is_ok());
+        assert!(crate::git::diff(&proj, "sub", false).is_ok());
+        assert!(!fired());
+        // Inside the sandboxed folder, that repository is the agent's alone.
+        assert!(matches!(git_pin(&proj.join("sub")), GitPin::Refused(_)));
+        assert!(crate::git::status(&proj.join("sub")).is_err());
+        assert!(!fired());
+        set_projects([]);
+        assert_eq!(git_pin(&proj.join("sub")), GitPin::Open);
+    }
+
+    /// What leads git elsewhere stays put inside the real sandbox, and the agent
+    /// still commits.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn git_pointers_stay_put_inside() {
+        if hs::find_runner().is_none_or(|r| !r.program().exists()) {
+            return;
+        }
+        let d = crate::platform::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("arakun-sbx-ptr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let _rm = RemoveOnDrop(Some(d.clone()));
+        let Some((proj, env_a, _)) = repo_with_evil(&d) else {
+            return;
+        };
+        let commit = "git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m inside";
+        let Ok(s) = Session::new(AgentKind::Codex, &proj) else {
+            return;
+        };
+        // A runner that can't start here (bubblewrap without user namespaces in CI).
+        if s.run("true", &[], None).is_err() {
+            return;
+        }
+        if let Err(e) = s.run(commit, &[], None) {
+            panic!("the agent can't commit: {e}");
+        }
+        for script in [
+            "printf x >> .git/config",
+            "touch .git/hooks/pre-commit",
+            "mv .git .git2",
+            "mkdir .git/worktrees/evil",
+            "echo ../../../evil > .git/worktrees/env-a/commondir",
+            "echo x >> .git/worktrees/env-a/config.worktree",
+        ] {
+            assert!(s.run(script, &[], None).is_err(), "{script}");
+        }
+        // bubblewrap can't hold a stand-in for a file git must not find; Seatbelt names it.
+        if matches!(s.runner, Runner::Seatbelt(_)) {
+            assert!(s.run("echo ../evil > .git/commondir", &[], None).is_err());
+        }
+        assert!(proj.join(".git/config").is_file());
+        drop(s);
+        let Ok(s) = Session::new(AgentKind::Codex, &env_a) else {
+            panic!("no sandbox in the worktree");
+        };
+        if let Err(e) = s.run(commit, &[], None) {
+            panic!("the agent can't commit: {e}");
+        }
+        let ws = env_a.display();
+        let common = crate::platform::canonicalize(proj.join(".git")).unwrap();
+        let c = common.display();
+        for script in [
+            format!("printf 'gitdir: {ws}/evil' > .git"),
+            "mv .git git".to_string(),
+            format!("echo ../../../evil > {c}/worktrees/env-a/commondir"),
+            format!("echo x > {c}/worktrees/env-a/gitdir"),
+            format!("mv {c}/worktrees/env-a {c}/worktrees/b"),
+            format!("echo ../evil > {c}/commondir"),
+            format!("printf x >> {c}/config"),
+        ] {
+            if script.ends_with("/commondir")
+                && script.starts_with("echo ../evil")
+                && matches!(s.runner, Runner::Bwrap(_))
+            {
+                continue;
+            }
+            assert!(s.run(&script, &[], None).is_err(), "{script}");
+        }
+    }
+
     fn session(runner: Runner) -> Session {
         Session {
             runner,
@@ -836,7 +1153,14 @@ mod tests {
             frozen: vec![
                 "/home/u/proj/.git/config".into(),
                 "/home/u/proj/.git/hooks".into(),
+                "/home/u/proj/.git/worktrees".into(),
+                "/home/u/proj/.git/worktrees/env-a/config.worktree".into(),
+                "/home/u/ws/env-a/.git".into(),
+                "/home/u/proj/.git/worktrees/env-a/commondir".into(),
+                "/home/u/proj/.git/worktrees/env-a/gitdir".into(),
             ],
+            thawed: vec!["/home/u/proj/.git/worktrees/env-a".into()],
+            absent: vec!["/home/u/proj/.git/commondir".into()],
             tmp: "/home/u/.local/share/arakun/sandbox/claude-1/tmp".into(),
             empty: "/home/u/.local/share/arakun/sandbox/claude-1/empty".into(),
             socket: "/run/user/1/arakun/sandbox/control.sock".into(),
@@ -853,8 +1177,24 @@ mod tests {
         let show = at(
             "(allow file-read-data file-read-xattr (subpath \"/home/u/.local/share/arakun/agents\")",
         );
-        let freeze = at("(deny file-write* (subpath \"/home/u/proj/.git/config\")");
+        let freeze = at("(deny file-write* (subpath \"/home/u/proj/.git/commondir\")");
         assert!(write < hide && hide < show && show < freeze);
+        // What leads git elsewhere stays put: this checkout's `.git` file and its
+        // folder's pointers, the other checkouts' folders. Its own folder is
+        // writable again, but for those pointers.
+        for p in [
+            "/home/u/proj/.git/config",
+            "/home/u/proj/.git/worktrees",
+            "/home/u/ws/env-a/.git",
+            "/home/u/ws/env-a/.git/commondir",
+        ] {
+            assert!(at(&format!("(subpath \"{p}\")")) > freeze, "{p}");
+        }
+        let thaw = at("(allow file-write* (subpath \"/home/u/proj/.git/worktrees/env-a\"))");
+        let again =
+            at("(deny file-write* (subpath \"/home/u/proj/.git/worktrees/env-a/commondir\")");
+        assert!(freeze < thaw && thaw < again);
+        assert!(p[again..].contains("(subpath \"/home/u/proj/.git/worktrees/env-a/gitdir\")"));
         // The workspace's own, before `git init` makes them, and later secrets.
         assert!(p.contains("(subpath \"/home/u/ws/env-a/.git/hooks\")"));
         assert!(p.contains("(regex #\"^/home/u/ws/env-a/(.*/)?\\.env(\\.[^/]*)?$\")"));
@@ -888,6 +1228,27 @@ mod tests {
         let mem = at(&["--bind", "/home/u/.local/share/arakun/memory"]);
         let hooks = at(&["--ro-bind", "/home/u/proj/.git/hooks"]);
         assert!(cargo < cred && hide < mem && mem < hooks);
+        // A folder before what is inside it: the other checkouts' Git folders
+        // read-only, this one's writable again, its pointers read-only again.
+        let others = at(&[
+            "--ro-bind",
+            "/home/u/proj/.git/worktrees",
+            "/home/u/proj/.git/worktrees",
+        ]);
+        let own = at(&[
+            "--bind",
+            "/home/u/proj/.git/worktrees/env-a",
+            "/home/u/proj/.git/worktrees/env-a",
+        ]);
+        let back = at(&["--ro-bind", "/home/u/proj/.git/worktrees/env-a/commondir"]);
+        assert!(others < own && own < back);
+        at(&[
+            "--ro-bind",
+            "/home/u/ws/env-a/.git",
+            "/home/u/ws/env-a/.git",
+        ]);
+        // `commondir` is not there, and an empty one would break git: only Seatbelt names it.
+        assert!(!a.iter().any(|x| x == "/home/u/proj/.git/commondir"));
         assert!(at(&["--bind", "/run/user/1/arakun/sandbox"]) > at(&["--tmpfs", "/run"]));
         // Its own /tmp, not the host's with tmux's and ssh-agent's sockets.
         at(&[
@@ -1027,11 +1388,13 @@ mod tests {
 
     #[test]
     fn a_worktree_belongs_to_its_project() {
+        let _one = projects_lock();
         let d = std::env::temp_dir().join(format!("arakun-sbx-wt-{}", std::process::id()));
         let main = d.join("proj");
         let wt = d.join("env-a");
         std::fs::create_dir_all(main.join(".git/worktrees/env-a")).unwrap();
         std::fs::create_dir_all(main.join("src")).unwrap();
+        std::fs::write(main.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(
             wt.join(".git"),

@@ -495,8 +495,10 @@ pub struct Sandbox {
     pub empty: PathBuf,
     pub caps: Vec<Cap>,
     pub hidden: Vec<Hidden>,
-    /// Bound read-only over the writable workspace (`.git/config`, `.git/hooks`).
+    /// Bound read-only over the writable workspace: the Git metadata ([`git_freeze`]).
     pub frozen: Vec<PathBuf>,
+    /// Bound over itself, writable: `.git`, so it can't be renamed and replaced.
+    pub thawed: Vec<PathBuf>,
     /// Read-only extras the caps need (a resolv.conf under /run).
     pub extra_ro: Vec<PathBuf>,
 }
@@ -627,9 +629,7 @@ impl Sandbox {
         {
             hide(&mut a, h);
         }
-        for f in &self.frozen {
-            a.extend(["--ro-bind".to_string(), s(f), s(f)]);
-        }
+        a.extend(bwrap_freeze(&self.frozen, &self.thawed));
         for f in &self.extra_ro {
             a.extend(["--ro-bind".to_string(), s(f), s(f)]);
         }
@@ -665,14 +665,16 @@ impl Sandbox {
              (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n"
         ));
         // Also when they are not there yet: a deny names a path, not a file, so
-        // `git init` can't plant a hook or an fsmonitor the user's git runs outside.
+        // `git init` can't plant a hook or an fsmonitor the user's git runs
+        // outside, nor a `commondir` that leads it to config elsewhere.
         let git = self.workspace.join(".git");
-        let git_own = [git.join("config"), git.join("hooks")];
+        let git_own = [git.join("config"), git.join("hooks"), git.join("commondir")];
         let mut frozen: Vec<&Path> = self.frozen.iter().map(PathBuf::as_path).collect();
         frozen.extend(git_own.iter().map(PathBuf::as_path));
         frozen.sort();
         frozen.dedup();
-        out.push_str(&format!("(deny file-write* {})\n", list(&frozen)));
+        let thawed: Vec<&Path> = self.thawed.iter().map(PathBuf::as_path).collect();
+        out.push_str(&sbpl_freeze(&frozen, &thawed));
         // $HOME and the shared temporary folders read as empty, but for what is
         // shown again; names and sizes stay visible, as Seatbelt has no tmpfs.
         let mut dark = vec![self.home.as_path()];
@@ -996,6 +998,101 @@ pub fn sbpl_secret_names(root: &Path) -> String {
     format!("(deny {READ} {})\n", rules.join(" "))
 }
 
+/// What an empty stand-in for a frozen path is, when bubblewrap needs one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stand {
+    File,
+    Dir,
+}
+
+/// The Git metadata a sandbox keeps read-only, with the stand-in each needs when
+/// it is not there yet, and what is bound back writable: `git` is the
+/// repository's shared Git folder and this checkout's own, None without one.
+///
+/// Git reads config and hooks, which run commands, from wherever the metadata
+/// leads it: `.git` as a file names the checkout's folder, its `commondir` the
+/// shared one. So those stay as they are too, and so do the other checkouts'
+/// folders (their `commondir`, `config.worktree`). `.git` itself is bound over
+/// itself: a mount point can't be renamed, so it can't be swapped for one the
+/// agent made.
+pub fn git_freeze(ws: &Path, git: Option<(&Path, &Path)>) -> (Vec<(PathBuf, Stand)>, Vec<PathBuf>) {
+    let Some((common, own)) = git else {
+        // No repository, and none made inside (`git init`): git outside would read its config.
+        return (vec![(ws.join(".git"), Stand::Dir)], Vec::new());
+    };
+    let mut frozen = vec![
+        (common.join("config"), Stand::File),
+        (common.join("hooks"), Stand::Dir),
+        (common.join("worktrees"), Stand::Dir),
+        // With extensions.worktreeConfig, a checkout's own config counts too.
+        (own.join("config.worktree"), Stand::File),
+    ];
+    if own == common {
+        (frozen, vec![common.to_path_buf()])
+    } else {
+        // A linked worktree: its folder sits in the frozen `worktrees`, writable
+        // again but for what leads to the repository and back.
+        frozen.extend([
+            (ws.join(".git"), Stand::File),
+            (own.join("commondir"), Stand::File),
+            (own.join("gitdir"), Stand::File),
+        ]);
+        (frozen, vec![own.to_path_buf()])
+    }
+}
+
+/// Makes an empty file or folder at `p` when nothing is there, not even a
+/// dangling link, so bubblewrap has something to bind over.
+pub fn stand_in(p: &Path, kind: Stand) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(p).is_ok() {
+        return Ok(());
+    }
+    match kind {
+        Stand::File => std::fs::write(p, ""),
+        Stand::Dir => std::fs::create_dir_all(p),
+    }
+}
+
+/// bubblewrap's binds for `frozen` (read-only) and `thawed` (writable), a folder
+/// before what is inside it, so each lands on the one around it.
+pub fn bwrap_freeze(frozen: &[PathBuf], thawed: &[PathBuf]) -> Vec<String> {
+    let mut all: Vec<(&PathBuf, &str)> = frozen
+        .iter()
+        .map(|p| (p, "--ro-bind"))
+        .chain(thawed.iter().map(|p| (p, "--bind")))
+        .collect();
+    all.sort_by_key(|(p, _)| p.components().count());
+    all.into_iter()
+        .flat_map(|(p, how)| [how.to_string(), s(p), s(p)])
+        .collect()
+}
+
+/// Seatbelt's rules for the same: no writes to `frozen`, but in a `thawed`
+/// folder inside one of them, and again none to what is frozen inside that.
+/// Seatbelt needs no mount point to keep a folder from being renamed
+/// ([`sbpl_pin`]), so a thawed folder outside the frozen ones adds nothing.
+pub fn sbpl_freeze(frozen: &[&Path], thawed: &[&Path]) -> String {
+    let mut out = format!("(deny file-write* {})\n", sbpl_list(frozen));
+    let inner: Vec<&Path> = thawed
+        .iter()
+        .copied()
+        .filter(|t| frozen.iter().any(|f| t.starts_with(f) && t != f))
+        .collect();
+    if inner.is_empty() {
+        return out;
+    }
+    out.push_str(&format!("(allow file-write* {})\n", sbpl_list(&inner)));
+    let again: Vec<&Path> = frozen
+        .iter()
+        .copied()
+        .filter(|f| inner.iter().any(|t| f.starts_with(t) && f != t))
+        .collect();
+    if !again.is_empty() {
+        out.push_str(&format!("(deny file-write* {})\n", sbpl_list(&again)));
+    }
+    out
+}
+
 pub fn sbpl_list(ps: &[&Path]) -> String {
     ps.iter()
         .map(|p| sbpl_subpath(p))
@@ -1015,6 +1112,20 @@ pub const SEATBELT_SERVICES: &[&str] = &[
 ];
 
 /// The runner this platform has: Seatbelt on macOS, bubblewrap elsewhere.
+/// [`git_freeze`] for a headless run, where only the workspace is writable: a
+/// linked worktree's folders are outside it, so only its `.git` file stays. A
+/// `.git` folder with no `HEAD` is no repository to git (the stand-in of an
+/// earlier run), so it stays read-only whole.
+fn headless_git_freeze(ws: &Path) -> (Vec<(PathBuf, Stand)>, Vec<PathBuf>) {
+    let git = ws.join(".git");
+    match std::fs::symlink_metadata(&git) {
+        Err(_) => git_freeze(ws, None),
+        Ok(m) if m.is_dir() && git.join("HEAD").exists() => git_freeze(ws, Some((&git, &git))),
+        Ok(m) if m.is_dir() => (vec![(git, Stand::Dir)], Vec::new()),
+        Ok(_) => (vec![(git, Stand::File)], Vec::new()),
+    }
+}
+
 pub fn find_runner() -> Option<Runner> {
     if cfg!(target_os = "macos") {
         return Some(PathBuf::from("/usr/bin/sandbox-exec"))
@@ -1066,11 +1177,17 @@ impl Sandbox {
         // Seatbelt matches real paths: a deny on a linked $HOME would match nothing.
         let home = crate::platform::home();
         let home = crate::platform::canonicalize(&home).unwrap_or(home);
-        let git = workspace.join(".git");
-        let frozen = [git.join("config"), git.join("hooks")]
-            .into_iter()
-            .filter(|p| p.exists())
-            .collect();
+        let (frozen, thawed) = headless_git_freeze(&workspace);
+        if matches!(runner, Runner::Bwrap(_)) {
+            // bubblewrap binds over a path, so it must be there; without that, no
+            // sandbox rather than a hole in it.
+            for (p, kind) in &frozen {
+                stand_in(p, *kind).map_err(|e| {
+                    format!("{}: {e}; the sandbox can't keep it read-only", p.display())
+                })?;
+            }
+        }
+        let frozen = frozen.into_iter().map(|(p, _)| p).collect();
         let mut extra_ro = Vec::new();
         if caps.iter().any(|c| matches!(c, Cap::Net | Cap::Modal))
             && let Ok(r) = crate::platform::canonicalize("/etc/resolv.conf")
@@ -1104,6 +1221,7 @@ impl Sandbox {
             caps: caps.to_vec(),
             hidden,
             frozen,
+            thawed,
             extra_ro,
         };
         sb.probe()?;
@@ -1290,7 +1408,11 @@ mod tests {
                     dir: true,
                 },
             ],
-            frozen: vec!["/home/u/proj/.git/hooks".into()],
+            frozen: vec![
+                "/home/u/proj/.git/config".into(),
+                "/home/u/proj/.git/hooks".into(),
+            ],
+            thawed: vec!["/home/u/proj/.git".into()],
             extra_ro: Vec::new(),
         }
     }
@@ -1338,6 +1460,18 @@ mod tests {
         assert!(ro.contains(&("/d/h1/empty", "/home/u/.local/bin/mail-pass")));
         assert!(ro.contains(&("/d/h1/empty", "/home/u/proj/.env")));
         assert!(ro.contains(&("/home/u/proj/.git/hooks", "/home/u/proj/.git/hooks")));
+        // `.git` is a mount point, so it can't be renamed and replaced, and what
+        // is read-only in it lands on that mount.
+        let at = |x: [&str; 3]| a.windows(3).position(|w| w == x).unwrap();
+        let git = at(["--bind", "/home/u/proj/.git", "/home/u/proj/.git"]);
+        assert!(git > at(["--bind", "/home/u/proj", "/home/u/proj"]));
+        assert!(
+            git < at([
+                "--ro-bind",
+                "/home/u/proj/.git/config",
+                "/home/u/proj/.git/config"
+            ])
+        );
         assert!(a.windows(3).any(|w| w
             == [
                 "--symlink",
@@ -1377,7 +1511,7 @@ mod tests {
         assert!(p.contains("(subpath \"/home/u/proj/.env\")"));
         // The Git config and hooks, there or not yet.
         assert!(p.contains(
-            "(deny file-write* (subpath \"/home/u/proj/.git/config\") (subpath \"/home/u/proj/.git/hooks\"))"
+            "(deny file-write* (subpath \"/home/u/proj/.git/commondir\") (subpath \"/home/u/proj/.git/config\") (subpath \"/home/u/proj/.git/hooks\"))"
         ));
         // Secrets made later, by name.
         assert!(p.contains("(regex #\"^/home/u/proj/(.*/)?\\.env(\\.[^/]*)?$\")"));
@@ -1403,6 +1537,101 @@ mod tests {
         assert!(
             b.seatbelt_profile()
                 .contains("(subpath \"/home/u/a\\\"b\")")
+        );
+    }
+
+    #[test]
+    fn the_git_metadata_stays_put() {
+        let d = std::env::temp_dir().join(format!("arakun-hs-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let names = |(f, t): (Vec<(PathBuf, Stand)>, Vec<PathBuf>)| {
+            let rel = |p: &Path| p.strip_prefix(&d).unwrap().to_string_lossy().into_owned();
+            (
+                f.iter().map(|(p, k)| (rel(p), *k)).collect::<Vec<_>>(),
+                t.iter().map(|p| rel(p)).collect::<Vec<_>>(),
+            )
+        };
+        // No repository: none made inside, so none whose config git outside reads.
+        assert_eq!(
+            names(headless_git_freeze(&d)),
+            (vec![(".git".into(), Stand::Dir)], vec![])
+        );
+        // A stand-in from an earlier run is no repository either.
+        std::fs::create_dir(d.join(".git")).unwrap();
+        assert_eq!(
+            names(headless_git_freeze(&d)).0,
+            vec![(".git".into(), Stand::Dir)]
+        );
+        // A repository: what runs commands and what leads elsewhere; `.git` is
+        // bound over itself. Its `commondir` is not there, so Seatbelt names it.
+        std::fs::write(d.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let (frozen, thawed) = names(headless_git_freeze(&d));
+        for (p, k) in [
+            (".git/config", Stand::File),
+            (".git/hooks", Stand::Dir),
+            (".git/worktrees", Stand::Dir),
+            (".git/config.worktree", Stand::File),
+        ] {
+            assert!(frozen.contains(&(p.into(), k)), "{p} in {frozen:?}");
+        }
+        assert!(!frozen.iter().any(|(p, _)| p.ends_with("commondir")));
+        assert_eq!(thawed, vec![".git".to_string()]);
+        // A linked worktree: its `.git` file. The rest is outside the workspace.
+        std::fs::remove_dir_all(d.join(".git")).unwrap();
+        std::fs::write(d.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert_eq!(
+            names(headless_git_freeze(&d)),
+            (vec![(".git".into(), Stand::File)], vec![])
+        );
+        // Stand-ins are made only where nothing is, links included.
+        stand_in(&d.join("f"), Stand::File).unwrap();
+        stand_in(&d.join("dir/sub"), Stand::Dir).unwrap();
+        assert!(d.join("f").is_file() && d.join("dir/sub").is_dir());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.join("nowhere"), d.join("l")).unwrap();
+            stand_in(&d.join("l"), Stand::File).unwrap();
+            assert!(!d.join("nowhere").exists());
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_thawed_folder_inside_a_frozen_one() {
+        let frozen = [
+            Path::new("/r/.git/worktrees"),
+            Path::new("/r/.git/worktrees/a/commondir"),
+            Path::new("/r/.git/config"),
+        ];
+        let p = sbpl_freeze(
+            &frozen,
+            &[Path::new("/r/.git/worktrees/a"), Path::new("/r/.git")],
+        );
+        assert_eq!(
+            p,
+            "(deny file-write* (subpath \"/r/.git/worktrees\") (subpath \"/r/.git/worktrees/a/commondir\") (subpath \"/r/.git/config\"))\n\
+             (allow file-write* (subpath \"/r/.git/worktrees/a\"))\n\
+             (deny file-write* (subpath \"/r/.git/worktrees/a/commondir\"))\n"
+        );
+        let owned = |ps: &[&str]| ps.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let a = bwrap_freeze(
+            &owned(&["/r/.git/worktrees/a/commondir", "/r/.git/worktrees"]),
+            &owned(&["/r/.git/worktrees/a"]),
+        );
+        assert_eq!(
+            a,
+            [
+                "--ro-bind",
+                "/r/.git/worktrees",
+                "/r/.git/worktrees",
+                "--bind",
+                "/r/.git/worktrees/a",
+                "/r/.git/worktrees/a",
+                "--ro-bind",
+                "/r/.git/worktrees/a/commondir",
+                "/r/.git/worktrees/a/commondir",
+            ]
         );
     }
 

@@ -150,8 +150,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the
-`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the cloud and phone
-tests and the other platforms. If CI fails, fix it with the `triage-ci` skill.
+`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the cloud tests and
+the other platforms. If CI fails, fix it with the `triage-ci` skill.
 Don't rerun the whole suite locally just to be sure. With the Git hooks installed, push
 with `LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite
 either.

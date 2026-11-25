@@ -52,8 +52,8 @@ cargo test --locked --no-default-features <module>   # the modules you touched
 (cd phone && npm ci && npm test && npm run build)  # phone/ changed; commit phone/dist
 ```
 
-- Skip the full `cargo test`, `cargo deny check`, `zizmor`, the cloud and phone
-  tests and the other platforms. CI runs them; if one goes red, step 5 handles it.
+- Skip the full `cargo test`, `cargo deny check`, `zizmor`, the cloud tests and
+  the other platforms. Run the phone tests, as above. CI runs them; if one goes red, step 5 handles it.
 - For a UI change, also run `cargo test --locked --no-default-features design_lint`.
 - `cargo: command not found`: run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 - Fix every warning. `#[allow(...)]` only with a comment saying why the lint is

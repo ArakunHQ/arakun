@@ -7,11 +7,13 @@ main = "worker/index.ts"
 compatibility_date = "2026-11-01"
 
 # The page is a single-page app: any path that is not a file gets index.html.
-# The Worker runs first only for the API and the sign-in routes.
+# The Worker runs first for every request: it puts the page policy on each
+# page, and a path list would let the assets answer without it. The Worker
+# asks env.ASSETS, which still falls back to index.html.
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/auth/*"]
+run_worker_first = true
 
 # The cloud Worker keeps the database and the /admin/* routes. The browser
 # never reaches it: this Worker adds the bearer secret.
@@ -52,7 +54,7 @@ routes = [{ pattern = "admin.arakun.dev/*", zone_name = "arakun.dev" }]
 [env.production.assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/auth/*"]
+run_worker_first = true
 
 [[env.production.services]]
 binding = "CLOUD"

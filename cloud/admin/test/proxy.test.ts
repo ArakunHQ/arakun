@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../worker/index";
 import { SESSION_COOKIE, signSession } from "../worker/session";
+import wranglerToml from "../wrangler.toml?raw";
 import { testEnv } from "./helpers";
 
 const ORIGIN = "https://admin.test";
@@ -113,6 +114,33 @@ describe("forwarding", () => {
     expect(ok.status).toBe(200);
   });
 
+  it("refuses a body over 4096 bytes that has no Content-Length", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array(4097));
+        c.close();
+      },
+    });
+    const res = await api("/api/users/1001/flags", { ...change, method: "PUT", body: stream, duplex: "half" } as RequestInit);
+    expect(res.status).toBe(413);
+    expect(seen).toEqual([]);
+  });
+
+  it("answers /api/me itself, for GET only", async () => {
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const res = await api("/api/me", { method, headers: { Origin: ORIGIN } });
+      expect(res.status).toBe(405);
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it("marks its own JSON answers no-store and nosniff", async () => {
+    for (const res of [await api("/api/me"), await api("/api/users", {}, env, false), await api("/api/users", {}, { ...env, ADMIN_SECRET: undefined })]) {
+      expect(res.headers.get("Cache-Control")).toBe("no-store");
+      expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    }
+  });
+
   it("refuses a path that leaves /admin/", async () => {
     for (const path of ["/api/", "/api/users//1", "/api/users%2F1"]) {
       const res = await api(path);
@@ -165,6 +193,14 @@ describe("forwarding", () => {
 });
 
 describe("pages", () => {
+  // The asset routing runs before the Worker unless every request is sent to
+  // it, and a test that calls worker.fetch cannot see that.
+  it("sends every request to the Worker first, in both environments", () => {
+    const blocks = wranglerToml.split(/^\[/m).filter((b) => /^(env\.production\.)?assets\]/.test(b));
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) expect(block).toMatch(/^run_worker_first = true$/m);
+  });
+
   it("serves the page with its policy, also for a path of the single-page app", async () => {
     for (const path of ["/", "/users/1001"]) {
       const res = await api(path, {}, env, false);

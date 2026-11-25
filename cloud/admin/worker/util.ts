@@ -1,8 +1,13 @@
 // Copies of the few helpers of ../../src/util.ts: this Worker imports nothing
 // from the cloud Worker.
 
+/// The Worker's own JSON answers: never cached, never sniffed as another type.
+export function json(body: unknown, status = 200): Response {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+}
+
 export function error(status: number, message: string): Response {
-  return Response.json({ error: message }, { status });
+  return json({ error: message }, status);
 }
 
 export function b64url(bytes: Uint8Array): string {

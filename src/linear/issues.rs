@@ -160,12 +160,20 @@ pub fn assigned(s: &Session) -> Result<Assigned, ApiError> {
          filter: {{ state: {{ type: {{ in: [\"started\", \"unstarted\", \"backlog\", \"triage\"] }} }} }}) \
          {{ nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }} }}"
     );
+    collect(|after| {
+        let data = graphql(s, &query, json!({ "after": after }))?;
+        Ok(data["viewer"]["assignedIssues"].clone())
+    })
+}
+
+/// Pages through `fetch` (cursor to page) until `LIMIT` issues or the last page.
+fn collect(mut fetch: impl FnMut(&Value) -> Result<Value, ApiError>) -> Result<Assigned, ApiError> {
     let mut issues = Vec::new();
     let mut after = Value::Null;
     let mut next = false;
     while issues.len() < LIMIT {
-        let data = graphql(s, &query, json!({ "after": after }))?;
-        let page = &data["viewer"]["assignedIssues"];
+        let page = fetch(&after)?;
+        let page = &page;
         issues.extend(parse_issues(page));
         next = page["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false);
         match page["pageInfo"]["endCursor"].as_str() {
@@ -259,5 +267,41 @@ mod tests {
         let i =
             &parse_issues(&json!({"nodes": [node("1", "started", "2026-11-25T10:00:00.000Z")]}))[0];
         assert!(matches(i, "eng-1") && matches(i, "ENG") && matches(i, "") && !matches(i, "zzz"));
+    }
+
+    fn page(count: usize, next: bool) -> Value {
+        let nodes: Vec<Value> = (0..count)
+            .map(|i| node(&i.to_string(), "started", "2026-11-25T10:00:00.000Z"))
+            .collect();
+        json!({"nodes": nodes, "pageInfo": {"hasNextPage": next, "endCursor": "c"}})
+    }
+    #[test]
+    fn three_full_pages_stop_at_the_cap_with_more() {
+        let mut calls = 0;
+        let got = collect(|_| {
+            calls += 1;
+            Ok(page(100, true))
+        })
+        .unwrap();
+        assert_eq!((got.issues.len(), got.more, calls), (250, true, 3));
+    }
+    #[test]
+    fn one_page_has_no_more() {
+        let got = collect(|_| Ok(page(40, false))).unwrap();
+        assert_eq!((got.issues.len(), got.more), (40, false));
+    }
+    #[test]
+    fn exactly_the_cap_with_no_next_page_has_no_more() {
+        let mut calls = 0;
+        let got = collect(|_| {
+            calls += 1;
+            Ok(if calls < 3 {
+                page(100, true)
+            } else {
+                page(50, false)
+            })
+        })
+        .unwrap();
+        assert_eq!((got.issues.len(), got.more), (250, false));
     }
 }

@@ -19,6 +19,12 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
   assign it to yourself (or comment that you are on it) so no one else does the same
   work. For anything bigger than a small fix, wait until we agree on the approach in
   the issue before you spend time on it. Link the issue from the pull request.
+- **Where issues live.** Members of the ArakunHQ organization open and track issues in
+  [Linear](https://linear.app/arakun). Everyone else uses
+  [GitHub issues](https://github.com/arakunhq/arakun/issues). The two sync both ways:
+  an issue opened in Linear also appears on GitHub, and the other way round, with
+  comments, status and assignees kept in step, so search either one before you open a
+  new issue.
 - **Coding agents track every task in an issue** the same way. Before it changes
   anything, the agent finds or opens the issue, assigns it to the person running the
   agent while it works, keeps the plan and progress in it up to date, and links the
@@ -360,7 +366,8 @@ that keeps one on purpose goes on its allow-list.
 - **One fix or feature per pull request.** Split unrelated cleanups into their own.
 - **Link the issue.** Every pull request has one: `Closes #<number>` when it does
   the whole job, `Refs #<number>` when it does part of it. Open the issue first if
-  there is none.
+  there is none. For an issue opened in Linear, use the number of its synced GitHub
+  issue, so the link works for readers without Linear access.
 - **Fill in the template:** what changed and why, the issue it fixes, and how you
   checked it (the commands you ran and what you tried by hand).
 - **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/):

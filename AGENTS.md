@@ -24,21 +24,29 @@ browser (`--no-default-features`), as CI does.
 
 ## Tracking work in issues
 
-Every task has a GitHub issue before work on it starts, for people and agents alike,
-so the team sees who is doing what.
+Every task has an issue before work on it starts, for people and agents alike, so
+the team sees who is doing what. Members of the ArakunHQ organization track issues in
+[Linear](https://linear.app/arakun); everyone else uses GitHub issues. The two sync
+both ways, so an issue made in one shows up in the other with its comments, status and
+assignee.
 
-- Before you change anything, find the issue (`gh issue list --search "<words>"`) or
-  open one with `gh issue create`: what is wrong or missing, and the plan. One issue
-  per fix or feature, like the pull requests.
-- Assign it to the person running you as soon as you start:
+- Before you change anything, find the issue or open one: what is wrong or missing,
+  and the plan. One issue per fix or feature, like the pull requests.
+  - The person running you is an organization member and the Linear MCP server (or
+    another Linear tool) is set up: search and create the issue in Linear, in the
+    Arakun workspace.
+  - Otherwise use GitHub: `gh issue list --search "<words>"`, then
+    `gh issue create`. For members, the sync copies it into Linear.
+- Assign it to the person running you as soon as you start: in Linear, or with
   `gh issue edit <number> --add-assignee "@me"` (`@me` is the account `gh` is
   logged in as).
 - Keep it current while you work: edit the body when the plan or scope changes, and
   comment on decisions, blockers and anything you found that a reader would need.
 - Link the pull request with `Closes #<number>` (`Refs #<number>` for part of the
-  work), as the template asks. Every pull request links an issue.
+  work), as the template asks. Every pull request links an issue. For a Linear issue,
+  use the number of the GitHub issue the sync made for it.
 - If you stop before it is done, comment where you stopped and what is left, then
-  `gh issue edit <number> --remove-assignee "@me"`.
+  unassign yourself (in Linear, or `gh issue edit <number> --remove-assignee "@me"`).
 
 ## Commits and pull requests
 

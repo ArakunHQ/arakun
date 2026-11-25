@@ -5,7 +5,7 @@
 // to the next, or turning a tablet, does not mount the frame again.
 
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useContext, useEffect } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useMe } from "../../lib/account";
 import { LinkContext, useLink } from "../../lib/link";
 import { connecting, connectingHint, needsYou } from "../../lib/sessions";
@@ -21,6 +21,8 @@ import "./Shell.css";
 
 // Screens with no computer behind them yet: the whole window, at every width.
 const ALONE = ["/signin", "/pair", "/moved", "/offline", "/fatal"];
+// Where the page is on its way in: the inbox comes next.
+const ON_THE_WAY = [...ALONE, "/", "/computers", "/inbox"];
 
 /**
  * A desktop's pane with no session open: the first session that needs you,
@@ -66,6 +68,13 @@ export function Shell() {
   const width = useWidth();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const link = useContext(LinkContext);
+  // A desktop opens what needs you only on the way in. Once the page has been
+  // anywhere else, the Inbox tab and Back show the inbox's list: else they
+  // would land on that session again, and its notices would never show.
+  const [arrived, setArrived] = useState(false);
+  useEffect(() => {
+    if (!ON_THE_WAY.includes(path)) setArrived(true);
+  }, [path]);
   // No computer yet (sign-in, pairing, the account's list before a pick):
   // nothing to lay out around the screen.
   if (!link || ALONE.includes(path)) return <Outlet />;
@@ -84,7 +93,7 @@ export function Shell() {
   return (
     <div className={`shell ${width}`}>
       {width === "desktop" ? <Sidebar /> : <Rail />}
-      <main className="pane">{width === "desktop" && path === "/inbox" ? <Home /> : <Outlet />}</main>
+      <main className="pane">{width === "desktop" && path === "/inbox" && !arrived ? <Home /> : <Outlet />}</main>
     </div>
   );
 }

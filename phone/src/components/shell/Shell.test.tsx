@@ -9,29 +9,12 @@ import { detectWay, resetStart } from "../../lib/start";
 import { Inbox } from "../../routes/inbox";
 import { SessionScreen } from "../../routes/session";
 import { validateSessionSearch } from "../session/sheetNav";
-import { fakeLink, type FakeLink } from "../../test/screen";
+import { fakeLink, type FakeLink, widthIs } from "../../test/screen";
 import { Shell } from "./Shell";
 
 const now = Math.floor(Date.now() / 1000);
 const row = (id: string, status: string, over = {}) => ({ id, title: `t-${id}`, agent: "claude", status, project: "p", env: "main", updated: now - 60, ...over });
 const inbox = [row("a", "needs_input"), row("b", "working"), row("c", "idle"), row("d", "error")] as LinkState["inbox"];
-
-/** The window as wide as `px`: what `matchMedia` answers for a min-width query. */
-function widthIs(px: number) {
-  vi.stubGlobal("matchMedia", (q: string) => {
-    const min = /min-width:\s*(\d+)px/.exec(q);
-    return {
-      matches: min ? px >= Number(min[1]) : false,
-      media: q,
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    };
-  });
-}
 
 /** The account host, signed in as `rik`, with two computers. */
 async function account() {
@@ -169,8 +152,12 @@ describe("the shell on a desktop", () => {
     expect(heads).toEqual(["Needs you", "Working", "Done"]);
     expect(within(list).getAllByRole("button")[0].textContent).toContain("New session");
     expect(within(list).getByRole("button", { name: /t-b/ }).getAttribute("aria-current")).toBe("page");
+    // The open session is the page: the Inbox tab is lit but not current too.
+    expect(document.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(within(tabs).getByRole("button", { name: "Inbox" }).getAttribute("aria-current")).toBeNull();
     // The account at the bottom, and the computer picker opens the list of computers.
-    expect(within(side).getByText("rik")).toBeTruthy();
+    // The account comes from the boot answer, which may still be on its way.
+    expect(await within(side).findByText("rik")).toBeTruthy();
     expect(within(side).getByRole("button", { name: "Sign out" })).toBeTruthy();
     fireEvent.click(within(side).getByRole("button", { name: /MacBook Pro/ }));
     const menu = await screen.findByRole("menu");
@@ -194,6 +181,60 @@ describe("the shell on a desktop", () => {
     const { router } = await renderShell("/inbox", fakeLink({ inbox }));
     await tick();
     expect(router.state.location.pathname).toBe("/s/a");
+  });
+
+  it("shows the inbox's list once the first session has opened, with no jump back to it", async () => {
+    widthIs(1440);
+    const { router } = await renderShell("/inbox", fakeLink({ inbox }));
+    await tick();
+    expect(router.state.location.pathname).toBe("/s/a");
+    const tabs = within(screen.getByRole("complementary")).getByRole("navigation", { name: "Tabs" });
+    fireEvent.click(within(tabs).getByRole("button", { name: "Inbox" }));
+    await tick();
+    await tick();
+    expect(router.state.location.pathname).toBe("/inbox");
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
+    expect(within(tabs).getByRole("button", { name: "Inbox" }).getAttribute("aria-current")).toBe("page");
+    // Back to the inbox from another session shows the list too.
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: /t-b/ }));
+    await tick();
+    expect(router.state.location.pathname).toBe("/s/b");
+    await act(async () => router.history.back());
+    await tick();
+    await tick();
+    expect(router.state.location.pathname).toBe("/inbox");
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
+  });
+
+  it("shows the inbox's list, not a session, when the page lands on a session first", async () => {
+    widthIs(1440);
+    const { router } = await renderShell("/s/b", fakeLink({ inbox }));
+    await act(() => router.navigate({ to: "/inbox" }));
+    await tick();
+    expect(router.state.location.pathname).toBe("/inbox");
+    expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
+  });
+
+  it("puts the focus in the computer menu and takes it back to the picker on Escape", async () => {
+    widthIs(1440);
+    await account();
+    await renderShell("/s/b", fakeLink({ inbox, host: "MacBook Pro" }));
+    const side = screen.getByRole("complementary");
+    const picker = within(side).getByRole("button", { name: /MacBook Pro/ });
+    fireEvent.click(picker);
+    const menu = await screen.findByRole("menu");
+    await within(menu).findByText("Build box");
+    await tick();
+    const items = within(menu).getAllByRole("menuitem");
+    expect(document.activeElement).toBe(items[0]);
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(items[1]);
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(picker);
   });
 
   it("says to pick one when nothing needs you", async () => {

@@ -42,3 +42,7 @@
 .perm .always .t { font-size: var(--text-lg); font-weight: 500; }
 .perm .always .t.armed { color: var(--color-attention); }
 .perm .always .s { font-size: var(--text-sm); color: var(--color-text-subtle); }
+/* A desktop is used with a mouse: the buttons can be smaller there, and only there. */
+@media (min-width: 1200px) {
+  .perm .opts .btn { height: 36px; font-size: var(--text-lg); }
+}

@@ -4,7 +4,7 @@
 // to switch to, so it is a plain label.
 
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { pick, pickedMachine, useMachines, useMe, useRemoveMachine, useSignOut } from "../../lib/account";
 import { ago } from "../../lib/format";
 import { type Machine, RELAY } from "../../lib/globals";
@@ -46,11 +46,37 @@ function Menu({ look, onClose }: { look: PickerLook; onClose: () => void }) {
   const list = machines.data && "list" in machines.data ? machines.data.list : [];
   const current = pickedMachine()?.label;
 
+  const box = useRef<HTMLDivElement>(null);
+  const items = () => [...(box.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+  // A menu takes the focus to its first item, so the keys work at once. While
+  // the computers load, that is Sign out; the first computer takes it when they
+  // come, unless a key has moved it already.
+  const moved = useRef(false);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    if (!moved.current) items()[0]?.focus();
+  }, [list.length]);
+
+  // Escape anywhere, the focus in the menu or not.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === "Escape" && onClose();
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    const all = items();
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    let next = -1;
+    if (e.key === "ArrowDown") next = (at + 1) % all.length;
+    else if (e.key === "ArrowUp") next = (at - 1 + all.length) % all.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = all.length - 1;
+    else if (e.key === "Tab") onClose();
+    if (next < 0) return;
+    e.preventDefault();
+    moved.current = true;
+    all[next]?.focus();
+  };
 
   const choose = (m: Machine) => {
     onClose();
@@ -64,7 +90,7 @@ function Menu({ look, onClose }: { look: PickerLook; onClose: () => void }) {
   return (
     <>
       <div className="pkscrim" onClick={onClose} />
-      <div className={`pkmenu pk-${look}`} role="menu" aria-label="Computers">
+      <div ref={box} className={`pkmenu pk-${look}`} role="menu" aria-label="Computers" onKeyDown={onKeyDown}>
         {list.map((m) => (
           // The pick and Remove side by side: a button cannot hold another.
           <div className="pkrow" key={m.label}>
@@ -98,6 +124,12 @@ export function ComputerPicker({ look }: { look: PickerLook }) {
   const host = useLink((s) => s.host);
   const pcOffline = useLink((s) => s.pcOffline);
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  // Closed, the focus goes back to where it came from.
+  const close = () => {
+    setOpen(false);
+    trigger.current?.focus();
+  };
   const account = mode() === "account";
   const machine = account ? pickedMachine() : null;
   const name = machine?.name || host || location.hostname;
@@ -140,10 +172,10 @@ export function ComputerPicker({ look }: { look: PickerLook }) {
   }
   return (
     <div className={`pickwrap pk-${look}`}>
-      <button type="button" className={`picker pk-${look}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button ref={trigger} type="button" className={`picker pk-${look}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>
         {inner}
       </button>
-      {open ? <Menu look={look} onClose={() => setOpen(false)} /> : null}
+      {open ? <Menu look={look} onClose={close} /> : null}
     </div>
   );
 }

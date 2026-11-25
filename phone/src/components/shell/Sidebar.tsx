@@ -69,7 +69,8 @@ export function Sidebar() {
   const { needs, working, recent, older } = inboxGroups(inbox);
   const open = /^\/s\/([^/]+)$/.exec(path)?.[1];
   const openId = open ? decodeURIComponent(open) : "";
-  // A session open counts under Inbox: the sidebar's list is the inbox.
+  // A session open is lit under Inbox, the sidebar's list being the inbox,
+  // but only the session is the current page.
   const tabOn = (to: string) => path === to || (to === "/inbox" && !!openId);
 
   return (
@@ -84,7 +85,7 @@ export function Sidebar() {
           const on = tabOn(t.to);
           const count = t.to === "/inbox" ? needs.length : t.to === "/sessions" ? inbox.length : 0;
           return (
-            <button key={t.to} type="button" className={`sbtab${on ? " on" : ""}`} aria-label={t.label} aria-current={on ? "page" : undefined} onClick={() => path !== t.to && void navigate({ to: t.to })}>
+            <button key={t.to} type="button" className={`sbtab${on ? " on" : ""}`} aria-label={t.label} aria-current={path === t.to ? "page" : undefined} onClick={() => path !== t.to && void navigate({ to: t.to })}>
               <Icon name={t.icon} />
               <span className="grow">{t.label}</span>
               {count ? (

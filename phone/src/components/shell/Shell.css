@@ -70,6 +70,14 @@
 .rdot.needs { background: var(--color-accent-ink); }
 .rdot.working { background: var(--color-sheet); box-shadow: 0 0 0 2px var(--color-sheet), inset 0 0 0 2px var(--color-link); }
 
+/* A phone on its side is a tablet only 390 px high: the whole rail scrolls,
+   tighter, so the computer at the bottom is still in reach. */
+@media (max-height: 560px) {
+  .rail { overflow-y: auto; scrollbar-width: none; gap: 4px; }
+  .rlogo { margin: 2px 0 4px; }
+  .rlive { flex: 1 0 auto; overflow: visible; gap: 4px; }
+}
+
 /* A desktop's pane with no session open. */
 .home { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 0 24px 24px; }
 .home .setup { width: min(100%, 560px); align-self: center; }

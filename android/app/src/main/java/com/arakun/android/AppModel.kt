@@ -13,8 +13,11 @@ import com.arakun.kit.AccountClient
 import com.arakun.kit.AccountError
 import com.arakun.kit.AccountKeeper
 import com.arakun.kit.AccountSession
+import com.arakun.kit.ChangedTurn
 import com.arakun.kit.DeviceCode
+import com.arakun.kit.DiffRef
 import com.arakun.kit.EndKind
+import com.arakun.kit.FileDiff
 import com.arakun.kit.Inbox
 import com.arakun.kit.InboxSession
 import com.arakun.kit.LimitWait
@@ -136,6 +139,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var session by mutableStateOf<LiveSession?>(null)
         private set
     var loadingOlder by mutableStateOf(false)
+        private set
+
+    /** The files the session on screen changed, turn by turn, once asked for. */
+    var changes by mutableStateOf<List<ChangedTurn>?>(null)
+        private set
+
+    /** The session's diffs that came, by the place each was asked by. */
+    var diffs by mutableStateOf<Map<DiffRef, FileDiff>>(emptyMap())
         private set
 
     /** A message worth a moment on screen. */
@@ -741,6 +752,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 session = session?.applyEntries(msg)
             }
             "state" -> if (session?.id == id) session = session?.applyState(msg)
+            "changes" -> if (session?.id == id) changes = ChangedTurn.list(msg)
+            "diff" -> if (session?.id == id) FileDiff.of(msg)?.let { diffs = diffs + (it.ref to it) }
             "started" -> {
                 starting = false
                 startUnsure = false
@@ -769,6 +782,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun open(id: String) {
         val line = inbox.firstOrNull { it.id == id }
+        forgetChanges()
         demo?.let {
             session = demoSession(id)
             return
@@ -781,7 +795,35 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         session = null
         openWhenLinked = null
         loadingOlder = false
+        forgetChanges()
         send("type" to "close")
+    }
+
+    /** They belong to the session on screen and go with it. */
+    private fun forgetChanges() {
+        changes = null
+        diffs = emptyMap()
+    }
+
+    /** Asks for the list of what the session changed; the answer fills [changes]. */
+    fun loadChanges() {
+        val s = session ?: return
+        demo?.let {
+            changes = ChangedTurn.list(parseJson(Demo.changes(System.currentTimeMillis() / 1000 - 600))!!)
+            return
+        }
+        send("type" to "changes", "session" to s.id)
+    }
+
+    /** Asks for the diffs of `refs` that have not come yet; the answers fill [diffs]. */
+    fun loadDiffs(refs: List<DiffRef>) {
+        val s = session ?: return
+        val missing = refs.filter { it !in diffs }
+        demo?.let {
+            diffs = diffs + missing.mapNotNull { r -> FileDiff.of(parseJson(Demo.diff(r))!!)?.let { d -> r to d } }
+            return
+        }
+        missing.forEach { send("type" to "diff", "session" to s.id, "entry" to it.entry, "index" to it.index) }
     }
 
     fun loadOlder() {

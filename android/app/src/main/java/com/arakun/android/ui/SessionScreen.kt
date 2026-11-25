@@ -1,5 +1,6 @@
 package com.arakun.android.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.drawWithContent
@@ -45,6 +46,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
@@ -72,6 +75,9 @@ fun SessionScreen(model: AppModel, id: String) {
     val atEnd by remember { derivedStateOf { !list.canScrollForward } }
     LaunchedEffect(atEnd) { if (atEnd) unseen = false }
     var followed by remember { mutableStateOf(false) }
+    // The session's changes or one of its diffs, over everything else here.
+    var sheet by remember { mutableStateOf<ChangesSheet?>(null) }
+    val focus = LocalFocusManager.current
     val lastIndex = (s?.let { 1 + (if (it.from > 0) 1 else 0) + it.entries.size + it.queue.size + 1 }) ?: 1
 
     val working = s?.status == SessionStatus.WORKING && s.turnStarted != null
@@ -91,7 +97,13 @@ fun SessionScreen(model: AppModel, id: String) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(c.ground)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(c.ground)
+            // Under a sheet the session is not there for a screen reader either.
+            .then(if (sheet != null) Modifier.clearAndSetSemantics {} else Modifier),
+    ) {
         SessionTopBar(s, onBack = model::close)
         Box(Modifier.weight(1f)) {
             LazyColumn(
@@ -107,7 +119,13 @@ fun SessionScreen(model: AppModel, id: String) {
                         }
                     }
                 } else {
-                    item(key = "header") { SessionHeader(s) }
+                    item(key = "header") {
+                        SessionHeader(s) {
+                            // The keyboard would stay up over the sheet.
+                            focus.clearFocus()
+                            sheet = ChangesSheet.Files
+                        }
+                    }
                     if (s.from > 0) {
                         item(key = "older") {
                             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -187,6 +205,12 @@ fun SessionScreen(model: AppModel, id: String) {
             )
         }
     }
+    val over = sheet
+    if (over != null && s != null) {
+        ChangesSheetView(model, s, over) { sheet = it }
+        // Back leaves a diff for the list, and the list for the session.
+        BackHandler { sheet = if (over is ChangesSheet.Diff) ChangesSheet.Files else null }
+    }
 }
 
 private fun sessionMood(model: AppModel, s: LiveSession?): Mood {
@@ -245,16 +269,27 @@ private fun SessionTopBar(s: LiveSession?, onBack: () -> Unit) {
 
 /** What the session has cost and changed so far, above its first entry. */
 @Composable
-private fun SessionHeader(s: LiveSession) {
+private fun SessionHeader(s: LiveSession, openChanges: () -> Unit) {
     val c = Palette.current
     Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         s.usage?.let { Text(it, style = mono(11.5f), color = c.textFaint) }
         Spacer(Modifier.weight(1f))
         if (s.changes.files > 0) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            // The counts open the list of files; the outline says they can be tapped.
+            Row(
+                Modifier
+                    .card(c.ground, c.line, Radius.control)
+                    .tap(onClick = openChanges)
+                    .semantics { contentDescription = "Show changes" }
+                    .heightIn(min = 32.dp)
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 BrandIcon(R.drawable.ic_file_diff, 13.dp, c.textFaint)
-                Text("${s.changes.files} files", style = mono(11.5f), color = c.textMuted)
+                Text(if (s.changes.files == 1) "1 file" else "${s.changes.files} files", style = mono(11.5f), color = c.textMuted)
                 Changes(s.changes.added, s.changes.removed)
+                BrandIcon(R.drawable.ic_arrow_right01, 11.dp, c.textFaint)
             }
         }
     }

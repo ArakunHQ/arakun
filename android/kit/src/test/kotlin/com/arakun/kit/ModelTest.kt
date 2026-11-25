@@ -94,4 +94,61 @@ class ModelTest {
         assertNotNull(s.usage)
         assertNull(s.applyState(json("""{"status":"idle","permission":null}""")).permission)
     }
+
+    @Test
+    fun readsTheChangesTurnByTurn() {
+        val turns = ChangedTurn.list(
+            json(
+                """
+                {"type":"changes","id":"s1","turns":[
+                 {"entry":4,"text":"Fix the limit","at":1700000000,"files":[
+                  {"path":"cloud/src/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[8,1]]},
+                  {"path":"README.md","name":"README.md","added":1,"removed":0,"diffs":[[9,0],["x",1],[3],[1e20,0]]}]},
+                 {"entry":0,"text":"","at":0,"files":[]}]}
+                """,
+            ),
+        )
+        assertEquals(2, turns.size)
+        assertEquals("Fix the limit", turns[0].text)
+        assertEquals(1_700_000_000_000L, turns[0].at)
+        val relay = turns[0].files[0]
+        assertEquals(listOf(DiffRef(6, 0), DiffRef(8, 1)), relay.diffs)
+        assertEquals("cloud/src", relay.dir)
+        assertEquals(12, relay.added)
+        // A pair that names no diff is left out, the file stays.
+        assertEquals(listOf(DiffRef(9, 0)), turns[0].files[1].diffs)
+        assertEquals("", turns[0].files[1].dir)
+        assertEquals(emptyList(), ChangedTurn.list(json("""{"type":"changes"}""")))
+    }
+
+    @Test
+    fun readsADiffWithItsHunksAndLines() {
+        val d = FileDiff.of(
+            json(
+                """
+                {"type":"diff","id":"s1","entry":6,"index":0,"path":"src/a.rs","name":"a.rs","added":1,"removed":1,
+                 "new_file":false,"deleted":false,"cut":40,
+                 "lines":["@@ -1,3 +1,3 @@ fn main",[" ",1,"fn main() {"],["-",2,"    old();"],["+",2,"    new();"],["+",null,""],[1,2],{"x":1}]}
+                """,
+            ),
+        )!!
+        assertEquals(DiffRef(6, 0), d.ref)
+        assertEquals("src/a.rs", d.path)
+        assertEquals(40, d.cut)
+        assertEquals(
+            listOf(
+                DiffLine.Hunk("@@ -1,3 +1,3 @@ fn main"),
+                DiffLine.Text(' ', 1, "fn main() {"),
+                DiffLine.Text('-', 2, "    old();"),
+                DiffLine.Text('+', 2, "    new();"),
+                DiffLine.Text('+', null, ""),
+            ),
+            d.lines,
+        )
+        val new = FileDiff.of(json("""{"entry":1,"index":2,"new_file":true,"lines":[]}"""))!!
+        assertEquals(true, new.newFile)
+        assertEquals(0, new.cut)
+        // Without its place there is nowhere to show it.
+        assertNull(FileDiff.of(json("""{"type":"diff","path":"a"}""")))
+    }
 }

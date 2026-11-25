@@ -12,9 +12,9 @@ android/
     E2E.kt           P-256 handshake, HKDF keys, AES-GCM frames (phone/e2e.js)
     RelayLink.kt     the WebSocket to the relay, pings, {req}/{res}, {part} (phone/relay.js)
     Pairing.kt       why a channel ended, and what an opened link gets told
-    Models.kt        inbox, session, entries, state (core/src/phone/wire.rs)
+    Models.kt        inbox, session, entries, state, changes, diffs (core/src/phone/wire.rs)
     WebPush.kt       this phone's push keys, opening a sealed notice (core/src/phone/push.rs)
-  app/               the app: sign-in, computers, inbox, a live session, new session
+  app/               the app: sign-in, computers, inbox, a live session and what it changed, new session
   tools/vectors.py   the brand's SVG icons and the raccoon as vector drawables
 ```
 

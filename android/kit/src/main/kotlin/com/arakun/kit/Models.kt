@@ -239,3 +239,101 @@ data class LiveSession(
         )
     }
 }
+
+/**
+ * Where one diff is in a session: its place in a tool's content, or a shell
+ * change's in a user entry. The computer is asked for a diff by it.
+ */
+data class DiffRef(val entry: Int, val index: Int)
+
+/** A file one turn changed. Several edits of it in the turn are several `diffs`, in order. */
+data class ChangedFile(
+    val name: String,
+    /** From the session's folder. */
+    val path: String,
+    val added: Int,
+    val removed: Int,
+    val diffs: List<DiffRef>,
+) {
+    /** The folder the file is in, "" at the top. */
+    val dir: String get() = path.substringBeforeLast('/', "")
+}
+
+/** One turn's changes: the first line of its prompt, when it was sent, and the files. */
+data class ChangedTurn(val text: String, val at: Long, val files: List<ChangedFile>) {
+    companion object {
+        /** A `changes` message: the turns that changed something, newest first. */
+        fun list(j: JsonElement): List<ChangedTurn> = j["turns"].array.map { t ->
+            ChangedTurn(
+                text = t["text"].str,
+                at = t["at"].millis(),
+                files = t["files"].array.map { f ->
+                    ChangedFile(
+                        name = f["name"].str,
+                        path = f["path"].str,
+                        added = f["added"].int ?: 0,
+                        removed = f["removed"].int ?: 0,
+                        // A pair that is not two whole numbers names no diff: left out.
+                        diffs = f["diffs"].array.mapNotNull { d ->
+                            val pair = d.array
+                            val entry = pair.getOrNull(0)?.int
+                            val index = pair.getOrNull(1)?.int
+                            if (pair.size == 2 && entry != null && index != null) DiffRef(entry, index) else null
+                        },
+                    )
+                },
+            )
+        }
+    }
+}
+
+/** A line of a diff as the computer cut it for a phone. */
+sealed interface DiffLine {
+    /** A hunk's `@@` header. */
+    data class Hunk(val text: String) : DiffLine
+
+    /** `mark` is '+', '-' or ' ' for context; `number` is the line's place in the file. */
+    data class Text(val mark: Char, val number: Int?, val text: String) : DiffLine
+
+    companion object {
+        fun of(j: JsonElement): DiffLine? {
+            j.string?.let { return Hunk(it) }
+            val parts = j.array
+            if (parts.size != 3) return null
+            return Text(parts[0].str.firstOrNull() ?: ' ', parts[1].int, parts[2].str)
+        }
+    }
+}
+
+/** A `diff` message: one edit of a file, read-only. */
+data class FileDiff(
+    val ref: DiffRef,
+    val path: String,
+    val name: String,
+    val added: Int,
+    val removed: Int,
+    val newFile: Boolean,
+    val deleted: Boolean,
+    val lines: List<DiffLine>,
+    /** Lines the computer left out of a long diff. */
+    val cut: Int,
+) {
+    companion object {
+        /** Null without the place it was asked by: there is nowhere to show it. */
+        fun of(j: JsonElement): FileDiff? {
+            val entry = j["entry"].int ?: return null
+            val index = j["index"].int ?: return null
+            return FileDiff(
+                ref = DiffRef(entry, index),
+                path = j["path"].str,
+                name = j["name"].str,
+                added = j["added"].int ?: 0,
+                removed = j["removed"].int ?: 0,
+                newFile = j["new_file"].bool,
+                deleted = j["deleted"].bool,
+                lines = j["lines"].array.mapNotNull(DiffLine::of),
+                cut = j["cut"].int ?: 0,
+            )
+        }
+    }
+}

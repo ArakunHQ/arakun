@@ -60,6 +60,9 @@ run_worker_first = true
 binding = "CLOUD"
 service = "arakun-cloud"
 
+# GITHUB_CLIENT_ID stays PLACEHOLDER until the "Arakun Admin" OAuth App exists:
+# cloud-deploy.yml reads it and skips this Worker while it is. Replace it as
+# "The admin panel" in cloud/README.md says.
 [env.production.vars]
 CLOUD_ORIGIN = "https://app.arakun.dev"
 GITHUB_CLIENT_ID = "PLACEHOLDER"

@@ -3990,15 +3990,7 @@ impl Daemon {
         let Some(live) = self.live.get(id) else {
             return kind != notify::Kind::Input;
         };
-        let t = live.thread.read(cx);
-        match kind {
-            notify::Kind::Input => {
-                t.pending_permission().is_some()
-                    || t.pending_question().is_some()
-                    || t.needs_install().is_some()
-            }
-            notify::Kind::Done | notify::Kind::Error => t.status() != ThreadStatus::Working,
-        }
+        live.thread.read(cx).still(kind)
     }
 
     /// Pushes notices in the background. Subscriptions the push service says

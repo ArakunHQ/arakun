@@ -2219,6 +2219,21 @@ impl Thread {
             .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
     }
 
+    /// Whether the session is still in the state a phone notice of `kind`
+    /// is about: waiting for the user, or not at work again. A notice that
+    /// waits for the user to leave goes only while this holds.
+    pub fn still(&self, kind: crate::phone::notify::Kind) -> bool {
+        use crate::phone::notify::Kind;
+        match kind {
+            Kind::Input => {
+                self.pending_permission().is_some()
+                    || self.pending_question().is_some()
+                    || self.needs_install().is_some()
+            }
+            Kind::Done | Kind::Error => self.status != ThreadStatus::Working,
+        }
+    }
+
     /// Spends the user's yes on one attempt: a later reconnect asks again if the
     /// adapter is gone by then.
     fn take_install_approval(&mut self) -> bool {
@@ -4664,6 +4679,43 @@ mod tests {
         t.push_terminal_output(&format!("{}\n", "x".repeat(3 * super::TERMINAL_KEEP)));
         assert!(t.terminal_output.len() >= super::TERMINAL_KEEP);
         assert!(t.terminal_output.ends_with("x\n"));
+    }
+
+    #[test]
+    fn a_notice_still_holds_while_the_session_waits_or_rests() {
+        use crate::phone::notify::Kind;
+        let fresh = || {
+            let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+            t.status = ThreadStatus::Idle;
+            t
+        };
+        let t = fresh();
+        assert!(!t.still(Kind::Input), "nothing is pending");
+        let mut t = fresh();
+        t.permissions
+            .push_back(PermissionRequest::for_test("Run", None));
+        assert!(t.still(Kind::Input));
+        let mut t = fresh();
+        t.native
+            .questions
+            .push_back(AskUserRequest::for_test(Vec::new()));
+        assert!(t.still(Kind::Input));
+        let mut t = fresh();
+        t.status = ThreadStatus::Error("no adapter".into());
+        t.needs_install = Some(launch::AdapterInstall {
+            kind: AgentKind::Claude,
+            package: "x",
+            dir: "/a".into(),
+        });
+        assert!(t.still(Kind::Input));
+        for kind in [Kind::Done, Kind::Error] {
+            let mut t = fresh();
+            assert!(t.still(kind));
+            t.status = ThreadStatus::Error("x".into());
+            assert!(t.still(kind));
+            t.status = ThreadStatus::Working;
+            assert!(!t.still(kind), "back at work");
+        }
     }
 
     #[test]

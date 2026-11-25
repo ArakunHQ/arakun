@@ -15,7 +15,7 @@ use serde_json::json;
 use super::Shell;
 use super::sessions::summary;
 use crate::agent::AgentKind;
-use crate::agent::{Setting, Thread, ThreadEvent, ThreadStatus};
+use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::cloud;
 use crate::island::AlertKind;
 use crate::model::TabKind;
@@ -278,8 +278,7 @@ impl Shell {
             && link.account != account
         {
             self.save_devices();
-            self.stop_phone(cx);
-            self.start_phone(&phone::Settings::load(), window, cx);
+            self.restart_phone(&phone::Settings::load(), window, cx);
         }
         let session = account.map(|(_, s)| s);
         if self.signed_in.asked != session || self.signed_in.beta_asked != session {
@@ -811,8 +810,7 @@ impl Shell {
                 settings.save_soon();
                 self.list_signed_in(window, cx);
                 if self.phone.is_some() {
-                    self.stop_phone(cx);
-                    self.start_phone(&settings, window, cx);
+                    self.restart_phone(&settings, window, cx);
                 } else {
                     self.sync_phone_view(cx);
                 }
@@ -888,6 +886,26 @@ impl Shell {
                 })
                 .detach();
         }
+    }
+
+    /// Starts the phone link again with `settings`. Notices waiting for the
+    /// person to leave carry over to the new link.
+    fn restart_phone(
+        &mut self,
+        settings: &phone::Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let waiting = self
+            .phone
+            .as_mut()
+            .map(|link| std::mem::take(&mut link.notifier));
+        self.stop_phone(cx);
+        self.start_phone(settings, window, cx);
+        if let (Some(waiting), Some(link)) = (waiting, &mut self.phone) {
+            link.notifier = waiting;
+        }
+        self.time_notices(window, cx);
     }
 
     fn start_phone(
@@ -2129,15 +2147,7 @@ impl Shell {
         let Some(thread) = self.phone_thread(&env_path, &id) else {
             return kind != Kind::Input;
         };
-        let t = thread.read(cx);
-        match kind {
-            Kind::Input => {
-                t.pending_permission().is_some()
-                    || t.pending_question().is_some()
-                    || t.needs_install().is_some()
-            }
-            Kind::Done | Kind::Error => t.status() != ThreadStatus::Working,
-        }
+        thread.read(cx).still(kind)
     }
 
     /// Pushes notices in the background. Subscriptions the push service says

@@ -111,7 +111,7 @@ impl View {
             #[cfg(feature = "coderlabs")]
             View::Canvas => "Canvas",
             View::Phone => "Phone",
-            View::Servers => "Servers",
+            View::Servers => "Computers",
             View::Automations => "Automations",
             View::Teams => "Team",
             #[cfg(feature = "team")]
@@ -170,7 +170,7 @@ impl View {
             #[cfg(feature = "coderlabs")]
             View::Canvas => "Design frames, drawn natively",
             View::Phone => "Arakun on your phone",
-            View::Servers => "Sessions on your other machines",
+            View::Servers => "This computer and your servers",
             View::Automations => "Scheduled agent runs",
             View::Teams => "Your team in Arakun",
             #[cfg(feature = "team")]

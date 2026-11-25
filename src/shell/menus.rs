@@ -1278,7 +1278,7 @@ impl Shell {
                             })),
                     );
             }
-            // A server's folder: nothing here acts on it but the Servers tab.
+            // A server's folder: nothing here acts on it but the Computers tab.
             MenuTarget::Env(pi, ei)
                 if self
                     .projects
@@ -1327,7 +1327,7 @@ impl Shell {
                             )),
                         )
                         .child(
-                            ui::menu_item("cm-servers", "computer", "Open Servers", false, true)
+                            ui::menu_item("cm-servers", "computer", "Open Computers", false, true)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_servers_tab(window, cx)
                                 })),

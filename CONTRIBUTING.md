@@ -336,6 +336,8 @@ the README. Use these:
 | **notice** | something Arakun tells you, on the island and in the Inbox | notification, alert. A notice can also show as a desktop notification, and GitHub's notifications keep their name. |
 | **check** | the project's check command, run after a turn that edits files | |
 | **checks** | GitHub's checks on a pull request | CI, when you mean the checks |
+| **Computers** | the tab that lists this computer and your servers | Servers tab. A machine running `arakun server` is still a server, and the program keeps its name. |
+| **Remove** | taking a server out of the Computers tab, and off your account when it is on it | Forget or Disconnect, for a server |
 
 Stored names stay as they are (`palettes.json`, `arakun notices`, `~/arakun-workspaces`).
 A test in `src/words_lint.rs` fails on a retired word in a string of prose; a phrase

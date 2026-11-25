@@ -1,11 +1,12 @@
 //! The account's servers: machines signed in to the same account, which the
 //! app reaches through the relay with its own sign-in, with no link.
 //!
-//! The account lists them (`cloud::machines`) with their keys. A server
-//! added from that list is kept in `servers.json` by its label only; it is
-//! connected once the list is here, so each connection checks the server
-//! against the key the account lists now. A server paired through the relay
-//! before accounts is moved over once the account lists its label.
+//! The account lists them (`cloud::machines`) with their keys. Each server
+//! it lists joins the list here by itself, kept in `servers.json` by its
+//! label only; it is connected once the list is here, so each connection
+//! checks the server against the key the account lists now. A server paired
+//! through the relay before accounts is moved over once the account lists
+//! its label.
 
 use super::*;
 use crate::cloud;
@@ -154,13 +155,9 @@ fn dial_session(session: Option<(String, String)>, fixture: bool) -> Option<(Str
     session.filter(|_| !fixture)
 }
 
-/// The servers the account lists, for the Servers tab: of kind `server`,
-/// never this computer, each marked when it is in the list here already.
-pub(super) fn your_servers(
-    machines: &Machines,
-    saved: &[Saved],
-    own_label: Option<&str>,
-) -> YourServers {
+/// The servers the account lists, for the Computers tab: of kind `server`,
+/// never this computer.
+pub(super) fn your_servers(machines: &Machines, own_label: Option<&str>) -> YourServers {
     if machines.asked.is_none() {
         return YourServers::SignedOut;
     }
@@ -177,12 +174,43 @@ pub(super) fn your_servers(
                 label: m.label.clone(),
                 name: m.name.clone(),
                 online: m.online,
-                added: saved
-                    .iter()
-                    .any(|s| s.label() == Some(m.label.as_str()) && !s.needs_sign_in()),
+                last_seen: m.last_seen_at,
             })
             .collect(),
     )
+}
+
+/// The servers the account lists that are not in the list here yet, to be
+/// kept as reached through the account at `base`: a server signed in to the
+/// same account needs no step here. Never this computer, and never one that
+/// looks paired already by link (a server of the same name reached
+/// directly), which would show twice.
+pub(super) fn joining(
+    list: &[cloud::Machine],
+    saved: &[Saved],
+    own_label: Option<&str>,
+    base: &str,
+) -> Vec<Saved> {
+    list.iter()
+        .filter(|m| m.kind == "server" && Some(m.label.as_str()) != own_label)
+        .filter(|m| !saved.iter().any(|s| s.label() == Some(m.label.as_str())))
+        .filter(|m| {
+            !saved
+                .iter()
+                .any(|s| matches!(s.way, Way::Direct) && s.name.eq_ignore_ascii_case(&m.name))
+        })
+        .map(|m| Saved {
+            id: servers::new_id(),
+            name: m.name.clone(),
+            origin: base.to_string(),
+            way: Way::Account {
+                label: m.label.clone(),
+            },
+            device: String::new(),
+            token: String::new(),
+            removed: false,
+        })
+        .collect()
 }
 
 /// The machines the made-up account of `ARAKUN_TEAMS_FIXTURE` lists, so a
@@ -223,16 +251,12 @@ pub(super) fn own_label() -> Option<String> {
 }
 
 impl Shell {
-    /// What the Servers tab lists under "Your servers".
+    /// The servers the account lists, as the Computers tab shows them.
     pub(super) fn servers_yours(&self) -> YourServers {
         let Some(link) = &self.servers else {
             return YourServers::SignedOut;
         };
-        your_servers(
-            &link.machines,
-            &link.saved,
-            link.machines.own_label.as_deref(),
-        )
+        your_servers(&link.machines, link.machines.own_label.as_deref())
     }
 
     /// The sign-in changed (in, out, or to another account): the servers of
@@ -325,7 +349,16 @@ impl Shell {
                 link.machines.error = None;
                 link.machines.stop_retrying();
                 let labels: Vec<String> = list.iter().map(|m| m.label.clone()).collect();
-                if adopt(&mut link.saved, &labels, &asked.0) {
+                let mut changed = adopt(&mut link.saved, &labels, &asked.0);
+                let new = joining(
+                    &list,
+                    &link.saved,
+                    link.machines.own_label.as_deref(),
+                    &asked.0,
+                );
+                changed |= !new.is_empty();
+                link.saved.extend(new);
+                if changed {
                     servers::save(&link.saved);
                 }
                 link.machines.list = Some(list);
@@ -460,40 +493,6 @@ impl Shell {
             });
         })
         .detach();
-    }
-
-    /// "Connect" on one of the account's servers: it joins the list here,
-    /// and is connected with the key the account lists.
-    pub(super) fn servers_add_machine(
-        &mut self,
-        label: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(link) = &mut self.servers else {
-            return;
-        };
-        let (Some((base, _)), Some(list)) = (&link.machines.asked, &link.machines.list) else {
-            return;
-        };
-        let Some(machine) = list.iter().find(|m| m.label == label) else {
-            return;
-        };
-        if !link.saved.iter().any(|s| s.label() == Some(label)) {
-            link.saved.push(Saved {
-                id: servers::new_id(),
-                name: machine.name.clone(),
-                origin: base.clone(),
-                way: Way::Account {
-                    label: label.to_string(),
-                },
-                device: String::new(),
-                token: String::new(),
-                removed: false,
-            });
-            servers::save(&link.saved);
-        }
-        self.servers_reach_accounts(window, cx);
     }
 }
 
@@ -718,44 +717,72 @@ mod tests {
     fn your_servers_are_the_accounts_servers_but_this_computer() {
         let mut machines = Machines::default();
         assert!(matches!(
-            your_servers(&machines, &[], None),
+            your_servers(&machines, None),
             YourServers::SignedOut
         ));
         machines.asked = Some(("https://app.arakun.dev".into(), "tok".into()));
         assert!(matches!(
-            your_servers(&machines, &[], None),
+            your_servers(&machines, None),
             YourServers::Loading
         ));
+        let mut seen = machine("cccccccccccccccc", "server");
+        seen.online = false;
+        seen.last_seen_at = 1_800_000_000;
         machines.list = Some(vec![
             machine("aaaaaaaaaaaaaaaa", "server"),
             machine("bbbbbbbbbbbbbbbb", "app"),
-            machine("cccccccccccccccc", "server"),
+            seen,
             machine("dddddddddddddddd", "server"),
         ]);
-        let saved = vec![Saved {
-            id: "s1".into(),
-            name: "c".into(),
-            origin: "https://app.arakun.dev".into(),
-            way: Way::Account {
-                label: "cccccccccccccccc".into(),
-            },
-            device: String::new(),
-            token: String::new(),
-            removed: false,
-        }];
-        let YourServers::Listed(rows) = your_servers(&machines, &saved, Some("dddddddddddddddd"))
-        else {
+        let YourServers::Listed(rows) = your_servers(&machines, Some("dddddddddddddddd")) else {
             panic!("listed");
         };
-        let shown: Vec<(&str, bool)> = rows.iter().map(|r| (r.label.as_str(), r.added)).collect();
+        let shown: Vec<(&str, bool, u64)> = rows
+            .iter()
+            .map(|r| (r.label.as_str(), r.online, r.last_seen))
+            .collect();
         assert_eq!(
             shown,
-            [("aaaaaaaaaaaaaaaa", false), ("cccccccccccccccc", true)]
+            [
+                ("aaaaaaaaaaaaaaaa", true, 0),
+                ("cccccccccccccccc", false, 1_800_000_000)
+            ]
         );
         machines.error = Some("offline".into());
         assert!(matches!(
-            your_servers(&machines, &saved, None),
+            your_servers(&machines, None),
             YourServers::Failed(_)
         ));
+    }
+
+    #[test]
+    fn a_server_on_the_account_joins_the_list_by_itself() {
+        let base = "https://app.arakun.dev";
+        let list = vec![
+            machine("aaaaaaaaaaaaaaaa", "server"),
+            machine("bbbbbbbbbbbbbbbb", "app"),
+            machine(LABEL, "server"),
+            machine("dddddddddddddddd", "server"),
+            machine("eeeeeeeeeeeeeeee", "server"),
+        ];
+        // One already here, and one paired by link under the same name.
+        let mut by_link = account_server();
+        by_link.id = "s2".into();
+        by_link.way = Way::Direct;
+        by_link.name = "EEEEEEEEEEEEEEEE box".into();
+        let saved = vec![account_server(), by_link];
+        let new = joining(&list, &saved, Some("dddddddddddddddd"), base);
+        let labels: Vec<Option<&str>> = new.iter().map(|s| s.label()).collect();
+        // Not this computer, not an app, not one here already in either way.
+        assert_eq!(labels, [Some("aaaaaaaaaaaaaaaa")]);
+        let joined = &new[0];
+        assert_eq!(joined.name, "aaaaaaaaaaaaaaaa box");
+        assert_eq!(joined.origin, base);
+        assert!(joined.token.is_empty() && joined.device.is_empty() && !joined.removed);
+        assert!(matches!(joined.way, Way::Account { .. }));
+        // Once kept, it does not join again.
+        let mut all = saved.clone();
+        all.extend(new);
+        assert!(joining(&list, &all, Some("dddddddddddddddd"), base).is_empty());
     }
 }

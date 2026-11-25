@@ -317,7 +317,7 @@ sees the project's skills.
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
   Paired devices reach it the way phones reach the app, with the same page, pairing
-  and notifications, and the app follows them in its Servers tab; agents ask for
+  and notifications, and the app follows them in its Computers tab; agents ask for
   permission as they do in the app, and you answer from wherever you are.
   `arakun-server` is the same server as a program of its own that needs no display
   library. See [Server](#server).
@@ -521,7 +521,7 @@ after a week).
   (a Cloudflare Worker): `relay_base` in `phone.json` and `ARAKUN_TEAMS_URL` must
   name the same server. Arakun sends your session only to the server that issued it,
   so when the two differ the relay stays signed out and the Phone tab names both
-  addresses. A server in the Servers tab added under another account server is kept
+  addresses. A server in the Computers tab added under another account server is kept
   but not connected, for the same reason. A
   `relay_base` of `https://arakun.dev`, the old default, reads as the new one.
   The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
@@ -649,9 +649,9 @@ after a week).
   (Claude Code's `local` scope; a skill goes in `.claude/skills` and is listed in
   `.git/info/exclude`). An MCP server that signs in gets the repo in its name when it is
   installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
-  get what you install by the mirror (see Servers). Under Arakun › Extensions (or Settings ›
+  get what you install by the mirror (see [Server](#server)). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
-  Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Servers and Automations. The
+  Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Computers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
@@ -1439,13 +1439,17 @@ out first.
 ## Server
 
 To run sessions on another machine, start a server there and reach it from a device.
-A server signed in to your account (`arakun-server login`) is listed in the app's
-Servers tab under **Your servers**, each with **Connect** and **Remove** (remove it
-from the account, after a question that names it): no link is needed, and the
-connection goes through the relay, end to end encrypted, checked against the key your
-account lists for that server. Signed out, the tab says "Sign in to see your servers".
-A server reached directly (`--reach lan` or `--reach tailscale`) is paired with a link
-instead. Where the app is installed, `arakun server` is the command; `arakun-server` is
+The app's Computers tab lists this computer first, then your servers, each with its
+status as a dot and a word, and what its sessions are doing. Pick one to see how it is
+reached, its environments and their sessions (a session opens in its project), its
+agents and their plan limits, and its settings. A server signed in to your account
+(`arakun-server login`) joins the list by itself: no link is needed, and the connection
+goes through the relay, end to end encrypted, checked against the key your account
+lists for that server. Signed out, the list says your account's servers show up once
+you sign in. A server reached directly (`--reach lan` or `--reach tailscale`) is paired
+with a link instead: **Add a computer** shows both ways. **Remove**, in a server's
+settings or its ⋯ menu, asks once, then has the server forget the app and, for a
+server on your account, takes it off the account too. Where the app is installed, `arakun server` is the command; `arakun-server` is
 the same command for a machine with no display (see
 [The server alone](#the-server-alone-no-display)).
 
@@ -1508,7 +1512,7 @@ the device and sign in as the same GitHub account, and the device is let in. On
 Tailscale and the local network, `pair` prints a link and its QR code. The link is good
 for two minutes and pairs one device. There are two ways to use it:
 
-- **In the app.** Open the Servers tab and paste the link (a link of the old relay
+- **In the app.** Open the Computers tab, press **Add a computer**, pick **By link** and paste the link (a link of the old relay
   says to sign in on the server with `arakun-server login` instead). From then on the app
   connects to the server when it starts, and works there as if you were at that
   machine: each folder the server offers is an environment in the sidebar, marked with
@@ -1517,10 +1521,10 @@ for two minutes and pairs one device. There are two ways to use it:
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
   go to the server. "New environment" makes a worktree on a server too: Alt+click the
   + and pick the machine, or right-click a server's environment. A plain + makes it on
-  the open environment's machine. To spread them instead, turn on **Spread across
-  machines** in the Servers tab: a new environment then goes to a connected machine
+  the open environment's machine. To spread them instead, turn on **Spread new
+  environments** at the foot of the Computers tab's list: a new environment then goes to a connected machine
   that has the project, This computer included, picking the least busy one (the fewest
-  sessions at work). Set each machine to Prefer, Normal, Avoid or Off there: a preferred
+  sessions at work). Set each machine to Prefer, Normal, Avoid or Off in its settings there: a preferred
   machine takes new environments before the others, an avoided one only when no other
   can, and one that is off never does (you can still pick it in the dialog). When every
   machine is off, a new environment goes to the open environment's machine. The New environment dialog starts on that machine too, and a first prompt stays
@@ -1563,7 +1567,7 @@ for two minutes and pairs one device. There are two ways to use it:
   Keychain there. The skills installed from skills.sh are listed in
   `skills-installed.json` in arakun's folder, and what was installed in a repo in
   `repo-installs.json`.
-  To add a folder on a server, press the folder button on it in the Servers tab,
+  To add a folder on a server, press **Add a folder** on it in the Computers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the
@@ -1580,11 +1584,11 @@ for two minutes and pairs one device. There are two ways to use it:
   While the app cannot reach your account, a server of the account says "Could not reach
   your account. Trying again." and connects once the account answers. A server whose
   user removed the app from its devices is marked in the file and is not connected
-  again until you forget it and connect it anew from **Your servers**. What each server listed last is
+  again until you remove it and run `arakun-server login` on it again. What each server listed last is
   kept in `servers-inbox.json` beside it, so its environments show at start before it
   answers, or while it cannot be reached. A server reached over plain http shows them
-  only once the Servers tab connects it. "Forget" on a server removes it
-  there and has the server forget the app. A server that cannot be reached at that
+  only once the Computers tab connects it. **Remove** on a server removes it
+  here and has the server forget the app. A server that cannot be reached at that
   moment keeps the app in its list: remove it there with
   `arakun-server unpair <device>`.
 - **On a phone, or in any browser.** Open the link. It is the page the Phone tab pairs

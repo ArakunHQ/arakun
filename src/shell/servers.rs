@@ -34,7 +34,9 @@ use crate::phone::{ClientId, wire};
 use crate::servers::balance::{self, Balance, Candidate};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
-use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
+use crate::servers_view::{
+    PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow, Via, YourServers,
+};
 
 mod account;
 pub(super) use account::fixture_machines;
@@ -57,6 +59,12 @@ struct Conn {
     /// new list of the account's machines leaves it alone when nothing
     /// changed. `None` for the others.
     start: Option<account::Start>,
+    /// Unix seconds it connected at, while it is connected.
+    since: Option<u64>,
+    /// Unix seconds it was last connected, since this app started.
+    seen: Option<u64>,
+    /// Its agents and their limits, from its last `usage` message.
+    agents: Vec<crate::servers_view::AgentRow>,
 }
 
 impl Conn {
@@ -69,6 +77,9 @@ impl Conn {
             watches_several: false,
             no_images: false,
             start: None,
+            since: None,
+            seen: None,
+            agents: Vec::new(),
         }
     }
 
@@ -912,12 +923,12 @@ fn images_dir() -> PathBuf {
 }
 
 impl Shell {
-    /// Opens (or focuses) the Servers tab, and connects to the paired servers
+    /// Opens (or focuses) the Computers tab, and connects to the paired servers
     /// the first time.
     pub(super) fn open_servers_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if self.has_projects() {
-            self.show_view_tab("Servers", TabKind::Servers, |k| {
+            self.show_view_tab("Computers", TabKind::Servers, |k| {
                 matches!(k, TabKind::Servers)
             });
             self.note_active_tab(cx);
@@ -937,7 +948,7 @@ impl Shell {
     /// At start: the paired servers are connected, and their projects show
     /// what they listed last until they answer. Not one reached over plain
     /// http: its token would cross whatever network this is now in the clear.
-    /// It waits for the Servers tab.
+    /// It waits for the Computers tab.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if servers::load().iter().any(|s| !in_the_clear(s)) {
             self.servers_connect_with(true, window, cx);
@@ -1064,14 +1075,25 @@ impl Shell {
         let targets = self.server_targets();
         self.extensions_view
             .update(cx, |v, cx| v.set_servers(targets, cx));
+        let yours = self.servers_yours();
         let Some(link) = &self.servers else {
             return;
+        };
+        // When the relay last saw each server of the account.
+        let listed_seen = |label: Option<&str>| match (&yours, label) {
+            (YourServers::Listed(rows), Some(label)) => rows
+                .iter()
+                .find(|m| m.label == label)
+                .map(|m| m.last_seen)
+                .filter(|t| *t > 0),
+            _ => None,
         };
         let servers = link
             .saved
             .iter()
             .filter_map(|s| {
                 let conn = link.conns.get(&s.id)?;
+                let seen = conn.seen.max(listed_seen(s.label()));
                 Some(ServerRow {
                     id: s.id.clone(),
                     name: Self::server_name(s),
@@ -1079,13 +1101,20 @@ impl Shell {
                     reach: conn.reach.clone(),
                     sessions: conn.sessions.clone(),
                     places: conn.places.clone(),
+                    via: match s.way {
+                        servers::Way::Direct => Via::Direct {
+                            clear: in_the_clear(s),
+                        },
+                        servers::Way::Account { .. } => Via::Account,
+                        servers::Way::Relay { .. } => Via::OldRelay,
+                    },
+                    label: s.label().map(str::to_string),
+                    since: conn.since,
+                    seen,
+                    agents: conn.agents.clone(),
                 })
             })
             .collect();
-        let yours = self.servers_yours();
-        let Some(link) = &self.servers else {
-            return;
-        };
         let state = ServersState {
             servers,
             yours,
@@ -1095,7 +1124,50 @@ impl Shell {
             balance: link.balance.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
+        self.sync_this_computer(cx);
         cx.notify();
+    }
+
+    /// What the Computers tab shows of this computer: its environments with
+    /// their latest sessions, and the agents signed in here. Asked as the
+    /// tab draws, since sessions here start and stop all the time.
+    pub(super) fn sync_this_computer(&self, cx: &mut Context<Self>) {
+        const SHOWN: usize = 4;
+        let mut envs = Vec::new();
+        for p in self.projects.iter().filter(|p| !p.is_remote()) {
+            for e in &p.environments {
+                let mut sessions: Vec<&Session> =
+                    e.sessions.iter().filter(|s| !s.settled).collect();
+                sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+                let more = sessions.len().saturating_sub(SHOWN);
+                envs.push(crate::servers_view::EnvRow {
+                    project: p.name.to_string(),
+                    branch: e.branch.to_string(),
+                    path: model::pretty_path(&e.path),
+                    here: Some(e.path.clone()),
+                    sessions: sessions
+                        .into_iter()
+                        .take(SHOWN)
+                        .map(|s| SessionRow {
+                            id: s.id.to_string(),
+                            title: s.title.to_string(),
+                            agent: s.agent.label().to_string(),
+                            status: s.shown_status(),
+                            updated: s.updated,
+                            place: String::new(),
+                            env: String::new(),
+                        })
+                        .collect(),
+                    more,
+                });
+            }
+        }
+        let this = crate::servers_view::ThisComputer {
+            name: crate::phone::host_name(),
+            envs,
+            agents: crate::servers_view::agents_of(&self.local_usage(cx)),
+        };
+        self.servers_view.update(cx, |v, cx| v.set_this(this, cx));
     }
 
     /// The paired servers, for the Marketplace to install on. Before the
@@ -1151,14 +1223,41 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.servers_connect(window, cx);
-        if let ServersEvent::Connect(label) = ev {
-            self.servers_add_machine(label, window, cx);
-            self.sync_servers_view(cx);
-            return;
-        }
-        if let ServersEvent::Remove(label) = ev {
-            self.servers_remove_machine(label.clone(), window, cx);
-            return;
+        match ev {
+            ServersEvent::SignIn => {
+                self.open_account_sign_in(window, cx);
+                return;
+            }
+            ServersEvent::OpenHere { env, session } => {
+                let found = self
+                    .projects
+                    .iter()
+                    .enumerate()
+                    .find_map(|(pi, p)| p.env_index(env).map(|ei| (pi, ei)));
+                if let Some((pi, ei)) = found {
+                    self.select_env(pi, ei, window, cx);
+                    self.open_session(session.clone().into(), window, cx);
+                }
+                return;
+            }
+            ServersEvent::Remove(id) => {
+                // Taken off the account after the pairing is forgotten: the
+                // list asked again then no longer brings it back.
+                let leave = self.servers.as_ref().and_then(|l| {
+                    l.saved
+                        .iter()
+                        .find(|s| s.id == *id)
+                        .and_then(servers::account_to_leave)
+                        .map(str::to_string)
+                });
+                self.servers_forget(id, window, cx);
+                if let Some(label) = leave {
+                    self.servers_remove_machine(label, window, cx);
+                }
+                self.sync_servers_view(cx);
+                return;
+            }
+            _ => {}
         }
         let Some(link) = &mut self.servers else {
             return;
@@ -1193,41 +1292,6 @@ impl Shell {
                 }
                 link.pairing_timeout = None;
             }
-            ServersEvent::Forget(id) => {
-                if let Some(conn) = link.conns.remove(id) {
-                    conn.client.unpair();
-                }
-                link.git_asks
-                    .fail(id, "The server was forgotten before it answered.");
-                link.saved.retain(|s| s.id != *id);
-                servers::save(&link.saved);
-                if link.balance.servers.contains_key(id) {
-                    link.balance.forget(id);
-                    balance::save(&link.balance);
-                }
-                if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
-                    save_inboxes(link, cx);
-                }
-                link.following.retain(|f| f.server != *id);
-                // What it was asked is not coming: the others' requests stay.
-                link.adding.remove(id);
-                if link.added.as_ref().is_some_and(|(s, _)| s == id) {
-                    link.added = None;
-                }
-                link.deleting.retain(|(server, _, _)| server != id);
-                let new = link.new_env.remove(id);
-                // Its link stops without a word: the phones waiting on a start hear it here.
-                let waiting = link.starts.dropped(id);
-                settle_first_prompts(&mut link.first_prompts, &link.starts, id);
-                self.sync_remote_projects(window, cx);
-                if let Some(new) = new {
-                    let why = "The server was forgotten before it made the environment.";
-                    self.servers_new_env_failed(new, why.into(), cx);
-                }
-                for client in waiting {
-                    self.phone_send(client, wire::error("that server was forgotten"));
-                }
-            }
             ServersEvent::AddPlace { server, path } => {
                 if let Some(conn) = link.conns.get(server) {
                     conn.client
@@ -1241,7 +1305,7 @@ impl Shell {
                     link.adding.insert(server.clone());
                 }
             }
-            ServersEvent::Connect(_) | ServersEvent::Remove(_) => {}
+            ServersEvent::Remove(_) | ServersEvent::OpenHere { .. } | ServersEvent::SignIn => {}
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);
@@ -1258,6 +1322,48 @@ impl Shell {
         self.sync_servers_view(cx);
     }
 
+    /// Forgets a server: it is told to forget this app, and all that waits
+    /// on it here is let go.
+    fn servers_forget(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        link.error = None;
+        if let Some(conn) = link.conns.remove(id) {
+            conn.client.unpair();
+        }
+        link.git_asks
+            .fail(id, "The server was removed before it answered.");
+        link.saved.retain(|s| s.id != *id);
+        servers::save(&link.saved);
+        if link.balance.servers.contains_key(id) {
+            link.balance.forget(id);
+            balance::save(&link.balance);
+        }
+        if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
+            save_inboxes(link, cx);
+        }
+        link.following.retain(|f| f.server != *id);
+        // What it was asked is not coming: the others' requests stay.
+        link.adding.remove(id);
+        if link.added.as_ref().is_some_and(|(s, _)| s == id) {
+            link.added = None;
+        }
+        link.deleting.retain(|(server, _, _)| server != id);
+        let new = link.new_env.remove(id);
+        // Its link stops without a word: the phones waiting on a start hear it here.
+        let waiting = link.starts.dropped(id);
+        settle_first_prompts(&mut link.first_prompts, &link.starts, id);
+        self.sync_remote_projects(window, cx);
+        if let Some(new) = new {
+            let why = "The server was removed before it made the environment.";
+            self.servers_new_env_failed(new, why.into(), cx);
+        }
+        for client in waiting {
+            self.phone_send(client, wire::error("that server was removed"));
+        }
+    }
+
     /// The link of a pairing still under way has run out: it is given up.
     fn servers_pairing_ran_out(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(link) = &mut self.servers else {
@@ -1272,7 +1378,7 @@ impl Shell {
         self.sync_servers_view(cx);
     }
 
-    /// The last Servers tab was closed: what went wrong was about what it showed.
+    /// The last Computers tab was closed: what went wrong was about what it showed.
     pub(super) fn servers_tab_closed(&mut self, cx: &mut Context<Self>) {
         if let Some(link) = &mut self.servers {
             link.error = None;
@@ -2149,7 +2255,7 @@ impl Shell {
         self.servers.as_ref()?.error.clone()
     }
 
-    /// A session picked in the Servers tab opens in its environment's tab.
+    /// A session picked in the Computers tab opens in its environment's tab.
     fn servers_open_session(
         &mut self,
         server: &str,
@@ -2769,6 +2875,19 @@ impl Shell {
                     });
                 }
                 if let Some(conn) = link.conns.get_mut(id) {
+                    let now = unix_now();
+                    match (conn.reach == Reach::Connected, back) {
+                        (false, true) => {
+                            conn.since = Some(now);
+                            // Its agents and their limits; it says again when they change.
+                            conn.client.send(&json!({ "type": "usage" }));
+                        }
+                        (true, false) => {
+                            conn.since = None;
+                            conn.seen = Some(now);
+                        }
+                        _ => {}
+                    }
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
                     // again, whole, since what changed meanwhile was not
@@ -2851,6 +2970,13 @@ impl Shell {
                         .extensions_view
                         .update(cx, |v, cx| v.server_error(id, &msg, cx))
                 {
+                    return;
+                }
+                if kind == "usage" {
+                    if let Some(conn) = link.conns.get_mut(id) {
+                        conn.agents = crate::servers_view::agents_of(&msg);
+                    }
+                    self.sync_servers_view(cx);
                     return;
                 }
                 if msg["type"] == "inbox" {
@@ -2970,7 +3096,7 @@ impl Shell {
 
     /// An error that answers a start, a rename or a new environment, told to
     /// whoever asked for it. False for the rest, which the session on screen
-    /// or the Servers tab shows; a start this app asked for among them.
+    /// or the Computers tab shows; a start this app asked for among them.
     fn servers_answer_failed(&mut self, id: &str, msg: &Value, cx: &mut Context<Self>) -> bool {
         let Some(link) = &mut self.servers else {
             return false;
@@ -2991,7 +3117,7 @@ impl Shell {
                         true
                     }
                     Some(Asker::Gone) => true,
-                    // Also shown in the Servers tab, whose start it ends.
+                    // Also shown in the Computers tab, whose start it ends.
                     Some(Asker::Desktop) | None => {
                         if let Some(first) = first.filter(|f| f.desktop) {
                             let why = format!("The server said: {message}.");
@@ -3020,7 +3146,7 @@ impl Shell {
                 true
             }
             // A new environment asked from the sidebar: said there, not in
-            // the Servers tab. A server that does not know `new_env` yet
+            // the Computers tab. A server that does not know `new_env` yet
             // turns the message itself down.
             // Its own failures come as `place_failed`; any other error is
             // about something else and is left to the session or the tab.
@@ -3372,7 +3498,7 @@ impl Shell {
                 let message = text(msg, "message");
                 // An error about a session names it.
                 let about = msg["id"].as_str();
-                // Said in that session's tab when it is open, else in the Servers tab.
+                // Said in that session's tab when it is open, else in the Computers tab.
                 let thread = about.and_then(|session| {
                     let env = self
                         .projects
@@ -4180,7 +4306,7 @@ mod tests {
         };
         // At start the plain-http one is not connected, so nothing of it shows.
         assert_eq!(ids(seeded_inboxes(&servers, &inboxes, true)), ["safe"]);
-        // Built from the Servers tab, it is, and its kept list shows.
+        // Built from the Computers tab, it is, and its kept list shows.
         assert_eq!(
             ids(seeded_inboxes(&servers, &inboxes, false)),
             ["clear", "safe"]

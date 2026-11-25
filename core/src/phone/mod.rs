@@ -333,6 +333,12 @@ pub enum ClientMsg {
     Visible {
         visible: bool,
     },
+    /// How long the person has been idle at the desktop app's computer, in
+    /// seconds. The app following this server says it on change and at least
+    /// every 30 s; phones never do. A server has no display to tell.
+    Idle {
+        secs: u64,
+    },
     /// A terminal in place `place`, under the id `term` the app picked: the
     /// login shell there, running `run` first when it says one. Its output
     /// follows as `term_output`, then `term_exit` once it ends.
@@ -3133,6 +3139,16 @@ mod tests {
             }
         }
         assert!(heard);
+    }
+
+    #[test]
+    fn idle_reads_as_the_app_sends_it() {
+        // As `shell::servers::idle` writes it.
+        let sent = serde_json::json!({ "type": "idle", "secs": 75 });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(sent).unwrap(),
+            ClientMsg::Idle { secs: 75 }
+        );
     }
 
     #[test]

@@ -41,6 +41,7 @@ use crate::servers_view::{
 mod account;
 pub(super) use account::fixture_machines;
 mod files;
+mod idle;
 mod mirror;
 mod terms;
 
@@ -65,6 +66,10 @@ struct Conn {
     seen: Option<u64>,
     /// Its agents and their limits, from its last `usage` message.
     agents: Vec<crate::servers_view::AgentRow>,
+    /// The idle time it was last told, and when, on this connection.
+    idle_told: Option<(u64, std::time::Instant)>,
+    /// It is from before it took idle time: none is sent to it.
+    no_idle: bool,
 }
 
 impl Conn {
@@ -80,6 +85,8 @@ impl Conn {
             since: None,
             seen: None,
             agents: Vec::new(),
+            idle_told: None,
+            no_idle: false,
         }
     }
 
@@ -277,6 +284,8 @@ pub(super) struct ServersLink {
     /// The account's machines, for its servers.
     machines: account::Machines,
     _listen: Task<()>,
+    /// Tells the connected servers the idle time here (`idle`).
+    _idle: Task<()>,
 }
 
 /// The folders a server's sessions ran in that it no longer offers. Their
@@ -1126,6 +1135,7 @@ impl Shell {
             git_asks: Default::default(),
             machines: Default::default(),
             _listen: listen,
+            _idle: Self::servers_time_idle(window, cx),
         });
         self.servers_list_machines(window, cx);
         for (id, inbox) in &seeded {
@@ -3073,6 +3083,12 @@ impl Shell {
                         _ => {}
                     }
                     conn.reach = reach;
+                    // A new connection is a new client there, which heard
+                    // nothing, and may be an updated server that takes idle time.
+                    conn.idle_told = None;
+                    if back {
+                        conn.no_idle = false;
+                    }
                     // Back after a drop: the followed session is asked for
                     // again, whole, since what changed meanwhile was not
                     // heard. It is read to the side and swapped in when complete.
@@ -3140,6 +3156,13 @@ impl Shell {
                 }
                 // A server from before mirroring: it keeps what it has.
                 if kind == "error" && older_server_refused(&text(&msg, "message"), &["mirror"]) {
+                    return;
+                }
+                // A server from before it took idle time: it waits as it did.
+                if kind == "error" && older_server_refused(&text(&msg, "message"), &["idle"]) {
+                    if let Some(conn) = link.conns.get_mut(id) {
+                        conn.no_idle = true;
+                    }
                     return;
                 }
                 if matches!(kind, "market" | "market_done") {

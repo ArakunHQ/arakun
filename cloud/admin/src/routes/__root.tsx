@@ -22,6 +22,9 @@ export interface RouterContext {
 export const NAV: { to: LinkProps["to"]; label: string }[] = [
   { to: "/", label: "Cloud access" },
   { to: "/users", label: "Users" },
+  { to: "/machines", label: "Machines" },
+  { to: "/notices", label: "Notices" },
+  { to: "/activity", label: "Activity" },
 ];
 
 export const Route = createRootRouteWithContext<RouterContext>()({

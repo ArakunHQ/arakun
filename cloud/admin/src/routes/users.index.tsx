@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
 import { Time } from "../components/Time";
 import { parseGithubId } from "../format";
 import { usersQuery } from "../queries";
+import { useSearchBox } from "../useSearchBox";
 import type { UserRow } from "../types";
 
 interface UsersSearch {
@@ -26,26 +27,11 @@ export const Route = createFileRoute("/users/")({
 function Users() {
   const { q, after } = Route.useSearch();
   const navigate = Route.useNavigate();
-  const [typed, setTyped] = useState(q ?? "");
-  // The last q this box wrote to the URL: any other change came from outside.
-  const written = useRef(q);
-  useEffect(() => {
-    if (q !== written.current) {
-      written.current = q;
-      setTyped(q ?? "");
-    }
-  }, [q]);
-  // Wait for a pause in typing, then put the search in the URL. A new search
-  // starts at the first page: a cursor belongs to the search that made it.
-  useEffect(() => {
-    const value = typed.trim() || undefined;
-    if (value === q) return;
-    const timer = setTimeout(() => {
-      written.current = value;
-      void navigate({ search: { q: value }, replace: true });
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [typed, q, navigate]);
+  // A new search starts at the first page: a cursor belongs to the search that made it.
+  const [typed, setTyped] = useSearchBox(
+    q,
+    useCallback((value) => void navigate({ search: { q: value }, replace: true }), [navigate]),
+  );
 
   const users = useQuery(usersQuery({ q, after }));
   const id = q === undefined ? null : parseGithubId(q);

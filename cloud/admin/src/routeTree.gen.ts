@@ -10,6 +10,9 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ActivityRouteImport } from './routes/activity'
+import { Route as MachinesRouteImport } from './routes/machines'
+import { Route as NoticesRouteImport } from './routes/notices'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as UsersIndexRouteImport } from './routes/users.index'
 import { Route as UsersGithubIdRouteImport } from './routes/users.$githubId'
@@ -17,6 +20,21 @@ import { Route as UsersGithubIdRouteImport } from './routes/users.$githubId'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ActivityRoute = ActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MachinesRoute = MachinesRouteImport.update({
+  id: '/machines',
+  path: '/machines',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NoticesRoute = NoticesRouteImport.update({
+  id: '/notices',
+  path: '/notices',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignInRoute = SignInRouteImport.update({
@@ -37,12 +55,18 @@ const UsersGithubIdRoute = UsersGithubIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
+  '/machines': typeof MachinesRoute
+  '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users/': typeof UsersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
+  '/machines': typeof MachinesRoute
+  '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users': typeof UsersIndexRoute
@@ -50,20 +74,48 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
+  '/machines': typeof MachinesRoute
+  '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users/': typeof UsersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/sign-in' | '/users/$githubId' | '/users/'
+  fullPaths:
+    | '/'
+    | '/activity'
+    | '/machines'
+    | '/notices'
+    | '/sign-in'
+    | '/users/$githubId'
+    | '/users/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/sign-in' | '/users/$githubId' | '/users'
-  id: '__root__' | '/' | '/sign-in' | '/users/$githubId' | '/users/'
+  to:
+    | '/'
+    | '/activity'
+    | '/machines'
+    | '/notices'
+    | '/sign-in'
+    | '/users/$githubId'
+    | '/users'
+  id:
+    | '__root__'
+    | '/'
+    | '/activity'
+    | '/machines'
+    | '/notices'
+    | '/sign-in'
+    | '/users/$githubId'
+    | '/users/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ActivityRoute: typeof ActivityRoute
+  MachinesRoute: typeof MachinesRoute
+  NoticesRoute: typeof NoticesRoute
   SignInRoute: typeof SignInRoute
   UsersGithubIdRoute: typeof UsersGithubIdRoute
   UsersIndexRoute: typeof UsersIndexRoute
@@ -76,6 +128,27 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/activity': {
+      id: '/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/machines': {
+      id: '/machines'
+      path: '/machines'
+      fullPath: '/machines'
+      preLoaderRoute: typeof MachinesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notices': {
+      id: '/notices'
+      path: '/notices'
+      fullPath: '/notices'
+      preLoaderRoute: typeof NoticesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sign-in': {
@@ -104,6 +177,9 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ActivityRoute: ActivityRoute,
+  MachinesRoute: MachinesRoute,
+  NoticesRoute: NoticesRoute,
   SignInRoute: SignInRoute,
   UsersGithubIdRoute: UsersGithubIdRoute,
   UsersIndexRoute: UsersIndexRoute,

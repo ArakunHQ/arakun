@@ -160,7 +160,7 @@ describe("one user", () => {
     expect((screen.getByRole("button", { name: "Set plan" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Send notice" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sign out everywhere" })).toBeNull();
-    expect(screen.queryByText("Activity")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Activity" })).toBeNull();
   });
 
   it("starts a fresh screen when the operator goes to another account", async () => {

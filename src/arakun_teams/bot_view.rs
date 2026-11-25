@@ -718,7 +718,22 @@ impl TeamsView {
                 .text_color(theme::text_subtle())
                 .child(format!("Could not check: {}", a.unchecked.join(" ")))
         });
-        if columns || unchecked.is_some() {
+        // What left the machine as web searches, for the team to check.
+        let searched = bot::searches_line(meta).map(|line| {
+            div()
+                .pt(ui::sp(if columns || unchecked.is_some() {
+                    0.
+                } else {
+                    12.
+                }))
+                .pb(ui::sp(12.))
+                .ty(Type::Label)
+                .font_weight(FontWeight::NORMAL)
+                .line_height(px(18.))
+                .text_color(theme::text_subtle())
+                .child(line)
+        });
+        if columns || unchecked.is_some() || searched.is_some() {
             sections.push(
                 div()
                     .flex()
@@ -742,6 +757,7 @@ impl TeamsView {
                         )
                     })
                     .children(unchecked)
+                    .children(searched)
                     .into_any_element(),
             );
         }
@@ -1245,6 +1261,7 @@ mod tests {
                 decision: "Do it.".into(),
             },
             parts: 0,
+            searches: Vec::new(),
         };
         let mut answer = m("bot", 3, 2, bot::bot_body(&range, 2, &outcome));
         answer.github_id = 2;

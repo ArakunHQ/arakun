@@ -53,7 +53,10 @@ export async function listUsers(env: Env, url: URL): Promise<Response> {
   let after: RegExpExecArray | null = null;
   if (query.has("after")) {
     after = CURSOR.exec(query.get("after")!);
-    if (!after) return error(400, "after must be a cursor from a previous answer");
+    // 16 digits can pass MAX_SAFE_INTEGER, and a rounded cursor would skip rows.
+    if (!after || !Number.isSafeInteger(Number(after[1])) || !Number.isSafeInteger(Number(after[2]))) {
+      return error(400, "after must be a cursor from a previous answer");
+    }
   }
   const q = query.get("q");
   if (q !== null && !GITHUB_LOGIN.test(q)) return error(400, "q is 1 to 39 of A-Z, a-z, 0-9, _ and -");

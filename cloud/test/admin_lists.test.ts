@@ -92,7 +92,7 @@ describe("GET /admin/users", () => {
   });
 
   it("refuses a bad limit or cursor", async () => {
-    for (const query of ["?limit=0", "?limit=101", "?limit=x", "?after=x", "?after=1_0"]) {
+    for (const query of ["?limit=0", "?limit=101", "?limit=x", "?after=x", "?after=1_0", "?after=1_9999999999999999"]) {
       expect((await call("GET", `/admin/users${query}`, ADMIN)).status, query).toBe(400);
     }
   });

@@ -54,8 +54,15 @@ export interface GitHubUser {
 }
 
 /// What a session can be for: the app, `arakun-server`, the phone page, and
-/// the native apps.
+/// the native apps. Sign-in takes only these. `cloud` is not among them: only
+/// `newCloudSession` makes one.
 const KINDS = ["app", "server", "phone", "ios", "android"];
+/// A session for an `arakun-server` in a container we host. An agent there
+/// may be talked into reading the token, so it is good for one door only:
+/// `/machines/<label>/pc` of the label it was made for.
+export const CLOUD_KIND = "cloud";
+/// A machine label, as the relay derives it from the computer's key.
+const LABEL = /^[a-z2-7]{16}$/;
 const MAX_NAME = 100;
 /// How many sessions an account keeps. Sign-in is limited per client IP, not
 /// per account, so without this the list has no end.
@@ -160,16 +167,54 @@ export async function newSession(
       .prepare("INSERT INTO sessions (token_hash, id, name, kind, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .bind(hash, id, name, kind, user.id, t, expiresAt, t),
     // Past the cap, the sessions used longest ago make room for the new one.
+    // Cloud sessions neither count nor go: one per machine bounds them, and
+    // signing in on a new phone must not cut off a machine we run.
     db
       .prepare(
         `DELETE FROM sessions WHERE github_id = ?1 AND token_hash IN (
-           SELECT token_hash FROM sessions WHERE github_id = ?1 AND token_hash != ?2
+           SELECT token_hash FROM sessions WHERE github_id = ?1 AND token_hash != ?2 AND kind != 'cloud'
            ORDER BY last_used_at DESC, created_at DESC, token_hash LIMIT -1 OFFSET ?3)`,
       )
       .bind(user.id, hash, MAX_SESSIONS - 1),
   ]);
   // A session that made room may have sockets open: they close now.
   if (results[3]!.meta.changes > 0) await recheckAccount(env, user.id);
+  return { session, session_id: id, expires_at: expiresAt };
+}
+
+/// A session for the machine with this label, for a user who has signed in
+/// before and is not blocked; null otherwise. The token is returned once and
+/// only its hash is kept. It lives as long as any session, and use renews it
+/// the same way, so a token copied out of the container ends too. A machine has
+/// one cloud session: a new one ends the one before, which keeps them bounded
+/// without the cap, and a restarted container leaves no live token behind.
+export async function newCloudSession(
+  env: Env,
+  githubId: number,
+  label: string,
+  name: string,
+): Promise<{ session: string; session_id: string; expires_at: number } | null> {
+  if (!LABEL.test(label)) throw new Error("not a machine label");
+  if (name.length === 0 || name.length > MAX_NAME) throw new Error(`name must be 1 to ${MAX_NAME} characters`);
+  const t = now();
+  const session = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const expiresAt = t + SESSION_DAYS * DAY;
+  const hash = hex(await sha256(session));
+  const db = env.DB;
+  const results = await db.batch([
+    db.prepare("DELETE FROM sessions WHERE github_id = ? AND (expires_at <= ? OR machine_label = ?)").bind(githubId, t, label),
+    // No row without a user who exists and is not blocked.
+    db
+      .prepare(
+        `INSERT INTO sessions (token_hash, id, name, kind, machine_label, github_id, created_at, expires_at, last_used_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, github_id, ?6, ?7, ?6 FROM users WHERE github_id = ?8 AND blocked_at IS NULL`,
+      )
+      .bind(hash, id, name, CLOUD_KIND, label, t, expiresAt, githubId),
+  ]);
+  // The session it replaced may hold the machine's socket.
+  if (results[0]!.meta.changes > 0) await recheckAccount(env, githubId);
+  if (results[1]!.meta.changes === 0) return null;
   return { session, session_id: id, expires_at: expiresAt };
 }
 
@@ -227,10 +272,15 @@ export async function deleteSession(request: Request, env: Env, id: string): Pro
 /// or by the cookie. Every endpoint that needs a user goes through here. Team
 /// endpoints pass `flag`, so the flag is read in the same query rather than
 /// in a second round trip.
+///
+/// A cloud session counts as no session, unless the caller is the computer
+/// door and passes `machine`, the label it serves, and that is the session's
+/// label. Refusing here rather than in each caller means a new endpoint is
+/// closed to it without anyone remembering to.
 export async function session(
   request: Request,
   env: Env,
-  { renew = true, flag = null }: { renew?: boolean; flag?: string | null } = {},
+  { renew = true, flag = null, machine = null }: { renew?: boolean; flag?: string | null; machine?: string | null } = {},
 ): Promise<Session | null> {
   let token = bearer(request);
   if (token === null && !request.headers.has("Authorization")) {
@@ -246,7 +296,7 @@ export async function session(
   const hash = hex(await sha256(token));
   // A lookup by the hash itself, so no secret is compared here.
   const row = await env.DB.prepare(
-    `SELECT s.id, s.name, s.kind, s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, u.plan, u.blocked_at IS NOT NULL AS blocked,
+    `SELECT s.id, s.name, s.kind, s.machine_label, s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, u.plan, u.blocked_at IS NOT NULL AS blocked,
             f.flag IS NOT NULL AS flagged
      FROM sessions s JOIN users u ON u.github_id = s.github_id
      LEFT JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?2
@@ -257,6 +307,7 @@ export async function session(
       id: string | null;
       name: string;
       kind: string;
+      machine_label: string | null;
       github_id: number;
       created_at: number;
       expires_at: number;
@@ -267,6 +318,8 @@ export async function session(
       flagged: number;
     }>();
   if (!row) return null;
+  // Before the renewal: a refused request must not keep the session alive.
+  if ((row.kind === CLOUD_KIND || row.machine_label !== null) && (machine === null || row.machine_label !== machine)) return null;
   const t = now();
   if (row.expires_at <= t) {
     // Only while it is still expired: a request that renewed it meanwhile wins.

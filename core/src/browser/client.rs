@@ -1260,7 +1260,8 @@ pub fn gpu_frames() -> bool {
 /// window the browser opens: an Arakun tab cannot host it without a port.
 pub fn show_dev_tools(host: &BrowserHost) {
     #[cfg(windows)]
-    let window_info = WindowInfo::default().set_as_popup(std::ptr::null_mut(), "DevTools");
+    let window_info =
+        WindowInfo::default().set_as_popup(cef::sys::HWND(std::ptr::null_mut()), "DevTools");
     #[cfg(not(windows))]
     let window_info = WindowInfo {
         window_name: CefString::from("DevTools"),

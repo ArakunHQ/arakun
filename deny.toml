@@ -74,12 +74,13 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Our forks of GPUI and wgpu-hal (see [patch] in Cargo.toml), and the forks
-# GPUI itself takes from git. zed-industries/zed is not here: the [patch]
-# replaces every crate Cargo.toml names from it.
+# Our fork of GPUI (see [patch] in Cargo.toml), and the git sources GPUI
+# itself takes: wgpu 30 and Zed's forks. zed-industries/zed is not here: the
+# [patch] replaces every crate Cargo.toml names from it.
 allow-git = [
     "https://github.com/arakunhq/zed",
-    "https://github.com/arakunhq/wgpu-hal-fork",
+    "https://github.com/gfx-rs/wgpu",
     "https://github.com/zed-industries/font-kit",
+    "https://github.com/zed-industries/oo7",
     "https://github.com/zed-industries/xim-rs.git",
 ]

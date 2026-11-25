@@ -4,7 +4,7 @@
 //! A server reached directly (its network, or Tailscale) is paired with the
 //! link `arakun server pair` prints. A server signed in to the same account
 //! is reached through the relay with the app's own sign-in, and needs no
-//! link. [`client`] is that connection; the Servers tab (`servers_view`,
+//! link. [`client`] is that connection; the Computers tab (`servers_view`,
 //! `shell::servers`) is what it is for.
 //!
 //! What pairing gave is kept in `servers.json` next to the state, readable by
@@ -49,12 +49,6 @@ pub struct Saved {
 }
 
 impl Saved {
-    /// Paired through the relay before accounts: it is reached again once
-    /// the account lists it, which takes a sign-in here and on the server.
-    pub fn needs_sign_in(&self) -> bool {
-        matches!(self.way, Way::Relay { .. })
-    }
-
     /// The server's label on the relay, when it is reached through it.
     pub fn label(&self) -> Option<&str> {
         match &self.way {
@@ -112,6 +106,17 @@ pub fn mark_removed(saved: &mut [Saved], id: &str) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// What Remove does beyond forgetting the pairing: the label to take off
+/// the account, for a server reached through it. One paired by link has
+/// nothing on the account; one paired through the old relay may not be
+/// listed there, and is reached again only once it is, so only its pairing goes.
+pub fn account_to_leave(saved: &Saved) -> Option<&str> {
+    match &saved.way {
+        Way::Account { label } => Some(label),
+        Way::Direct | Way::Relay { .. } => None,
     }
 }
 
@@ -217,7 +222,7 @@ pub fn load() -> Vec<Saved> {
 }
 
 /// Written on the file writer's thread, after every save before it: the one
-/// a Forget makes lands last, so an earlier one can't bring the server back.
+/// a Remove makes lands last, so an earlier one can't bring the server back.
 pub fn save(servers: &[Saved]) {
     match serde_json::to_vec_pretty(servers) {
         Ok(bytes) => {
@@ -390,6 +395,12 @@ mod tests {
         assert_ne!(new_id(), new_id());
     }
 
+    /// Paired through the relay before accounts: it is reached again once
+    /// the account lists it, which takes a sign-in here and on the server.
+    fn needs_sign_in(s: &Saved) -> bool {
+        matches!(s.way, Way::Relay { .. })
+    }
+
     /// A server paired through the relay before accounts, as `servers.json` kept it.
     fn old_relay_entry() -> Saved {
         let json = r#"{"id":"r1","name":"build-box","origin":"https://abcdefghij234567.arakun.dev","via":"relay","label":"abcdefghij234567","ticket":"t1","device":"d1","token":"k1"}"#;
@@ -406,7 +417,7 @@ mod tests {
                 ticket: "t1".into(),
             }
         );
-        assert!(old.needs_sign_in());
+        assert!(needs_sign_in(&old));
         assert_eq!(old.label(), Some("abcdefghij234567"));
         // Kept as it is, ticket and all, until the account lists it.
         let json = serde_json::to_string(&old).unwrap();
@@ -417,8 +428,8 @@ mod tests {
             },
             ..old.clone()
         };
-        assert!(!account.needs_sign_in());
-        assert!(!direct().needs_sign_in());
+        assert!(!needs_sign_in(&account));
+        assert!(!needs_sign_in(&direct()));
     }
 
     #[test]
@@ -450,6 +461,17 @@ mod tests {
     }
 
     #[test]
+    fn remove_takes_only_a_server_of_the_account_off_the_account() {
+        let mut account = old_relay_entry();
+        account.way = Way::Account {
+            label: "abcdefghij234567".into(),
+        };
+        assert_eq!(account_to_leave(&account), Some("abcdefghij234567"));
+        assert_eq!(account_to_leave(&direct()), None);
+        assert_eq!(account_to_leave(&old_relay_entry()), None);
+    }
+
+    #[test]
     fn a_server_of_another_account_server_is_not_dialed() {
         let mut s = old_relay_entry();
         s.way = Way::Account {
@@ -474,7 +496,7 @@ mod tests {
             &["zzzzzzzzzzzzzzzz".into()],
             "https://app.arakun.dev"
         ));
-        assert!(saved[0].needs_sign_in());
+        assert!(needs_sign_in(&saved[0]));
 
         assert!(adopt(
             &mut saved,

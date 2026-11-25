@@ -176,7 +176,7 @@ impl Shell {
             )
     }
 
-    /// What shows in the welcome's place. Leaving the Servers tab tells the
+    /// What shows in the welcome's place. Leaving the Computers tab tells the
     /// servers nobody is looking, as when its tab closes.
     pub(super) fn show_alone(&mut self, alone: Option<Alone>, cx: &mut Context<Self>) {
         let left = std::mem::replace(&mut self.alone, alone);
@@ -207,7 +207,10 @@ impl Shell {
                     .update(cx, |v, cx| v.set_card_corners(gpui::Corners::default(), cx));
                 self.github_view.clone().into_any_element()
             }
-            Alone::Servers => self.servers_view.clone().into_any_element(),
+            Alone::Servers => {
+                self.sync_this_computer(cx);
+                self.servers_view.clone().into_any_element()
+            }
             Alone::Teams => self.teams_view.clone().into_any_element(),
             Alone::Usage => {
                 self.usage_shown.set(true);

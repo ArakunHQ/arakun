@@ -5,7 +5,7 @@ platform and the only one used daily; this guide says what has been verified and
 not.
 
 The **Connect SSH** panel for local agent sessions is available on Linux and
-macOS only. The Servers tab for paired Arakun servers is separate.
+macOS only. The Computers tab for paired Arakun servers is separate.
 
 **What was verified (from Linux):** `cargo check` and `cargo clippy --all-targets` for
 `x86_64-pc-windows-gnu` with no errors, and the unit tests running as Windows `.exe` files
@@ -140,11 +140,11 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sign-in (`account.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
-| Servers the app is paired with or reaches through your account (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| Servers the app is paired with or reaches through your account (Computers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
-| Account session (Settings › Account, the Phone tab's relay, the Servers tab) | Credential Manager, as `arakun:teams-session` |
+| Account session (Settings › Account, the Phone tab's relay, the Computers tab) | Credential Manager, as `arakun:teams-session` |
 | Teams device keys (Teams tab) | Credential Manager, as `arakun:teams-device-<account>-<scope>`; scope identifies the server and profile |
 | Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |

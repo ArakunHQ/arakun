@@ -522,7 +522,7 @@ pub struct Shell {
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
     /// The connections to the machines running `arakun server`, once the
-    /// Servers tab was opened.
+    /// Computers tab was opened.
     servers: Option<servers::ServersLink>,
     servers_view: Entity<crate::servers_view::ServersView>,
     _servers_view: Subscription,
@@ -1882,7 +1882,7 @@ impl Shell {
         self.sync_teams_project(cx);
         self.settle_strip(cx);
         self.unfloat_github(cx);
-        // Its Servers tab went with it; a no-op while one is left elsewhere.
+        // Its Computers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
         self.save(cx);
@@ -4063,7 +4063,11 @@ impl Shell {
                 self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
-            Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
+            Some(TabKind::Servers) => {
+                // This computer's sessions start and stop all the time; its row follows them.
+                self.sync_this_computer(cx);
+                self.servers_view.clone().into_any_element()
+            }
             Some(TabKind::Teams) => {
                 // @bot reads the visible environment's code.
                 let dir = env.path.clone();

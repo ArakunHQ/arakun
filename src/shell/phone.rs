@@ -111,7 +111,7 @@ fn relay_ended_sign_in(status: &relay::Status, given: bool) -> bool {
 }
 
 /// The account's computers that run the app, for the Phone tab: servers
-/// are the Servers tab's. This computer is marked, and not removed here.
+/// are the Computers tab's. This computer is marked, and not removed here.
 fn your_computers(machines: &[cloud::Machine], own_label: Option<&str>) -> Vec<AccountComputer> {
     machines
         .iter()
@@ -1424,8 +1424,8 @@ impl Shell {
         }
     }
 
-    /// Both agents' plan limits, as `wire::plan_usage` puts them.
-    fn phone_usage_json(&self, cx: &Context<Self>) -> String {
+    /// Both agents' plan limits here, as `wire::plan_usage` puts them.
+    pub(super) fn local_usage(&self, cx: &App) -> serde_json::Value {
         let plan = crate::agent::plan::latest();
         let account = self.account.read(cx);
         let droid = wire::DroidPlan {
@@ -1441,7 +1441,10 @@ impl Shell {
             &droid,
             crate::account::unix_now(),
         )
-        .to_string()
+    }
+
+    fn phone_usage_json(&self, cx: &Context<Self>) -> String {
+        self.local_usage(cx).to_string()
     }
 
     /// The plan limits may have moved (a fetch landed): phones hear if they did.

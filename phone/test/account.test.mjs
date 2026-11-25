@@ -188,7 +188,7 @@ test("the signed-in devices are listed escaped, this phone marked, the others wi
   assert.doesNotMatch(rows[0], /data-signout/);
   assert.match(rows[1], new RegExp(`data-signout="${id}"`));
   assert.match(rows[1], /&lt;img src=x onerror=&quot;x&quot;&gt;/);
-  assert.doesNotMatch(rows.join(""), /<img|<script|<b>/);
+  assert.doesNotMatch(rows.join(""), /<img|<script|<b>/i);
   assert.match(rows[1], /Device · used 2h ago/);
   // An id that is not one gets no button at all.
   assert.doesNotMatch(rows[2], /data-signout/);

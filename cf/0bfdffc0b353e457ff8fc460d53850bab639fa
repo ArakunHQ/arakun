@@ -1,0 +1,25 @@
+core/src/headless/broker.rs
+  s_d4f5ecb60faad9::t_06be1daa97faf8 925,985-1005,1011,1014,1017-1018,1021-1065
+  s_d4f5ecb60faad9::t_51e29d36228a8e 926-984
+  s_d4f5ecb60faad9::t_aefdf1d6d94c39 1006-1010,1012-1013,1015-1016,1019-1020
+  s_d4f5ecb60faad9::t_af715a10661e65 204,213-277
+  s_d4f5ecb60faad9::t_c6e81a194fe40d 612
+  s_d4f5ecb60faad9::t_af2833b0bddffb 377-397
+  s_d4f5ecb60faad9::t_b2509c174bce53 278
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf0bfdffc0b353e457ff8fc460d53850bab639fa",
+  "prompts": {},
+  "sessions": {
+    "s_d4f5ecb60faad9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4ae967fd-b7bb-43bf-88c2-3ed8c68092d2",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

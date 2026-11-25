@@ -4,7 +4,10 @@ import UIKit
 
 @main
 struct ArakunApp: App {
-    @State private var model = AppModel()
+    /// It holds the model: a tap on a notification can launch the app, and
+    /// is handed to the delegate before any view is there.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    private var model: AppModel { delegate.model }
     @Environment(\.scenePhase) private var phase
     /// A computer's page a link asks to open, until the person says yes or no.
     @State private var opened: URL?

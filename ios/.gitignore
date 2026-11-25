@@ -1,5 +1,9 @@
 *.xcodeproj
+# Written by xcodegen from project.yml.
 Arakun/Info.plist
+Arakun/Arakun.entitlements
+Notifications/Info.plist
+Notifications/Notifications.entitlements
 ArakunKit/.build
 ArakunKit/.swiftpm
 build/

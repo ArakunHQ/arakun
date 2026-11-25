@@ -114,6 +114,10 @@ struct WebPushTests {
         #expect(old?.notifying == false)
         #expect(old?.notices == NoticeChoice(error: false))
         #expect(PushState(.null) == nil)
+        var choice = NoticeChoice()
+        choice[.input] = false
+        #expect(choice == NoticeChoice(input: false))
+        #expect(!choice[.input] && choice[.done] && choice[.error])
         let sent = try? JSONSerialization.data(withJSONObject: ["notices": NoticeChoice(input: false).json])
         #expect(JSON.parse(sent ?? Data())?["notices"] == JSON.parse(Data(#"{"done":true,"input":false,"error":true}"#.utf8)))
     }

@@ -80,6 +80,10 @@ struct InboxView: View {
                 if AppModel.isDemo, UserDefaults.standard.bool(forKey: "demoNew") { starting = true }
             }
             #endif
+            .onAppear {
+                // A notification tap picked this computer and its session together.
+                if let id = model.session?.id, path.isEmpty { path = [id] }
+            }
             .onChange(of: model.session?.id) { _, id in
                 // A session started from the sheet opens on its own.
                 if let id, path.last != id { path = [id] }

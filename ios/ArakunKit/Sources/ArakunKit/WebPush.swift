@@ -143,6 +143,33 @@ public struct NoticeChoice: Equatable, Sendable {
     }
 
     public var json: [String: Any] { ["done": done, "input": input, "error": error] }
+
+    public subscript(_ kind: NoticeKind) -> Bool {
+        get {
+            switch kind {
+            case .done: done
+            case .input: input
+            case .error: error
+            }
+        }
+        set {
+            switch kind {
+            case .done: done = newValue
+            case .input: input = newValue
+            case .error: error = newValue
+            }
+        }
+    }
+}
+
+/// The kinds of notice a phone can turn off one by one.
+public enum NoticeKind: String, Sendable, CaseIterable {
+    /// A turn finished.
+    case done
+    /// The agent needs a permission or an answer.
+    case input
+    /// A turn failed.
+    case error
 }
 
 /// What the computer says about this phone's notices, in `GET /me` and in

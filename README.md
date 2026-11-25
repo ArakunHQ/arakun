@@ -693,8 +693,9 @@ after a week).
   with `arakun iso example [name]`.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 - **Teams.** A pilot, only for the accounts it is turned on for; the agents and the
-  rest of Arakun never need it. **Sign in with GitHub** (the User row of the sidebar,
-  or Settings › Account) opens a dialog with a code and opens GitHub's device page:
+  rest of Arakun never need it. Click the User row of the sidebar (or Settings ›
+  Account) for the Profile dialog. **Sign in with GitHub** there opens a dialog with a
+  code and opens GitHub's device page:
   enter the code there and approve. The dialog counts down the code's 15 minutes and
   says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
   asks GitHub only to read your email addresses (`user:email`) and hands the token once
@@ -707,9 +708,9 @@ after a week).
   Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
   (without it, the session lasts until Arakun quits). Signed in, the User row shows
   your GitHub picture and "Signed in with GitHub". An account the server has turned
-  Teams on for gets a **Team** row under Search in the sidebar; any other account sees
-  "Signed in as @you" in Settings and cannot use Teams. A Team tab left open from
-  before says Teams is not on for the account. Sign out (Settings › Account) removes
+  Teams on for gets a **Team** row under Search in the sidebar; any other account is
+  signed in all the same, but cannot use Teams. A Team tab left open from
+  before says Teams is not on for the account. Sign out (in the Profile dialog) removes
   the session from the keyring, then asks the server to end it; if the server can't be
   reached, the session there stays valid until it expires (90 days without renewal,
   180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams

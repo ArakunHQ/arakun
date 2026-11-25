@@ -67,6 +67,7 @@ mod picker;
 mod posthog;
 mod posthog_view;
 mod pr_writer;
+mod profile_dialog;
 mod prompts;
 mod repeats;
 mod running;

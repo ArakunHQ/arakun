@@ -195,6 +195,8 @@ enum Modal {
     DeleteEnv(Entity<DeleteEnvDialog>),
     Command(Entity<crate::dialogs::CommandDialog>),
     Account(Entity<AccountDialog>),
+    /// The rail's User row: the GitHub sign-in and Teams.
+    Profile(Entity<crate::profile_dialog::ProfileDialog>),
     Commit(Entity<crate::git_dialogs::CommitDialog>),
     GitConfirm(Entity<crate::git_dialogs::ConfirmDialog>),
     PullRequest(Entity<crate::git_dialogs::PullRequestDialog>),
@@ -812,9 +814,8 @@ impl Shell {
                 &teams_view,
                 window,
                 |this, _, ev: &crate::arakun_teams::view::TeamsViewEvent, window, cx| match ev {
-                    crate::arakun_teams::view::TeamsViewEvent::OpenSettings => {
-                        crate::settings_view::start_on_account();
-                        this.open_settings(window, cx);
+                    crate::arakun_teams::view::TeamsViewEvent::OpenProfile => {
+                        this.open_profile(None, window, cx);
                     }
                 },
             ),
@@ -2727,6 +2728,42 @@ impl Shell {
         cx.notify();
     }
 
+    /// The Profile dialog, with the name the rail's User row shows when
+    /// Customize set one.
+    pub(super) fn open_profile(
+        &mut self,
+        label: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::profile_dialog::{ProfileDialog, ProfileEvent};
+        if self.modal_busy(cx) {
+            return;
+        }
+        self.menu = None;
+        self.env_menu_open = false;
+        let teams = self.teams.clone();
+        let git = rail_blocks::git_identity().clone();
+        let dialog = cx.new(|cx| ProfileDialog::new(teams, label, git, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &ProfileEvent, window, cx| match ev {
+                ProfileEvent::Dismissed => this.close_modal(window, cx),
+                ProfileEvent::SignIn => {
+                    this.close_modal(window, cx);
+                    this.open_teams_sign_in(window, cx);
+                }
+                ProfileEvent::OpenTeam => {
+                    this.close_modal(window, cx);
+                    this.open_teams_tab(window, cx);
+                }
+            },
+        );
+        self.modal = Some((Modal::Profile(dialog), sub));
+        cx.notify();
+    }
+
     fn open_account(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.env_menu_open = false;
@@ -3077,13 +3114,9 @@ impl Shell {
                     this.close_modal(window, cx);
                     this.open_tasks_tab(window, cx);
                 }
-                SettingsEvent::OpenTeams => {
+                SettingsEvent::OpenProfile => {
                     this.close_modal(window, cx);
-                    this.open_teams_tab(window, cx);
-                }
-                SettingsEvent::SignInTeams => {
-                    this.close_modal(window, cx);
-                    this.open_teams_sign_in(window, cx);
+                    this.open_profile(None, window, cx);
                 }
                 SettingsEvent::OpenUsage => {
                     this.close_modal(window, cx);
@@ -4345,6 +4378,7 @@ impl Render for Shell {
             Modal::DeleteEnv(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Command(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Account(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Profile(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Commit(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::GitConfirm(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::PullRequest(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),

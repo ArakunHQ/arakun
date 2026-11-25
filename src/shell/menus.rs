@@ -1490,7 +1490,7 @@ impl Shell {
                             ui::menu_item(
                                 "cm-server-add-place",
                                 "folder01",
-                                "Clone or add a folder on this server…",
+                                "Clone or add a folder…",
                                 false,
                                 true,
                             )

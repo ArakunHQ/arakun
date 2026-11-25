@@ -64,15 +64,12 @@ describe("Markdown", () => {
     fireEvent.click(imgs[1]);
     expect(onPic).toHaveBeenCalledWith("https://e.com/p.png", "d");
   });
-  it("takes a picture's address from picSrc, the tap still names the link", () => {
-    const onPic = vi.fn();
-    const picSrc = (url: string) => (url.startsWith("/") ? undefined : url);
-    const { container } = render(<Markdown src="![a](/image/1) ![b](https://e.com/b.png)" onPic={onPic} picSrc={picSrc} />);
-    const imgs = container.querySelectorAll("img.pic");
-    expect(imgs[0].hasAttribute("src")).toBe(false);
-    expect(imgs[1].getAttribute("src")).toBe("https://e.com/b.png");
-    fireEvent.click(imgs[0]);
-    expect(onPic).toHaveBeenCalledWith("/image/1", "a");
+  it("draws a picture with renderPic when given", () => {
+    const renderPic = (url: string, alt: string) => <span className="mine" data-url={url} data-alt={alt} />;
+    const { container } = render(<Markdown src="see ![a](/image/1)" renderPic={renderPic} />);
+    expect(container.querySelector("img")).toBeNull();
+    const mine = container.querySelector(".mine")!;
+    expect([mine.getAttribute("data-url"), mine.getAttribute("data-alt")]).toEqual(["/image/1", "a"]);
   });
   it("shows a script tag as text", () => {
     const { container } = render(<Markdown src={"<script>alert(1)</script> hi\nnext line"} />);

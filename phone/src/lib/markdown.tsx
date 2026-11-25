@@ -11,18 +11,18 @@ export interface MarkdownProps {
   /** A picture was tapped. */
   onPic?: (url: string, alt: string) => void;
   /**
-   * Where to load a picture from; the address as written when absent.
+   * Draws a picture; an <img> of the address as written when absent.
    * Through the relay a picture of the computer's is fetched apart and shown
-   * from a blob, so this may give undefined until it is there.
+   * from a blob, which the screen's own component waits for.
    */
-  picSrc?: (url: string) => string | undefined;
+  renderPic?: (url: string, alt: string) => ReactNode;
   /** Open was pressed on a table. */
   onTable?: (table: HTMLTableElement) => void;
   /** Draws a closed fenced block as a chart or diagram; null leaves it as code. */
   onDiagram?: (lang: string, code: string) => ReactNode | null;
 }
 
-type Handlers = Pick<MarkdownProps, "onPic" | "picSrc" | "onTable" | "onDiagram">;
+type Handlers = Pick<MarkdownProps, "onPic" | "renderPic" | "onTable" | "onDiagram">;
 
 export function Markdown({ src, ...handlers }: MarkdownProps) {
   return <>{blocks(String(src ?? ""), handlers)}</>;
@@ -227,7 +227,13 @@ function inline(raw: string, h: Handlers): ReactNode[] {
     if (m[1] !== undefined) top.push(<code key={top.length}>{codes[+m[1]]}</code>);
     else if (m[2] !== undefined) {
       const { alt, url } = shots[+m[2]];
-      top.push(<img key={top.length} src={h.picSrc ? h.picSrc(url) : url} alt={alt} className="pic" loading="lazy" onClick={h.onPic ? () => h.onPic!(url, alt) : undefined} />);
+      top.push(
+        h.renderPic ? (
+          <Fragment key={top.length}>{h.renderPic(url, alt)}</Fragment>
+        ) : (
+          <img key={top.length} src={url} alt={alt} className="pic" loading="lazy" onClick={h.onPic ? () => h.onPic!(url, alt) : undefined} />
+        ),
+      );
     } else if (m[3] !== undefined) stack.push({ open: +m[3], kids: [] });
     else {
       let at = stack.length - 1;

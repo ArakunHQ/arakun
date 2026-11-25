@@ -809,6 +809,9 @@ button.prow:active { background: var(--fill-hover); }
 .screen[data-session] > .hdr .av svg { width: 18px; height: 18px; }
 .screen[data-session] > .hdr .iconbtn { width: 36px; height: 36px; }
 
+/* With the keyboard up there is no home bar under the composer: it sits just over the keys. */
+:root.kb .composer { margin-bottom: 8px; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

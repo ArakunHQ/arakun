@@ -2,70 +2,102 @@
 // screen. And the pictures themselves, which through the relay are fetched
 // apart and shown from blobs.
 
-import { type ReactNode, useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "../../lib/api";
 import { DIAGRAMS } from "../../lib/globals";
 import { Icon } from "../../lib/icons";
 
 /**
  * The relay serves no images: the computer sends them inside the channel.
- * `src(url)` gives the address to show a picture from: as written for data:,
- * http and everything when served by the computer itself; a blob URL for the
- * computer's own `/…` links through the relay, or undefined while it is
- * fetched. The blobs go when the screen does.
+ * Through the relay the computer's own `/…` links are fetched apart, once at
+ * a time each, and shown from blob URLs; everything else (data:, http, all
+ * of it on the computer's own server) loads as written. The blobs go when
+ * the screen does.
  */
-export function usePics(relay: boolean) {
-  const pics = useRef(new Map<string, string>());
-  const asked = useRef(new Set<string>());
-  const [, bump] = useReducer((n: number) => n + 1, 0);
-  useEffect(() => {
-    const kept = pics.current;
-    const tried = asked.current;
-    return () => {
-      for (const u of kept.values()) URL.revokeObjectURL(u);
-      kept.clear();
-      tried.clear();
-    };
-  }, []);
+export class PicStore {
+  private got = new Map<string, string>();
+  private flying = new Map<string, Promise<string | undefined>>();
+  private listeners = new Set<() => void>();
+  private alive = true;
 
-  const fetchPic = useCallback(async (url: string): Promise<string | undefined> => {
-    const got = pics.current.get(url);
-    if (got) return got;
-    try {
-      const res = await api(url);
-      if (!res.ok) return undefined;
-      const blob = URL.createObjectURL(await res.blob());
-      pics.current.set(url, blob);
-      bump();
-      return blob;
-    } catch {
+  constructor(private relay: boolean) {}
+
+  private fetched(url: string): boolean {
+    return this.relay && url.startsWith("/");
+  }
+
+  /** The address to show `url` from now; undefined while it is fetched. */
+  get = (url: string): string | undefined => (this.fetched(url) ? this.got.get(url) : url);
+
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+
+  /** Fetches `url` unless it is here or on its way. A failure is tried again on the next call. */
+  load = (url: string): Promise<string | undefined> => {
+    if (!this.fetched(url)) return Promise.resolve(url);
+    const got = this.got.get(url);
+    if (got) return Promise.resolve(got);
+    const flying = this.flying.get(url);
+    if (flying) return flying;
+    const p = api(url)
+      .then(async (res) => {
+        if (!res.ok) return undefined;
+        const blob = URL.createObjectURL(await res.blob());
+        // The screen went while this was on its way.
+        if (!this.alive) {
+          URL.revokeObjectURL(blob);
+          return undefined;
+        }
+        this.got.set(url, blob);
+        this.emit();
+        return blob;
+      })
       // The link went away, or the computer with it; the picture stays blank.
-      return undefined;
-    }
-  }, []);
+      .catch(() => undefined)
+      .finally(() => this.flying.delete(url));
+    this.flying.set(url, p);
+    return p;
+  };
 
-  const src = useCallback(
-    (url: string): string | undefined => {
-      if (!relay || !url.startsWith("/")) return url;
-      const got = pics.current.get(url);
-      if (got) return got;
-      // Asked once per address; the answer draws the screen again.
-      if (!asked.current.has(url)) {
-        asked.current.add(url);
-        setTimeout(() => void fetchPic(url), 0);
-      }
-      return undefined;
-    },
-    [relay, fetchPic],
-  );
+  revive(): void {
+    this.alive = true;
+  }
 
-  /** The address to show full size, fetched first if need be. */
-  const full = useCallback(
-    async (url: string): Promise<string | undefined> => (!relay || !url.startsWith("/") ? url : fetchPic(url)),
-    [relay, fetchPic],
-  );
+  dispose(): void {
+    this.alive = false;
+    for (const u of this.got.values()) URL.revokeObjectURL(u);
+    this.got.clear();
+    // Pictures still on screen (StrictMode mounts again) ask anew.
+    this.emit();
+  }
 
-  return useMemo(() => ({ src, full }), [src, full]);
+  private emit() {
+    for (const fn of this.listeners) fn();
+  }
+}
+
+/** The screen's pictures, let go of when it goes. */
+export function usePics(relay: boolean): PicStore {
+  const [store] = useState(() => new PicStore(relay));
+  useEffect(() => {
+    store.revive();
+    return () => store.dispose();
+  }, [store]);
+  return store;
+}
+
+/**
+ * A picture of the transcript. It follows the store itself, so a blob that
+ * arrives draws this picture only, not the entry around it.
+ */
+export function Pic({ store, url, alt, onTap }: { store: PicStore; url: string; alt: string; onTap: (url: string, alt: string) => void }) {
+  const src = useSyncExternalStore(store.subscribe, () => store.get(url));
+  useEffect(() => {
+    if (!src) void store.load(url);
+  }, [store, url, src]);
+  return <img src={src} alt={alt} className="pic" loading="lazy" onClick={() => onTap(url, alt)} />;
 }
 
 /** A picture over everything; a tap anywhere closes it. The page never navigates away from the app. */

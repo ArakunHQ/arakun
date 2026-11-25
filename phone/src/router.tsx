@@ -23,6 +23,7 @@ import { mode, setPairMessage, tappedNotice, whereTo } from "./lib/start";
 import { Toaster, toast } from "./lib/toast";
 import { useViewportFit } from "./lib/viewport";
 import { Resubscribe } from "./components/Resubscribe";
+import { validateSessionSearch } from "./components/session/sheetNav";
 import { Computers } from "./routes/computers";
 import { Fatal } from "./routes/fatal";
 import { Inbox } from "./routes/inbox";
@@ -59,7 +60,7 @@ const routeTree = rootRoute.addChildren([
   createRoute({ getParentRoute: () => rootRoute, path: "/computers", component: Computers }),
   createRoute({ getParentRoute: () => rootRoute, path: "/inbox", component: Inbox }),
   createRoute({ getParentRoute: () => rootRoute, path: "/sessions", component: Sessions }),
-  createRoute({ getParentRoute: () => rootRoute, path: "/s/$session", component: SessionScreen }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/s/$session", component: SessionScreen, validateSearch: validateSessionSearch }),
   createRoute({ getParentRoute: () => rootRoute, path: "/new", component: NewSession }),
   createRoute({ getParentRoute: () => rootRoute, path: "/usage", component: Usage }),
   createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: Settings }),

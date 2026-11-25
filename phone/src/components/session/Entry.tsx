@@ -9,8 +9,8 @@ import type { Entry } from "../../lib/model";
 
 /** What an entry needs from the screen: pictures, the full-screen views, the changes sheet. */
 export interface EntryHandlers {
-  /** The address to show a picture from; undefined while it is fetched. */
-  picSrc: (url: string) => string | undefined;
+  /** Draws a picture of the transcript; through the relay it is fetched apart. */
+  renderPic: (url: string, alt: string) => ReactNode;
   onPic: (url: string, alt: string) => void;
   onTable: (table: HTMLTableElement) => void;
   onDiagram: (lang: string, code: string) => ReactNode | null;
@@ -121,7 +121,7 @@ function UserEntry({ e, edits }: { e: Entry; edits: Edits | null }) {
         {images.length ? (
           <div className={`pics ${images.length === 1 ? "one" : ""}`}>
             {images.map((p, k) => (
-              <img key={k} src={h?.picSrc(p.url)} alt={p.name} className="pic" loading="lazy" onClick={() => h?.onPic(p.url, p.name)} />
+              <Fragment key={k}>{h ? h.renderPic(p.url, p.name) : <img src={p.url} alt={p.name} className="pic" loading="lazy" />}</Fragment>
             ))}
           </div>
         ) : null}
@@ -209,7 +209,7 @@ function Body({ e, edits }: { e: Entry; edits: Edits | null }) {
     case "agent":
       return (
         <div className="md">
-          <Markdown src={str(e.text)} picSrc={h?.picSrc} onPic={h?.onPic} onTable={h?.onTable} onDiagram={h?.onDiagram} />
+          <Markdown src={str(e.text)} renderPic={h?.renderPic} onPic={h?.onPic} onTable={h?.onTable} onDiagram={h?.onDiagram} />
         </div>
       );
     case "thought":

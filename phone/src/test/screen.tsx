@@ -6,6 +6,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Router
 import { act, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
+import { validateSessionSearch } from "../components/session/sheetNav";
 import { type Link, LinkContext } from "../lib/link";
 import { closeSession, emptyLink, type LinkEvent, type LinkState, openSession } from "../lib/model";
 
@@ -66,7 +67,14 @@ const matches = (p: string, path: string) => new RegExp(`^${p.replace(/\$\w+/g, 
 /** `screen` shown at `path`; the other screens are empty. */
 export async function renderScreen(screen: ReactNode, path: string, link: Link, wrap: (n: ReactNode) => ReactNode = (n) => n) {
   const root = createRootRoute();
-  const routes = PATHS.map((p) => createRoute({ getParentRoute: () => root, path: p, component: () => (matches(p, path) ? <>{screen}</> : <div>{p}</div>) }));
+  const routes = PATHS.map((p) =>
+    createRoute({
+      getParentRoute: () => root,
+      path: p,
+      component: () => (matches(p, path) ? <>{screen}</> : <div>{p}</div>),
+      ...(p === "/s/$session" ? { validateSearch: validateSessionSearch } : {}),
+    }),
+  );
   const router = createRouter({ routeTree: root.addChildren(routes), history: createMemoryHistory({ initialEntries: [path] }) });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await router.load();

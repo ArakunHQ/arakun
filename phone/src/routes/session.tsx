@@ -11,10 +11,11 @@ import { Counts, EntryContext, type EntryHandlers } from "../components/session/
 import { Pending, usePending } from "../components/session/Pending";
 import { type Permission, PermissionCard } from "../components/session/PermissionCard";
 import { type Question, QuestionCard } from "../components/session/QuestionCard";
-import { Sheet, type SheetState } from "../components/session/Sheet";
+import { Sheet } from "../components/session/Sheet";
+import { useSheetNav } from "../components/session/sheetNav";
 import { usageSummary } from "../components/session/StopRow";
 import { Transcript, type TranscriptHandle } from "../components/session/Transcript";
-import { drawDiagram, NodeView, PicView, usePics } from "../components/session/Views";
+import { drawDiagram, NodeView, Pic, PicView, usePics } from "../components/session/Views";
 import { StatusBar } from "../components/StatusBar";
 import { keepDraft, loadDraft } from "../lib/drafts";
 import { statusLabel } from "../lib/format";
@@ -76,7 +77,6 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   const connected = useLink((st) => st.connected);
   const [draft, setDraftState] = useState(() => loadDraft(s.id));
   const [shots, setShots] = useState<Shot[]>([]);
-  const [sheet, setSheet] = useState<SheetState | null>(null);
   const [view, setView] = useState<View>(null);
   // Answered here; the card goes before the computer says so.
   const [answered, setAnswered] = useState<string[]>([]);
@@ -85,6 +85,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   const transcript = useRef<TranscriptHandle>(null);
   const pics = usePics(mode() === "account");
   const send = useCallback((m: ClientMessage) => link.send(m), [link]);
+  const { sheet, go: openSheet } = useSheetNav(s.id, send);
 
   const setDraft = (text: string) => {
     setDraftState(text);
@@ -141,17 +142,6 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
     toast("Stopping…");
   };
 
-  // Each sheet asks the computer for what it shows as it opens.
-  const openSheet = useCallback(
-    (next: SheetState | null) => {
-      if (next?.kind === "changes") send({ type: "changes", session: s.id });
-      else if (next?.kind === "settings") send({ type: "settings", session: s.id });
-      else if (next?.kind === "diff") for (const [entry, index] of next.diffs) send({ type: "diff", session: s.id, entry, index });
-      setSheet(next);
-    },
-    [send, s.id],
-  );
-
   const back = () => {
     if (router.history.canGoBack()) router.history.back();
     else void navigate({ to: "/inbox" });
@@ -165,19 +155,24 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   // Asked for what comes before `from`; the answer moves `from`.
   const loadingOlder = askedOlder === s.from;
 
+  // Tapping a picture opens it over everything, fetched first if need be.
+  const showPic = useCallback(
+    (url: string, alt: string) =>
+      void pics.load(url).then((src) => {
+        if (src) setView({ kind: "pic", src, alt });
+      }),
+    [pics],
+  );
   const openNode = useCallback((title: string, node: Node) => setView({ kind: "node", title, node }), []);
   const handlers: EntryHandlers = useMemo(
     () => ({
-      picSrc: pics.src,
-      onPic: (url, alt) =>
-        void pics.full(url).then((src) => {
-          if (src) setView({ kind: "pic", src, alt });
-        }),
+      renderPic: (url, alt) => <Pic store={pics} url={url} alt={alt} onTap={showPic} />,
+      onPic: showPic,
       onTable: (table) => openNode("Table", table.cloneNode(true)),
       onDiagram: (lang, code) => drawDiagram(lang, code, openNode),
       openChanges: () => openSheet({ kind: "changes" }),
     }),
-    [pics, openNode, openSheet],
+    [pics, showPic, openNode, openSheet],
   );
 
   // Stable, so typing in the box does not draw the transcript again.

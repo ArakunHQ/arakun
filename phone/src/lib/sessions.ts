@@ -10,6 +10,25 @@ export function needsYou(s: Pick<InboxSession, "status">): boolean {
   return s.status === "needs_input" || s.status === "error";
 }
 
+// How far back the finished sessions of the inbox reach, in seconds.
+const RECENT = 24 * 3600;
+
+/**
+ * The inbox split as the lists show it: what waits on you first (a failed run
+ * too), then what runs, then what ended lately. Older sessions are in Sessions:
+ * `older` counts them.
+ */
+export function inboxGroups(inbox: InboxSession[], now = Date.now() / 1000) {
+  const finished = inbox.filter((s) => s.status === "idle");
+  const recent = finished.filter((s) => (s.updated ?? 0) >= now - RECENT).slice(0, 12);
+  return {
+    needs: inbox.filter(needsYou),
+    working: inbox.filter((s) => s.status === "working"),
+    recent,
+    older: finished.length - recent.length,
+  };
+}
+
 /** Under a waiting session's title: what it asks, so the inbox alone says it. "" when it asks nothing. */
 export function asksLine(s: Pick<InboxSession, "status" | "asks">): string {
   if (s.asks) return s.asks.kind === "permission" ? `Run: ${s.asks.text}` : s.asks.text;

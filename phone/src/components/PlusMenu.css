@@ -1,4 +1,4 @@
-/* The + in the tab bar: the tab screens' one primary action, in amber. */
+/* The + in the phone's top bar: the tab screens' one primary action, in amber. */
 .tplus { width: 52px; height: 52px; border-radius: 50%; background: var(--color-accent); color: var(--color-on-accent); display: grid; place-items: center; flex: none; }
 .tplus svg { width: 20px; height: 20px; }
 .tplus:disabled { opacity: 0.35; }
@@ -86,3 +86,11 @@
 .pptile small { display: flex; align-items: center; gap: 5px; font-size: var(--text-sm); color: var(--color-text-subtle); margin-top: 2px; }
 .pptile small .dot { width: 6px; height: 6px; background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-link); }
 .pmic.ppmark { border-radius: var(--radius-lg); }
+
+/* Wider than a phone, the sheet and the tiles float in the middle: a sheet as
+   wide as a desktop reads as a page, not a step over it. */
+@media (min-width: 768px) {
+  #quick { align-items: center; }
+  .qsheet { width: min(640px, calc(100% - 48px)); margin-bottom: 24px; border-radius: var(--radius-m-sheet); }
+  #projpick { padding-left: max(var(--gl), calc(50% - 320px)); padding-right: max(var(--gr), calc(50% - 320px)); }
+}

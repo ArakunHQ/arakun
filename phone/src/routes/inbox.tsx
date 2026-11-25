@@ -3,17 +3,14 @@ import { NoticeBanners } from "../components/NoticeBanners";
 import { SessionRow } from "../components/SessionRow";
 import { SetupCards } from "../components/SetupCards";
 import { StatusBar } from "../components/StatusBar";
-import { TabBar } from "../components/TabBar";
+import { TopBar } from "../components/shell/TopBar";
 import { useMe } from "../lib/account";
 import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
-import { connecting, connectingHint, needsYou } from "../lib/sessions";
+import { connecting, connectingHint, inboxGroups } from "../lib/sessions";
 import { mode } from "../lib/start";
 import type { InboxSession } from "../lib/model";
 import "./inbox.css";
-
-// How far back Finished reaches in the inbox, in seconds.
-const RECENT = 24 * 3600;
 
 function Group({ kind, name, items }: { kind: string; name: string; items: InboxSession[] }) {
   return (
@@ -51,25 +48,14 @@ export function Inbox() {
   const me = useMe(mode() === "account");
   const notices = me.data && me.data.screen !== "signin" ? me.data.me?.notices || [] : [];
 
-  // What waits on you first (a failed run too), then what runs, then what ended
-  // lately: older sessions are in Sessions, not here.
-  const since = Date.now() / 1000 - RECENT;
-  const finished = inbox.filter((s) => s.status === "idle");
-  const recent = finished.filter((s) => (s.updated ?? 0) >= since).slice(0, 12);
-  const needs = inbox.filter(needsYou);
-  const working = inbox.filter((s) => s.status === "working");
-  const older = finished.length - recent.length;
+  const { needs, working, recent, older } = inboxGroups(inbox);
   const toSessions = () => void navigate({ to: "/sessions" });
 
   return (
     <div className="screen" data-screen="inbox">
       <StatusBar />
+      <TopBar />
       <div className="ihead">
-        <span className="hostchip">
-          <span className={`dot ${connected ? "ok" : "bad"}`} />
-          <span className="host">{host || "Arakun"}</span>
-          <span className="state">{connected ? "online" : "away"}</span>
-        </span>
         <h1>Inbox</h1>
       </div>
       <div className="inbox">
@@ -102,7 +88,6 @@ export function Inbox() {
         <Icon name="search" />
         <span>Jump to a session or search…</span>
       </button>
-      <TabBar />
     </div>
   );
 }

@@ -1,21 +1,28 @@
 // The screens with made-up sessions and no computer, for screenshots of the
-// look: `npm run dev`, then open /demo.html#/inbox, #/s/a or #/signin. Only
-// demo.html loads this; the build has index.html alone, so it never ships.
+// look: `npm run dev`, then open /demo.html#/inbox, #/s/a or #/signin, at any
+// width. /demo.html?account#/inbox plays the account host, signed in with two
+// computers. Only demo.html loads this; the build has index.html alone, so it
+// never ships.
 import "./styles/tokens.css";
 import "./styles/base.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createHashHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
+import { createHashHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { Shell } from "./components/shell/Shell";
 import { validateSessionSearch } from "./components/session/sheetNav";
 import type { Link } from "./lib/link";
 import { LinkContext } from "./lib/link";
 import { emptyLink, type InboxSession, type LinkState, type Session } from "./lib/model";
+import { detectWay } from "./lib/start";
+import { Computers } from "./routes/computers";
 import { Toaster } from "./lib/toast";
 import { Inbox } from "./routes/inbox";
 import { SessionScreen } from "./routes/session";
 import { Sessions } from "./routes/sessions";
+import { Settings } from "./routes/settings";
 import { SignIn } from "./routes/signin";
+import { Usage } from "./routes/usage";
 
 const now = Math.floor(Date.now() / 1000);
 const inbox: InboxSession[] = [
@@ -62,8 +69,13 @@ function demoLink(over: Partial<LinkState>): Link {
     subscribeEvents: () => () => {},
     getState: () => state,
     send: (m) => {
-      // Opening a row shows the one made-up session.
-      if ((m as { type: string }).type === "open") state = { ...state, session };
+      // Opening a row shows the made-up session, under that row's title; only
+      // the first one asks for a permission.
+      const msg = m as { type: string; session?: string };
+      if (msg.type === "open") {
+        const row = inbox.find((r) => r.id === msg.session);
+        state = { ...state, session: msg.session === "a" || !row ? session : ({ ...session, ...row, permission: null } as Session) };
+      }
       for (const fn of listeners) fn();
     },
     fetch: () => Promise.reject(new Error("demo")),
@@ -77,7 +89,7 @@ function demoLink(over: Partial<LinkState>): Link {
 const root = createRootRoute({
   component: () => (
     <>
-      <Outlet />
+      <Shell />
       <Toaster />
     </>
   ),
@@ -89,8 +101,26 @@ const router = createRouter({
     createRoute({ getParentRoute: () => root, path: "/inbox", component: Inbox }),
     createRoute({ getParentRoute: () => root, path: "/sessions", component: Sessions }),
     createRoute({ getParentRoute: () => root, path: "/s/$session", component: SessionScreen, validateSearch: validateSessionSearch }),
+    createRoute({ getParentRoute: () => root, path: "/settings", component: Settings }),
+    createRoute({ getParentRoute: () => root, path: "/usage", component: Usage }),
+    createRoute({ getParentRoute: () => root, path: "/computers", component: Computers }),
   ]),
 });
+
+// The account host, made up: relay.js's answers, without the network.
+if (new URLSearchParams(location.search).has("account")) {
+  const machines = [
+    { label: "m1", name: "MacBook Pro", pub: "A", online: true },
+    { label: "m2", name: "Build box", pub: "B", kind: "server", last_seen_at: now - 7200 },
+  ];
+  Object.assign((globalThis as unknown as { RELAY: object }).RELAY, {
+    detect: async () => "account",
+    boot: async () => ({ screen: "ok", me: { login: "rikvisser", notices: [] }, machines }),
+    machines: async () => ({ list: machines }),
+    sessions: async () => ({ list: [] }),
+  });
+  await detectWay();
+}
 
 createRoot(document.getElementById("app")!).render(
   <StrictMode>

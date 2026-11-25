@@ -3,14 +3,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useReducer, useState } from "react";
 import { turnOnNotifications, appleTab } from "../components/SetupCards";
 import { StatusBar } from "../components/StatusBar";
-import { TabBar } from "../components/TabBar";
-import { leaveMachine, meQuery, signedOut, useMachines, useSignedInSessions, useSignOut } from "../lib/account";
+import { TopBar } from "../components/shell/TopBar";
+import { meQuery, signedOut, useMachines, useSignedInSessions, useSignOut } from "../lib/account";
 import { activeLink, api, setActiveLink } from "../lib/api";
 import { ago, clock } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon, type IconName } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { deviceName } from "../lib/pair";
+import { useWidth } from "../lib/useWidth";
 import { notifyState } from "../lib/push";
 import { mode, setPairMessage } from "../lib/start";
 import { toast } from "../lib/toast";
@@ -139,7 +140,7 @@ function SignedInDevices() {
 
 export function Settings() {
   const navigate = useNavigate();
-  const qc = useQueryClient();
+  const width = useWidth();
   const me = useLink((s) => s.me);
   const host = useLink((s) => s.host);
   const connected = useLink((s) => s.connected);
@@ -252,16 +253,22 @@ export function Settings() {
   return (
     <div className="screen">
       <StatusBar />
+      <TopBar />
       <div className="hdr">
         <div className="grow">
-          <h1>Phone</h1>
+          <h1>Settings</h1>
         </div>
       </div>
       <div className="settings">
         <Group label="Desktop">
           <Row icon="monitor" title={host || location.hostname} sub={connected ? wayIn() : pcOffline ? `Away since ${clock(pcOffline)}` : "Reconnecting…"} />
-          {account && computers.length > 1 ? <Row icon="layers" title="All computers" onClick={() => { leaveMachine(qc); void navigate({ to: "/computers" }); }} /> : null}
         </Group>
+        {/* A phone has no Usage tab: it is here. */}
+        {width === "phone" ? (
+          <Group label="Agents">
+            <Row icon="gauge" title="Usage" onClick={() => void navigate({ to: "/usage" })} />
+          </Group>
+        ) : null}
         <Group label="Notifications">{notify}</Group>
         {account ? <SignedInDevices /> : null}
         <Group label="This phone">
@@ -278,7 +285,6 @@ export function Settings() {
           )}
         </Group>
       </div>
-      <TabBar />
     </div>
   );
 }

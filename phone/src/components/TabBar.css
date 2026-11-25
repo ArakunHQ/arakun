@@ -1,4 +1,4 @@
-/* The tabs under the top-level screens: one floating bar, a new session in the middle. */
+/* The tabs under a phone's top-level screens: one floating bar. */
 .tabs {
   display: flex; align-items: center; justify-content: space-around; gap: 2px; flex: none;
   margin: 6px var(--gr) var(--float) var(--gl); padding: 6px;

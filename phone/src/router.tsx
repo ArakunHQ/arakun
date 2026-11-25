@@ -9,7 +9,6 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
-  Outlet,
   redirect,
   type Router,
   useRouter,
@@ -23,6 +22,7 @@ import { mode, setPairMessage, tappedNotice, whereTo } from "./lib/start";
 import { Toaster, toast } from "./lib/toast";
 import { useViewportFit } from "./lib/viewport";
 import { Resubscribe } from "./components/Resubscribe";
+import { Shell } from "./components/shell/Shell";
 import { validateSessionSearch } from "./components/session/sheetNav";
 import { Computers } from "./routes/computers";
 import { Fatal } from "./routes/fatal";
@@ -159,7 +159,7 @@ function Root() {
 
   return (
     <>
-      <Outlet />
+      <Shell />
       <Resubscribe />
       <Toaster />
     </>

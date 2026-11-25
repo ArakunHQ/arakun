@@ -1,0 +1,34 @@
+/* The computer: a chip on a phone, a card in the sidebar, an icon in the rail. */
+.pickwrap { position: relative; min-width: 0; }
+.picker { display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left; color: var(--color-text); }
+.picker .pkbody { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.picker .pkname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker svg { flex: none; color: var(--color-text-subtle); }
+.picker.pk-chip {
+  height: 36px; padding: 0 12px; border-radius: 999px; max-width: 100%;
+  background: var(--color-raised); box-shadow: inset 0 0 0 1px var(--color-border-subtle); font-size: var(--text-m-sub); font-weight: 600;
+}
+.picker.pk-card { width: 100%; padding: 8px 10px; border-radius: var(--radius-md); box-shadow: inset 0 0 0 1px var(--color-border); background: var(--color-raised); }
+.picker.pk-card .pkname { font-size: var(--text-lg); font-weight: 600; }
+.picker.pk-card .pksub { font-size: var(--text-sm); color: var(--color-text-subtle); }
+.picker.pk-icon { position: relative; width: 44px; height: 44px; justify-content: center; border-radius: var(--radius-lg); flex: none; }
+.picker.pk-icon .dot { position: absolute; right: 9px; bottom: 11px; width: 7px; height: 7px; box-shadow: 0 0 0 2px var(--color-sheet); }
+button.picker:hover { filter: brightness(1.15); }
+
+.pkscrim { position: fixed; inset: 0; z-index: 44; }
+.pkmenu {
+  position: absolute; z-index: 45; top: calc(100% + 6px); left: 0; width: max(100%, 280px); max-height: 60vh; overflow-y: auto;
+  padding: 6px; border-radius: var(--radius-lg); background: var(--color-raised); box-shadow: 0 0 0 1px var(--color-border), 0 20px 40px var(--color-scrim);
+}
+.pkmenu.pk-icon { top: auto; bottom: 0; left: calc(100% + 8px); }
+.pkrow { display: flex; align-items: center; gap: 4px; }
+.pkpick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 8px; border-radius: var(--radius-md); text-align: left; }
+.pkpick svg { width: 16px; height: 16px; flex: none; color: var(--color-text-subtle); }
+.pkpick .pkbody { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pkpick .pkname { font-size: var(--text-lg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pkpick .pksub { font-size: var(--text-sm); color: var(--color-text-subtle); }
+.pkremove { flex: none; height: 32px; padding: 0 10px; border-radius: var(--radius-md); font-size: var(--text-md); color: var(--color-text-subtle); }
+.pkpick:hover, .pkremove:hover, .pkout:hover { background: var(--color-fill-hover); }
+.pkhint { padding: 10px; font-size: var(--text-md); color: var(--color-text-faint); }
+.pksep { height: 1px; margin: 6px 8px; background: var(--color-border-subtle); }
+.pkout { width: 100%; min-height: 40px; padding: 0 10px; border-radius: var(--radius-md); text-align: left; font-size: var(--text-lg); color: var(--color-error); }

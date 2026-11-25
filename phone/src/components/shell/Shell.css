@@ -1,0 +1,75 @@
+/* The frame by width: the phone's column with the tab bar, the tablet's rail,
+   the desktop's sidebar. The screen sits in .pane at every width. */
+.shell { height: 100%; display: flex; min-height: 0; }
+.shell.phone { flex-direction: column; }
+.shell > .pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.shell > .pane > .screen { flex: 1; min-height: 0; height: auto; }
+
+/* A phone's top bar: the computer on the left, the + on the right. */
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px var(--gr) 6px var(--gl); flex: none; }
+.topbar .tplus { width: 44px; height: 44px; }
+
+/* The desktop's sidebar. */
+.sidebar {
+  width: 288px; flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 0;
+  padding: max(var(--sat), 12px) 12px max(var(--sab), 12px); background: var(--color-sheet); border-right: 1px solid var(--color-border-subtle);
+}
+.sbhead { display: flex; align-items: center; gap: 10px; padding: 6px 8px 2px; font-size: var(--text-m-sub); }
+.sbhead img { width: 22px; height: 22px; }
+.sbtabs { display: flex; flex-direction: column; gap: 2px; }
+.sbtab, .sbnew {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; border-radius: var(--radius-md);
+  font-size: var(--text-lg); color: var(--color-text-muted); text-align: left;
+}
+.sbtab svg, .sbnew svg { width: 16px; height: 16px; flex: none; color: var(--color-text-subtle); }
+.sbtab .grow { flex: 1; }
+.sbtab:hover, .sbnew:hover, .sbrow:hover { background: var(--color-fill-hover); }
+.sbtab.on { background: var(--color-fill-selected); color: var(--color-text); font-weight: 500; }
+.sbtab.on svg { color: var(--color-text); }
+.sbcount { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--color-text-faint); font-variant-numeric: tabular-nums; }
+/* What waits on you, counted in amber. */
+.sbcount.needs { color: var(--color-accent-ink); font-weight: 600; }
+.sbcount .dot { width: 6px; height: 6px; }
+.sblist { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+/* New session: a plain row; the amber stays for the pane's own primary. */
+.sbnew { box-shadow: inset 0 0 0 1px var(--color-border-subtle); color: var(--color-text); margin: 4px 0 2px; }
+.sbnew:disabled { opacity: 0.4; }
+.sbgroup h2 { margin: 16px 10px 6px; font: 500 var(--text-xs) var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); }
+.sbrow { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--radius-md); text-align: left; }
+.sbrow.on { background: var(--color-fill-selected); }
+.sbrow > .dot { margin-top: 7px; }
+.sbbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sbt { font-size: var(--text-lg); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sbs { font-size: var(--text-sm); color: var(--color-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sbstate { flex: none; font-size: var(--text-sm); color: var(--color-text-subtle); padding-top: 1px; }
+.sbstate.error { color: var(--color-error); }
+.sbmore { display: block; width: 100%; padding: 10px; font-size: var(--text-md); color: var(--color-text-subtle); text-decoration: underline; text-underline-offset: 2px; text-align: left; }
+.sbfoot { display: flex; align-items: center; gap: 10px; padding: 10px 4px 0; border-top: 1px solid var(--color-border-subtle); }
+.sbav { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--color-fill-selected); font-size: var(--text-sm); font-weight: 600; }
+.sblogin { flex: 1; min-width: 0; font-size: var(--text-lg); color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The tablet's rail. */
+.rail {
+  width: 64px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; min-height: 0;
+  padding: max(var(--sat), 12px) 0 max(var(--sab), 12px); background: var(--color-sheet); border-right: 1px solid var(--color-border-subtle);
+}
+.rlogo { width: 28px; height: 28px; margin: 6px 0 8px; }
+.rtile { position: relative; width: 44px; height: 44px; border-radius: var(--radius-lg); display: grid; place-items: center; flex: none; color: var(--color-text-subtle); }
+.rtile svg { width: 20px; height: 20px; }
+.rtile:hover { background: var(--color-fill-hover); }
+.rtile.on { background: var(--color-fill-selected); color: var(--color-text); }
+.rnew { box-shadow: inset 0 0 0 1px var(--color-border-subtle); color: var(--color-text); }
+.rnew:disabled { opacity: 0.4; }
+.rsep { width: 32px; height: 1px; background: var(--color-border-subtle); margin: 4px 0; flex: none; }
+.rlive { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; scrollbar-width: none; }
+.rsess .av { width: 40px; height: 40px; }
+.rsess.on { background: none; }
+.rsess.on .av { box-shadow: inset 0 0 0 1px var(--color-border-strong); background: var(--color-fill-selected); }
+/* A tile's state: amber when it needs you, the blue ring while it works. */
+.rdot { position: absolute; top: 1px; right: 1px; width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 2px var(--color-sheet); }
+.rdot.needs { background: var(--color-accent-ink); }
+.rdot.working { background: var(--color-sheet); box-shadow: 0 0 0 2px var(--color-sheet), inset 0 0 0 2px var(--color-link); }
+
+/* A desktop's pane with no session open. */
+.home { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 0 24px 24px; }
+.home .setup { width: min(100%, 560px); align-self: center; }

@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { NoticeBanners } from "../components/NoticeBanners";
-import { meQuery, pick, useMachines, useRemoveMachine, useSaid, useSignOut } from "../lib/account";
+import { TopBar } from "../components/shell/TopBar";
+import { meQuery, pick, pickedMachine, useMachines, useRemoveMachine, useSaid, useSignOut } from "../lib/account";
 import { ago } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon } from "../lib/icons";
@@ -34,7 +35,8 @@ export function Computers() {
   const sentence = blockedBy ? RELAY.sentence("blocked") + (blockedBy.reason ? ` ${blockedBy.reason}` : "") : said;
 
   const choose = (m: Machine) => {
-    pick(m);
+    // The Computers tab lists the computer in use too: picking it again keeps its link.
+    if (m.label !== pickedMachine()?.label) pick(m);
     const id = takePendingOpen();
     if (!id) return void navigate({ to: "/inbox" });
     noteNoticeOpen(id, list.length);
@@ -99,6 +101,7 @@ export function Computers() {
     <div className="screen">
       {/* The bar is empty here: it only keeps the header clear of the notch. */}
       <div className="statusbar" />
+      <TopBar />
       <div className="hdr">
         <div className="grow">
           <h1>Computers</h1>

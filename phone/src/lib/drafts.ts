@@ -7,7 +7,7 @@ import { RELAY } from "./globals";
 import { mode } from "./start";
 import { toast } from "./toast";
 
-// The keys app.js used, so what was kept before the update is still found.
+// The keys the old app.js used, so what was kept before the update is still found.
 // The colon matters: RELAY.scoped puts the computer before it.
 export const DRAFT_KEY = "arakun.draft:";
 /** Where the last session started, offered first for the next. */
@@ -40,6 +40,24 @@ export function loadDraft(id: string): string {
     return localStorage.getItem(kept(DRAFT_KEY) + id) || "";
   } catch {
     return "";
+  }
+}
+
+/** Where the last session started on this computer, if it was kept. */
+export function lastPlacePath(): string | null {
+  try {
+    return localStorage.getItem(kept(PLACE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function keepPlace(path: string): void {
+  if (nowhereToKeep()) return;
+  try {
+    localStorage.setItem(kept(PLACE_KEY), path);
+  } catch {
+    // Storage full or off: the next form starts on the first place.
   }
 }
 

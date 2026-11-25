@@ -1,5 +1,5 @@
-/* The old page's look for the screens ported so far, copied from
-   public/app.css. It goes when the tokens arrive (Task 8). */
+/* The old page's look, copied from the old public/app.css. It goes when
+   the tokens arrive (Task 8). */
 @font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("/fonts/Geist-Regular.woff2") format("woff2"); }
 @font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("/fonts/Geist-Medium.woff2") format("woff2"); }
 @font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("/fonts/Geist-SemiBold.woff2") format("woff2"); }
@@ -811,6 +811,108 @@ button.prow:active { background: var(--fill-hover); }
 
 /* With the keyboard up there is no home bar under the composer: it sits just over the keys. */
 :root.kb .composer { margin-bottom: 8px; }
+
+/* ---- New session (Task 7), from public/app.css ---- */
+/* New session: project, agent and the first message. Fields at 16px (see the composer). */
+.newform { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); }
+.newform .chips { padding: 0; margin: 0; }
+.nlabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
+.nfield {
+  width: 100%; background: var(--card); color: var(--text); border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg); padding: 10px 12px; font: 16px/1.35 var(--sans); outline: none;
+}
+.nfield:focus { border-color: rgba(255, 181, 71, 0.5); }
+select.nfield { height: 44px; -webkit-appearance: none; appearance: none; }
+textarea.nfield { resize: none; min-height: 140px; }
+.newform .btn { height: 44px; margin-top: 12px; }
+/* A column that scrolls: its parts keep their size instead of squeezing to fit. */
+.newform > * { flex: none; }
+
+.prow:has(.switch) { cursor: pointer; }
+
+/* ---- new session: the quick sheet over the screen, and the + menu ---- */
+#quick { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; justify-content: flex-end; height: var(--vh, 100%); }
+#quick .qscrim, #plusmenu .pmscrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
+.qsheet {
+  position: relative; background: var(--group); border-radius: 28px 28px 0 0; padding: 0 var(--gr) var(--float) var(--gl);
+  box-shadow: 0 -1px 0 var(--border-strong); max-height: 85%; display: flex; flex-direction: column;
+}
+:root.kb .qsheet { padding-bottom: 8px; }
+.qsheet .grab { width: 38px; height: 5px; border-radius: 3px; background: var(--rail); margin: 8px auto 12px; flex: none; }
+.qctx { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--subtle); margin-bottom: 10px; text-align: left; }
+.qctx b { color: var(--text); font-size: 15px; font-weight: 600; }
+.qctx .ppmark { width: 22px; height: 22px; border-radius: 7px; }
+.qctx svg { width: 14px; height: 14px; opacity: 0.6; }
+.qchips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.qchip {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px 0 12px; border-radius: 999px; font-size: 14px; font-weight: 500;
+  background: var(--raised); color: var(--muted); box-shadow: 0 0 0 1px var(--border);
+}
+.qchip:first-child { background: var(--primary); color: var(--on-primary); }
+.qchip:disabled { opacity: 1; }
+.qchip svg:first-child { width: 15px; height: 15px; opacity: 0.8; transform: none !important; }
+.qbr { display: inline-flex; align-items: center; gap: 8px; }
+.qbr svg { width: 15px; height: 15px; color: var(--subtle); }
+.qchip svg { width: 14px; height: 14px; opacity: 0.6; transition: transform 0.15s; }
+.qchip.open svg { transform: rotate(180deg); }
+.qlist { display: flex; flex-direction: column; background: var(--card); border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--border); margin-bottom: 10px; overflow-y: auto; max-height: 40vh; }
+.qhead { padding: 10px 14px 4px; font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); border-top: 1px solid var(--border); }
+.qhead:first-child { border-top: 0; }
+.qopt { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-height: 44px; padding: 11px 14px; text-align: left; font-size: 15px; }
+.qopt + .qopt { border-top: 1px solid var(--border); }
+.qopt small { font-size: 12px; color: var(--subtle); }
+.qopt.on { font-weight: 600; }
+.qopt small { margin-left: auto; }
+.qopt.on::after { content: "✓"; color: var(--success); font-weight: 600; margin-left: 10px; }
+.qopt { align-items: center; }
+.qopt:disabled { opacity: 0.4; }
+#qtext { width: 100%; min-height: 72px; max-height: 30vh; resize: none; background: none; border: 0; outline: none; color: var(--text); font: 17px/1.4 var(--sans); padding: 4px 0; }
+#qtext::placeholder { color: var(--faint); }
+.qbar { display: flex; align-items: center; gap: 8px; padding: 6px 0 4px; }
+.qbar .grow { flex: 1; }
+.qmore { height: 36px; padding: 0 12px; border-radius: 999px; font-size: 13.5px; color: var(--subtle); box-shadow: 0 0 0 1px var(--border-strong); }
+#qgo { width: 40px; height: 40px; padding: 0; border-radius: 50%; }
+#qgo svg { width: 18px; height: 18px; }
+
+#plusmenu { position: fixed; inset: 0; z-index: 45; }
+#plusmenu .pmscrim { background: rgba(0, 0, 0, 0.6); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.pmcard {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(var(--bot) + 66px); width: min(320px, calc(100% - var(--gl) - var(--gr)));
+  background: var(--card); border-radius: 24px; padding: 6px; box-shadow: 0 0 0 1px var(--border-strong), 0 20px 40px rgba(0, 0, 0, 0.6);
+  animation: pmin 0.16s ease-out;
+}
+@keyframes pmin { from { opacity: 0; transform: translate(-50%, 10px) scale(0.97); } }
+.pmitem { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 16px; text-align: left; font-size: 15px; }
+.pmitem.hl, .pmitem:active { background: var(--raised); }
+.pmic { width: 32px; height: 32px; border-radius: 10px; background: var(--raised); display: grid; place-items: center; flex: none; color: var(--muted); }
+.pmitem.hl .pmic { background: var(--bg); }
+.pmic img { width: 22px; height: 22px; border-radius: 7px; }
+.pmic svg { width: 16px; height: 16px; }
+.pmtx small { display: block; font-size: 12px; color: var(--subtle); }
+.pmsep { height: 1px; background: var(--border); margin: 6px 10px; }
+
+/* The project tiles the + opens first. */
+.ppmark { display: grid; place-items: center; overflow: hidden; border-radius: 11px; flex: none; }
+.ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 600; font-size: 15px; }
+#projpick {
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); height: var(--vh, 100%); overflow-y: auto;
+  padding: var(--top) var(--gr) calc(var(--bot) + 16px) var(--gl); animation: ppin 0.18s ease-out;
+}
+@keyframes ppin { from { opacity: 0; transform: translateY(16px); } }
+.pphead { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 2px; }
+.pphead b { font-size: 24px; font-weight: 600; letter-spacing: -0.03em; }
+.ppsub { font-size: 14px; color: var(--subtle); margin: 2px 0 16px; }
+.ppgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pptile {
+  display: flex; flex-direction: column; align-items: flex-start; height: 118px; padding: 14px; border-radius: var(--r-xl); text-align: left;
+  background: var(--card); box-shadow: inset 0 1px 0 var(--fill), 0 0 0 1px var(--border);
+}
+.pptile:active { background: var(--raised); }
+.pptile .ppmark { width: 36px; height: 36px; }
+.pptile b { margin-top: auto; font-size: 16px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pptile small { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--subtle); margin-top: 2px; }
+.pptile small .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+.pmic.ppmark { border-radius: 10px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

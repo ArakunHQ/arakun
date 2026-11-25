@@ -132,6 +132,12 @@ describe("what the link says", () => {
     expect(go).toHaveBeenCalledWith("/pair");
     expect(pairMessage()).toBe("This phone is no longer paired.");
   });
+
+  it("opens a session the New session form started, in place of the form", () => {
+    const go = vi.fn();
+    onLinkEvent({ type: "started", id: "a b" }, new QueryClient(), go);
+    expect(go).toHaveBeenCalledWith("/s/a%20b", { replace: true });
+  });
 });
 
 describe("a session opened from a notification", () => {

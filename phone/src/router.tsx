@@ -1,7 +1,7 @@
 // The page's screens and the way between them. Hash history: both servers
 // serve exact paths only, with no fallback to index.html, so the route lives
 // after the `#`. The root asks `whereTo` before each screen, which is where
-// `start()` in app.js decided what to show.
+// `start()` in the old app.js decided what to show.
 
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
@@ -80,7 +80,7 @@ declare module "@tanstack/react-router" {
   }
 }
 
-type Go = (to: string) => void;
+type Go = (to: string, opts?: { replace?: boolean }) => void;
 
 /** What the page does when the link says something the screen must act on. */
 export function onLinkEvent(e: LinkEvent, qc: QueryClient, go: Go): void {
@@ -89,6 +89,10 @@ export function onLinkEvent(e: LinkEvent, qc: QueryClient, go: Go): void {
       return toast(e.text);
     case "session-elsewhere":
       return go("/inbox");
+    case "started":
+      // The link has opened it. The form's step gives way to the session's:
+      // back from it goes where the + was.
+      return go(`/s/${encodeURIComponent(e.id)}`, { replace: true });
     case "unpaired":
       // The computer let go of this phone, or never knew it.
       dropMachine();
@@ -132,7 +136,7 @@ function Root() {
   useViewportFit();
 
   useEffect(() => {
-    const go: Go = (to) => void router.navigate({ to });
+    const go: Go = (to, opts) => void router.navigate({ to, replace: opts?.replace });
     const stop = followLink(qc, go);
     // A tap on a notification while the page is open comes through the worker.
     const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;

@@ -2,6 +2,7 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Icon, type IconName } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { needsYou } from "../lib/sessions";
+import { PlusButton } from "./PlusMenu";
 
 type Tab = { to: "/inbox" | "/sessions" | "/usage" | "/settings"; label: string; icon: IconName };
 
@@ -34,9 +35,7 @@ export function TabBar() {
   return (
     <nav className="tabs">
       {LEFT.map(tab)}
-      <button className="tplus" aria-label="New session" disabled={!canStart} onClick={() => void navigate({ to: "/new" })}>
-        <Icon name="plus" size={20} />
-      </button>
+      <PlusButton disabled={!canStart} />
       {RIGHT.map(tab)}
     </nav>
   );

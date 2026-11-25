@@ -28,6 +28,7 @@ export interface Place {
   path: string;
   project: string;
   env?: string;
+  branch?: string;
   agent?: string;
   [k: string]: unknown;
 }

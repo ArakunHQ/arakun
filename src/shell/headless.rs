@@ -59,21 +59,34 @@ impl Shell {
             let mut skipped = 0;
             let mut has_active = false;
             loop {
-                let Ok(active) = this.update_in(cx, |_, window, _| window.is_window_active())
-                else {
+                let Ok((active, open)) = this.update_in(cx, |this, window, _| {
+                    (window.is_window_active(), this.open_headless())
+                }) else {
                     break;
                 };
                 if !has_active || active || skipped >= 4 {
                     skipped = 0;
                     let found = cx
-                        .background_spawn(crate::guard::task(async {
+                        .background_spawn(crate::guard::task(async move {
                             headless::list()
                                 .into_iter()
-                                .map(|m| (modified(&m.id), m))
+                                .map(|m| {
+                                    let time = modified(&m.id);
+                                    // Parsed here, off the UI thread: a long
+                                    // session's transcript is large.
+                                    let t = open
+                                        .get(&m.id)
+                                        .is_some_and(|&seen| {
+                                            seen != Some((time, headless::status(&m)))
+                                        })
+                                        .then(|| headless::read_transcript(&m.id))
+                                        .flatten();
+                                    (time, m, t)
+                                })
                                 .collect::<Vec<_>>()
                         }))
                         .await;
-                    has_active = found.iter().any(|(_, m)| {
+                    has_active = found.iter().any(|(_, m, _)| {
                         matches!(
                             headless::status(m),
                             headless::Status::Working | headless::Status::NeedsInput
@@ -99,18 +112,32 @@ impl Shell {
         .detach();
     }
 
+    /// The headless sessions open in a viewer, with what each last showed.
+    fn open_headless(&self) -> HashMap<String, Option<(Option<SystemTime>, Status)>> {
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .filter(|s| s.live.is_some() && headless::shown(&s.id))
+            .map(|s| {
+                let seen = SEEN.with(|seen| seen.borrow().get(s.id.as_ref()).copied());
+                (s.id.to_string(), seen)
+            })
+            .collect()
+    }
+
     fn sync_headless(
         &mut self,
-        found: Vec<(Option<SystemTime>, Meta)>,
+        found: Vec<(Option<SystemTime>, Meta, Option<agent::Transcript>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // A scan that started before a delete can still carry the deleted session.
         let found: Vec<_> = found
             .into_iter()
-            .filter(|(_, m)| !headless::discarding(&m.id))
+            .filter(|(_, m, _)| !headless::discarding(&m.id))
             .collect();
-        let ids: HashSet<&str> = found.iter().map(|(_, m)| m.id.as_str()).collect();
+        let ids: HashSet<&str> = found.iter().map(|(_, m, _)| m.id.as_str()).collect();
         let gone: Vec<(PathBuf, String)> = self
             .projects
             .iter()
@@ -126,7 +153,7 @@ impl Shell {
         for (env_path, id) in gone {
             self.drop_headless(&env_path, &id, window, cx);
         }
-        for (time, m) in found {
+        for (time, m, transcript) in found {
             let status = headless::status(&m);
             let place = self
                 .projects
@@ -176,11 +203,14 @@ impl Shell {
             if seen == Some((time, status)) {
                 continue;
             }
+            // Not read: the viewer opened after the scan began, or reading
+            // failed. The next scan tries again.
+            let Some(t) = transcript else {
+                continue;
+            };
             SEEN.with(|seen| seen.borrow_mut().insert(m.id.clone(), (time, status)));
-            if let Some(t) = headless::read_transcript(&m.id) {
-                let shown = headless::thread_status(&m);
-                thread.update(cx, |th, cx| th.show_transcript(t, shown, cx));
-            }
+            let shown = headless::thread_status(&m);
+            thread.update(cx, |th, cx| th.show_transcript(t, shown, cx));
         }
         if changed {
             cx.notify();

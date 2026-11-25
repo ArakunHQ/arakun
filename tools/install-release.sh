@@ -8,7 +8,9 @@
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
 # Linux (x86_64, arm64): ~/.local/bin/arakun, and the browser's CEF runtime in
-#                        ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.
+#                        ${XDG_DATA_HOME:-~/.local/share}/arakun/cef, and the app
+#                        launcher's entry and icons in applications/arakun.desktop
+#                        and icons/hicolor/*/apps/arakun.* there.
 # --server (Linux):      only ~/.local/bin/arakun-server, the server without
 #                        the window. arakun.dev/install-server serves this script
 #                        with `main "$@"` at the end changed to `main --server "$@"`,
@@ -308,6 +310,47 @@ install_claude() {
   fi
 }
 
+# Linux: the app launcher's entry for $bindir/arakun in $data/applications, and the
+# icons of the unpacked release $1 in $data/icons/hicolor, as tools/install.sh puts
+# them. Releases from before the icons were packed ship none; their entry gets the
+# desktop's default one. Sets $launcher to the files it wrote, quoted for the
+# uninstall line. The caller runs this with errexit off, so every step returns
+# on failure.
+launcher_entry() {
+  launcher="\"$data/applications/arakun.desktop\""
+  for icon in scalable/apps/arakun.svg 256x256/apps/arakun.png; do
+    if [ -f "$1/icons/hicolor/$icon" ]; then
+      mkdir -p "$data/icons/hicolor/${icon%/*}" &&
+        cp "$1/icons/hicolor/$icon" "$data/icons/hicolor/$icon" || return 1
+      launcher="$launcher \"$data/icons/hicolor/$icon\""
+    fi
+  done
+  mkdir -p "$data/applications" || return 1
+  # Exec is quoted, so a home folder with a space in it still starts.
+  cat >"$data/applications/.arakun.desktop.new" <<EOF || return 1
+[Desktop Entry]
+Type=Application
+Name=Arakun
+Comment=Coding agents, terminals and a browser in one window
+Exec="$bindir/arakun"
+Icon=arakun
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=arakun
+EOF
+  mv -f "$data/applications/.arakun.desktop.new" "$data/applications/arakun.desktop" || return 1
+  # Best effort: a desktop finds them without these caches too. Each is refreshed
+  # only where one exists already, since a new one would go stale and hide what
+  # other apps add later without refreshing it.
+  if command -v gtk-update-icon-cache >/dev/null && [ -f "$data/icons/hicolor/icon-theme.cache" ]; then
+    gtk-update-icon-cache -q -t "$data/icons/hicolor" 2>/dev/null || true
+  fi
+  if command -v update-desktop-database >/dev/null && [ -f "$data/applications/mimeinfo.cache" ]; then
+    update-desktop-database -q "$data/applications" 2>/dev/null || true
+  fi
+  return 0
+}
+
 main() {
   version=${ARAKUN_VERSION:-}
   server=
@@ -529,7 +572,14 @@ main() {
       uninstall="rm -rf ~/.local/bin/arakun \"$cef\""
     else
       say "installed arakun in $bindir"
-      uninstall="rm ~/.local/bin/arakun"
+      uninstall="rm -f ~/.local/bin/arakun"
+    fi
+    data=${XDG_DATA_HOME:-$HOME/.local/share}
+    if launcher_entry "$tmp/x/$name"; then
+      say "added Arakun to the app launcher"
+      uninstall="$uninstall $launcher"
+    else
+      say "warning: could not add Arakun to the app launcher in $data"
     fi
   fi
 

@@ -506,6 +506,11 @@ jobs:
           cp "target/$TARGET/release/arakun" "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
+          # The app launcher's icons, laid out as tools/install-release.sh installs
+          # them. The 256 px one is the small icon: launchers show it at 48 px or less.
+          mkdir -p "dist/$name/icons/hicolor/scalable/apps" "dist/$name/icons/hicolor/256x256/apps"
+          cp assets/brand/arakun.svg "dist/$name/icons/hicolor/scalable/apps/arakun.svg"
+          cp assets/brand/arakun-small.png "dist/$name/icons/hicolor/256x256/apps/arakun.png"
           # Next to the binary, where core/src/browser/loader.rs looks first. Without
           # sdk/, which only the build reads.
           cp -r "$RUNNER_TEMP/cef" "dist/$name/cef"
@@ -539,6 +544,8 @@ jobs:
           "$server" --version
           test -f "$dir/cef/libcef.so"
           test -f "$dir/cef/locales/en-US.pak"
+          test -f "$dir/icons/hicolor/scalable/apps/arakun.svg"
+          test -f "$dir/icons/hicolor/256x256/apps/arakun.png"
           # Loaded on the first browser tab, never at startup.
           if objdump -p "$app" | grep -q 'NEEDED.*libcef'; then
             echo "::error::arakun links libcef.so at startup"

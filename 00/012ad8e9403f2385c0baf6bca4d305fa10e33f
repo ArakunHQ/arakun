@@ -1,0 +1,25 @@
+.github/workflows/dependency-review.yml
+  s_83cfce835fc08e::t_57b0626bcde06a 1-50
+.github/workflows/scorecard.yml
+  s_83cfce835fc08e::t_af617c9fad8a07 1-50
+.github/workflows/secrets.yml
+  s_83cfce835fc08e::t_1651cbd32aece2 1-53
+CONTRIBUTING.md
+  s_83cfce835fc08e::t_2cfd460fe2cf1d 103-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "00012ad8e9403f2385c0baf6bca4d305fa10e33f",
+  "prompts": {},
+  "sessions": {
+    "s_83cfce835fc08e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab2e4f4b-8d63-47f2-a5af-8f9f2c06c08a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

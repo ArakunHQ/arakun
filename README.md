@@ -822,8 +822,9 @@ open), State (Icon, Dot, Word), Group by project, Sort sessions (Recent, Name,
 Manual), Projects with nothing running (Open, Folded, Hidden), Long titles (Cut, Two
 lines) and Sidebar width. Sort sessions starts on Recent, the session that moved last
 on top of its project, or of the whole tree without project headings, whether its
-agent or you moved it. Recent and Name put the sessions with a tab open first, a rule
-under them; a session with no tab open is dimmed. Manual is the order you drag the
+agent or you moved it. Sessions pinned to the title bar go first in every order, with
+a pin at the end of the row and a rule under them. Recent and Name put the sessions
+with a tab open next, a rule under them; a session with no tab open is dimmed. Manual is the order you drag the
 sessions into within each project, kept for each project in `state.json`; dragging a
 session onto another switches to Manual from the order on screen. The rows hold still
 while the pointer is over the tree. The sort button in the tree's heading says the

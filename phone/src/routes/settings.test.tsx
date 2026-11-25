@@ -30,10 +30,10 @@ describe("settings", () => {
     expect(screen.getByRole("button", { name: "30 s" }).getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("shows what the computer chose, and posts only the number picked", async () => {
-    const link = fakeLink({ me: { notices: { done: true, input: true, error: true, away_after_secs: 0, min_turn_secs: 60 } } as never });
+  it("shows what the computer chose, and posts the number picked with the three switches", async () => {
+    const link = fakeLink({ me: { notices: { done: false, input: true, error: true, away_after_secs: 0, min_turn_secs: 60 } } as never });
     (link.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      new Response(JSON.stringify({ notifying: true, notices: { done: true, input: true, error: true, away_after_secs: 300, min_turn_secs: 60 } })),
+      new Response(JSON.stringify({ notifying: true, notices: { done: false, input: true, error: true, away_after_secs: 300, min_turn_secs: 60 } })),
     );
     setActiveLink(link);
     await renderScreen(<Settings />, "/settings", link);
@@ -43,7 +43,7 @@ describe("settings", () => {
     fireEvent.click(within(away).getByRole("button", { name: "5 min" }));
     const [path, init] = (link.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(path).toBe("/push");
-    expect(JSON.parse(init.body)).toEqual({ notices: { away_after_secs: 300 } });
+    expect(JSON.parse(init.body)).toEqual({ notices: { done: false, input: true, error: true, away_after_secs: 300 } });
     setActiveLink(null);
   });
 });

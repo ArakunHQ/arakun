@@ -178,7 +178,9 @@ export function Settings() {
   const [flipped, setFlipped] = useState<Notices | null>(null);
   const notices: Notices = flipped ?? { ...DEFAULTS, ...(me?.notices || {}) };
 
-  // One setting of notices; the computer keeps the choice. Only the one changed is sent.
+  // One setting of notices; the computer keeps the choice. The one changed is
+  // sent with the three switches: a computer from before the away time and
+  // the shortest turn reads all three or answers 400.
   const setNotice = async (patch: Partial<Notices>) => {
     if (!me) return;
     const before = notices;
@@ -188,7 +190,7 @@ export function Settings() {
       const res = await api("/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notices: patch }),
+        body: JSON.stringify({ notices: { done: next.done, input: next.input, error: next.error, ...patch } }),
       });
       if (!res.ok) throw new Error(String(res.status));
       setFlipped({ ...next, ...((await res.json()).notices || {}) });

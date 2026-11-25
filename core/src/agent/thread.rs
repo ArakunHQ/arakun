@@ -141,7 +141,7 @@ pub enum ToolStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolContent {
     Text {
@@ -157,7 +157,7 @@ pub enum ToolContent {
     },
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub title: String,
@@ -242,7 +242,7 @@ impl ToolCall {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanEntry {
     pub content: String,
     #[serde(default)]
@@ -296,7 +296,7 @@ pub struct NoticePlace {
 
 // Tool calls are most of a transcript; boxing them would only add a hop.
 #[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Entry {
     User {
@@ -1170,11 +1170,9 @@ impl Thread {
     pub fn show_transcript(&mut self, t: Transcript, status: ThreadStatus, cx: &mut Context<Self>) {
         const WINDOW: usize = 64;
         let old = self.entries.len();
-        let same =
-            |a: &Entry, b: &Entry| serde_json::to_value(a).ok() == serde_json::to_value(b).ok();
         let start = old.saturating_sub(WINDOW).min(t.entries.len());
         let from = (start..old.min(t.entries.len()))
-            .find(|&i| !same(&self.entries[i], &t.entries[i]))
+            .find(|&i| self.entries[i] != t.entries[i])
             .unwrap_or(old.min(t.entries.len()));
         if !t.meta.title.is_empty() && t.meta.title != self.meta.title {
             self.meta.title = t.meta.title.clone();

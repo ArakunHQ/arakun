@@ -150,7 +150,8 @@ impl Shell {
         let (archive_path, archive_id) = (env.path.clone(), s.id.to_string());
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the project name gives up.
-        let archive_shown = can_archive && self.active_hover.as_ref() == Some(&s.id);
+        // Not on the open session: archiving it there is too easy by accident.
+        let archive_shown = can_archive && !current && self.active_hover.as_ref() == Some(&s.id);
         let hovered = s.id.clone();
         div()
             .id(SharedString::from(format!("active-{pi}-{ei}-{}", s.id)))

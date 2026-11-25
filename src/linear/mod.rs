@@ -5,6 +5,8 @@
 //! `api.linear.app` and nowhere else.
 
 mod fixture;
+#[allow(dead_code)] // Used by the tab (task 5).
+pub mod issues;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -187,7 +189,6 @@ const ENDPOINT: &str = "https://api.linear.app/graphql";
 
 /// Runs `query` as `s` and returns its `data` object. The key goes in the
 /// header only.
-#[allow(dead_code)] // Used by the tab (task 2).
 pub(crate) fn graphql(s: &Session, query: &str, variables: Value) -> Result<Value, ApiError> {
     call(&s.credential, query, variables)
 }

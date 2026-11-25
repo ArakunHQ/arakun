@@ -15,6 +15,16 @@ function endOfDay(date: string): number | null {
   return Math.floor(next.getTime() / 1000) - 1;
 }
 
+/// An https address with a host, which is all the Worker will take.
+function isHttps(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && u.hostname !== "";
+  } catch {
+    return false;
+  }
+}
+
 /// A notice for one account (`githubId`), or, without it, for everyone or an
 /// account whose ID is typed in. A notice to everyone asks first.
 export function NoticeForm({ githubId }: { githubId?: number }) {
@@ -33,11 +43,13 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
       ? "Write the notice text."
       : text.length > MAX_TEXT
         ? `The text is at most ${MAX_TEXT} characters.`
-        : url !== "" && !url.startsWith("https://")
-          ? "The link must start with https://."
+        : url !== "" && !(url.startsWith("https://") && isHttps(url))
+          ? "The link must be an https:// address."
           : expires !== "" && endOfDay(expires) === null
             ? "Choose a date for the end."
-            : targetId === null
+            : expires !== "" && endOfDay(expires)! <= Date.now() / 1000
+              ? "Choose a day that has not passed."
+              : targetId === null
               ? "Enter a GitHub ID: digits only."
               : null;
   const touched = text !== "" || url !== "" || target !== "";

@@ -6,21 +6,27 @@ import type { LogEntry } from "../types";
 import { Time } from "./Time";
 
 /// What an entry says the operator did, in words. An action the panel does
-/// not know is shown as its name, so a newer Worker never shows a blank.
+/// not know, or an entry without the detail its words need, is shown as the
+/// action's name, so a newer Worker never shows a blank or "undefined".
 function words({ action, detail }: LogEntry): string {
+  const has = (key: string) => detail?.[key] !== undefined && detail[key] !== null;
   switch (action) {
     case "flag.grant":
-      return `granted the flag ${detail?.flag}`;
+      if (has("flag")) return `granted the flag ${detail!.flag}`;
+      break;
     case "flag.revoke":
-      return `took away the flag ${detail?.flag}`;
+      if (has("flag")) return `took away the flag ${detail!.flag}`;
+      break;
     case "sessions.close":
-      return `signed out ${detail?.closed} devices`;
+      if (has("closed")) return `signed out ${detail!.closed} devices`;
+      break;
     case "block":
       return detail?.reason ? `blocked the account: ${detail.reason}` : "blocked the account";
     case "unblock":
       return "unblocked the account";
     case "plan.set":
-      return `set the plan to ${detail?.plan}`;
+      if (has("plan")) return `set the plan to ${detail!.plan}`;
+      break;
     case "notice.create":
       return "sent a notice";
     case "notice.delete":
@@ -29,9 +35,8 @@ function words({ action, detail }: LogEntry): string {
       return "granted cloud access";
     case "cloud.decline":
       return "declined cloud access";
-    default:
-      return String(action);
   }
+  return String(action);
 }
 
 function Entry({ entry }: { entry: LogEntry }) {

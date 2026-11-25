@@ -50,7 +50,7 @@ describe("NoticeForm", () => {
     await userEvent.type(text, "Hi");
     await userEvent.type(screen.getByRole("textbox", { name: "Link (optional)" }), "http://example.com");
     expect(send().disabled).toBe(true);
-    expect(screen.getByText("The link must start with https://.")).toBeTruthy();
+    expect(screen.getByText("The link must be an https:// address.")).toBeTruthy();
     await userEvent.clear(screen.getByRole("textbox", { name: "Link (optional)" }));
     expect(send().disabled).toBe(false);
     await userEvent.click(text);
@@ -83,5 +83,18 @@ describe("NoticeForm", () => {
     await userEvent.type(id, "1005");
     await userEvent.click(send());
     await waitFor(() => expect(posts).toEqual([{ github_id: 1005, text: "Hello" }]));
+  });
+
+  it("refuses a link with no host and a day that has passed", async () => {
+    show(1002);
+    await userEvent.type(screen.getByRole("textbox", { name: "Text" }), "Hi");
+    const link = screen.getByRole("textbox", { name: "Link (optional)" });
+    await userEvent.type(link, "https://");
+    expect(send().disabled).toBe(true);
+    await userEvent.clear(link);
+    await userEvent.type(screen.getByLabelText("Ends on (optional)"), "2001-01-01");
+    expect(send().disabled).toBe(true);
+    expect(screen.getByText("Choose a day that has not passed.")).toBeTruthy();
+    expect(posts).toEqual([]);
   });
 });

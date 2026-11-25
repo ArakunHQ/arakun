@@ -1,6 +1,7 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { userQuery } from "../queries";
 import { renderRoute, stubDialog } from "../test-utils";
 import type { LogEntry, UserDetail } from "../types";
 
@@ -154,9 +155,23 @@ describe("one user", () => {
     expect(screen.getByRole("textbox", { name: "New flag" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Plan" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Block" })).toBeTruthy();
+    // No plan is picked for it: one click must not set "free" by accident.
+    expect(screen.getByRole("option", { name: "Choose a plan" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Set plan" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Send notice" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sign out everywhere" })).toBeNull();
     expect(screen.queryByText("Activity")).toBeNull();
+  });
+
+  it("starts a fresh screen when the operator goes to another account", async () => {
+    const { router, queryClient } = renderRoute("/users/1002");
+    await queryClient.prefetchQuery(userQuery(1003));
+    await userEvent.type(await screen.findByRole("textbox", { name: "Reason" }), "spam");
+    await userEvent.type(screen.getByRole("textbox", { name: "New flag" }), "beta");
+    // Account B is already cached, so nothing unmounts by waiting.
+    await router.navigate({ to: "/users/$githubId", params: { githubId: "1003" } });
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Reason" }) as HTMLInputElement).value).toBe(""));
+    expect((screen.getByRole("textbox", { name: "New flag" }) as HTMLInputElement).value).toBe("");
   });
 
   it("shows the server's error under the form that failed", async () => {

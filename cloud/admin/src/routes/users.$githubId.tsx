@@ -39,7 +39,8 @@ function UserRoute() {
       </>
     );
   }
-  return <User id={id} />;
+  // Keyed, so what was typed for one account never carries over to the next.
+  return <User key={id} id={id} />;
 }
 
 function Failure({ error }: { error: Error | null }) {
@@ -297,14 +298,20 @@ function Plan({ id, plan }: { id: number; plan: string | null }) {
   const set = useSetPlan();
   const [chosen, setChosen] = useState<string | null>(null);
   // The plan the server holds is the select's value until the operator picks.
-  const value = chosen ?? plan ?? "free";
+  // An account with no row has none: the operator must choose one.
+  const value = chosen ?? plan ?? "";
   const names = plans.data?.plans ?? [];
-  const options = names.includes(value) ? names : [value, ...names];
+  const options = value === "" || names.includes(value) ? names : [value, ...names];
   return (
     <section className="section">
       <h2>Plan</h2>
       <div className="form-inline">
         <select className="input" aria-label="Plan" value={value} disabled={plans.isPending || set.isPending} onChange={(e) => setChosen(e.target.value)}>
+          {value === "" && (
+            <option value="" disabled>
+              Choose a plan
+            </option>
+          )}
           {options.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -314,7 +321,7 @@ function Plan({ id, plan }: { id: number; plan: string | null }) {
         <button
           type="button"
           className="button"
-          disabled={set.isPending || plans.isPending || value === plan}
+          disabled={set.isPending || plans.isPending || value === "" || value === plan}
           onClick={() => set.mutate({ githubId: id, plan: value }, { onSuccess: () => setChosen(null) })}
         >
           Set plan

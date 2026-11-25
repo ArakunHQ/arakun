@@ -93,6 +93,17 @@ describe("Users", () => {
     await waitFor(() => expect(router.state.location.search).toEqual({ q: "octo" }));
   });
 
+  it("the box follows q when it changes from outside", async () => {
+    const { router } = renderRoute("/users?q=octo");
+    const box = (await screen.findByRole("searchbox")) as HTMLInputElement;
+    expect(box.value).toBe("octo");
+    await router.navigate({ to: "/users", search: {} });
+    await waitFor(() => expect(box.value).toBe(""));
+    // It must not jump back to the old search after the pause.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(router.state.location.search).toEqual({});
+  });
+
   it("offers to open a numeric ID", async () => {
     renderRoute("/users?q=1099");
     const link = await screen.findByRole("link", { name: "Open account 1099" });

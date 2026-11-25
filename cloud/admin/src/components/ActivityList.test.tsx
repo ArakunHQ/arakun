@@ -9,6 +9,7 @@ import type { LogEntry } from "../types";
 const NOW = Math.floor(Date.now() / 1000);
 const calls: string[] = [];
 let empty = false;
+let odd = false;
 
 /// The list alone, in a router only so its links have somewhere to point.
 function renderList() {
@@ -57,11 +58,15 @@ const ALL: LogEntry[] = [
 beforeEach(() => {
   calls.length = 0;
   empty = false;
+  odd = false;
   vi.stubGlobal(
     "fetch",
     vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       calls.push(url);
+      if (url === "/api/log" && odd) {
+        return json({ entries: [entry(20, { action: "flag.grant", detail: null }), entry(19, { action: "plan.set", detail: {} })], next: null });
+      }
       if (url === "/api/log" && empty) return json({ entries: [], next: null });
       if (url === "/api/log") return json({ entries: ALL, next: 5 });
       if (url === "/api/log?before=5") {
@@ -108,6 +113,14 @@ describe("ActivityList", () => {
     expect(screen.getByText("granted the flag cloud")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());
     expect(calls).toContain("/api/log?before=5");
+  });
+
+  it("shows the action's name when its detail is missing", async () => {
+    odd = true;
+    renderList();
+    expect(await screen.findByText("flag.grant")).toBeTruthy();
+    expect(screen.getByText("plan.set")).toBeTruthy();
+    expect(screen.queryByText(/undefined/)).toBeNull();
   });
 
   it("says so when the log is empty", async () => {

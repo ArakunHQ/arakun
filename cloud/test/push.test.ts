@@ -186,13 +186,14 @@ describe("what the push service refuses", () => {
   });
 
   it("a 31st message to one token in a minute, while another token still gets through", async () => {
-    await roomInWindow(60, 10_000);
+    await roomInWindow(60);
     const path = `/push/v1/apns/${"b2".repeat(32)}`;
     const auth = await vapid();
     for (let i = 0; i < 30; i++) expect((await deliver(path, { auth })).status).toBe(201);
     expect((await deliver(path, { auth })).status).toBe(429);
     expect((await deliver(`/push/v1/apns/${"c3".repeat(32)}`, { auth })).status).toBe(201);
-  });
+    // The wait for a window can take 3 seconds; 32 calls need room after it.
+  }, 10_000);
 
   it("anything while Apple's or Google's keys are unset", async () => {
     const url = new URL(`${ORIGIN}/push/v1/apns/${APNS_TOKEN}`);

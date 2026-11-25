@@ -586,6 +586,12 @@ fn send(
                 .body(body.to_string())
                 .map_err(built)?,
         ),
+        // ureq sends `()` on a POST as a chunked body, and a server that answers before
+        // reading its end marker resets the connection. An empty slice sends
+        // `Content-Length: 0` instead; GET and DELETE carry no length at all.
+        None if matches!(method, "POST" | "PUT" | "PATCH") => {
+            http_for(base).run(req.body(&[][..]).map_err(built)?)
+        }
         None => http_for(base).run(req.body(()).map_err(built)?),
     };
     read(sent, limit)
@@ -936,11 +942,12 @@ mod tests {
         );
         let (base, rx) = serve(204, "");
         logout(&base, "s").unwrap();
-        assert!(
-            rx.recv()
-                .unwrap()
-                .starts_with("POST /auth/logout HTTP/1.1\r\n")
-        );
+        let got = rx.recv().unwrap();
+        assert!(got.starts_with("POST /auth/logout HTTP/1.1\r\n"));
+        // A chunked empty body leaves its end marker unread by a server that answers
+        // at once, and closing on it resets the connection.
+        assert!(got.contains("content-length: 0\r\n"), "{got}");
+        assert!(!got.contains("transfer-encoding"), "{got}");
     }
 
     #[test]

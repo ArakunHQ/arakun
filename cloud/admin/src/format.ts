@@ -33,3 +33,13 @@ export function relative(seconds: number, now: number): string {
 export function exact(seconds: number): string {
   return new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
 }
+
+/// GitHub's own rule for a login, as the cloud Worker checks it.
+const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
+
+/// The account's page on GitHub, or null for a login that is empty (an
+/// account set up before its first sign-in) or not one GitHub allows. A link
+/// is never built from text that does not pass.
+export function githubUrl(login: string): string | null {
+  return GITHUB_LOGIN.test(login) ? `https://github.com/${login}` : null;
+}

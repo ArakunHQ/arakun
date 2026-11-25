@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { Confirm } from "../components/Confirm";
 import { Time } from "../components/Time";
-import { age } from "../format";
+import { age, githubUrl } from "../format";
 import { requestsQuery, useDecline, useGrant, type RequestStatus } from "../queries";
 import type { CloudRequest } from "../types";
 
@@ -88,9 +88,14 @@ function Request({ request: r }: { request: CloudRequest }) {
     <li className="request" aria-label={r.login}>
       <div className="request-head">
         <img className="avatar" src={`https://avatars.githubusercontent.com/u/${r.github_id}?s=64`} alt="" />
-        <a className="request-login" href={`https://github.com/${r.login}`} rel="noreferrer">
-          {r.login}
-        </a>
+        {githubUrl(r.login) ? (
+          <a className="request-login" href={githubUrl(r.login)!} rel="noreferrer">
+            {r.login}
+          </a>
+        ) : (
+          // Set up by an operator before its first sign-in: no login yet.
+          <span className="request-login">GitHub ID {r.github_id}</span>
+        )}
         {r.blocked && <span className="chip">blocked</span>}
         {r.has_flag && <span className="chip">has cloud access</span>}
         {/* The user's screen is a route the next task adds; until it is typed, a plain link. */}
@@ -117,7 +122,11 @@ function Request({ request: r }: { request: CloudRequest }) {
       </p>
       {r.status !== "granted" && (
         <div className="request-actions">
-          <button type="button" className="button primary" disabled={busy} onClick={() => grant.mutate(r.github_id)}>
+          <button type="button" className="button primary" disabled={busy} onClick={() => {
+              // One error at a time: the one of the call that ran last.
+              decline.reset();
+              grant.mutate(r.github_id);
+            }}>
             Grant
           </button>
           {r.status === "pending" && (
@@ -127,7 +136,10 @@ function Request({ request: r }: { request: CloudRequest }) {
               confirmLabel="Decline"
               danger
               disabled={busy}
-              onConfirm={() => decline.mutate(r.github_id)}
+              onConfirm={() => {
+                grant.reset();
+                decline.mutate(r.github_id);
+              }}
             >
               Decline
             </Confirm>

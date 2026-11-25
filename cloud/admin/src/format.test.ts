@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { age, relative } from "./format";
+import { age, githubUrl, relative } from "./format";
 
 const DAY = 24 * 60 * 60;
 const now = 1_800_000_000;
@@ -37,5 +37,19 @@ describe("relative", () => {
   it("says just now within a minute", () => {
     expect(relative(now - 30, now)).toBe("just now");
     expect(relative(now + 30, now)).toBe("just now");
+  });
+});
+
+describe("githubUrl", () => {
+  it("links a valid login", () => {
+    expect(githubUrl("octo-cat_1")).toBe("https://github.com/octo-cat_1");
+  });
+
+  it("gives null for an empty login or one with other characters", () => {
+    expect(githubUrl("")).toBeNull();
+    expect(githubUrl("a/b")).toBeNull();
+    expect(githubUrl("a b")).toBeNull();
+    expect(githubUrl("../x")).toBeNull();
+    expect(githubUrl("a".repeat(40))).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ let requests: CloudRequest[];
 const calls: string[] = [];
 let hold: Promise<void> | null;
 let failGrant: string | null;
+let failDecline: string | null;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
@@ -48,7 +49,8 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const act = /^\/api\/cloud\/requests\/(\d+)\/(grant|decline)$/.exec(url);
   if (act && method === "PUT") {
     if (hold) await hold;
-    if (failGrant) return json({ error: failGrant }, 409);
+    const failure = act[2] === "grant" ? failGrant : failDecline;
+    if (failure) return json({ error: failure }, 409);
     const r = requests.find((q) => q.github_id === Number(act[1]))!;
     r.status = act[2] === "grant" ? "granted" : "declined";
     return json(r);
@@ -62,6 +64,7 @@ beforeEach(() => {
   calls.length = 0;
   hold = null;
   failGrant = null;
+  failDecline = null;
   fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
   requests = [
@@ -160,6 +163,24 @@ describe("Cloud access", () => {
     expect(calls).toContain("GET /api/cloud/requests?status=declined");
   });
 
+  it("Grant on a declined row calls PUT /api/cloud/requests/<id>/grant", async () => {
+    renderRoute("/?status=declined");
+    await userEvent.click(within(await screen.findByRole("listitem", { name: "declined-one" })).getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(screen.queryByRole("listitem", { name: "declined-one" })).toBeNull());
+    expect(calls).toContain("PUT /api/cloud/requests/1004/grant");
+  });
+
+  it("shows no GitHub link for a login that is empty or not valid", async () => {
+    requests = [request({ github_id: 1007, login: "" }), request({ github_id: 1008, login: "a/b" })];
+    renderRoute("/");
+    const first = within(await screen.findByRole("listitem", { name: "" }));
+    expect(first.getByText("GitHub ID 1007")).toBeTruthy();
+    expect(first.queryByRole("link", { name: /GitHub ID/ })).toBeNull();
+    const second = within(screen.getByRole("listitem", { name: "a/b" }));
+    expect(second.getByText("GitHub ID 1008")).toBeTruthy();
+    expect(document.querySelector('a[href^="https://github.com"]')).toBeNull();
+  });
+
   it("a failed grant shows the server's text", async () => {
     failGrant = "the request is already granted";
     renderRoute("/");
@@ -167,6 +188,20 @@ describe("Cloud access", () => {
     const alert = await within(row("octocat")).findByRole("alert");
     expect(alert.textContent).toBe("the request is already granted");
     expect(within(row("newcomer")).queryByRole("alert")).toBeNull();
+  });
+
+  it("shows the error of the call that failed last", async () => {
+    failGrant = "the grant failed";
+    failDecline = "the decline failed";
+    renderRoute("/");
+    const octocat = within(await screen.findByRole("listitem", { name: "octocat" }));
+    await userEvent.click(octocat.getByRole("button", { name: "Grant" }));
+    expect((await octocat.findByRole("alert")).textContent).toBe("the grant failed");
+    await userEvent.click(octocat.getByRole("button", { name: "Decline" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(octocat.getByRole("alert").textContent).toBe("the decline failed"));
+    await userEvent.click(octocat.getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(octocat.getByRole("alert").textContent).toBe("the grant failed"));
   });
 
   it("says so when nothing is pending", async () => {

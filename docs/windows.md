@@ -60,7 +60,8 @@ always checks the signature.
   development with C++*) and are on the `PATH` of the Developer PowerShell.
 
 `tools\setup-dev.ps1` installs Git, the Build Tools and Rust with winget and rustup. Add
-`-Relay` for Node, and `-Browser` to check for CMake and Ninja. It cannot add a workload
+`-Relay` for Node, `-Browser` to check for CMake and Ninja, and `-CiTools` for
+cargo-deny and zizmor. It cannot add a workload
 to a Visual Studio you already have; it tells you what to add in the Visual Studio
 Installer instead. It has not been run on real Windows yet; please report what fails.
 

@@ -2,7 +2,8 @@
 # Sets up a Linux or macOS machine to build Arakun and run the checks CI runs.
 # For contributors and for coding agents. Windows: tools/setup-dev.ps1.
 #
-#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--browser] [--hooks] [--build]
+#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--browser] [--ci-tools]
+#                      [--hooks] [--build]
 #
 #   --yes      do not ask before installing (implied when stdin is not a terminal)
 #   --check    only report what is missing; exit 1 if anything is
@@ -10,10 +11,12 @@
 #   --display  also what `arakun dev` needs: Xvfb and tesseract (macOS: tesseract,
 #              through Homebrew)
 #   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
+#   --ci-tools also cargo-deny and zizmor, with cargo install (each one compiles for a
+#              few minutes the first time)
 #   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
 #   --build    build the tests once, so the first clippy or test run is quick
 #
-# Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
+# Always: the system libraries GPUI needs (apt, dnf or pacman; on macOS the Xcode Command
 # Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
 # It builds without the browser, as CI does; for CEF see --browser and "With the browser"
 # in the README. Running it again is safe.
@@ -25,6 +28,7 @@ check=0
 relay=0
 display=0
 browser=0
+ci_tools=0
 hooks=0
 build=0
 while [ $# -gt 0 ]; do
@@ -34,9 +38,10 @@ while [ $# -gt 0 ]; do
     --relay) relay=1 ;;
     --display) display=1 ;;
     --browser) browser=1 ;;
+    --ci-tools) ci_tools=1 ;;
     --hooks) hooks=1 ;;
     --build) build=1 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "setup-dev: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -79,6 +84,7 @@ os=$(uname)
 pm=
 if [ "$os" = Linux ]; then
   if command -v apt-get >/dev/null; then pm=apt
+  elif command -v dnf >/dev/null; then pm=dnf
   elif command -v pacman >/dev/null; then pm=pacman
   fi
 fi
@@ -89,6 +95,11 @@ case $pm in
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
     libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev"
     display_pkgs="xvfb tesseract-ocr" ;;
+  # libX11-devel has x11-xcb.pc; vulkan-loader-devel pulls in vulkan-headers.
+  dnf) pkgs="gcc gcc-c++ make pkgconf-pkg-config git curl ca-certificates
+    libxkbcommon-devel libxkbcommon-x11-devel wayland-devel libX11-devel libxcb-devel
+    fontconfig-devel freetype-devel vulkan-loader-devel openssl-devel"
+    display_pkgs="xorg-x11-server-Xvfb tesseract tesseract-langpack-eng" ;;
   pacman) pkgs="base-devel pkgconf git curl
     libxkbcommon libxkbcommon-x11 wayland libxcb fontconfig freetype2
     vulkan-icd-loader vulkan-headers openssl"
@@ -104,6 +115,11 @@ not_installed() {
     apt)
       for p in $pkgs; do
         dpkg-query -W -f='${Status}\n' "$p" 2>/dev/null | grep -q '^install ok installed$' || echo "$p"
+      done ;;
+    # By what is provided, so the curl-minimal of older Fedora counts as curl.
+    dnf)
+      for p in $pkgs; do
+        rpm -q --whatprovides "$p" >/dev/null 2>&1 || echo "$p"
       done ;;
     # -T prints the ones no installed package satisfies.
     pacman) pacman -T $pkgs || true ;;
@@ -125,7 +141,7 @@ if [ "$os" = Darwin ]; then
   fi
 elif [ -z "$pm" ]; then
   # No list for other distributions yet: they need the same libraries under their names.
-  say "no apt-get or pacman here; install the equivalents of the Ubuntu packages in the README" >&2
+  say "no apt-get, dnf or pacman here; install the equivalents of the Ubuntu packages in the README" >&2
   [ $check = 1 ] && missing=1
 else
   todo=$(not_installed | tr '\n' ' ' | sed 's/ *$//')
@@ -143,6 +159,7 @@ else
         as_root env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 update -q
         as_root env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 \
           install -y -q --no-install-recommends $todo ;;
+      dnf) as_root dnf install -y -q --setopt=install_weak_deps=False $todo ;;
       pacman) as_root pacman -S --needed --noconfirm $todo ;;
     esac
   else
@@ -216,6 +233,35 @@ if [ $added_cargo_bin = 1 ]; then
   else
     say "add $cargo_bin to PATH (or open a new shell after: . \"${CARGO_HOME:-$HOME/.cargo}/env\")"
   fi
+fi
+
+# --- cargo-deny and zizmor ---
+# CI runs them when Cargo.toml, Cargo.lock, deny.toml or .github/ changes. zizmor comes at
+# the version the zizmor workflow pins, so it finds what CI finds.
+if [ $ci_tools = 1 ]; then
+  say "cargo-deny and zizmor"
+  zizmor_version=$(sed -n 's/^ *version: *\([0-9][0-9.]*\) *$/\1/p' \
+    "$here/.github/workflows/zizmor.yml" | head -n 1)
+  for spec in cargo-deny "zizmor${zizmor_version:+@$zizmor_version}"; do
+    tool=${spec%@*}
+    want=
+    case $spec in *@*) want=${spec#*@} ;; esac
+    if have=$("$tool" --version 2>/dev/null); then
+      # Both print "<name> <version>". Another version stays; the user may want it.
+      if [ -n "$want" ] && [ "${have##* }" != "$want" ]; then
+        ok "$have; CI runs $want (cargo install --locked $spec)"
+      else
+        ok "$have"
+      fi
+    elif [ $check = 1 ]; then
+      lack "$tool (cargo install --locked $spec)"
+    elif ask "install $spec with cargo install (it compiles for a few minutes)?"; then
+      cargo install --locked "$spec"
+      ok "$spec"
+    else
+      lack "$tool (cargo install --locked $spec)"
+    fi
+  done
 fi
 
 # --- relay ---
@@ -370,7 +416,7 @@ if [ $check = 1 ]; then
   say "everything is in place"
   exit 0
 fi
-# Things this script does not install itself (Node, a distribution without apt or pacman).
+# Things this script does not install itself (Node, a distribution without apt, dnf or pacman).
 [ $missing = 1 ] && { say "done, but see 'missing' above"; exit 1; }
 
 # --- warm build ---
@@ -379,8 +425,11 @@ if [ $build = 1 ]; then
   (cd "$here" && cargo test --locked --no-default-features --no-run)
 fi
 
-say "ready. The checks CI runs:"
+say "ready. The checks CI runs (the full list is under \"Checks\" in CONTRIBUTING.md):"
 cat <<'EOF'
+  tools/rustfmt.sh --check
   cargo clippy --locked --all-targets --no-default-features -- -D warnings
   cargo test --locked --no-default-features
+  cargo deny check   # Cargo.toml, Cargo.lock or deny.toml changed (--ci-tools)
+  zizmor .github     # .github/ changed (--ci-tools)
 EOF

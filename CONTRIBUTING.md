@@ -47,7 +47,7 @@ system libraries, Rust with clippy, and with the flags below Node for the relay 
 safely.
 
 ```sh
-tools/setup-dev.sh --hooks             # Linux (apt or pacman) and macOS
+tools/setup-dev.sh --hooks             # Linux (apt, dnf or pacman) and macOS
 tools/setup-dev.sh --check             # only report what is missing
 ```
 
@@ -61,7 +61,8 @@ first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
 tesseract for `arakun dev` (on macOS only tesseract, through Homebrew), `--browser`
 fetches the CEF SDK a macOS build with the browser needs and links it at `.cef-sdk`,
-`--build` (`-Build`) builds the tests once, and `--yes`
+`--ci-tools` (`-CiTools`) adds cargo-deny and zizmor (the version CI pins) with
+`cargo install`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
 follow [Build from source](README.md#build-from-source) in the README.
 
@@ -123,7 +124,7 @@ cargo test --locked --no-default-features
 # server/ or core/ changed
 cargo clippy --locked -p arakun-server -- -D warnings
 
-# Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
+# Cargo.toml, Cargo.lock or deny.toml changed (tools/setup-dev.sh --ci-tools)
 cargo deny check
 
 # cloud/ or phone/ changed
@@ -140,7 +141,7 @@ cargo deny check
 (cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
 # CI also builds the release bundle, signed with a throwaway key; R8 is slow, so leave it to CI.
 
-# .github/ changed (brew install zizmor, or pipx install zizmor)
+# .github/ changed (tools/setup-dev.sh --ci-tools, brew install zizmor or pipx install zizmor)
 zizmor .github
 ```
 

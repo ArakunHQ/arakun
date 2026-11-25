@@ -449,6 +449,7 @@ jobs:
           cache-dependency-path: |
             cloud/package-lock.json
             cloud/admin/package-lock.json
+            phone/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -470,10 +471,11 @@ jobs:
         working-directory: cloud/admin
         run: npm run build
 
-      # The phone's encryption against the vectors the Rust side wrote.
-      - name: phone e2e vectors
+      # The phone's encryption against the vectors the Rust side wrote, and
+      # the committed phone/dist against a fresh build.
+      - name: phone tests and dist
         working-directory: phone
-        run: node --test "test/*.test.mjs"
+        run: npm ci && npm test && tools/check-dist.sh
 
   # The iOS app (ios/): its protocol package's tests, which check the Swift
   # crypto against phone/test/vectors, and an unsigned build for the

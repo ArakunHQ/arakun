@@ -15,7 +15,7 @@ compatibility_date = "2026-11-01"
 # The phone page, straight from the repo: the Worker runs first and hands the
 # rest to the assets.
 [assets]
-directory = "../phone"
+directory = "../phone/dist"
 binding = "ASSETS"
 run_worker_first = true
 
@@ -194,7 +194,7 @@ binding = "CONFIG"
 id = "c6b6881faa8941e7aac00b98dbe0b45d"
 
 [env.production.assets]
-directory = "../phone"
+directory = "../phone/dist"
 binding = "ASSETS"
 run_worker_first = true
 

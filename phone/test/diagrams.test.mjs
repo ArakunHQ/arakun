@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
-const D = require("../diagrams.js");
+const D = require("../public/diagrams.js");
 
 test("a JSON chart with two series", () => {
   const { chart } = D.parse(

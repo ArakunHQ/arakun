@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", file), "utf8"), { filename: file });
+for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", "public", file), "utf8"), { filename: file });
 const { E2E, RELAY } = globalThis;
 
 /// A fetch that answers each path from `routes`: a status, or [status, body].

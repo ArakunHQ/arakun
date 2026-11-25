@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-vm.runInThisContext(readFileSync(join(here, "..", "e2e.js"), "utf8"), { filename: "e2e.js" });
+vm.runInThisContext(readFileSync(join(here, "..", "public", "e2e.js"), "utf8"), { filename: "e2e.js" });
 const E2E = globalThis.E2E;
 const vectors = JSON.parse(readFileSync(join(here, "vectors", "e2e.json"), "utf8"));
 const bytes = (name) => E2E.fromB64url(vectors[name]);

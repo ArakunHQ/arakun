@@ -1,4 +1,4 @@
-// The markdown phone/app.js draws agent replies with. Agent text is untrusted
+// The markdown phone/public/app.js draws agent replies with. Agent text is untrusted
 // (a repository or a web page can steer it), so what comes out goes into
 // innerHTML only as tags the renderer wrote itself. Run with
 // `node --test phone/test/`.
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const app = readFileSync(join(here, "..", "app.js"), "utf8");
+const app = readFileSync(join(here, "..", "public", "app.js"), "utf8");
 
 // app.js runs only in a page, so the renderer is taken out of it whole: each
 // piece from its first line to the closing brace at the start of a line.

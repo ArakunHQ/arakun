@@ -178,8 +178,10 @@ class WebPushTest {
     @Test
     fun readsTheMutedSessions() {
         assertEquals(listOf("s1", "s2"), WebPush.mutedOf(parseJson("""{"muted":["s1","s2",3]}""")!!))
-        // An older computer knows no muting: nothing is muted.
+        // An older computer knows no muting: nothing is muted, and no switch shows.
         assertEquals(emptyList<String>(), WebPush.mutedOf(parseJson("""{"notifying":false}""")!!))
+        assertFalse(WebPush.knowsMuting(parseJson("""{"notifying":false}""")!!))
+        assertTrue(WebPush.knowsMuting(parseJson("""{"muted":[]}""")!!))
     }
 
     @Test

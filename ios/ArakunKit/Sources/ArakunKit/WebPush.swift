@@ -244,11 +244,15 @@ public struct PushState: Equatable, Sendable {
     /// The sessions this phone hears nothing about, from `GET /me`. Empty from
     /// a computer that knows no muting, and in the answer to `POST /push`.
     public let muted: [String]
+    /// Whether the computer knows muting: one from before sends no `muted`
+    /// in `GET /me`, and a mute switch would get nothing but an error there.
+    public let canMute: Bool
 
-    public init(notifying: Bool, notices: NoticeChoice, muted: [String] = []) {
+    public init(notifying: Bool, notices: NoticeChoice, muted: [String] = [], canMute: Bool = false) {
         self.notifying = notifying
         self.notices = notices
         self.muted = muted
+        self.canMute = canMute
     }
 
     public init?(_ j: JSON) {
@@ -256,6 +260,7 @@ public struct PushState: Equatable, Sendable {
         notifying = j["notifying"].bool
         notices = NoticeChoice(j["notices"])
         muted = j["muted"].array.compactMap(\.string)
+        canMute = Mute.list(j) != nil
     }
 }
 

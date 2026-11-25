@@ -237,6 +237,13 @@ describe("the session at each width", () => {
     expect(screen.getByRole("button", { name: "Unmute" })).toBeTruthy();
   });
 
+  it("offers no mute for a computer that does not know muting", async () => {
+    const link = fakeLink({ session: session() as never, me: {} as never });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    await tick();
+    expect(screen.queryByRole("button", { name: "Mute" })).toBeNull();
+  });
+
   it("keeps it unmuted and says so when the computer cannot be reached", async () => {
     const link = fakeLink({ session: session() as never, me: { muted: [] } as never });
     (link.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("offline"));

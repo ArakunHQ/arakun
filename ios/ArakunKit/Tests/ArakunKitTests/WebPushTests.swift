@@ -183,9 +183,11 @@ struct WebPushTests {
         let me = try #require(PushState(try #require(JSON.parse(Data(
             #"{"notifying":true,"notices":{},"muted":["s1","s2",3]}"#.utf8)))))
         #expect(me.muted == ["s1", "s2"])
-        // An older computer knows no muting: nothing is muted.
+        #expect(me.canMute)
+        // An older computer knows no muting: nothing is muted, and no switch shows.
         let old = try #require(PushState(try #require(JSON.parse(Data(#"{"notifying":false}"#.utf8)))))
         #expect(old.muted == [])
+        #expect(!old.canMute)
         #expect(old == PushState(notifying: false, notices: NoticeChoice()))
     }
 

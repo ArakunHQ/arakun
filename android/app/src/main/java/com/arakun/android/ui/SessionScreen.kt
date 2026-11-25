@@ -108,6 +108,7 @@ fun SessionScreen(model: AppModel, id: String) {
             s,
             muted = model.isMuted(id),
             canMute = model.isLinked,
+            knowsMuting = model.knowsMuting,
             onMute = { model.mute(id, !model.isMuted(id)) },
             onBack = model::close,
         )
@@ -231,7 +232,14 @@ private fun sessionMood(model: AppModel, s: LiveSession?): Mood {
 }
 
 @Composable
-private fun SessionTopBar(s: LiveSession?, muted: Boolean, canMute: Boolean, onMute: () -> Unit, onBack: () -> Unit) {
+private fun SessionTopBar(
+    s: LiveSession?,
+    muted: Boolean,
+    canMute: Boolean,
+    knowsMuting: Boolean,
+    onMute: () -> Unit,
+    onBack: () -> Unit,
+) {
     val c = Palette.current
     Box(
         Modifier
@@ -247,14 +255,17 @@ private fun SessionTopBar(s: LiveSession?, muted: Boolean, canMute: Boolean, onM
         Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) {
             IconTap(R.drawable.ic_arrow_left01, "Back", c.text, onClick = onBack)
         }
-        Box(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
-            IconTap(
-                if (muted) R.drawable.ic_notification_off01 else R.drawable.ic_notification01,
-                if (muted) "Unmute" else "Mute",
-                if (muted) c.textFaint else c.text,
-                enabled = canMute,
-                onClick = onMute,
-            )
+        // A computer from before muting has no `/mute`: no switch for it.
+        if (knowsMuting) {
+            Box(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+                IconTap(
+                    if (muted) R.drawable.ic_notification_off01 else R.drawable.ic_notification01,
+                    if (muted) "Unmute" else "Mute",
+                    if (muted) c.textFaint else c.text,
+                    enabled = canMute,
+                    onClick = onMute,
+                )
+            }
         }
         Column(
             Modifier.align(Alignment.Center).widthIn(max = 260.dp),

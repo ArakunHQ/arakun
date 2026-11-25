@@ -221,6 +221,9 @@ object WebPush {
     /** The muted sessions in `GET /me`; none from a computer that knows no muting. */
     fun mutedOf(me: JsonElement): List<String> = muteReply(me) ?: emptyList()
 
+    /** Whether the computer knows muting: one from before sends no `muted` in `GET /me`. */
+    fun knowsMuting(me: JsonElement): Boolean = muteReply(me) != null
+
     /**
      * The environment, and how long the turn took: `app`, `app · 4m 12s` from a minute
      * up, `app · 42s` under it. Empty without an environment.

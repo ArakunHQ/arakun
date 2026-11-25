@@ -156,6 +156,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var muted by mutableStateOf<List<String>>(emptyList())
         private set
 
+    /** Whether the computer open knows muting; one from before has no `/mute`. */
+    var knowsMuting by mutableStateOf(false)
+        private set
+
     /** Sample data instead of a computer (debug builds, launched with `demo`). */
     var demo: Demo? = null
         private set
@@ -444,6 +448,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         retryJob?.cancel()
         machine = null
         muted = emptyList()
+        knowsMuting = false
         connection = Connection.Idle
         host = ""
         inbox = emptyList()
@@ -943,7 +948,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             try {
                 val (status, bytes) = l.fetch("/me")
                 if (status != 200 || link !== l) return@launch
-                muted = WebPush.mutedOf(parseJson(bytes) ?: return@launch)
+                val me = parseJson(bytes) ?: return@launch
+                muted = WebPush.mutedOf(me)
+                knowsMuting = WebPush.knowsMuting(me)
             } catch (_: RelayLink.ClosedException) {
             }
         }
@@ -1030,6 +1037,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         machines = Demo.machines(now)
         machinesLoaded = true
         devices = Demo.devices(now)
+        knowsMuting = true
         if (openFirst) pick(machines.first())
     }
 

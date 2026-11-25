@@ -11,6 +11,11 @@ export function useMuted(): string[] {
 }
 const NONE: string[] = [];
 
+/** Whether the computer knows muting: an older one sends no `muted` in `/me`. */
+export function useCanMute(): boolean {
+  return useLink((s) => Array.isArray(s.me?.muted));
+}
+
 /** Mutes or unmutes one session on the computer. Says so when it could not. */
 export async function setMuted(link: Link, session: string, muted: boolean): Promise<void> {
   try {

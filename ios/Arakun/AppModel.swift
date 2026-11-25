@@ -89,6 +89,8 @@ final class AppModel {
     private(set) var notices: NoticeChoice?
     /// The sessions the computer picked sends this phone no notices about.
     private(set) var muted: [String] = []
+    /// Whether the computer knows muting; one from before has no `/mute`.
+    private(set) var canMute = false
     /// APNs's token for this install. It comes again at every launch.
     private var pushToken: Data?
     /// A session a notification tap asked for, until a computer is picked.
@@ -510,6 +512,7 @@ final class AppModel {
         starting = false
         notices = nil
         muted = []
+        canMute = false
     }
 
     func connect() {
@@ -953,6 +956,7 @@ final class AppModel {
             else { return }
             notices = state.notices
             muted = state.muted
+            canMute = state.canMute
             if notifying {
                 if let body = subscriptionBody() { await post(body, on: l) }
             } else if state.notifying, let body = Self.text(["subscription": NSNull()]) {
@@ -1037,6 +1041,7 @@ extension AppModel {
         connection = .connected
         notices = NoticeChoice(done: false)
         muted = ["s3"]
+        canMute = true
         let inboxJSON = """
         {"host":"studio","sessions":[
          {"id":"s1","title":"Fix the relay pairing limit","agent":"Opus 5.5","status":"needs_input","updated":\(now - 40),"added":42,"removed":7,"project":"arakun","env":"env/brave-otter","place":"/w/a","pr":"#631","asks":{"kind":"permission","text":"cargo test -p arakun relay"}},

@@ -53,7 +53,8 @@ assignee.
   - **Estimate:** the size of the work in your plan, on the team's T-shirt scale:
     XS (`1`) a small change in one place, S (`2`) a few files, M (`3`) a day or so,
     L (`5`) several days, XL (`8`) too big. Split XL work into sub-issues instead.
-  - **Status:** In Progress when you start. The linked pull request moves it on.
+  - **Status:** In Progress as soon as you start work, set by you (see below). The
+    linked pull request moves it on from there.
   - **Links:** set the parent when the issue is a sub-issue, and blocked by when it
     waits on another issue.
   - If you are not sure of a value, choose the closest and say why in a comment.
@@ -64,7 +65,10 @@ assignee.
   you as lead, and a priority. Put each part in it as its own issue, one per pull
   request, and split a part into sub-issues when it has steps. Every issue in the
   project gets the fields above.
-- Assign it to the person running you as soon as you start: in Linear, or with
+- As soon as you start, assign it to the person running you and set its status to
+  In Progress, without being asked. Do this for an issue you found as well as one you
+  made, before you change any code. In Linear, set both on the issue (`assignee: me`,
+  `state: In Progress`); the sync carries them to GitHub. On GitHub alone, run
   `gh issue edit <number> --add-assignee "@me"` (`@me` is the account `gh` is
   logged in as).
 - Keep it current while you work: edit the body when the plan or scope changes, and
@@ -73,7 +77,8 @@ assignee.
   work), as the template asks. Every pull request links an issue. For a Linear issue,
   use the number of the GitHub issue the sync made for it.
 - If you stop before it is done, comment where you stopped and what is left, then
-  unassign yourself (in Linear, or `gh issue edit <number> --remove-assignee "@me"`).
+  unassign yourself and move it back to Todo (in Linear, or
+  `gh issue edit <number> --remove-assignee "@me"`).
 
 ## Commits and pull requests
 

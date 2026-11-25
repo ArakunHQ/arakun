@@ -34,8 +34,8 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
   steps. AGENTS.md says how to choose each value.
 - **Coding agents track every task in an issue** the same way. Before it changes
   anything, the agent finds or opens the issue, assigns it to the person running the
-  agent while it works, keeps the plan and progress in it up to date, and links the
-  pull request. AGENTS.md has the commands.
+  agent, sets it to In Progress in Linear, keeps the plan and progress in it up to
+  date, and links the pull request. AGENTS.md has the commands.
 
 **Security problems:** do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 

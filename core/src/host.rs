@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 pub struct Host {
     /// What a session started in this folder is told it remembers (`arakun mem`).
@@ -16,6 +17,9 @@ pub struct Host {
     pub shim_dir: fn() -> Option<PathBuf>,
     /// What a GitHub write says when `ARAKUN_GITHUB=readonly` stops it.
     pub github_read_only: &'static str,
+    /// How long since the person last used the keyboard or mouse; `None` when the
+    /// host can't tell (`arakun-server` has no display to ask).
+    pub idle_for: fn() -> Option<Duration>,
 }
 
 impl Default for Host {
@@ -26,6 +30,7 @@ impl Default for Host {
             sandbox_socket: || crate::platform::app_dir().join("sandbox/control.sock"),
             shim_dir: || None,
             github_read_only: "GitHub is read-only here (ARAKUN_GITHUB=readonly): nothing was sent.",
+            idle_for: || None,
         }
     }
 }

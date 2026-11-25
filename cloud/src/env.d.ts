@@ -43,5 +43,21 @@ declare namespace Cloudflare {
     /// A Discord webhook URL, from `wrangler secret put BETA_REQUESTS_WEBHOOK`:
     /// each new sign-up for a phone app beta is posted there. Unset = no post.
     BETA_REQUESTS_WEBHOOK?: string;
+    /// Counts the messages pushed to each native app's token (src/push.ts).
+    PUSH_LIMIT: RateLimit;
+    /// Apple's push key for the iOS app: the .p8 file's text, from
+    /// `wrangler secret put APNS_KEY`. Unset (or any APNS_* unset) = no push
+    /// to iOS.
+    APNS_KEY?: string;
+    /// That key's ID, as App Store Connect shows it.
+    APNS_KEY_ID?: string;
+    /// The Apple developer team the key belongs to.
+    APNS_TEAM_ID?: string;
+    /// The iOS app's bundle ID, which Apple delivers to.
+    APNS_TOPIC?: string;
+    /// A Google service account's JSON key, allowed to send with Firebase
+    /// Cloud Messaging, from `wrangler secret put FCM_SERVICE_ACCOUNT`. Unset =
+    /// no push to Android.
+    FCM_SERVICE_ACCOUNT?: string;
   }
 }

@@ -21,6 +21,40 @@ const CONTACT: &str = "https://arakun.dev";
 /// One record carries the whole message; the services take up to 4 KB.
 const RECORD_SIZE: u32 = 4096;
 const MAX_PAYLOAD: usize = 3800;
+/// The most a notice may take once written. Sealed it grows by 103 bytes, and
+/// the native apps' push service (cloud/src/push.ts) takes 2800, so that
+/// Apple and Google's 4 KB still holds it in base64.
+pub const MAX_NOTICE: usize = 2600;
+/// How much of a session's title and of the text a notice shows.
+const TITLE_CHARS: usize = 120;
+const TEXT_CHARS: usize = 600;
+
+/// A notice about `session`, as the phone page and the apps read it, short
+/// enough for every push service. A long error is cut, and cut again if
+/// escaping still makes it too big.
+pub fn notice(kind: &str, session: &str, title: &str, text: &str) -> String {
+    let title = shorten(title, TITLE_CHARS);
+    let mut chars = TEXT_CHARS;
+    loop {
+        let out = serde_json::json!({
+            "kind": kind, "session": session, "title": title, "body": shorten(text, chars),
+        })
+        .to_string();
+        if out.len() <= MAX_NOTICE || chars == 0 {
+            return out;
+        }
+        chars /= 2;
+    }
+}
+
+/// `text` in at most `chars` characters, with an ellipsis where it was cut.
+fn shorten(text: &str, chars: usize) -> String {
+    if text.chars().count() <= chars {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(chars.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
 
 /// Where a phone's browser takes messages for it, and the keys to seal them with.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -487,6 +521,45 @@ mod tests {
 
     /// Rings every phone paired with this computer, skipping the window and
     /// session checks, to tell a delivery problem from a trigger problem:
+    #[test]
+    fn a_notice_keeps_short_text_whole() {
+        let n: serde_json::Value =
+            serde_json::from_str(&notice("done", "s1", "Fix sign-in", "Finished its turn."))
+                .unwrap();
+        assert_eq!(
+            n,
+            serde_json::json!({ "kind": "done", "session": "s1", "title": "Fix sign-in", "body": "Finished its turn." })
+        );
+    }
+
+    #[test]
+    fn a_long_notice_is_cut_to_fit_the_apps_push_service() {
+        let title = "t".repeat(500);
+        let error = "Ω".repeat(5000);
+        let out = notice("error", "s1", &title, &error);
+        assert!(out.len() <= MAX_NOTICE);
+        let n: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let title = n["title"].as_str().unwrap();
+        assert_eq!(title.chars().count(), TITLE_CHARS);
+        assert!(title.ends_with('…'));
+        let body = n["body"].as_str().unwrap();
+        assert_eq!(body.chars().count(), TEXT_CHARS);
+        assert!(body.ends_with('…'));
+        // Sealed, it stays under what cloud/src/push.ts takes.
+        let phone = Phone::new();
+        let sealed = encrypt(&phone.subscription(), out.as_bytes()).unwrap();
+        assert!(sealed.len() <= 2800, "{} bytes", sealed.len());
+    }
+
+    #[test]
+    fn text_that_escapes_long_is_cut_again() {
+        // Each control character is six bytes in JSON.
+        let out = notice("error", "s1", "x", &"\u{1}".repeat(600));
+        assert!(out.len() <= MAX_NOTICE, "{} bytes", out.len());
+        let n: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(n["body"].as_str().unwrap().chars().count() < TEXT_CHARS);
+    }
+
     /// `cargo test phone::push::tests::ring_the_real_phones -- --ignored --nocapture`.
     #[test]
     #[ignore]

@@ -54,6 +54,7 @@ cloud/
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
+  src/push.ts           the native apps' push service: POST /push/v1/<service>/<token>
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets
   src/wire.ts           the shapes of PROTOCOL.md and their signature checks
@@ -318,6 +319,19 @@ admin secret cannot grant flags or make sessions in production.
 
    ```sh
    npx wrangler secret put CLOUD_REQUESTS_WEBHOOK --env production
+   ```
+
+   Optionally, the keys that let the iOS and Android apps get notices (see Push to
+   the apps). Without them, `/push` answers 503 and the apps get none:
+
+   ```sh
+   # Apple: the .p8 file's text and its key ID (developer.apple.com → Keys, with
+   # Apple Push Notifications service). The team and bundle ID are in wrangler.toml.
+   npx wrangler secret put APNS_KEY --env production < AuthKey_XXXXXXXXXX.p8
+   npx wrangler secret put APNS_KEY_ID --env production
+   # Google: a service account's JSON key from the Firebase project, with the
+   # Firebase Cloud Messaging API Admin role.
+   npx wrangler secret put FCM_SERVICE_ACCOUNT --env production < service-account.json
    ```
 
 4. Deploy:
@@ -768,6 +782,20 @@ npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
   SELECT u.github_id, u.login, f.flag FROM user_flags f JOIN users u USING (github_id)"
 ```
 
+## Push to the apps
+
+The phone page gets its notices from the browser's own push service. The iOS and
+Android apps can only be woken through Apple (APNs) and Google (FCM), with Arakun's
+keys, so this Worker is their push service. An app makes its own P-256 key and
+auth secret, and gives each computer a Web Push subscription whose endpoint is
+here: `https://<host>/push/v1/apns/<token>` (`apns-sandbox` for a development
+build) or `https://<host>/push/v1/fcm/<token>`. The computer sends what it sends a
+browser's service: an RFC 8291 aes128gcm body with a VAPID token. The Worker
+checks the token's signature and audience, and passes the ciphertext on as `e`:
+in a mutable alert to Apple, which the app's notification service opens, and in
+a data message to Google. Neither the Worker, Apple nor Google can read the
+notice. Each token gets 30 messages a minute.
+
 ## API
 
 Times are Unix seconds. The request and answer bodies of the team endpoints, and
@@ -792,6 +820,7 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `POST /beta/<ios\|android>` with the session, `{"email"?: "..."}` | Signs up: `201` with the platform's shape, `pending`. While pending, changes the email: `200`. `400` for an address that does not look like one or is over 254 characters, or no email when GitHub gave none. `401`, `403 {error: "blocked"}`, `404` for another platform, `409 {error, ...}` when `already admitted` or `declined recently`, `429` after 5 a minute. |
 | `GET /admin/beta/signups[?platform=][&status=]` with `ADMIN_SECRET` | `200 [{github_id, login, platform, email, status, requested_at, decided_at, decided_by, retry_at, blocked, github: {...}}]`, pending first. |
 | `PUT /admin/beta/signups/<github_id>/<platform>/admit\|decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Marks it admitted or declined, from any state: `200` with the sign-up. The same decision again keeps its first time and name. `404` without a sign-up. |
+| `POST /push/v1/{apns,apns-sandbox,fcm}/<token>` with a Web Push request (`Content-Encoding: aes128gcm`, `Authorization: vapid t=..., k=...`, `TTL`, `Urgency`) | `201` once Apple or Google took it. `401` for a missing or bad VAPID token (wrong signature, audience or expiry), `404` for a token that is not one, `410` when Apple or Google say the token is gone, `413` for a body over 2800 bytes, `415` without `aes128gcm`, `429` after 30 a minute for one token or when the service is busy, `502` when it refuses or cannot be reached, `503` without its keys. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

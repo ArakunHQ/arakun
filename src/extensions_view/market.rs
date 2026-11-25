@@ -47,9 +47,7 @@ const RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub(super) struct MarketState {
-    pub(super) catalog: Option<Vec<PluginEntry>>,
-    pub(super) catalog_loading: bool,
-    pub(super) catalog_error: Option<SharedString>,
+    pub(super) catalog: Loadable<Vec<PluginEntry>, SharedString>,
     /// When a load of the catalog or a server list last failed. Opening the
     /// Marketplace doesn't ask again until `RETRY` has passed, so a failure
     /// stays on screen instead of restarting at every redraw.
@@ -67,20 +65,20 @@ pub(super) struct MarketState {
     /// Show everything, not only what companies publish themselves.
     pub(super) everything: bool,
     /// Every server the known companies publish (`publishers`).
-    pub(super) official: Option<Vec<RegistryServer>>,
-    pub(super) official_loading: bool,
+    /// Its errors show with the registry's, in `registry_error`.
+    pub(super) official: Loadable<Vec<RegistryServer>, Infallible>,
     /// skills.sh's answer to the search box.
-    pub(super) skills: Option<Vec<SkillEntry>>,
+    pub(super) skills: Loadable<Vec<SkillEntry>, SharedString>,
     /// The query the shown skills answer.
     pub(super) skills_for: String,
     /// The repository the shown skills are all of, when the search named one.
     pub(super) skills_repo: Option<String>,
-    pub(super) skills_loading: bool,
     /// The query skills.sh is being asked, so asking again for it does not
     /// drop the answer on its way.
     pub(super) skills_asking: Option<String>,
-    pub(super) skills_error: Option<SharedString>,
-    pub(super) skills_task: Option<Task<()>>,
+    /// The pause after typing before skills.sh is asked. One search or one
+    /// pause at a time: either starting drops the other.
+    pub(super) skills_debounce: Option<Task<()>>,
     /// Each picked skill's folder on GitHub, by skills.sh id.
     pub(super) located: HashMap<String, Located>,
     /// The plugin id or server name whose details show on the right.
@@ -109,7 +107,7 @@ impl ExtensionsView {
         }
         match self.market {
             Market::Plugins if self.targets.target.is_some() => {}
-            Market::Plugins if self.ms.catalog.is_none() && !self.ms.catalog_loading => {
+            Market::Plugins if self.ms.catalog.data.is_none() && !self.ms.catalog.loading() => {
                 self.load_catalog(cx)
             }
             Market::Registry if !self.ms.everything => self.load_official(cx),
@@ -124,54 +122,53 @@ impl ExtensionsView {
     /// Asks skills.sh for the search box's words, unless it answered them already.
     fn search_skills(&mut self, cx: &mut Context<Self>) {
         let query = self.query.read(cx).text().trim().to_string();
-        if (self.ms.skills.is_some() || self.ms.skills_error.is_some())
+        if (self.ms.skills.data.is_some() || self.ms.skills.error.is_some())
             && query == self.ms.skills_for
             || self.ms.skills_asking.as_ref() == Some(&query)
         {
             return;
         }
-        self.ms.skills_error = None;
+        self.ms.skills.error = None;
+        self.ms.skills_debounce = None;
+        // Other words: the search on its way answers the old ones.
+        self.ms.skills.cancel();
         if query.chars().count() < 2 {
-            self.ms.skills = None;
+            self.ms.skills.data = None;
             self.ms.skills_repo = None;
             self.ms.skills_for = query;
-            self.ms.skills_loading = false;
             self.ms.skills_asking = None;
-            self.ms.skills_task = None;
             cx.notify();
             return;
         }
-        self.ms.skills_loading = true;
         self.ms.skills_asking = Some(query.clone());
-        self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
-            let q = query.clone();
+        let q = query.clone();
+        self.ms.skills.start(
+            cx,
+            |this| &mut this.ms.skills,
             // A repository named in the box lists every skill in it, as GitHub
             // has them now, whether skills.sh knows it or not.
-            let found = cx
-                .background_spawn(crate::guard::task(async move {
-                    let search = || {
-                        skills_sh::search(&q).map(|l| {
-                            l.into_iter()
-                                .map(|e| (e, None::<skills_sh::SkillSource>))
-                                .collect::<Vec<_>>()
-                        })
-                    };
-                    let Some(repo) = skills_sh::repo_of(&q) else {
-                        return search();
-                    };
-                    match skills_sh::package(&repo) {
-                        Ok(p) => Ok(p.skills.into_iter().map(|(e, f)| (e, Some(f))).collect()),
-                        // Words like `ci/cd` look like a repository too: what
-                        // skills.sh finds for them beats GitHub's "not found".
-                        Err(e) => match search() {
-                            Ok(l) if !l.is_empty() => Ok(l),
-                            _ => Err(e),
-                        },
-                    }
-                }))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.ms.skills_loading = false;
+            async move {
+                let search = || {
+                    skills_sh::search(&q).map(|l| {
+                        l.into_iter()
+                            .map(|e| (e, None::<skills_sh::SkillSource>))
+                            .collect::<Vec<_>>()
+                    })
+                };
+                let Some(repo) = skills_sh::repo_of(&q) else {
+                    return search();
+                };
+                match skills_sh::package(&repo) {
+                    Ok(p) => Ok(p.skills.into_iter().map(|(e, f)| (e, Some(f))).collect()),
+                    // Words like `ci/cd` look like a repository too: what
+                    // skills.sh finds for them beats GitHub's "not found".
+                    Err(e) => match search() {
+                        Ok(l) if !l.is_empty() => Ok(l),
+                        _ => Err(e),
+                    },
+                }
+            },
+            |this, found, _| {
                 this.ms.skills_asking = None;
                 match found {
                     Ok(list) => {
@@ -187,19 +184,18 @@ impl ExtensionsView {
                             }
                             entries.push(entry);
                         }
-                        this.ms.skills = Some(entries);
+                        this.ms.skills.data = Some(entries);
                     }
+                    // A failed search keeps no old answer: it was for other words.
                     Err(e) => {
-                        this.ms.skills = None;
+                        this.ms.skills.data = None;
                         this.ms.skills_repo = None;
-                        this.ms.skills_error = Some(format!("{e:#}").into());
+                        this.ms.skills.error = Some(format!("{e:#}").into());
                     }
                 }
                 this.ms.skills_for = query;
-                cx.notify();
-            });
-        }));
-        cx.notify();
+            },
+        );
     }
 
     /// Finds a picked skill's folder on GitHub, once, for its details and install.
@@ -311,6 +307,7 @@ impl ExtensionsView {
         let skills = self
             .ms
             .skills
+            .data
             .iter()
             .flatten()
             .map(|e| match self.ms.located.get(&e.id) {
@@ -326,13 +323,13 @@ impl ExtensionsView {
 
     /// The official servers: the last list at once, a new one when a day old.
     fn load_official(&mut self, cx: &mut Context<Self>) {
-        if self.ms.official_loading {
+        if self.ms.official.loading() {
             return;
         }
         let mut stale = true;
-        if self.ms.official.is_none() {
+        if self.ms.official.data.is_none() {
             if let Some((list, fresh)) = marketplace::cached_official() {
-                self.ms.official = Some(list);
+                self.ms.official.data = Some(list);
                 stale = !fresh;
             }
         } else {
@@ -341,57 +338,40 @@ impl ExtensionsView {
         if !stale {
             return;
         }
-        self.ms.official_loading = true;
         self.ms.registry_error = None;
-        cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(crate::guard::task(async move {
-                    marketplace::official_servers()
-                }))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.ms.official_loading = false;
-                match found {
-                    Ok(list) => this.ms.official = Some(list),
-                    Err(e) => {
-                        this.ms.registry_error = Some(format!("{e:#}").into());
-                        this.ms.failed_at = Some(Instant::now());
-                    }
+        self.ms.official.start(
+            cx,
+            |this| &mut this.ms.official,
+            async move { marketplace::official_servers() },
+            |this, found, _| match found {
+                Ok(list) => this.ms.official.data = Some(list),
+                Err(e) => {
+                    this.ms.registry_error = Some(format!("{e:#}").into());
+                    this.ms.failed_at = Some(Instant::now());
                 }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
+            },
+        );
     }
 
     fn load_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd.clone() else { return };
-        if self.ms.catalog.is_none() {
-            self.ms.catalog = marketplace::cached_plugins();
+        if self.ms.catalog.data.is_none() {
+            self.ms.catalog.data = marketplace::cached_plugins();
         }
-        self.ms.catalog_loading = true;
-        self.ms.catalog_error = None;
-        cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(crate::guard::task(
-                    async move { marketplace::plugins(&cwd) },
-                ))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.ms.catalog_loading = false;
-                match found {
-                    Ok(list) => this.ms.catalog = Some(list),
-                    Err(e) => {
-                        this.ms.catalog_error = Some(format!("{e:#}").into());
-                        this.ms.failed_at = Some(Instant::now());
-                    }
+        self.ms.catalog.error = None;
+        self.ms.catalog.start(
+            cx,
+            |this| &mut this.ms.catalog,
+            async move { marketplace::plugins(&cwd) },
+            |this, found, _| {
+                if found.is_err() {
+                    this.ms.failed_at = Some(Instant::now());
                 }
-                cx.notify();
-            });
-        })
-        .detach();
-        cx.notify();
+                this.ms
+                    .catalog
+                    .settle(found.map_err(|e| format!("{e:#}").into()));
+            },
+        );
     }
 
     /// Asks the registry for the search box's words, after a pause in typing.
@@ -400,8 +380,8 @@ impl ExtensionsView {
             // This drops a search on its way: it is asked again, and nothing is
             // loading until it is (the words may be back to ones already answered).
             self.ms.skills_asking = None;
-            self.ms.skills_loading = false;
-            self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
+            self.ms.skills.cancel();
+            self.ms.skills_debounce = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(DEBOUNCE).await;
                 let _ = this.update(cx, |this, cx| this.search_skills(cx));
             }));
@@ -698,7 +678,7 @@ impl ExtensionsView {
                 let source = if self.ms.everything {
                     &self.ms.registry
                 } else {
-                    &self.ms.official
+                    &self.ms.official.data
                 };
                 source
                     .iter()
@@ -729,6 +709,7 @@ impl ExtensionsView {
             Market::Skills => self
                 .ms
                 .skills
+                .data
                 .iter()
                 .flatten()
                 .filter(|s| self.ms.category.as_ref().is_none_or(|c| &s.source == c))
@@ -799,11 +780,13 @@ impl ExtensionsView {
                     || self.targets.target.is_none()
                         && self
                             .claude
+                            .data
                             .as_ref()
                             .is_some_and(|x| x.plugins.iter().any(|i| i.id == p.id))
             }
             Item::Server(s) => self.remote_has_server(&s.short_name()).unwrap_or_else(|| {
                 self.claude
+                    .data
                     .as_ref()
                     .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
             }),
@@ -825,7 +808,7 @@ impl ExtensionsView {
                 .as_ref()
                 .is_some_and(|has| has.skill(skill_id));
         }
-        self.claude.as_ref().is_some_and(|x| {
+        self.claude.data.as_ref().is_some_and(|x| {
             x.skills.iter().any(|i| {
                 i.source == "personal"
                     && i.path
@@ -869,8 +852,8 @@ impl ExtensionsView {
                     .count()
             }),
             Market::Registry if self.ms.everything => self.ms.registry.as_ref().map(Vec::len),
-            Market::Registry => self.ms.official.as_ref().map(Vec::len),
-            Market::Skills => self.ms.skills.as_ref().map(Vec::len),
+            Market::Registry => self.ms.official.data.as_ref().map(Vec::len),
+            Market::Skills => self.ms.skills.data.as_ref().map(Vec::len),
         }
     }
 
@@ -913,7 +896,7 @@ impl ExtensionsView {
                 "Categories"
             }
             Market::Registry if !self.ms.everything => {
-                for s in self.ms.official.iter().flatten() {
+                for s in self.ms.official.data.iter().flatten() {
                     if let Some(c) = &s.official {
                         add(c);
                     }
@@ -922,7 +905,7 @@ impl ExtensionsView {
             }
             Market::Registry => return Vec::new(),
             Market::Skills => {
-                for s in self.ms.skills.iter().flatten() {
+                for s in self.ms.skills.data.iter().flatten() {
                     add(&s.source);
                 }
                 "Repositories"
@@ -983,13 +966,13 @@ impl ExtensionsView {
         let loading = match self.market {
             Market::Plugins => self.plugin_catalog().is_none(),
             Market::Registry if self.ms.everything => self.ms.registry.is_none(),
-            Market::Registry => self.ms.official.is_none(),
-            Market::Skills => self.ms.skills.is_none() && self.ms.skills_loading,
+            Market::Registry => self.ms.official.data.is_none(),
+            Market::Skills => self.ms.skills.data.is_none() && self.ms.skills.loading(),
         };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
             Market::Registry => self.ms.registry_error.clone(),
-            Market::Skills => self.ms.skills_error.clone(),
+            Market::Skills => self.ms.skills.error.clone(),
         };
         let query = self.query.read(cx).text().trim().to_string();
         // The most installed, larger, when there is room for two side by side,
@@ -1021,10 +1004,10 @@ impl ExtensionsView {
                     })
                     .into_any_element(),
                 }
-            } else if self.market == Market::Skills && self.ms.skills_error.is_some() {
+            } else if self.market == Market::Skills && self.ms.skills.error.is_some() {
                 // The heading says what went wrong.
                 div().into_any_element()
-            } else if self.market == Market::Skills && self.ms.skills.is_none() {
+            } else if self.market == Market::Skills && self.ms.skills.data.is_none() {
                 ui::empty_state(
                     "sparkles",
                     "Search skills.sh",
@@ -1245,7 +1228,7 @@ impl ExtensionsView {
     /// Only while Discover is on this computer: they are this computer's.
     fn needy(&self) -> impl Iterator<Item = &Server> {
         let here = self.targets.target.is_none();
-        self.claude.iter().filter(move |_| here).flat_map(|x| {
+        self.claude.data.iter().filter(move |_| here).flat_map(|x| {
             x.servers.iter().filter(|s| {
                 matches!(s.health, Health::Failed(_))
                     || (s.health == Health::NeedsAuth && !s.unused_connector())
@@ -1321,12 +1304,12 @@ impl ExtensionsView {
             && match self.market {
                 Market::Plugins => self.catalog_loading(),
                 Market::Registry if self.ms.everything => self.ms.registry_loading,
-                Market::Registry => self.ms.official_loading,
-                Market::Skills => self.ms.skills_loading,
+                Market::Registry => self.ms.official.loading(),
+                Market::Skills => self.ms.skills.loading(),
             };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
-            Market::Skills => self.ms.skills_error.clone(),
+            Market::Skills => self.ms.skills.error.clone(),
             // The registry is read from here; installing from it needs the server.
             Market::Registry => self.server_refused().or(self.ms.registry_error.clone()),
         };
@@ -1416,7 +1399,8 @@ impl ExtensionsView {
                     )
                     // Before a search, skills.sh has shown nothing to count.
                     .when(
-                        !loading && (self.market != Market::Skills || self.ms.skills.is_some()),
+                        !loading
+                            && (self.market != Market::Skills || self.ms.skills.data.is_some()),
                         |d| {
                             d.child(
                                 div()
@@ -1674,6 +1658,7 @@ impl ExtensionsView {
             Market::Skills => Item::Skill(
                 self.ms
                     .skills
+                    .data
                     .as_ref()?
                     .iter()
                     .find(|k| &k.id == key)?

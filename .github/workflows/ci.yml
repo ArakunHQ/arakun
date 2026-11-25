@@ -446,11 +446,29 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: cloud/package-lock.json
+          cache-dependency-path: |
+            cloud/package-lock.json
+            cloud/admin/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+
+      # The admin Worker (cloud/admin) is its own package with its own lockfile:
+      # it signs operators in and calls the cloud Worker's admin routes.
+      - name: admin npm ci
+        working-directory: cloud/admin
+        run: npm ci
+      - name: admin types
+        working-directory: cloud/admin
+        run: npm run check
+      - name: admin tests
+        working-directory: cloud/admin
+        run: npm test
+      # Also builds the panel's page, so a change that breaks vite shows here.
+      - name: admin build
+        working-directory: cloud/admin
+        run: npm run build
 
       # The phone's encryption against the vectors the Rust side wrote.
       - name: phone e2e vectors

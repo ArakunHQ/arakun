@@ -1,4 +1,5 @@
 import { authCallback, authStart, logout } from "./auth";
+import { page, proxy } from "./proxy";
 import { readSession } from "./session";
 import { error } from "./util";
 
@@ -13,9 +14,13 @@ export default {
       const op = await readSession(request, env, Math.floor(Date.now() / 1000));
       return op ? Response.json({ github_id: op.githubId, login: op.login }) : error(401, "not signed in");
     }
-    // The other routes land in the next tasks. Until then the API and sign-in
-    // paths are not the page, so they must not fall through to index.html.
-    if (pathname.startsWith("/api/") || pathname.startsWith("/auth/")) return error(404, "not found");
-    return env.ASSETS.fetch(request);
+    if (pathname.startsWith("/api/")) {
+      const op = await readSession(request, env, Math.floor(Date.now() / 1000));
+      return op ? proxy(request, env, op) : error(401, "not signed in");
+    }
+    // A sign-in path that is none of the routes above is not the page either.
+    if (pathname.startsWith("/auth/")) return error(404, "not found");
+    if (request.method !== "GET" && request.method !== "HEAD") return error(405, "method not allowed");
+    return page(request, env);
   },
 } satisfies ExportedHandler<Env>;

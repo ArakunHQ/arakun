@@ -1258,28 +1258,16 @@ keyring from one with no device yet.
 You need [rustup](https://rustup.rs). The first `cargo` command in the checkout
 installs the Rust version named in `rust-toolchain.toml`, the one CI uses.
 
-`tools/setup-dev.sh` (Linux and macOS) or `tools\setup-dev.ps1` (Windows) installs
-everything below for you; see [CONTRIBUTING.md](CONTRIBUTING.md#setting-up). To do it by
-hand:
+On Linux the build also needs a C compiler, pkg-config and the development packages of
+libxkbcommon, Wayland, X11 (xcb), fontconfig, FreeType, Vulkan and OpenSSL; on macOS,
+the Xcode Command Line Tools. `tools/setup-dev.sh` installs them on Debian and Ubuntu
+(apt), Fedora (dnf), Arch (pacman) and macOS; see
+[CONTRIBUTING.md](CONTRIBUTING.md#setting-up). To install them yourself,
+`tools/setup-dev.sh --check` names the packages that are missing, and the script has
+the list for each package manager.
 
-**Ubuntu / Debian:**
-
-```sh
-sudo apt install build-essential pkg-config \
-  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
-  libfontconfig1-dev libfreetype-dev libvulkan-dev libssl-dev
-```
-
-**Arch Linux:**
-
-```sh
-sudo pacman -S --needed base-devel pkgconf \
-  libxkbcommon libxkbcommon-x11 wayland libxcb fontconfig freetype2 \
-  vulkan-icd-loader vulkan-headers openssl
-```
-
-**Windows:** MSVC toolchain and Visual Studio Build Tools; see
-[docs/windows.md](docs/windows.md).
+**Windows:** MSVC toolchain and Visual Studio Build Tools; `tools\setup-dev.ps1`
+installs them. See [docs/windows.md](docs/windows.md).
 
 ### Without the browser
 

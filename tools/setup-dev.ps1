@@ -2,12 +2,14 @@
 Sets up a Windows machine to build Arakun and run the checks CI runs.
 For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
 
-  powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 [-Yes] [-Check] [-Relay] [-Browser] [-Hooks] [-Build]
+  powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 [-Yes] [-Check] [-Relay] [-Browser] [-CiTools] [-Hooks] [-Build]
 
   -Yes      do not ask before installing (implied when input is redirected or CI is set)
   -Check    only report what is missing; exit 1 if anything is
   -Relay    also Node 24+ and the npm packages of cloud\
   -Browser  also CMake and Ninja, for the `browser` feature (CEF)
+  -CiTools  also cargo-deny and zizmor, with cargo install (each one compiles for a few
+            minutes the first time)
   -Hooks    turn on the Git hooks in lefthook.yml (lefthook install; installs lefthook
             with winget if it is missing); lefthook runs them through sh, so commits
             need Git for Windows' sh
@@ -25,6 +27,7 @@ param(
     [switch]$Check,
     [switch]$Relay,
     [switch]$Browser,
+    [switch]$CiTools,
     [switch]$Hooks,
     [switch]$Build,
     [switch]$Help
@@ -238,6 +241,36 @@ if (Has 'cargo') {
     }
 }
 
+# --- cargo-deny and zizmor ---
+# CI runs them when Cargo.toml, Cargo.lock, deny.toml or .github\ changes. zizmor comes at
+# the version the zizmor workflow pins, so it finds what CI finds.
+if ($CiTools) {
+    Say 'cargo-deny and zizmor'
+    $workflow = Join-Path $Root '.github\workflows\zizmor.yml'
+    $pin = Select-String -Path $workflow -Pattern '^\s*version:\s*([0-9][0-9.]*)\s*$' | Select-Object -First 1
+    $zizmor = if ($pin) { "zizmor@$($pin.Matches[0].Groups[1].Value)" } else { 'zizmor' }
+    foreach ($spec in @('cargo-deny', $zizmor)) {
+        $tool, $want = $spec -split '@', 2
+        $have = Quiet { & $tool --version }
+        if ($have) {
+            # Both print "<name> <version>". Another version stays; the user may want it.
+            if ($want -and ($have -split ' ')[-1] -ne $want) {
+                Ok "$have; CI runs $want (cargo install --locked $spec)"
+            } else {
+                Ok $have
+            }
+        } elseif ($Check) {
+            Lack "$tool (cargo install --locked $spec)"
+        } elseif (Ask "install $spec with cargo install (it compiles for a few minutes)?") {
+            & cargo install --locked $spec
+            if ($LASTEXITCODE -ne 0) { Fail "cargo install $spec failed" }
+            Ok $spec
+        } else {
+            Lack "$tool (cargo install --locked $spec)"
+        }
+    }
+}
+
 # --- relay ---
 if ($Relay) {
     Say 'cloud Worker (Node 24+)'
@@ -339,6 +372,8 @@ if ($Build) {
     } finally { Pop-Location }
 }
 
-Say 'ready. In a Developer PowerShell for VS 2022, the checks CI runs:'
+Say 'ready. In a Developer PowerShell for VS 2022, the checks CI runs (the full list is under "Checks" in CONTRIBUTING.md):'
 Write-Host '  cargo clippy --locked --all-targets --no-default-features -- -D warnings'
 Write-Host '  cargo test --locked --no-default-features'
+Write-Host '  cargo deny check   # Cargo.toml, Cargo.lock or deny.toml changed (-CiTools)'
+Write-Host '  zizmor .github     # .github\ changed (-CiTools)'

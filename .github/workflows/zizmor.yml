@@ -46,7 +46,8 @@ jobs:
       # the Security tab: uploading needs security-events: write, which a
       # pull request from a fork doesn't get. A fixed zizmor version, so a
       # new release's audits don't fail pull requests that changed nothing;
-      # bump it by hand.
+      # bump it by hand. tools/setup-dev.sh and setup-dev.ps1 (--ci-tools)
+      # install the version on the `version:` line below, so keep it there.
       - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
         with:
           version: 1.32.0

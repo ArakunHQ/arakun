@@ -100,7 +100,10 @@ jobs, the cloud job runs only when `cloud/`, `phone/` or CI itself changes, the 
 the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
 alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
 when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
-`.github/` changes.
+`.github/` changes. Every pull request is scanned for secrets (TruffleHog, failing only
+on a secret it verified as live), and one that changes a manifest, lockfile or workflow
+gets a dependency review that fails on a new high or critical advisory. CodeQL and
+OpenSSF Scorecard run on `main` and weekly, with results in the Security tab.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules

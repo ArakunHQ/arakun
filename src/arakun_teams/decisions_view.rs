@@ -663,7 +663,10 @@ impl TeamsView {
                             ))
                             .child(Self::fact(
                                 "Proposed by",
-                                SharedString::from(format!("@bot, via {}", d.via_login)),
+                                SharedString::from(format!(
+                                    "{} (@bot)",
+                                    super::super::bot::author(&d.via_login)
+                                )),
                             ))
                             .children(reversed.as_ref().map(|r| {
                                 Self::fact(

@@ -782,7 +782,10 @@ after a week).
   first, and the answer says so. The answer judges each
   idea (Works, Works with conditions, Won't work) with numbered citations that jump to
   the message, lists what it verified in code, docs or on the web, what it assumed and
-  what it could not check, and ends with a **Proposed decision**. **Accept decision**
+  what it could not check, and ends with a **Proposed decision**. It is headed with whose Claude Code
+  wrote it, such as "karlo's Claude Code": the answer is that member's message, run
+  on their machine, and Arakun cannot check that a run wrote it or what it read.
+  Trust it as you trust the member. **Accept decision**
   tells the team; **Reject** marks it on this device only, and the team is not told; **Ask for more detail**
   starts a reply to it. While it runs, the chat shows its progress and **Stop**; if
   it fails, **Try again**. Once someone accepts, the channel says "Decided." and who

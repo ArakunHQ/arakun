@@ -400,14 +400,28 @@ impl TeamsView {
             .into_any_element()
     }
 
-    /// The line over a message from @bot: who ran it, how much it read, when.
-    fn bot_header(via: &str, read: Option<String>, at: u64) -> gpui::Div {
+    /// The line over a message from @bot: whose Claude Code it is, how much
+    /// it read, when. The member comes first: the answer is their message,
+    /// and nothing proves a run wrote it (see [`bot::author`]).
+    fn bot_header(
+        key: impl Into<gpui::ElementId>,
+        via: &str,
+        read: Option<String>,
+        at: u64,
+    ) -> gpui::Div {
         div()
             .flex()
             .items_center()
             .gap(ui::sp(8.))
-            .child(ui::text(Type::Body, theme::content(), "@bot").font_weight(FontWeight::SEMIBOLD))
-            .child(Self::outline_pill(format!("via {via}")))
+            .child(
+                ui::text(Type::Body, theme::content(), bot::author(via))
+                    .font_weight(FontWeight::SEMIBOLD),
+            )
+            .child(
+                Self::outline_pill("@bot")
+                    .id(key)
+                    .tooltip(ui::tip_text(bot::trust_note(via))),
+            )
             .children(read.map(|r| ui::text(Type::Caption, theme::text_faint(), r)))
             .child(
                 ui::text(Type::Caption, theme::text_faint(), clock(at))
@@ -501,7 +515,12 @@ impl TeamsView {
                     .gap(ui::sp(2.))
                     .flex_1()
                     .min_w_0()
-                    .child(Self::bot_header(&m.login, read, m.at))
+                    .child(Self::bot_header(
+                        ("teams-bot-whose", index),
+                        &m.login,
+                        read,
+                        m.at,
+                    ))
                     .child(body)
                     .children(self.delivery(index, m, team_channel, cx)),
             )
@@ -747,7 +766,10 @@ impl TeamsView {
                                 .child(if verified.is_empty() {
                                     div().flex_1()
                                 } else {
-                                    Self::checked_column("Verified in code and docs", verified)
+                                    Self::checked_column(
+                                        &format!("Verified on {}'s machine", m.login),
+                                        verified,
+                                    )
                                 })
                                 .child(if assumed.is_empty() {
                                     div().flex_1()
@@ -1221,7 +1243,12 @@ impl TeamsView {
                     .gap(ui::sp(2.))
                     .flex_1()
                     .min_w_0()
-                    .child(Self::bot_header(&bot.my_login, read, run.started))
+                    .child(Self::bot_header(
+                        ("teams-bot-whose-run", row),
+                        &bot.my_login,
+                        read,
+                        run.started,
+                    ))
                     .child(card),
             )
             .into_any_element()

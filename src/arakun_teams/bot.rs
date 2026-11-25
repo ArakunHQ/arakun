@@ -799,8 +799,25 @@ pub fn bot_body(range: &Range, via: u64, outcome: &Outcome) -> Body {
     }
 }
 
+/// How an answer names its author: "karlo's Claude Code". Never a neutral
+/// "@bot": the run is on a member's machine and the answer is their sealed
+/// message, so a member can also write one by hand. Who vouches for it is
+/// the member, and the interface says whose it is wherever it shows one.
+pub fn author(login: &str) -> String {
+    format!("{login}'s Claude Code")
+}
+
+/// What the interface says about how far an answer can be trusted.
+pub fn trust_note(login: &str) -> String {
+    format!(
+        "This ran on {login}'s machine and is {login}'s message. Arakun cannot check that Claude Code wrote it, or what it read: trust it as you trust {login}"
+    )
+}
+
 /// A bot message's `bot`, when it reads and was posted by the member it
 /// names as `via`: anyone can post `kind: "bot"`, but not as someone else.
+/// That is all this proves. The answer inside is whatever that member's
+/// device sent, see [`author`].
 pub fn meta(m: &Msg) -> Option<BotMeta> {
     if m.body.kind != "bot" {
         return None;
@@ -2083,6 +2100,14 @@ mod tests {
             assert!(p.contains("what you read in a file and for what a web search returns"));
             assert!(p.contains("Every web search you make is listed under your answer"));
         }
+    }
+
+    #[test]
+    fn an_answer_is_named_after_the_member_whose_machine_ran_it() {
+        assert_eq!(author("karlo"), "karlo's Claude Code");
+        let note = trust_note("karlo");
+        assert!(note.starts_with("This ran on karlo's machine and is karlo's message."));
+        assert!(note.contains("Arakun cannot check that Claude Code wrote it"));
     }
 
     #[test]

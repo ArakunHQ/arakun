@@ -632,10 +632,8 @@ the admin Worker, so a release still ships the cloud Worker.
 
 1. On GitHub, create an OAuth App named "Arakun Admin" with the callback
    `https://admin.arakun.dev/auth/github/callback`.
-2. In `cloud/admin/wrangler.toml`, replace `PLACEHOLDER` under
-   `[env.production.vars]` with the app's client ID, and merge that.
-3. In `cloud/admin`, set the four secrets. `ADMIN_SECRET` is the value the cloud Worker
-   has; `SESSION_SECRET` is 32 random bytes (`openssl rand -base64 32`);
+2. In `cloud/admin`, set the four secrets first. `ADMIN_SECRET` is the value the cloud
+   Worker has; `SESSION_SECRET` is 32 random bytes (`openssl rand -base64 32`);
    `ADMIN_GITHUB_IDS` is the operators' numeric GitHub IDs, comma-separated
    (find one at `https://api.github.com/users/<login>`):
 
@@ -647,9 +645,13 @@ the admin Worker, so a release still ships the cloud Worker.
    npx wrangler secret put SESSION_SECRET --env production
    ```
 
-   A secret can only be set once the Worker exists. If the first deploy has not run,
-   run `npm run deploy` in `cloud/admin` once, then set them.
-4. The next release deploys the panel to `https://admin.arakun.dev`.
+   The Worker does not exist yet, so wrangler asks whether to create it with the
+   secrets; answer yes. A Worker without its secrets fails closed: nobody can sign in.
+3. Last, in `cloud/admin/wrangler.toml`, replace `PLACEHOLDER` under
+   `[env.production.vars]` with the app's client ID, and merge that.
+4. The next release deploys the panel to `https://admin.arakun.dev`. By hand,
+   `npm run deploy` in `cloud/admin` does the same; it builds with
+   `CLOUDFLARE_ENV=production`, which a production build needs.
 
 ### Operators
 

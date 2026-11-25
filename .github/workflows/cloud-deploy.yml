@@ -218,7 +218,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: cloud/package-lock.json
+          cache-dependency-path: |
+            cloud/package-lock.json
+            cloud/admin/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -279,15 +281,34 @@ jobs:
 
       # After the cloud Worker, so the /admin/* routes it proxies to are there
       # first. The admin Worker has its own dependencies and page build.
+      # If one of these steps fails, the run is red with the cloud Worker
+      # already live and the admin Worker old or absent. Re-run the same tag:
+      # every step is safe to repeat and deploys both again.
       - name: Install the admin Worker
         if: steps.admin.outputs.ready == 'true'
         working-directory: cloud/admin
         run: npm ci
 
+      # The Cloudflare Vite plugin picks the wrangler environment when it
+      # builds, not when wrangler deploys. Without CLOUDFLARE_ENV the build is
+      # the dev Worker (arakun-admin-dev, no route, the dev service binding)
+      # and `wrangler deploy --env production` would publish that.
       - name: Build the admin panel
         if: steps.admin.outputs.ready == 'true'
         working-directory: cloud/admin
+        env:
+          CLOUDFLARE_ENV: production
         run: npm run build
+
+      - name: Check the build is production's
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        run: |
+          name=$(node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(c.name)' "$(node -e 'const d = JSON.parse(require("fs").readFileSync(".wrangler/deploy/config.json", "utf8")); console.log(require("path").resolve(".wrangler/deploy", d.configPath))')")
+          if [ "$name" != arakun-admin ]; then
+            echo "::error::The admin build is for the Worker \"$name\", not arakun-admin. Build it with CLOUDFLARE_ENV=production."
+            exit 1
+          fi
 
       - name: Deploy the admin Worker
         if: steps.admin.outputs.ready == 'true'

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "deploy": "vite build && wrangler deploy --env production",
+    "deploy": "CLOUDFLARE_ENV=production vite build && wrangler deploy --env production",
     "test": "vitest run",
     "check": "tsc --noEmit"
   },

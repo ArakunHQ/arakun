@@ -210,6 +210,9 @@ struct Row {
     /// It sits above the rule, with the sessions that have a tab open
     /// (`sort_rows` sets it).
     top: bool,
+    /// Its place in the order the user dragged its project's sessions into;
+    /// `None` for a session that came since.
+    manual: Option<usize>,
 }
 
 /// Where each session sat when the pointer came over the tree: its place in
@@ -226,7 +229,9 @@ fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     match sort {
         Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
         Sort::Name => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
-        Sort::Environment => {}
+        // Project by project without project headings; a session that
+        // came since goes first, where the user sees it.
+        Sort::Manual => rows.sort_by_key(|r| (r.pi, r.manual.map_or(0, |m| m + 1))),
     }
     let split = sort.open_tabs_first();
     if split {
@@ -243,6 +248,19 @@ fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
         }
         rows.sort_by_key(|r| held.get(&r.id).map_or(0, |(place, _)| place + 1));
     }
+}
+
+/// `order` with `moved` put in `target`'s place: the rows between them move
+/// up or down one to make room, as when a card is put down on another.
+fn move_onto(order: &mut Vec<SharedString>, moved: &SharedString, target: &SharedString) {
+    let (Some(from), Some(to)) = (
+        order.iter().position(|id| id == moved),
+        order.iter().position(|id| id == target),
+    ) else {
+        return;
+    };
+    let id = order.remove(from);
+    order.insert(to, id);
 }
 
 /// The rule between the sessions with an open tab and the rest.
@@ -293,6 +311,7 @@ impl Shell {
                     can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
                     tab: self.strip.session_tab(&s.id).is_some(),
                     top: false,
+                    manual: project.session_order.iter().position(|id| *id == s.id),
                 });
             }
         }
@@ -378,6 +397,54 @@ impl Shell {
             .filter(|p| p.open)
             .flat_map(|p| p.rows.into_iter().map(|r| r.id))
             .collect()
+    }
+
+    /// Session `d` dropped on the tree's row of session `target`, in the
+    /// same project: it takes that row's place. The order becomes Manual,
+    /// starting from what the tree shows, so no other row jumps.
+    fn drop_session_on_tree_row(
+        &mut self,
+        d: &super::drag::DraggedSession,
+        target: SharedString,
+        cx: &mut Context<Self>,
+    ) {
+        self.lifted = None;
+        let place = |id: &SharedString| self.session_place(id).map(|(pi, _)| pi);
+        let pi = match (place(&d.id), place(&target)) {
+            (Some(a), Some(b)) if a == b && d.id != target => a,
+            _ => return cx.notify(),
+        };
+        // What the tree shows now, rows held under the pointer and all.
+        let mut order: Vec<SharedString> = self
+            .tree_listing(None, cx)
+            .into_iter()
+            .flat_map(|p| p.rows)
+            .filter(|r| r.pi == pi)
+            .map(|r| r.id)
+            .collect();
+        move_onto(&mut order, &d.id, &target);
+        // Sessions the tree doesn't show now, archived ones, keep their
+        // places after the rest.
+        let project = &mut self.projects[pi];
+        let rest: Vec<SharedString> = project
+            .session_order
+            .iter()
+            .filter(|id| !order.contains(id))
+            .cloned()
+            .collect();
+        order.extend(rest);
+        project.session_order = order;
+        let layout = crate::tab_layout::current();
+        if layout.sort == Sort::Manual {
+            self.save(cx);
+        } else {
+            self.apply_tab_layout(layout.with(|l| l.sort = Sort::Manual), None, cx);
+        }
+        // The pointer is still over the tree: hold the rows where they are now.
+        if self.tree_held.take().is_some() {
+            self.tree_held = Some(self.tree_places(cx));
+        }
+        cx.notify();
     }
 
     /// A tree row clicked with Ctrl (Cmd) or Shift: Ctrl adds the session to
@@ -989,6 +1056,7 @@ impl Shell {
             can_archive,
             tab,
             top: _,
+            manual: _,
         } = row;
         let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
@@ -1024,6 +1092,8 @@ impl Shell {
         let opens = id.clone();
         let picks = id.clone();
         let archives = id.clone();
+        let onto = id.clone();
+        let lifted = self.lifted_session(cx) == Some(&id);
         div()
             .id(SharedString::from(format!("tree-session-{id}")))
             .relative()
@@ -1143,12 +1213,19 @@ impl Shell {
                 this.drop_pick();
                 this.open_session_at(pi, ei, opens.clone(), window, cx)
             }))
-            // Dragged up to the title bar, it pins.
-            .when(layout.pinned_bar(), |d| {
-                d.on_drag(dragged, move |d, offset, _, cx| {
-                    shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
-                })
+            // Dropped on another row, it takes that row's place; up on a bar
+            // of pinned tabs, it pins.
+            .on_drag(dragged, move |d, offset, _, cx| {
+                shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
             })
+            .drag_over::<super::drag::DraggedSession>(|s, _, _, _| s.bg(theme::hover()))
+            .on_drop(
+                cx.listener(move |this, d: &super::drag::DraggedSession, _, cx| {
+                    cx.stop_propagation();
+                    this.drop_session_on_tree_row(d, onto.clone(), cx)
+                }),
+            )
+            .when(lifted, |d| d.opacity(0.5))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -1287,6 +1364,7 @@ mod tests {
             can_archive: true,
             tab,
             top: false,
+            manual: None,
         }
     }
 
@@ -1317,7 +1395,7 @@ mod tests {
         // A tie keeps the listed order.
         assert_eq!(ids(Sort::Recent), ["b", "d", "c", "a"]);
         assert_eq!(ids(Sort::Name), ["c", "d", "b", "a"]);
-        assert_eq!(ids(Sort::Environment), ["a", "b", "c", "d"]);
+        assert_eq!(ids(Sort::Manual), ["a", "b", "c", "d"]);
     }
 
     #[test]
@@ -1342,8 +1420,8 @@ mod tests {
         let (ids, top) = sorted(Sort::Name);
         assert_eq!(ids, ["c", "a", "d", "b"]);
         assert_eq!(top, split);
-        // As listed, every session keeps its place and nothing is set apart.
-        let (ids, top) = sorted(Sort::Environment);
+        // Manual keeps every session where it is, and nothing is set apart.
+        let (ids, top) = sorted(Sort::Manual);
         assert_eq!(ids, ["a", "b", "c", "d"]);
         assert_eq!(top, vec![false; 4]);
     }
@@ -1385,6 +1463,66 @@ mod tests {
         let (ids, top) = placed(&rows);
         assert_eq!(ids, ["d", "e", "c", "b", "a"]);
         assert_eq!(top, [true, true, true, false, false]);
+    }
+
+    #[test]
+    fn manual_follows_the_dragged_order_with_new_sessions_first() {
+        let placed_at = |id: &str, pi: usize, manual: Option<usize>, tab: bool| Row {
+            pi,
+            manual,
+            ..row(id, id, 0, tab)
+        };
+        let mut rows = vec![
+            placed_at("a", 0, Some(2), true),
+            placed_at("b", 0, Some(0), false),
+            placed_at("new", 0, None, false),
+            placed_at("c", 0, Some(1), true),
+        ];
+        sort_rows(&mut rows, Sort::Manual, None);
+        let (ids, top) = placed(&rows);
+        assert_eq!(ids, ["new", "b", "c", "a"]);
+        // No rule: open tabs stay where the user put them.
+        assert_eq!(top, vec![false; 4]);
+        // Without project headings, project by project, each in its order.
+        let mut rows = vec![
+            placed_at("q", 1, Some(0), true),
+            placed_at("a", 0, Some(1), true),
+            placed_at("p", 1, Some(1), true),
+            placed_at("b", 0, Some(0), true),
+        ];
+        sort_rows(&mut rows, Sort::Manual, None);
+        assert_eq!(placed(&rows).0, ["b", "a", "q", "p"]);
+    }
+
+    #[test]
+    fn a_dropped_session_takes_the_place_of_the_row_it_lands_on() {
+        let ids = |list: &[&str]| -> Vec<SharedString> {
+            list.iter()
+                .map(|s| SharedString::from(s.to_string()))
+                .collect()
+        };
+        let moved = |list: &[&str], from: &str, onto: &str| {
+            let mut order = ids(list);
+            move_onto(
+                &mut order,
+                &from.to_string().into(),
+                &onto.to_string().into(),
+            );
+            order
+        };
+        // Down: the rows between move up one.
+        assert_eq!(
+            moved(&["a", "b", "c", "d"], "a", "c"),
+            ids(&["b", "c", "a", "d"])
+        );
+        // Up: they move down one.
+        assert_eq!(
+            moved(&["a", "b", "c", "d"], "d", "b"),
+            ids(&["a", "d", "b", "c"])
+        );
+        // Onto itself, or onto a session not in the list: nothing moves.
+        assert_eq!(moved(&["a", "b"], "a", "a"), ids(&["a", "b"]));
+        assert_eq!(moved(&["a", "b"], "a", "gone"), ids(&["a", "b"]));
     }
 
     #[test]

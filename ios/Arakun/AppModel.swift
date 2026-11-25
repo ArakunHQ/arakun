@@ -69,6 +69,10 @@ final class AppModel {
     /// The session on screen, kept live by the computer.
     var session: LiveSession?
     var loadingOlder = false
+    /// The files the session on screen changed, turn by turn, once asked for.
+    private(set) var changes: [ChangedTurn]?
+    /// The session's diffs that came, by the place each was asked by.
+    private(set) var diffs: [DiffRef: FileDiff] = [:]
     /// A message worth a moment on screen.
     var notice: String?
     /// A session asked for before the link was up (from a started session).
@@ -662,6 +666,12 @@ final class AppModel {
         case "state":
             guard session?.id == msg["id"].str else { return }
             session?.apply(state: msg)
+        case "changes":
+            guard session?.id == msg["id"].str else { return }
+            changes = ChangedTurn.list(msg)
+        case "diff":
+            guard session?.id == msg["id"].str, let d = FileDiff(msg) else { return }
+            diffs[d.ref] = d
         case "started":
             starting = false
             open(msg["id"].str)
@@ -685,6 +695,7 @@ final class AppModel {
     func open(_ id: String) {
         let line = inbox.first { $0.id == id }
         session = LiveSession(id: id, title: line?.title ?? "", agent: line?.agent ?? "")
+        forgetChanges()
         #if DEBUG
         if Self.isDemo {
             session = demoSession(id)
@@ -698,7 +709,40 @@ final class AppModel {
         session = nil
         openWhenLinked = nil
         loadingOlder = false
+        forgetChanges()
         send(["type": "close"])
+    }
+
+    /// They belong to the session on screen and go with it.
+    private func forgetChanges() {
+        changes = nil
+        diffs = [:]
+    }
+
+    /// Asks for the list of what the session changed; the answer fills `changes`.
+    func loadChanges() {
+        guard let s = session else { return }
+        #if DEBUG
+        if Self.isDemo {
+            changes = demoChanges()
+            return
+        }
+        #endif
+        send(["type": "changes", "session": s.id])
+    }
+
+    /// Asks for the diffs of `refs` that have not come yet; the answers fill `diffs`.
+    func loadDiffs(_ refs: [DiffRef]) {
+        guard let s = session else { return }
+        for r in refs where diffs[r] == nil {
+            #if DEBUG
+            if Self.isDemo {
+                diffs[r] = demoDiff(r)
+                continue
+            }
+            #endif
+            send(["type": "diff", "session": s.id, "entry": r.entry, "index": r.index])
+        }
     }
 
     func loadOlder() {
@@ -994,6 +1038,39 @@ extension AppModel {
         """.utf8))!)
         if line?.status == .working { s.permission = nil }
         return s
+    }
+
+    /// What the sample session changed, as the computer would list it.
+    func demoChanges() -> [ChangedTurn] {
+        let at = Date().timeIntervalSince1970 - 600
+        return ChangedTurn.list(JSON.parse(Data("""
+        {"turns":[
+         {"entry":0,"text":"Pairing links fail with limit:phones. Find out why and fix it.","at":\(at),"files":[
+          {"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[6,1]]},
+          {"path":"cloud/test/relay.test.ts","name":"relay.test.ts","added":28,"removed":0,"diffs":[[7,0]]},
+          {"path":"README.md","name":"README.md","added":2,"removed":2,"diffs":[[8,0]]}]}]}
+        """.utf8))!)
+    }
+
+    /// One of the sample diffs; they differ only in where they are.
+    func demoDiff(_ ref: DiffRef) -> FileDiff? {
+        FileDiff(JSON.parse(Data("""
+        {"entry":\(ref.entry),"index":\(ref.index),"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":4,"removed":3,
+         "new_file":false,"deleted":false,"cut":0,"lines":[
+          "@@ -409,9 +409,10 @@ export class Relay {",
+          [" ",409,"  acceptPhone(phone: Phone, code: string) {"],
+          [" ",410,"    const pairing = this.pairings.get(code);"],
+          [" ",411,"    if (!pairing) return refuse(phone, \\"no_pairing\\");"],
+          ["-",412,"    this.admit(phone);"],
+          ["-",413,"    this.pairings.delete(code);"],
+          ["-",414,"    if (this.phones.size > this.limit) return refuse(phone, \\"limit:phones\\");"],
+          ["+",412,"    // A refused phone keeps its code, so it can try again when there is room."],
+          ["+",413,"    if (this.phones.size >= this.limit) return refuse(phone, \\"limit:phones\\");"],
+          ["+",414,"    this.pairings.delete(code);"],
+          ["+",415,"    this.admit(phone);"],
+          [" ",416,"    return welcome(phone, pairing.host);"],
+          [" ",417,"  }"]]}
+        """.utf8))!)
     }
 }
 #endif

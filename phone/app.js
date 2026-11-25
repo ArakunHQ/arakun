@@ -1031,7 +1031,13 @@ function md(src) {
   return out;
 }
 
+// Code spans and images wait in placeholders (\u0000 and \u0001) while the rest
+// is escaped. Agent text is untrusted: it may not bring its own placeholders,
+// and a link's URL may not hold one, or the image's quoted HTML put back into
+// it would close the link's href and add attributes to the link. Nor may it
+// hold a tag the steps before wrote, such as bold.
 function inline(s) {
+  s = s.replace(/[\u0000\u0001]/g, "");
   const codes = [];
   s = s.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
   // Images out before escaping, so their URLs keep their query separators.
@@ -1041,7 +1047,7 @@ function inline(s) {
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/(^|\W)_(.+?)_(?=\W|$)/g, "$1<i>$2</i>")
     .replace(/(^|\W)\*(.+?)\*(?=\W|$)/g, "$1<i>$2</i>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)<\u0000\u0001]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/\n/g, "<br>");
   s = s.replace(/\u0001(\d+)\u0001/g, (_, n) => shots[n]);
   return s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${esc(codes[n])}</code>`);

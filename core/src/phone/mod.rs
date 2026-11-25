@@ -1853,6 +1853,18 @@ fn content_type(file: &str) -> &'static str {
     }
 }
 
+/// The phone page's policy, as the account host sends it (`pagePolicy` in
+/// `cloud/src/teams-router.ts`). The page shows what agents print, so script
+/// that slips into it through a transcript must not run.
+/// - Scripts: this computer only, so no inline handlers or `javascript:` links.
+/// - Sockets: `ws:` and `wss:` by name too, as some browsers do not count them
+///   under 'self'. The page talks only to the host that served it.
+/// - Images: `data:`, `blob:` and `https:` too, for pictures a session shows.
+/// - Styles: inline too, for the few `style` attributes the page writes.
+const PAGE_POLICY: &str = "default-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; \
+    img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; \
+    frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 fn respond(
     stream: &mut TcpStream,
     status: u16,
@@ -1868,7 +1880,7 @@ fn respond(
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nContent-Security-Policy: {PAGE_POLICY}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -2616,6 +2628,18 @@ mod tests {
         let index = http(&server, "GET", "/", "", "");
         assert!(index.starts_with("HTTP/1.1 200"), "{index}");
         assert!(index.contains("text/html"));
+        // A transcript that slips markup into the page cannot run script.
+        let head = index.split("\r\n\r\n").next().unwrap();
+        let policy = head
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Security-Policy: "))
+            .unwrap_or_else(|| panic!("no page policy in {head}"));
+        let script = policy
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("script-src"));
+        assert_eq!(script, Some("script-src 'self'"), "{policy}");
+        assert!(head.contains("X-Content-Type-Options: nosniff"), "{head}");
         assert!(http(&server, "GET", "/nope.txt", "", "").starts_with("HTTP/1.1 404"));
         let refused = http(
             &server,

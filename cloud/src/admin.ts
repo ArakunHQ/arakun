@@ -18,18 +18,23 @@
 //   PUT    /admin/cloud/requests/<github_id>/grant   → grants one and the `cloud` flag, { by? }
 //   PUT    /admin/cloud/requests/<github_id>/decline → declines a pending one, { by? }
 //   GET    /admin/log                             → what was changed and by whom, newest first (admin_log.ts)
+//   GET    /admin/beta/signups                    → sign-ups for the phone app betas, pending first, ?platform= ?status=
+//   PUT    /admin/beta/signups/<github_id>/<platform>/admit   → marks one admitted, { by? }
+//   PUT    /admin/beta/signups/<github_id>/<platform>/decline → declines one, { by? }
 //
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
 // Block, plan and notice delete answer 204; a new notice answers { id }. Each of them, and the sessions route, makes the
 // account's machine objects recheck their sockets at once. The cloud request
-// routes answer with the request (cloud_access.ts).
+// routes answer with the request (cloud_access.ts), the beta routes with the
+// sign-up (beta.ts).
 //
 // Every route that changes something writes one row to the log, with the
 // operator named by the X-Arakun-Operator-* headers (null for curl).
 
 import { listLog, operator, record, type Operator } from "./admin_log";
 import { getUser, listNotices, listPlans, listUsers } from "./admin_lists";
+import { decideSignup, listSignups } from "./beta";
 import { decideRequest, listRequests } from "./cloud_access";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
@@ -67,6 +72,9 @@ export async function admin(request: Request, env: Env, url: URL): Promise<Respo
   if (path === "/admin/cloud/requests" && request.method === "GET") return listRequests(env, url);
   const decide = /^\/admin\/cloud\/requests\/([^/]+)\/(grant|decline)$/.exec(path);
   if (decide && request.method === "PUT") return decideRequest(request, env, decide[1]!, decide[2] as "grant" | "decline", op);
+  if (path === "/admin/beta/signups" && request.method === "GET") return listSignups(env, url);
+  const signup = /^\/admin\/beta\/signups\/([^/]+)\/([^/]+)\/(admit|decline)$/.exec(path);
+  if (signup && request.method === "PUT") return decideSignup(request, env, signup[1]!, signup[2]!, signup[3] as "admit" | "decline", op);
   return error(404, "not found");
 }
 

@@ -415,6 +415,64 @@ pub fn logout(base: &str, session: &str) -> Result<(), Error> {
     act(base, session, "POST", "/auth/logout")
 }
 
+/// A phone app with a beta that testers are admitted to by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BetaPlatform {
+    Ios,
+    Android,
+}
+
+impl BetaPlatform {
+    /// Its name in the service's paths.
+    pub fn key(self) -> &'static str {
+        match self {
+            BetaPlatform::Ios => "ios",
+            BetaPlatform::Android => "android",
+        }
+    }
+}
+
+/// Where the account stands with one beta, as `GET /beta` answers. `status`
+/// is "none", "pending", "admitted" or "declined".
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct BetaSignup {
+    pub status: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub retry_at: Option<u64>,
+}
+
+/// The account's sign-ups for the phone app betas, and the verified email
+/// GitHub gave, which a sign-up uses when it names none.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct BetaSignups {
+    #[serde(default)]
+    pub email: Option<String>,
+    pub ios: BetaSignup,
+    pub android: BetaSignup,
+}
+
+pub fn beta(base: &str, session: &str) -> Result<BetaSignups, Error> {
+    get(base, session, "/beta", SMALL_LIMIT)
+}
+
+/// Signs the account up for one beta, to be invited at `email` (the
+/// account's GitHub email when empty). Sent again while pending, it changes
+/// the email. The operator admits by hand.
+pub fn join_beta(
+    base: &str,
+    session: &str,
+    platform: BetaPlatform,
+    email: &str,
+) -> Result<BetaSignup, Error> {
+    let email = email.trim();
+    let body = (!email.is_empty()).then(|| serde_json::json!({ "email": email }));
+    let path = format!("/beta/{}", platform.key());
+    let (status, answer) = send(base, "POST", &path, Some(session), body, SMALL_LIMIT)?;
+    json(status, &answer)
+}
+
 /// One answer to a poll of the token endpoint: a token or an error code.
 /// `Debug` leaves the token out.
 #[derive(Clone, Default, Deserialize)]
@@ -989,6 +1047,47 @@ mod tests {
             body,
             serde_json::json!({ "access_token": "gho_x", "name": "studio", "kind": "app" })
         );
+    }
+
+    #[test]
+    fn joining_a_beta_sends_the_email_only_when_given() {
+        let answer = r#"{"status": "pending", "email": "me@icloud.com", "requested_at": 1, "decided_at": null, "retry_at": null}"#;
+        let (base, rx) = serve(201, answer);
+        let signup = join_beta(&base, "s", BetaPlatform::Ios, " me@icloud.com ").unwrap();
+        assert_eq!(signup.status, "pending");
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /beta/ios HTTP/1.1\r\n"), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "email": "me@icloud.com" }));
+
+        let (base, rx) = serve(201, answer);
+        join_beta(&base, "s", BetaPlatform::Android, "  ").unwrap();
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /beta/android HTTP/1.1\r\n"), "{req}");
+        // No email, no body: an empty POST goes out with a zero length.
+        assert!(req.contains("content-length: 0\r\n"), "{req}");
+
+        let (base, _rx) = serve(
+            409,
+            r#"{"error": "declined recently", "status": "declined"}"#,
+        );
+        assert_eq!(
+            join_beta(&base, "s", BetaPlatform::Ios, ""),
+            Err(Error::Refused("declined recently".into()))
+        );
+    }
+
+    #[test]
+    fn the_beta_sign_ups_are_read() {
+        let body = r#"{"email": null,
+            "ios": {"status": "none", "email": null, "requested_at": null, "decided_at": null, "retry_at": null},
+            "android": {"status": "declined", "email": "a@b.co", "requested_at": 1, "decided_at": 2, "retry_at": 3}}"#;
+        let (base, _rx) = serve(200, body);
+        let all = beta(&base, "s").unwrap();
+        assert_eq!(all.email, None);
+        assert_eq!(all.ios.status, "none");
+        assert_eq!(all.android.retry_at, Some(3));
     }
 
     #[test]

@@ -43,10 +43,14 @@ cloud/
                         POST /admin/notices, DELETE /admin/notices/<id>,
                         GET /admin/cloud/requests,
                         PUT /admin/cloud/requests/<github_id>/grant|decline,
+                        GET /admin/beta/signups,
+                        PUT /admin/beta/signups/<github_id>/<platform>/admit|decline,
                         GET /admin/log
   src/admin_lists.ts    GET /admin/users, GET /admin/users/<github_id>,
                         GET /admin/notices, GET /admin/plans
   src/admin_log.ts      the admin log: record() and GET /admin/log
+  src/beta.ts           sign-ups for the phone app betas: GET /beta, POST /beta/<platform>,
+                        and the operator's side of them
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
@@ -715,6 +719,44 @@ auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<yo
   "https://<host>/admin/cloud/requests/<github_id>/decline"
 ```
 
+## Phone app betas
+
+The iOS app is tested through TestFlight and the Android app through a Play testing
+track. Both invite testers by email and cap how many there are, so testers are
+admitted by hand. The desktop app's Phone tab calls `POST /beta/ios` or
+`POST /beta/android` with the email to invite: an Apple ID for TestFlight, a Google
+account for Play. With no email it takes the account's verified GitHub email. One
+sign-up per GitHub account and platform. Sent again while pending, it changes the
+email. A declined account may sign up again after 30 days.
+
+Admitting invites no one. To admit someone:
+
+1. List the pending sign-ups and look at the account (age, repositories, followers).
+2. Add the email as a tester: in App Store Connect under TestFlight → External
+   Testing (or Internal), or in Play Console under Testing → the track's testers list.
+3. Mark it admitted, so the app says the invite is on its way.
+
+To remove a tester, remove them in the store, then decline the sign-up.
+
+With `BETA_REQUESTS_WEBHOOK` set, each new sign-up is posted to that Discord webhook,
+with the platform and the same public facts as a cloud access request. Never the
+email or a token.
+
+```sh
+read -rs ADMIN_SECRET
+auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
+# the sign-ups: pending first, oldest first. ?platform=ios|android and ?status=pending|admitted|declined
+auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pending"
+# the pending iOS emails, one a line, to paste into App Store Connect
+auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pending" | jq -r '.[].email'
+# admit one after adding the email in the store. "by" is optional, at most 100 characters
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/beta/signups/<github_id>/ios/admit"
+# decline one, pending or admitted
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/beta/signups/<github_id>/android/decline"
+```
+
 To see who has which flag:
 
 ```sh
@@ -742,6 +784,10 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
 | `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
 | `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
+| `GET /beta` with the session | `200 {email, ios, android}`: `email` is the account's verified GitHub email or `null`, and each platform is `{status, email, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `admitted` or `declined`; `retry_at` is set only for `declined`. `401` without a session. |
+| `POST /beta/<ios\|android>` with the session, `{"email"?: "..."}` | Signs up: `201` with the platform's shape, `pending`. While pending, changes the email: `200`. `400` for an address that does not look like one or is over 254 characters, or no email when GitHub gave none. `401`, `403 {error: "blocked"}`, `404` for another platform, `409 {error, ...}` when `already admitted` or `declined recently`, `429` after 5 a minute. |
+| `GET /admin/beta/signups[?platform=][&status=]` with `ADMIN_SECRET` | `200 [{github_id, login, platform, email, status, requested_at, decided_at, decided_by, retry_at, blocked, github: {...}}]`, pending first. |
+| `PUT /admin/beta/signups/<github_id>/<platform>/admit\|decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Marks it admitted or declined, from any state: `200` with the sign-up. The same decision again keeps its first time and name. `404` without a sign-up. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

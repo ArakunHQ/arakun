@@ -230,30 +230,38 @@ export function accountAgeDays(createdAt: number | null, at: number): number | n
 
 /// Tells the operator's Discord channel about a new request. Only public facts
 /// about the account: no email, no reason (the user wrote it, and it could ping
-/// or link anything), no token. Failures are logged without the URL, which is
-/// itself a secret.
+/// or link anything), no token.
 async function notify(webhook: string, githubId: number, login: string, signals: Signals, at: number): Promise<void> {
+  await postToWebhook(webhook, "cloud requests", [`New cloud access request from \`${login}\` (GitHub ID ${githubId})`, ...profileLines(login, signals, at)]);
+}
+
+/// The public GitHub facts a webhook message shows about an account.
+export function profileLines(login: string, signals: Signals, at: number): string[] {
   const age = accountAgeDays(signals.created_at, at);
-  const content = [
-    `New cloud access request from \`${login}\` (GitHub ID ${githubId})`,
+  return [
     `account age: ${age === null ? "unknown" : `${age} days`}`,
     `public repos: ${signals.public_repos ?? "unknown"}`,
     `followers: ${signals.followers ?? "unknown"}`,
     `<https://github.com/${login}>`,
-  ].join("\n");
+  ];
+}
+
+/// Posts lines to a Discord webhook, with no mentions. Failures are logged by
+/// `name`, never with the URL, which is itself a secret.
+export async function postToWebhook(webhook: string, name: string, lines: string[]): Promise<void> {
   try {
     const res = await fetch(webhook, {
       method: "POST",
       redirect: "manual",
       headers: { "Content-Type": "application/json" },
       // No mentions: nothing in the message may ping anyone.
-      body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+      body: JSON.stringify({ content: lines.join("\n"), allowed_mentions: { parse: [] } }),
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });
     await discard(res);
-    if (!res.ok) console.warn(`the cloud requests webhook answered ${res.status}`);
+    if (!res.ok) console.warn(`the ${name} webhook answered ${res.status}`);
   } catch {
-    console.warn("the cloud requests webhook could not be reached");
+    console.warn(`the ${name} webhook could not be reached`);
   }
 }
 

@@ -7,6 +7,7 @@
 //! sign it out, and its computers, each with a way to remove it. The shell
 //! runs the server (`shell::phone`).
 
+use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ClipboardItem, Context, EventEmitter, FocusHandle, FontWeight, InteractiveElement as _,
@@ -14,6 +15,8 @@ use gpui::{
     Styled as _, Window, div, px,
 };
 
+use crate::cloud::BetaPlatform;
+use crate::input::{InputEvent, TextInput};
 use crate::phone::Reach;
 use crate::theme;
 use crate::ui::{self, ButtonKind, Type, Typography as _, icon};
@@ -40,6 +43,95 @@ pub enum PhoneEvent {
     SignOutDevice(String),
     /// Remove one of the account's computers, by its label.
     RemoveComputer(String),
+    /// Sign up for a phone app beta, to be invited at this email (the
+    /// account's GitHub email when empty). Again while pending, it changes
+    /// the email.
+    JoinBeta {
+        platform: BetaPlatform,
+        email: String,
+    },
+}
+
+/// Where the account stands with the phone app betas, which the operator
+/// admits testers to by hand.
+#[derive(Clone, PartialEq, Eq)]
+pub enum BetaState {
+    SignedOut,
+    Loading,
+    Failed(String),
+    Ready {
+        ios: BetaStatus,
+        android: BetaStatus,
+    },
+}
+
+/// One beta, as the service last said.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BetaStatus {
+    /// "none", "pending", "admitted" or "declined".
+    pub status: String,
+    pub email: Option<String>,
+    /// When a declined account may sign up again.
+    pub retry_at: Option<u64>,
+    /// A sign-up is on its way.
+    pub busy: bool,
+    /// Why the last sign-up failed.
+    pub error: Option<String>,
+}
+
+/// What a beta's row says, and the label of its button when it has one.
+fn beta_text(platform: BetaPlatform, b: &BetaStatus, now: u64) -> (String, Option<&'static str>) {
+    let email = b
+        .email
+        .as_deref()
+        .map(crate::redact::value)
+        .unwrap_or_default();
+    let (store, join) = match platform {
+        BetaPlatform::Ios => ("TestFlight", "Join the iOS beta"),
+        BetaPlatform::Android => ("Google Play", "Join the Android beta"),
+    };
+    match b.status.as_str() {
+        "pending" => (
+            format!("Signed up. We add testers by hand; the {store} invite will go to {email}."),
+            Some("Change email"),
+        ),
+        "admitted" => (
+            format!("You are in. Look for the {store} invite at {email}."),
+            None,
+        ),
+        "declined" => match b.retry_at.filter(|t| *t > now) {
+            Some(t) => {
+                let days = (t - now).div_ceil(24 * 60 * 60);
+                let when = if days == 1 {
+                    "1 day".to_string()
+                } else {
+                    format!("{days} days")
+                };
+                (
+                    format!("Not this time. You can sign up again in {when}."),
+                    None,
+                )
+            }
+            None => (
+                "Not last time, but you can sign up again.".to_string(),
+                Some(join),
+            ),
+        },
+        _ => (
+            format!(
+                "Get Arakun for {} through {store}.",
+                platform_name(platform)
+            ),
+            Some(join),
+        ),
+    }
+}
+
+fn platform_name(platform: BetaPlatform) -> &'static str {
+    match platform {
+        BetaPlatform::Ios => "iOS",
+        BetaPlatform::Android => "Android",
+    }
 }
 
 /// This computer as the relay knows it.
@@ -196,7 +288,13 @@ pub struct PhoneView {
     confirm_identity: bool,
     /// Remove was pressed once on this computer, by label; the next press counts.
     confirm_remove: Option<String>,
+    beta: BetaState,
+    /// The email to invite to a beta.
+    beta_email: gpui::Entity<TextInput>,
+    /// The account's email was put in the field once; after that it is the user's.
+    beta_email_filled: bool,
     focus: FocusHandle,
+    _beta_email_sub: gpui::Subscription,
 }
 
 /// Under the sign-in button: phones paired by link before accounts stopped
@@ -209,6 +307,13 @@ impl EventEmitter<PhoneEvent> for PhoneView {}
 
 impl PhoneView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let beta_email = cx.new(|cx| TextInput::new("you@example.com", cx).redacted());
+        // Typing counts as filling it: the account's email no longer replaces it.
+        let sub = cx.subscribe(&beta_email, |this: &mut Self, _, ev, _| {
+            if let InputEvent::Changed = ev {
+                this.beta_email_filled = true;
+            }
+        });
         Self {
             state: PhoneState::Off {
                 reach: Reach::Lan,
@@ -218,7 +323,24 @@ impl PhoneView {
             copied: None,
             confirm_identity: false,
             confirm_remove: None,
+            beta: BetaState::SignedOut,
+            beta_email,
+            beta_email_filled: false,
             focus: cx.focus_handle(),
+            _beta_email_sub: sub,
+        }
+    }
+
+    /// What the service says of the betas; `email` is the account's GitHub
+    /// email, put in the field the first time there is one.
+    pub fn set_beta(&mut self, beta: BetaState, email: Option<&str>, cx: &mut Context<Self>) {
+        if let Some(email) = email.filter(|_| !self.beta_email_filled) {
+            self.beta_email
+                .update(cx, |i, cx| i.set_text(email.to_string(), cx));
+        }
+        if self.beta != beta {
+            self.beta = beta;
+            cx.notify();
         }
     }
 
@@ -344,6 +466,128 @@ impl PhoneView {
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(theme::text_muted())
             .child(text)
+    }
+
+    /// The phone app betas: the email to invite and a row for each store.
+    fn render_beta(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let note = |text: String, color: gpui::Hsla| {
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(color)
+                .child(text)
+        };
+        let section = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(Self::section_title("Phone app beta"))
+            .child(note(
+                "Arakun for iOS and Android is in beta. Sign up and we add testers by hand, a few at a time. The invite comes by email: use your Apple ID for iOS and your Google account for Android.".into(),
+                theme::text_muted(),
+            ));
+        match &self.beta {
+            BetaState::SignedOut => section
+                .child(note(
+                    "Sign in with GitHub to sign up.".into(),
+                    theme::text_faint(),
+                ))
+                .child(
+                    div().flex().child(
+                        ui::button_with(
+                            "phone-beta-sign-in",
+                            Some("github"),
+                            "Sign in with GitHub",
+                            ButtonKind::Outline,
+                            true,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SignIn))),
+                    ),
+                )
+                .into_any_element(),
+            BetaState::Loading => section
+                .child(note("Asking your account…".into(), theme::text_faint()))
+                .into_any_element(),
+            BetaState::Failed(why) => section
+                .child(note(
+                    crate::redact::text(why).into_owned(),
+                    theme::attention().into(),
+                ))
+                .into_any_element(),
+            BetaState::Ready { ios, android } => {
+                let now = crate::model::unix_now();
+                section
+                    .child(ui::field().max_w(px(360.)).child(self.beta_email.clone()))
+                    .child(self.render_beta_row(BetaPlatform::Ios, ios, now, cx))
+                    .child(self.render_beta_row(BetaPlatform::Android, android, now, cx))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_beta_row(
+        &self,
+        platform: BetaPlatform,
+        b: &BetaStatus,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (text, action) = beta_text(platform, b, now);
+        let input = self.beta_email.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(4.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(10.))
+                    .child(
+                        div()
+                            .w(px(64.))
+                            .flex_none()
+                            .text_size(px(ui::TEXT_SM))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(platform_name(platform)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child(text),
+                    )
+                    .when_some(action, |d, label| {
+                        let label = if b.busy { "Signing up…" } else { label };
+                        d.child(
+                            ui::button(
+                                match platform {
+                                    BetaPlatform::Ios => "phone-beta-ios",
+                                    BetaPlatform::Android => "phone-beta-android",
+                                },
+                                label,
+                                ButtonKind::Outline,
+                                !b.busy,
+                            )
+                            .when(!b.busy, |btn| {
+                                btn.on_click(cx.listener(move |_, _, _, cx| {
+                                    let email = input.read(cx).text().trim().to_string();
+                                    cx.emit(PhoneEvent::JoinBeta { platform, email });
+                                }))
+                            }),
+                        )
+                    }),
+            )
+            .when_some(b.error.clone(), |d, e| {
+                d.child(
+                    div()
+                        .pl(crate::ui::sp(74.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::attention())
+                        .child(crate::redact::text(&e).into_owned()),
+                )
+            })
     }
 
     /// The ways in, and what each means.
@@ -1086,6 +1330,7 @@ impl Render for PhoneView {
                 .flex_col()
                 .gap(crate::ui::sp(20.))
                 .child(intro)
+                .child(self.render_beta(cx))
                 .child(Self::render_reach(reach, cx))
                 .children(relay)
                 .when_some(self.error.clone(), |d, e| {
@@ -1135,6 +1380,7 @@ impl Render for PhoneView {
                     .flex_col()
                     .gap(crate::ui::sp(20.))
                     .child(intro)
+                    .child(self.render_beta(cx))
                     .child(Self::render_reach(reach, cx))
                     .children(relay)
                     .when(!(relay_reach && signed_out), |d| {
@@ -1214,6 +1460,41 @@ impl Render for PhoneView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status(status: &str, retry_at: Option<u64>) -> BetaStatus {
+        BetaStatus {
+            status: status.into(),
+            email: Some("me@icloud.com".into()),
+            retry_at,
+            busy: false,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn each_beta_state_says_what_comes_next() {
+        let now = 1_000_000;
+        let (text, action) = beta_text(BetaPlatform::Ios, &status("none", None), now);
+        assert!(text.contains("TestFlight"), "{text}");
+        assert_eq!(action, Some("Join the iOS beta"));
+        let (text, action) = beta_text(BetaPlatform::Android, &status("pending", None), now);
+        assert!(
+            text.contains("Google Play") && text.contains("me@icloud.com"),
+            "{text}"
+        );
+        assert_eq!(action, Some("Change email"));
+        let (_, action) = beta_text(BetaPlatform::Ios, &status("admitted", None), now);
+        assert_eq!(action, None);
+        let (text, action) = beta_text(
+            BetaPlatform::Ios,
+            &status("declined", Some(now + 2 * 86_400 - 5)),
+            now,
+        );
+        assert!(text.contains("2 days"), "{text}");
+        assert_eq!(action, None);
+        let (_, action) = beta_text(BetaPlatform::Ios, &status("declined", Some(now - 1)), now);
+        assert_eq!(action, Some("Join the iOS beta"));
+    }
 
     #[test]
     fn removing_a_computer_asks_by_its_name() {

@@ -414,7 +414,7 @@ impl Piece {
             Piece::User => "user",
             Piece::Usage => "dashboard-square01",
             Piece::Help => "help-circle",
-            Piece::Running => "signal-full02",
+            Piece::Running => "server-stack01",
             Piece::Settings => "settings01",
             Piece::Mascot => "smile-plus",
             Piece::Separator => "minus-sign",

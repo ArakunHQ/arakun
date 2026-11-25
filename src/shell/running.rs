@@ -175,7 +175,7 @@ impl Shell {
                 .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
                 // Open, the tooltip would sit over the list's own title.
                 .when(!open, |d| d.tooltip(ui::tip("Local servers that run")))
-                .child(icon("signal-full02", 12.).text_color(theme::text_subtle()))
+                .child(icon("server-stack01", 12.).text_color(theme::text_subtle()))
                 .child(format!("{count} running"))
                 .child(
                     div()
@@ -224,7 +224,7 @@ impl Shell {
         if count == 0 {
             list = list.child(
                 ui::empty_state(
-                    "signal-full02",
+                    "server-stack01",
                     "Nothing is running",
                     "A server that a terminal or an agent starts in one of your projects shows here.",
                     None,

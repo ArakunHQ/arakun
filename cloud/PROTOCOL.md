@@ -355,6 +355,8 @@ A message on the wire:
     - `answer`: `{ ideas: [{ label, title, verdict: "works" |
       "works_with_conditions" | "wont_work", reason, cites: [n] }], verified:
       [{ text, source }], assumed: [text], unchecked: [text], decision: text }`.
+    - `searches`: what the run searched the web for, `[text]`, empty when it
+      made none. An answer from before this field has none.
     `cites` maps only the numbers the answer cites. Clients ignore a `bot`
     message whose `via` is not its sender's `github_id`. All of this is inside
     the encrypted body; the server never sees it.

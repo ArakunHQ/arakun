@@ -296,6 +296,7 @@ mod tests {
         let outcome = Outcome {
             answer: answer("Use A. Fall back to B when no device is left."),
             parts: 0,
+            searches: Vec::new(),
         };
         let bot = msg("b1", 10, 1, "karlo", bot_body(&range, 1, &outcome));
         let a1 = msg("a1", 11, 2, "dani", accept_body(&bot));

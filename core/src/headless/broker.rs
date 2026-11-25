@@ -342,10 +342,13 @@ impl Drop for Private {
 /// Makes a new folder, mode 0700 on Unix. It fails if the folder is there:
 /// someone else may have made it.
 fn private_dir(d: &Path) -> std::io::Result<()> {
-    let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(d)
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(d)
+    }
+    #[cfg(not(unix))]
+    std::fs::DirBuilder::new().create(d)
 }
 
 /// Copies an approved attachment into `dir`, under its own name, and returns

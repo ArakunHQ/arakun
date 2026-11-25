@@ -1175,7 +1175,8 @@ impl Shell {
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the end of the row gives up.
         let under_pointer = self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
-        let archive_shown = can_archive && under_pointer;
+        // Not on the open session: archiving it there is too easy by accident.
+        let archive_shown = can_archive && under_pointer && !selected;
         let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()

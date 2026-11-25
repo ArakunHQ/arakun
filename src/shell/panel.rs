@@ -437,7 +437,8 @@ impl Shell {
                             // As the context menu's Archive: not while it works.
                             let can_archive =
                                 !s.settled && s.status != Status::Working && env.remote.is_none();
-                            let archive = can_archive.then(|| {
+                            // Not on the open session: too easy by accident.
+                            let archive = (can_archive && !active).then(|| {
                                 let env_path = env.path.clone();
                                 let id = s.id.to_string();
                                 icon_button(("session-archive", i), "archive02", 14., "Archive")

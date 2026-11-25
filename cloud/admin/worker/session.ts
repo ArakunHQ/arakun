@@ -10,9 +10,23 @@ export interface Operator {
   login: string;
 }
 
+/// GitHub's login shape. The login goes into a header the panel forwards, so
+/// nothing else may be signed or read back.
+const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
+
+function validId(id: unknown): id is number {
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0;
+}
+
 /// Whether the ID is in the comma-separated list. Unset, empty or all junk: nobody.
+/// An entry that is not a positive safe integer is junk.
 export function allowed(ids: string | undefined, githubId: number): boolean {
-  return (ids ?? "").split(",").some((part) => /^\d+$/.test(part.trim()) && Number(part.trim()) === githubId);
+  return (ids ?? "").split(",").some((part) => {
+    const text = part.trim();
+    if (!/^\d+$/.test(text)) return false;
+    const id = Number(text);
+    return validId(id) && id === githubId;
+  });
 }
 
 function hmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
@@ -21,6 +35,7 @@ function hmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
 
 /// The cookie's value: b64url(JSON { github_id, login, exp }) + "." + b64url(HMAC-SHA256 of the first part).
 export async function signSession(op: Operator, secret: string, now: number): Promise<string> {
+  if (!validId(op.githubId) || !LOGIN.test(op.login)) throw new Error("not an operator GitHub would name");
   const payload = b64url(new TextEncoder().encode(JSON.stringify({ github_id: op.githubId, login: op.login, exp: now + SESSION_SECONDS })));
   const mac = await crypto.subtle.sign("HMAC", await hmacKey(secret, "sign"), new TextEncoder().encode(payload));
   return `${payload}.${b64url(new Uint8Array(mac))}`;
@@ -48,7 +63,7 @@ export async function readSession(request: Request, env: Env, now: number): Prom
   }
   if (typeof claims !== "object" || claims === null) return null;
   const { github_id, login, exp } = claims as Record<string, unknown>;
-  if (typeof github_id !== "number" || typeof login !== "string" || typeof exp !== "number") return null;
+  if (!validId(github_id) || typeof login !== "string" || !LOGIN.test(login) || typeof exp !== "number") return null;
   if (now >= exp) return null;
   if (!allowed(env.ADMIN_GITHUB_IDS, github_id)) return null;
   return { githubId: github_id, login };

@@ -9,8 +9,27 @@ function withCookie(value: string): Request {
   return new Request("https://admin.test/", { headers: { Cookie: `${SESSION_COOKIE}=${value}` } });
 }
 
+// A character in the middle: the last one of a MAC has padding bits, and
+// changing those may decode to the same bytes.
 function flip(text: string): string {
-  return text.slice(0, -1) + (text.endsWith("A") ? "B" : "A");
+  const i = Math.floor(text.length / 2);
+  return text.slice(0, i) + (text[i] === "A" ? "B" : "A") + text.slice(i + 1);
+}
+
+/// A cookie value with a valid signature over any first part, as a bug in a
+/// signer would make one.
+async function signed(payload: string, secret = env.SESSION_SECRET!): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+  return `${payload}.${b64url(mac)}`;
+}
+
+function b64url(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function claims(value: unknown): string {
+  return b64url(new TextEncoder().encode(JSON.stringify(value)));
 }
 
 describe("session", () => {
@@ -32,6 +51,42 @@ describe("session", () => {
     expect(await readSession(withCookie(value), { ...env, SESSION_SECRET: undefined }, T)).toBeNull();
   });
 
+  it("refuses a validly signed payload of the wrong shape", async () => {
+    const good = { github_id: 1001, login: "octo", exp: T + 100 };
+    expect(await readSession(withCookie(await signed(claims(good))), env, T)).toEqual(op);
+    const bad: unknown[] = [
+      "text",
+      null,
+      [1001],
+      { ...good, github_id: "1001" },
+      { ...good, github_id: 0 },
+      { ...good, github_id: -5 },
+      { ...good, github_id: 1001.5 },
+      { ...good, github_id: 2 ** 60 },
+      { github_id: 1001, login: "octo" },
+      { ...good, exp: "999999999999" },
+      { ...good, login: 7 },
+      { ...good, login: "" },
+      { ...good, login: "bad\r\nX-Evil: 1" },
+      { ...good, login: "a".repeat(40) },
+      { ...good, login: "octo cat" },
+    ];
+    for (const value of bad) {
+      expect(await readSession(withCookie(await signed(claims(value))), env, T), JSON.stringify(value)).toBeNull();
+    }
+    expect(await readSession(withCookie(await signed("not base64url!")), env, T)).toBeNull();
+    expect(await readSession(withCookie(await signed("a")), env, T)).toBeNull();
+  });
+
+  it("does not sign an operator it would refuse to read", async () => {
+    const secret = env.SESSION_SECRET!;
+    await expect(signSession({ githubId: 0, login: "octo" }, secret, T)).rejects.toThrow();
+    await expect(signSession({ githubId: 1.5, login: "octo" }, secret, T)).rejects.toThrow();
+    await expect(signSession({ githubId: 2 ** 60, login: "octo" }, secret, T)).rejects.toThrow();
+    await expect(signSession({ githubId: 1001, login: "bad\nlogin" }, secret, T)).rejects.toThrow();
+    await expect(signSession({ githubId: 1001, login: "" }, secret, T)).rejects.toThrow();
+  });
+
   it("refuses at and after exp", async () => {
     const request = withCookie(await signSession(op, env.SESSION_SECRET!, T));
     expect(await readSession(request, env, T + 43199)).toEqual(op);
@@ -49,6 +104,9 @@ describe("session", () => {
     expect(allowed("abc, ,", 1001)).toBe(false);
     expect(allowed(" 1001 ,1002", 1002)).toBe(true);
     expect(allowed("10011", 1001)).toBe(false);
+    // Past 2^53 two entries spell one number: neither may match.
+    expect(allowed("9007199254740993", 9007199254740992)).toBe(false);
+    expect(allowed("0", 0)).toBe(false);
   });
 
   it("sets the cookie HttpOnly, Secure, SameSite=Lax, Path=/ and Max-Age=43200", () => {

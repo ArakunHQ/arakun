@@ -89,9 +89,11 @@ const CLAIM_TIMEOUT_MS = 30_000;
 /// never be read as a handshake.
 const CLAIM_TAG = utf8("arakun-relay-claim-v1\0");
 
-/// How often each socket's session and account are checked again. A sign-out
-/// or a block also asks at once; this catches what that call missed.
-const RECHECK_MS = 5 * 60_000;
+/// How often each socket's session and account are checked again. A sign-out,
+/// a block, a revoke and a plan change ask at once; this catches what those
+/// calls missed and sessions that ran out. Each one is an alarm, which is
+/// billed as a whole request, and a D1 read, for every computer online.
+const RECHECK_MS = 15 * 60_000;
 
 /// How soon a recheck that failed (D1 did not answer) is tried again.
 const RECHECK_RETRY_MS = 30_000;
@@ -102,13 +104,16 @@ const PLAN_CACHE_MS = 60_000;
 
 /// The day's count is written to storage this often; a hibernation in between
 /// loses at most this many, which is cheaper than a write per frame.
-const COUNT_FLUSH_EVERY = 50;
+const COUNT_FLUSH_EVERY = 100;
 
 /// The page pings ("ping", as text) and the runtime answers "pong" itself, so a
 /// ping neither wakes the object nor counts as a frame. A phone that pinged once
 /// and then went this long without one is gone without having closed (it left
 /// the network, its tab froze): it is closed, so the computer hears the channel
 /// close and sends its notifications again. Pages ping every 30 seconds.
+/// Only the computer needs to hear it, so while none is connected no alarm
+/// waits for it: a silent device goes when the computer claims, or when
+/// another device wants in.
 const PHONE_SILENT_MS = 90_000;
 
 /// A computer not seen for this long has moved on: its object empties itself.
@@ -248,6 +253,9 @@ export class Relay extends DurableObject<Env> {
     for (const other of this.ctx.getWebSockets("pc")) {
       if (other !== ws) this.bye(other, "replaced", CLOSE_REPLACED);
     }
+    // No alarm watched the waiting devices: the silent ones go before the
+    // computer counts as here, so it never hears of channels it never saw.
+    this.closeSilent(now);
     ws.serializeAttachment({ ...tag, claimed: true } satisfies Tag);
     await this.schedule();
     ws.send(pcControl({ type: "claimed" }));
@@ -326,6 +334,8 @@ export class Relay extends DurableObject<Env> {
     if (!refused) {
       // The Worker read the plan from D1 just now: the freshest word on it.
       this.setPlan(admitted.plan);
+      // No alarm watches devices while the computer is away; look now.
+      if (!this.computer()) this.closeSilent(Date.now());
       if ((await this.full()) === "phones") this.makeRoom(admitted);
       full = await this.full();
     }
@@ -502,10 +512,7 @@ export class Relay extends DurableObject<Env> {
     for (const ws of this.unclaimed()) {
       if ((ws.deserializeAttachment() as Tag & { role: "pc" }).until <= now) this.bye(ws, "claim_timeout", CLOSE_UNAUTHORIZED);
     }
-    for (const phone of this.phones()) {
-      const silentAt = this.silentAt(phone);
-      if (silentAt !== null && silentAt <= now) this.bye(phone, "silent", CLOSE_GONE);
-    }
+    this.closeSilent(now);
     const recheckAt = this.recheckAt();
     if (recheckAt !== null && recheckAt <= now) await this.tryRecheck();
     if (!this.computer()) {
@@ -632,6 +639,14 @@ export class Relay extends DurableObject<Env> {
     return keys.size > 0 ? 0 : null;
   }
 
+  /// Closes the devices that pinged and then went quiet for too long.
+  private closeSilent(now: number): void {
+    for (const phone of this.phones()) {
+      const silentAt = this.silentAt(phone);
+      if (silentAt !== null && silentAt <= now) this.bye(phone, "silent", CLOSE_GONE);
+    }
+  }
+
   /// When a phone counts as gone if it pings no more; null until its first ping.
   private silentAt(phone: WebSocket): number | null {
     const last = this.ctx.getWebSocketAutoResponseTimestamp(phone);
@@ -640,14 +655,15 @@ export class Relay extends DurableObject<Env> {
 
   /// Sets the alarm for the next thing it has to do, so every object that
   /// keeps a socket or state wakes again: a claim running out, a device gone
-  /// quiet, a recheck, or the purge.
+  /// quiet while the computer is there to hear it, a recheck, or the purge.
   private async schedule(): Promise<void> {
     const times = this.unclaimed().map((ws) => (ws.deserializeAttachment() as Tag & { role: "pc" }).until);
     const recheckAt = this.recheckAt();
     if (recheckAt !== null) times.push(recheckAt);
-    // A phone that has not pinged yet (a page from before pings) is looked at again later.
-    for (const phone of this.phones()) times.push(this.silentAt(phone) ?? Date.now() + this.silentMs);
-    if (!this.computer()) {
+    if (this.computer()) {
+      // A phone that has not pinged yet (a page from before pings) is looked at again later.
+      for (const phone of this.phones()) times.push(this.silentAt(phone) ?? Date.now() + this.silentMs);
+    } else {
       const due = await this.purgeAt();
       if (due !== null) times.push(due);
     }

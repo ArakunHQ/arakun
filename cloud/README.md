@@ -216,11 +216,11 @@ the account host. Do these once, in this order:
    covers the host, and `ACCOUNT_HOST` in `[env.production.vars]` makes it the only
    account host.
 7. In the CONFIG KV, give each plan in `plans` its `machines`, how many machines an
-   account on it may register (5 when it is missing). The namespace is the same as
+   account on it may register (10 when it is missing). The namespace is the same as
    the old relay's, so the other limits carry over:
 
    ```sh
-   npx wrangler kv key put --env production --remote --binding CONFIG plans '{"free":{"machines":5,"phones":3,"burst":50,"daily":20000,"frame":262144}}'
+   npx wrangler kv key put --env production --remote --binding CONFIG plans '{"free":{"machines":10,"phones":5,"burst":100,"daily":100000,"frame":262144}}'
    ```
 
 8. Move the route by hand, from a checkout of the commit you are about to release.
@@ -443,12 +443,12 @@ Everything is tuned in KV without redeploying:
 
 | Key | Value | Effect |
 |---|---|---|
-| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
+| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register, then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` (10 machines, 5 devices, 100 frames per second, 100,000 per day, 256 KiB frames) and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
 | `disabled` | `true` or a message | Both sockets close with `bye` `disabled` and the message (`message`); a plain request to them answers 503 with it |
 
 ```sh
 # arakun.dev's own Worker ([env.production])
-npx wrangler kv key put --binding CONFIG --env production --remote plans '{"free":{"machines":5,"phones":3,"burst":50,"daily":20000,"frame":262144}}'
+npx wrangler kv key put --binding CONFIG --env production --remote plans '{"free":{"machines":10,"phones":5,"burst":100,"daily":100000,"frame":262144}}'
 npx wrangler kv key put --binding CONFIG --env production --remote disabled "maintenance until 05:00 UTC"
 npx wrangler kv key delete --binding CONFIG --env production --remote disabled
 # a self-hosted Worker (the top level of wrangler.toml)
@@ -517,7 +517,7 @@ or does not exist. A `github_id` with no account answers `404`.
 A blocked account can still sign in and read `/me`; `GET /machines` answers it
 `403 { "error": "blocked", "reason": … }` with the reason given.
 
-Each object checks its sockets' sessions and account in D1 every 5 minutes, and at
+Each object checks its sockets' sessions and account in D1 every 15 minutes, and at
 once when the Worker asks after a sign-out, a block, a plan change or a forgotten
 machine. A socket whose session is gone closes with `signed_out`, a blocked
 account's with `blocked`. The object also reads a device's session, its account's

@@ -1,6 +1,7 @@
 import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { parsePhoneFrame, pcControl } from "../../src/relay/frames";
+import { FREE } from "../../src/relay/limits";
 import { hex, sha256, type Env } from "../../src/util";
 import { as, call, type SignedIn } from "../helpers";
 import { HOST, Inbox, account, claim, computer, computerAndPhone, connectedComputer, device, openPc, openPhone, opened, stored } from "./helpers";
@@ -43,19 +44,19 @@ describe("a computer with its account's session", () => {
     expect((await call("GET", "/machines")).status).toBe(401);
   });
 
-  it("is refused a sixth machine on the free plan, but a known one comes back", async () => {
+  it("is refused a machine past the free plan, but a known one comes back", async () => {
     const owner = await account();
-    const five = [];
-    for (let i = 0; i < 5; i++) five.push(await connectedComputer(owner));
+    const full = [];
+    for (let i = 0; i < FREE.machines; i++) full.push(await connectedComputer(owner));
     const sixth = await computer();
     const pc = await openPc(sixth.label, owner.session);
     expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "machines_full" });
     expect((await pc.inbox.closedWith()).code).toBe(4429);
-    expect((await machinesOf(owner.session)).map((m) => m.label).sort()).toEqual(five.map((c) => c.me.label).sort());
+    expect((await machinesOf(owner.session)).map((m) => m.label).sort()).toEqual(full.map((c) => c.me.label).sort());
 
-    // One of the five reconnecting is not a new machine.
-    const again = await openPc(five[0]!.me.label, owner.session);
-    expect(await claim(again, five[0]!.me)).toEqual({ type: "claimed" });
+    // One of them reconnecting is not a new machine.
+    const again = await openPc(full[0]!.me.label, owner.session);
+    expect(await claim(again, full[0]!.me)).toEqual({ type: "claimed" });
   });
 
   it("of another account cannot take a label that is taken, and leaves the owner's machine as it was", async () => {

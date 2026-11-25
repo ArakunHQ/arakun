@@ -25,8 +25,8 @@ describe("what KV says", () => {
     expect(await planFor(env.CONFIG)).toEqual(FREE);
   });
 
-  it("gives the free plan five machines", async () => {
-    expect(FREE.machines).toBe(5);
+  it("gives the free plan ten machines", async () => {
+    expect(FREE.machines).toBe(10);
     await plans({ machines: 2 });
     expect((await planFor(env.CONFIG)).machines).toBe(2);
     await env.CONFIG.put("plans", JSON.stringify({ free: { machines: 2 }, pro: { phones: 9 } }));
@@ -81,25 +81,25 @@ describe("the switch", () => {
 });
 
 describe("the plan's limits", () => {
-  it("let three devices in and tell the fourth", async () => {
+  it("let the plan's devices in and tell the next", async () => {
     const { me, pc, owner } = await connectedComputer();
     const dev = await device(owner);
     const phones = [];
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= FREE.phones; i++) {
       const p = await openPhone(me.label, dev.session);
       expect(await p.inbox.control()).toEqual({ type: "open", channel: i });
       await pc.inbox.control();
       phones.push(p);
     }
-    const fourth = await openPhone(me.label, dev.session);
-    expect(await fourth.inbox.control()).toEqual({ type: "limit", which: "phones" });
-    expect((await fourth.inbox.closedWith()).code).toBe(4429);
+    const next = await openPhone(me.label, dev.session);
+    expect(await next.inbox.control()).toEqual({ type: "limit", which: "phones" });
+    expect((await next.inbox.closedWith()).code).toBe(4429);
     await expect(pc.inbox.next(200)).rejects.toThrow();
 
     phones[0]!.ws.close(1000, "leaving");
     expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "leaving" });
-    const fifth = await openPhone(me.label, dev.session);
-    expect(await fifth.inbox.control()).toEqual({ type: "open", channel: 4 });
+    const after = await openPhone(me.label, dev.session);
+    expect(await after.inbox.control()).toEqual({ type: "open", channel: FREE.phones + 1 });
   });
 
   it("come from KV: a plan with one device", async () => {
@@ -175,14 +175,17 @@ describe("the plan's limits", () => {
     expect(await late.inbox.control()).toEqual({ type: "limit", which: "daily" });
   });
 
-  it("keep the day's count in storage every fifty frames and start over at midnight", async () => {
+  it("keep the day's count in storage every hundred frames and start over at midnight", async () => {
     await plans({ burst: 1000 });
     const { me, pc, phone } = await computerAndPhone();
     expect(await stored(me.label, "today")).toBeUndefined();
-    for (let i = 0; i < 50; i++) phone.ws.send(phoneFrame(DATA, new Uint8Array([1])));
-    for (let i = 0; i < 50; i++) await pc.inbox.next();
+    for (let i = 0; i < 99; i++) phone.ws.send(phoneFrame(DATA, new Uint8Array([1])));
+    for (let i = 0; i < 99; i++) await pc.inbox.next();
+    expect(await stored(me.label, "today")).toBeUndefined();
+    phone.ws.send(phoneFrame(DATA, new Uint8Array([1])));
+    await pc.inbox.next();
     const today = await stored<{ day: number; n: number }>(me.label, "today");
-    expect(today?.n).toBe(50);
+    expect(today?.n).toBe(100);
     expect(today?.day).toBe(Math.floor(Date.now() / 86_400_000));
 
     // Yesterday's count, however high, does not count today.
@@ -242,7 +245,7 @@ describe("a computer gone for ninety days", () => {
     const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
     // Only the recheck of the computer's session is due.
     const first = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
-    expect((first as number) - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+    expect((first as number) - Date.now()).toBeLessThanOrEqual(15 * 60_000);
 
     pc.ws.close(1000, "shutting down");
     await new Promise((r) => setTimeout(r, 50));
@@ -433,6 +436,49 @@ describe("a device that went quiet", () => {
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     expect(phone.inbox.closed).toBeNull();
+  });
+});
+
+describe("a device that went quiet while the computer is away", () => {
+  /// A device waiting at a label whose computer claimed once and left.
+  async function waiting() {
+    const { me, pc, owner } = await connectedComputer();
+    pc.ws.close(1000, "shutting down");
+    await new Promise((r) => setTimeout(r, 50));
+    const dev = await device(owner);
+    const phone = await openPhone(me.label, dev.session);
+    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+    expect((await phone.inbox.control())["type"]).toBe("pc_offline");
+    phone.ws.send("ping");
+    expect(await phone.inbox.next()).toEqual({ text: "pong" });
+    return { me, owner, phone, stub: env.RELAY.get(env.RELAY.idFromName(me.label)) };
+  }
+
+  it("wakes no alarm, and goes when the computer claims", async () => {
+    const { me, owner, phone, stub } = await waiting();
+    // Nobody would hear it leave: only the recheck is due.
+    const at = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
+    expect((at as number) - Date.now()).toBeGreaterThan(90_000);
+
+    await runInDurableObject(stub, (instance) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+    });
+    const pc = await openPc(me.label, owner.session);
+    expect(await claim(pc, me)).toEqual({ type: "claimed" });
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "silent" });
+    // The computer never hears of the channel.
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("gives its place to a device that wants in", async () => {
+    await plans({ phones: 1 });
+    const { me, owner, phone, stub } = await waiting();
+    await runInDurableObject(stub, (instance) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+    });
+    const other = await openPhone(me.label, (await device(owner)).session);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "silent" });
+    expect(await other.inbox.control()).toEqual({ type: "open", channel: 2 });
   });
 });
 

@@ -168,7 +168,7 @@ impl LinearView {
                 ui::text(
                     Type::Body,
                     theme::error().into(),
-                    crate::redact::text(&error_line(e)),
+                    crate::redact::text(&error_line(e, crate::model::unix_now())),
                 )
                 .flex_1()
                 .min_w_0(),

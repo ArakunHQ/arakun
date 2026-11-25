@@ -591,7 +591,8 @@ after a week).
   (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows) and never leave the
   computer: they go to Linear's API and nowhere else. The tab reads the list again
   when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
-  long as Linear asks when it hits Linear's request limit. A click on an issue (or
+  long as Linear asks when it hits Linear's request limit, saying how many minutes
+  are left. A click on an issue (or
   `↑`/`↓` and `Enter`; `/` goes to the search box) opens it with its description and
   comments. **Work on it with agent** starts an agent session in the open project
   with the issue's identifier, title, description, comments and link. It leaves git

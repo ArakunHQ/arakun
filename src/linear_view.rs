@@ -69,14 +69,21 @@ fn may_read(now: u64, read_at: Option<u64>, asked_at: u64, manual: bool, until: 
     }
 }
 
-/// A failed read, as the tab says it.
-fn error_line(e: &ApiError) -> String {
+/// A failed read, as the tab says it at unix second `now`.
+fn error_line(e: &ApiError, now: u64) -> String {
     match e {
         ApiError::SignedOut => {
             "This Linear sign-in no longer works. Sign in again under Accounts.".into()
         }
-        ApiError::Limited { .. } => {
-            "Linear's request limit is reached. Try again in a moment.".into()
+        ApiError::Limited { until } => {
+            // Nothing reads until `until`, so the line must say how long
+            // that is: Linear's wait can last an hour.
+            let wait = match until.saturating_sub(now) {
+                0..60 => "a moment".to_string(),
+                60 => "1 minute".to_string(),
+                s => format!("{} minutes", s.div_ceil(60)),
+            };
+            format!("Linear's request limit is reached. Try again in {wait}.")
         }
         ApiError::Failed(m) => m.clone(),
     }
@@ -577,12 +584,34 @@ mod tests {
     #[test]
     fn errors_read_plainly() {
         assert_eq!(
-            error_line(&ApiError::SignedOut),
+            error_line(&ApiError::SignedOut, 0),
             "This Linear sign-in no longer works. Sign in again under Accounts."
         );
         assert_eq!(
-            error_line(&ApiError::Limited { until: 0 }),
+            error_line(&ApiError::Limited { until: 0 }, 0),
             "Linear's request limit is reached. Try again in a moment."
+        );
+    }
+
+    #[test]
+    fn the_limit_line_says_how_long_to_wait() {
+        let now = 10_000;
+        let line = |until| error_line(&ApiError::Limited { until }, now);
+        let moment = "Linear's request limit is reached. Try again in a moment.";
+        assert_eq!(line(now - 5), moment); // already over
+        assert_eq!(line(now + 59), moment); // under a minute
+        assert_eq!(
+            line(now + 60),
+            "Linear's request limit is reached. Try again in 1 minute."
+        );
+        // Rounded up: 11 minutes and a second is 12.
+        assert_eq!(
+            line(now + 11 * 60 + 1),
+            "Linear's request limit is reached. Try again in 12 minutes."
+        );
+        assert_eq!(
+            line(now + 12 * 60),
+            "Linear's request limit is reached. Try again in 12 minutes."
         );
     }
 

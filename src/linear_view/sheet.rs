@@ -118,7 +118,7 @@ impl LinearView {
                 Some(e) => ui::text(
                     Type::Body,
                     theme::error().into(),
-                    crate::redact::text(&error_line(e)),
+                    crate::redact::text(&error_line(e, crate::model::unix_now())),
                 )
                 .into_any_element(),
                 None => ui::loading("Reading the issue").into_any_element(),

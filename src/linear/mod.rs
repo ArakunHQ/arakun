@@ -101,7 +101,6 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[allow(dead_code)] // Used by the tab (task 4).
 pub fn sessions() -> Vec<Session> {
     if let Some(s) = fixture::sessions() {
         return s;
@@ -109,7 +108,6 @@ pub fn sessions() -> Vec<Session> {
     Store::read_from(&store_file()).sessions
 }
 
-#[allow(dead_code)] // Used by the tab (task 4).
 pub fn save_session(s: Session) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
@@ -117,7 +115,6 @@ pub fn save_session(s: Session) -> Result<(), String> {
     store.write_to(&store_file())
 }
 
-#[allow(dead_code)] // Used by the tab (task 4).
 pub fn remove_session(id: &str) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
@@ -146,7 +143,6 @@ impl From<crate::guard::Panicked> for ApiError {
 }
 
 impl ApiError {
-    #[allow(dead_code)] // Used by the tab (task 4).
     pub fn message(&self) -> String {
         match self {
             ApiError::SignedOut => "Linear refused the sign-in. Sign in again.".into(),
@@ -241,7 +237,6 @@ fn session_from(data: &Value, credential: Credential, now: u64) -> Option<Sessio
 }
 
 /// Checks a pasted personal API key and says who it belongs to.
-#[allow(dead_code)] // Used by the tab (task 4).
 pub fn sign_in_with_key(key: &str) -> Result<Session, ApiError> {
     let key = key.trim();
     if key.is_empty() {

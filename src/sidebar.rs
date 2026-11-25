@@ -25,6 +25,7 @@ pub enum View {
     Extensions,
     Cloudflare,
     PostHog,
+    Linear,
     Doop,
     #[cfg(feature = "coderlabs")]
     Site,
@@ -56,6 +57,7 @@ impl View {
         View::Extensions,
         View::Cloudflare,
         View::PostHog,
+        View::Linear,
         View::Doop,
         #[cfg(feature = "coderlabs")]
         View::Site,
@@ -79,6 +81,7 @@ impl View {
         View::Usage,
         View::Cloudflare,
         View::PostHog,
+        View::Linear,
         View::Doop,
         View::Isometric,
         View::Phone,
@@ -104,6 +107,7 @@ impl View {
             View::Extensions => "Marketplace",
             View::Cloudflare => "Cloudflare",
             View::PostHog => "PostHog",
+            View::Linear => "Linear",
             View::Doop => "Doop",
             #[cfg(feature = "coderlabs")]
             View::Site => "arakun.dev",
@@ -133,6 +137,7 @@ impl View {
             View::Extensions => "store01",
             View::Cloudflare => "internet",
             View::PostHog => "chart-breakout-square",
+            View::Linear => "check-list",
             View::Doop => "paint-board",
             #[cfg(feature = "coderlabs")]
             View::Site => "globe",
@@ -163,6 +168,7 @@ impl View {
             View::Extensions => "Plugins, MCP servers and skills",
             View::Cloudflare => "Workers, tunnels and DNS",
             View::PostHog => "Product analytics for each repo",
+            View::Linear => "Your Linear issues",
             View::Doop => "Design canvases and their frames",
             #[cfg(feature = "coderlabs")]
             View::Site => "Your arakun.dev account",
@@ -677,6 +683,7 @@ impl Preset {
             View::Extensions,
             View::Cloudflare,
             View::PostHog,
+            View::Linear,
             View::Doop,
             #[cfg(feature = "coderlabs")]
             View::Site,
@@ -1814,6 +1821,12 @@ mod tests {
         assert!(new.on.is_empty());
         assert!(View::EXTENSIONS.iter().all(|v| !new.shows(*v)));
         assert!(new.shows(View::Extensions));
+    }
+
+    #[test]
+    fn linear_is_a_view_you_turn_on() {
+        assert!(View::EXTENSIONS.contains(&View::Linear));
+        assert_eq!(View::Linear.label(), "Linear");
     }
 
     #[test]

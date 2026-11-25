@@ -1097,11 +1097,11 @@ impl Shell {
                 View::Canvas => Target::Canvas,
                 v => Target::View(v),
             };
-            // GitHub reads GitHub, not a project, so it opens without one.
+            // GitHub and Linear read a service, not a project, so they open without one.
             if !has
                 && !matches!(
                     v,
-                    View::Usage | View::Extensions | View::Memory | View::GitHub
+                    View::Usage | View::Extensions | View::Memory | View::GitHub | View::Linear
                 )
             {
                 continue;

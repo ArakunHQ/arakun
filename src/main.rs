@@ -50,6 +50,7 @@ mod iso_view;
 #[cfg(feature = "coderlabs")]
 mod lab;
 mod linear;
+mod linear_view;
 mod loadable;
 mod logos;
 mod look;

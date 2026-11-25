@@ -43,6 +43,7 @@ mod home;
 mod inbox;
 mod island;
 mod limits;
+mod linear;
 mod menus;
 mod naming;
 mod new_dialog;
@@ -107,6 +108,7 @@ use crate::github::GitHub;
 use crate::github_view::GitHubView;
 use crate::highlight;
 use crate::input::{InputEvent, TextInput};
+use crate::linear_view::LinearView;
 use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
     self, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
@@ -515,6 +517,8 @@ pub struct Shell {
     _team_view: Subscription,
     posthog_view: Entity<PostHogView>,
     _posthog_view: Subscription,
+    linear_view: Entity<LinearView>,
+    _linear_view: Subscription,
     doop_view: Entity<DoopView>,
     _doop_view: Subscription,
     branches_view: Entity<BranchesView>,
@@ -956,6 +960,10 @@ impl Shell {
         let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
             this.on_posthog_event(ev, window, cx)
         });
+        let linear_view = cx.new(LinearView::new);
+        let linear_sub = cx.subscribe_in(&linear_view, window, |this, _, ev, window, cx| {
+            this.on_linear_event(ev, window, cx)
+        });
         let doop_view = cx.new(DoopView::new);
         let doop_sub = cx.subscribe_in(&doop_view, window, |this, _, ev, window, cx| {
             this.on_doop_event(ev, window, cx)
@@ -1140,6 +1148,8 @@ impl Shell {
             _team_view: team_sub,
             posthog_view,
             _posthog_view: posthog_sub,
+            linear_view,
+            _linear_view: linear_sub,
             doop_view,
             _doop_view: doop_sub,
             branches_view,
@@ -4075,6 +4085,7 @@ impl Shell {
                     .update(cx, |v, cx| v.set_project(&root, cx));
                 self.posthog_view.clone().into_any_element()
             }
+            Some(TabKind::Linear) => self.linear_view.clone().into_any_element(),
             Some(TabKind::Doop) => self.doop_view.clone().into_any_element(),
             Some(TabKind::Branches) => {
                 // Sessions start and stop all the time; the rows follow them.

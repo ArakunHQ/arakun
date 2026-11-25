@@ -10,7 +10,7 @@
 //   GET    /admin/users                           → accounts, last seen first (admin_lists.ts)
 //   GET    /admin/users/<github_id>               → one account in full (admin_lists.ts)
 //   GET    /admin/notices                         → every notice with its read count, newest first (admin_lists.ts)
-//   GET    /admin/plans                           → the plan names, free first (admin_lists.ts)
+//   GET    /admin/plans                           → the plan names, built-in and from KV, free first (admin_lists.ts)
 //   GET    /admin/machines                        → every registered machine
 //   POST   /admin/notices                         → a notice for one account or all, { github_id?, text, url?, expires_at? }
 //   DELETE /admin/notices/<id>                    → takes it back
@@ -36,7 +36,7 @@ import { createNotice, deleteNotice } from "./notices";
 import { GITHUB_ID, bearer, error, flagList, flagsQuery, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 const FLAG = /^[a-z][a-z0-9_]{0,31}$/;
-/// A plan's name, as a key of the KV `plans`.
+/// A plan's name: a built-in one or a key of the KV `plans`.
 const PLAN = /^[a-z][a-z0-9_]{0,31}$/;
 const MAX_REASON = 500;
 const MAX_BODY = 4096;
@@ -142,8 +142,8 @@ async function unblock(env: Env, op: Operator, idText: string): Promise<Response
   return new Response(null, { status: 204 });
 }
 
-/// The plan names a key of the KV `plans`; one KV does not know is the free
-/// plan. Open sockets go by the new plan after the recheck.
+/// The plan names a built-in plan or a key of the KV `plans`; any other name
+/// is the free plan. Open sockets go by the new plan after the recheck.
 async function setPlan(request: Request, env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");

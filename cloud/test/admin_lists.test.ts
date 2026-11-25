@@ -190,14 +190,14 @@ describe("GET /admin/notices", () => {
 
 describe("GET /admin/plans", () => {
   it("lists plan names with free first", async () => {
-    await env.CONFIG.put("plans", JSON.stringify({ pro: {}, free: {}, "Bad Name": {} }));
+    await env.CONFIG.put("plans", JSON.stringify({ pro: {}, free: {}, internal: {}, "Bad Name": {} }));
     const res = await call("GET", "/admin/plans", ADMIN);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ plans: ["free", "pro"] });
+    expect(await res.json()).toEqual({ plans: ["free", "internal", "pro"] });
   });
 
-  it("answers free alone without the KV key", async () => {
-    expect(await (await call("GET", "/admin/plans", ADMIN)).json()).toEqual({ plans: ["free"] });
+  it("answers the built-in plans without the KV key", async () => {
+    expect(await (await call("GET", "/admin/plans", ADMIN)).json()).toEqual({ plans: ["free", "internal"] });
   });
 
   it("needs the secret", async () => {

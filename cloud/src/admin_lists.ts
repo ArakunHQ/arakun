@@ -5,11 +5,12 @@
 //   GET /admin/users/<github_id>       → one account with its sessions, machines,
 //                                        cloud request and notices
 //   GET /admin/notices                 → every notice, newest first, at most 500
-//   GET /admin/plans                   → { plans }, the plan names in the KV `plans`
+//   GET /admin/plans                   → { plans }, the built-in plans and those in the KV `plans`
 //
 // A session's token hash never leaves the Worker.
 
 import { requestFor } from "./cloud_access";
+import { BUILT_IN } from "./relay/limits";
 import { GITHUB_ID, GITHUB_LOGIN, error, type Env } from "./util";
 
 const DEFAULT_LIMIT = 50;
@@ -126,8 +127,9 @@ export async function listNotices(env: Env): Promise<Response> {
 }
 
 export async function listPlans(env: Env): Promise<Response> {
-  // A KV that cannot be read must not hide `free`, which every account can fall back to.
+  // A KV that cannot be read must not hide the built-in plans, which work without it.
   const plans = await env.CONFIG.get<Record<string, unknown>>("plans", "json").catch(() => null);
-  const names = plans && typeof plans === "object" ? Object.keys(plans).filter((name) => PLAN.test(name) && name !== "free") : [];
-  return Response.json({ plans: ["free", ...names.sort()] });
+  const names = new Set([...Object.keys(BUILT_IN), ...(plans && typeof plans === "object" ? Object.keys(plans) : [])]);
+  names.delete("free");
+  return Response.json({ plans: ["free", ...[...names].filter((name) => PLAN.test(name)).sort()] });
 }

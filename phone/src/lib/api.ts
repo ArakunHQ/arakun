@@ -1,4 +1,4 @@
-// What would be an HTTP request to the computer, as `api()` in app.js: the
+// What would be an HTTP request to the computer, as `api()` in the old app.js: the
 // link in use knows how (plain fetch with the token on the computer's own
 // server, a request through the relay otherwise). This only knows which link
 // that is.

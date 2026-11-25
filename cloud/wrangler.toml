@@ -12,8 +12,9 @@ main = "src/index.ts"
 # itself (src/channel.ts relies on it).
 compatibility_date = "2026-11-01"
 
-# The phone page, straight from the repo: the Worker runs first and hands the
-# rest to the assets.
+# The phone page, as built into phone/dist (`npm run build` in phone/ writes
+# it, and it is committed): the Worker runs first and hands the rest to the
+# assets.
 [assets]
 directory = "../phone/dist"
 binding = "ASSETS"

@@ -11,13 +11,14 @@
 <link rel="icon" href="icon.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="app.css">
+  <script type="module" crossorigin src="./assets/app.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index.css">
 </head>
 <body>
 <div id="app"></div>
+<!-- Plain scripts that set globals (E2E, RELAY, DIAGRAMS); the bundle reads them. -->
 <script src="e2e.js"></script>
 <script src="relay.js"></script>
 <script src="diagrams.js"></script>
-<script src="app.js"></script>
 </body>
 </html>

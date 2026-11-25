@@ -1,4 +1,4 @@
-// phone/diagrams.js drawing ```chart and ```mermaid blocks, checked against
+// phone/public/diagrams.js drawing ```chart and ```mermaid blocks, checked against
 // what the desktop accepts (the tests in core/src/agent/chart.rs).
 // Run with `node --test phone/test/`.
 import assert from "node:assert/strict";

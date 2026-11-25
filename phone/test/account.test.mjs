@@ -1,4 +1,4 @@
-// phone/relay.js on the account host: which way in the page takes, what it
+// phone/public/relay.js on the account host: which way in the page takes, what it
 // shows first after sign-in, the socket it opens to a computer, and the
 // sentence for each reason the relay gives. Run with `node --test phone/test/`.
 import assert from "node:assert/strict";

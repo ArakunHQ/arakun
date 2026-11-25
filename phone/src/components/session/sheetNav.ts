@@ -1,6 +1,6 @@
 // Which sheet is open is a step in the history, `?sheet=` on the session's
 // address, so the phone's back gesture closes it (and goes from a diff back
-// to the list of changes) as it did in app.js. What the sheet shows beyond
+// to the list of changes) as it did in the old app.js. What the sheet shows beyond
 // its kind (the diff picked, the shortcut being written) stays in memory: a
 // reload without it falls back to the list it came from.
 

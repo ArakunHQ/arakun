@@ -1,4 +1,4 @@
-// phone/relay.js joining the pieces of a message the computer split for the
+// phone/public/relay.js joining the pieces of a message the computer split for the
 // relay (`say` in core/src/phone/relay.rs), against the pieces Rust wrote
 // (vectors/part.json). Run with `node --test phone/test/`.
 import assert from "node:assert/strict";

@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAppRouter, onLinkEvent } from "./router";
 import { useSaid } from "./lib/account";
-import { noteNoticeOpen, openSession, pairMessage, resetStart } from "./lib/start";
+import { noteNoticeOpen, openSession, pairMessage, resetStart, whereTo } from "./lib/start";
 import { renderHook } from "@testing-library/react";
 import type { Link } from "./lib/link";
 import { TOKEN_KEY } from "./lib/token";
@@ -54,6 +54,22 @@ describe("where the page lands", () => {
   it("asks for a pairing code on the computer's own server without a token", async () => {
     fakeRelay();
     expect(await land("#/inbox")).toBe("/pair");
+  });
+
+  it("pairs with the code in the QR link once, also when the router asks again meanwhile", async () => {
+    fakeRelay();
+    const pending: { answer?: (r: Response) => void } = {};
+    vi.stubGlobal("fetch", (url: string) => (url === "/pair" ? new Promise<Response>((r) => (pending.answer = r)) : new Promise(() => {})));
+    history.replaceState(null, "", "/?p=123456");
+    const qc = new QueryClient();
+    const first = whereTo("/", qc);
+    // Dropping the code from the address makes the router load again before the pairing is done.
+    while (!pending.answer) await new Promise((r) => setTimeout(r, 0));
+    const second = whereTo("/", qc);
+    pending.answer(new Response(JSON.stringify({ token: "tok" })));
+    expect(await first).toBe("/inbox");
+    expect(await second).toBe("/inbox");
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("tok");
   });
 
   it("opens the inbox on the computer's own server with a token", async () => {

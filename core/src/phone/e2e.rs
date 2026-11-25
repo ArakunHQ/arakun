@@ -6,7 +6,7 @@
 //! key it is agreeing with belongs to the computer it scanned. Both derive two
 //! AES-256-GCM keys (one per direction) from the ECDH secret with HKDF-SHA256,
 //! and every `data` frame from then on is numbered and sealed; a frame out of
-//! order or tampered with ends the session. `phone/e2e.js` is the phone's half:
+//! order or tampered with ends the session. `phone/public/e2e.js` is the phone's half:
 //! the two must agree byte for byte, which `phone/test/vectors/e2e.json` checks.
 
 use base64::Engine as _;
@@ -422,7 +422,7 @@ mod tests {
         );
     }
 
-    /// What `phone/e2e.js` is checked against: `WRITE_VECTORS=1 cargo test
+    /// What `phone/public/e2e.js` is checked against: `WRITE_VECTORS=1 cargo test
     /// phone::e2e::vectors` writes it; the plain run checks Rust still agrees
     /// with it, so a change on either side shows up.
     const VECTORS: &str = "../phone/test/vectors/e2e.json";

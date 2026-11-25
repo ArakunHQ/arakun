@@ -1,4 +1,4 @@
-// phone/e2e.js against the vectors core/src/phone/e2e.rs wrote (vectors/e2e.json):
+// phone/public/e2e.js against the vectors core/src/phone/e2e.rs wrote (vectors/e2e.json):
 // the phone must trust the computer's hello, derive the same keys, open the
 // computer's frames and seal its own to the very same bytes. Run with
 // `node --test phone/test/` (Node 20+, WebCrypto built in).

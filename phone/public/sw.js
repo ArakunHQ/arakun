@@ -35,9 +35,10 @@ self.addEventListener("push", (ev) => {
 });
 
 // The session a window's address shows: `#/s/<id>`, or `#s=<id>` from before
-// the router. Whole ids only: `abc` is not `abcd`.
+// the router. Whole ids only: `abc` is not `abcd`. A sheet open over the
+// session adds `?sheet=…`, and the session is still on screen.
 function showing(url) {
-  const m = /#(?:\/s\/|s=)([^/?#]+)$/.exec(url);
+  const m = /#(?:\/s\/|s=)([^/?#]+)(?:\?[^#]*)?$/.exec(url);
   if (!m) return null;
   try {
     return decodeURIComponent(m[1]);

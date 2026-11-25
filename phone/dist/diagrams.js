@@ -5,8 +5,8 @@
 // Anything that does not parse stays a code block: render() returns null.
 "use strict";
 (function () {
-  // Wrapped in a function: app.js is a classic script too, and names such as
-  // `esc` at the top level would clash with its own.
+  // Wrapped in a function: the other page scripts are classic scripts too,
+  // and names such as `esc` at the top level would clash with theirs.
 
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -1008,7 +1008,7 @@
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
 
   // The drawing in its card: the picture, the source behind "Code", and a
-  // footer with a caption and the two buttons. app.js handles the taps.
+  // footer with a caption and the two buttons. The page handles the taps.
   function card(kind, view, caption, source, title) {
     const foot =
       `<div class="dgfoot"><span class="dgcap">${esc(caption)}</span><span class="dgacts">` +

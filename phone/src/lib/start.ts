@@ -1,5 +1,5 @@
 // Which way in this is, and where the page goes from an address, as `start()`
-// in app.js: the account host, an old relay host, a host that failed, or the
+// in the old app.js: the account host, an old relay host, a host that failed, or the
 // computer's own server. The root route asks `whereTo` before every screen.
 
 import type { QueryClient } from "@tanstack/react-query";
@@ -36,7 +36,11 @@ function takeSignInFailed(): boolean {
 let way: Way | null = null;
 let detecting: Promise<Way> | null = null;
 let accountStarted = false;
-let localStarted = false;
+// The pairing code from the address, traded once; "" or why it failed. Every
+// ask waits on the same trade: dropping the code from the address makes the
+// router ask again before the trade is done.
+let localStart: Promise<string> | null = null;
+let localStartSeen = false;
 // A session to open once a computer is picked from the list.
 let pendingOpen = "";
 // The session a notification opened, which may be another computer's.
@@ -133,7 +137,8 @@ export function resetStart(): void {
   way = null;
   detecting = null;
   accountStarted = false;
-  localStarted = false;
+  localStart = null;
+  localStartSeen = false;
   pairCode = null;
   pendingOpen = "";
   noticeSession = "";
@@ -163,16 +168,16 @@ export async function whereTo(path: string, qc: QueryClient): Promise<string | n
 }
 
 async function localWhere(path: string, go: (to: string) => string | null): Promise<string | null> {
-  if (!localStarted) {
-    localStarted = true;
+  if (!localStart) {
     const code = takePairCode();
-    if (code) {
-      const done = await pair(code);
-      if (!done.ok) {
-        pairNote = done.error;
-        return go("/pair");
-      }
-    }
+    localStart = code ? pair(code).then((done) => (done.ok ? "" : done.error)) : Promise.resolve("");
+  }
+  const failed = await localStart;
+  // A code that did not work sends to pairing once, with why.
+  if (failed && !localStartSeen) {
+    localStartSeen = true;
+    pairNote = failed;
+    return go("/pair");
   }
   if (path === "/pair") return null;
   if (!loadToken()) return go("/pair");

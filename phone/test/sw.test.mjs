@@ -39,6 +39,10 @@ test("no notification for the session a window shows at the old address", async 
   assert.equal(await push([win("https://h/#s=abc")], "abc"), 0);
 });
 
+test("no notification for the session a window shows under a sheet", async () => {
+  assert.equal(await push([win("https://h/#/s/abc?sheet=changes")], "abc"), 0);
+});
+
 test("a notification when the window shows another screen", async () => {
   assert.equal(await push([win("https://h/#/inbox")], "abc"), 1);
 });

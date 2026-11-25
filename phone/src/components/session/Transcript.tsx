@@ -1,7 +1,7 @@
 // The transcript: only the entries near the viewport are drawn, placed by
 // translateY from summed heights. Heights are guessed first (`estimate`) and
 // measured once painted; a wrong guess just moves what is below. A port of
-// VList in app.js, with the same rules:
+// VList in the old app.js, with the same rules:
 //
 // - The scroll position is never written while the list moves: on Android any
 //   write to scrollTop cancels the fling in progress, and a drag fights it.

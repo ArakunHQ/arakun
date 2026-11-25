@@ -2,7 +2,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { Markdown } from "./markdown";
 
-// Expected markup comes from md() in public/app.js.
+// Expected markup comes from md() in the old public/app.js.
 const html = (src: string) => render(<Markdown src={src} />).container.innerHTML;
 
 describe("Markdown", () => {

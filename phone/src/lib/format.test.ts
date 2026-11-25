@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ago, clock, counts, fmtElapsed, statusLabel } from "./format";
 
 // Expected strings come from running the functions of the same name in
-// public/app.js, which this file replaces.
+// the old public/app.js, which this file replaces.
 describe("ago", () => {
   const now = 1_700_000_000;
   it("says now under a minute", () => {

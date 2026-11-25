@@ -1,4 +1,4 @@
-// One line of the transcript, as entryHtml() in app.js drew it: a prompt of
+// One line of the transcript, as entryHtml() in the old app.js drew it: a prompt of
 // yours, the agent's words, a tool call or thought, a plan, a notice.
 
 import { createContext, Fragment, memo, type ReactNode, useContext } from "react";

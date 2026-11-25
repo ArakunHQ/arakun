@@ -1,5 +1,5 @@
 // A short line at the bottom of the screen that goes by itself, as `toast()`
-// in app.js. Anything can call `toast`; the root shows it.
+// in the old app.js. Anything can call `toast`; the root shows it.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 

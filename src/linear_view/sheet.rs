@@ -1,5 +1,8 @@
 //! The sheet over the Linear tab: one issue in full, and what to do with it.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use gpui::relative;
 
 use super::list::group_icon;
@@ -24,6 +27,10 @@ fn body_style() -> MdStyle {
 }
 
 fn render_markdown(id: impl Into<gpui::ElementId>, blocks: &[Block]) -> AnyElement {
+    // Other people write issue text, so an image link in it must not make us
+    // read a file on this computer. With an empty map of fetched copies the
+    // renderer only looks names up in it and never touches the disk.
+    let no_files: HashMap<String, PathBuf> = HashMap::new();
     markdown::render(
         id,
         blocks,
@@ -32,7 +39,7 @@ fn render_markdown(id: impl Into<gpui::ElementId>, blocks: &[Block]) -> AnyEleme
         None,
         &[],
         None,
-        None,
+        Some(&no_files),
         None,
         None,
     )

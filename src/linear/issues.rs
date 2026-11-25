@@ -176,18 +176,20 @@ fn collect(mut fetch: impl FnMut(&Value) -> Result<Value, ApiError>) -> Result<A
         let page = &page;
         issues.extend(parse_issues(page));
         next = page["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false);
+        if !next {
+            break;
+        }
+        // A next page we can't ask for still means the list is not complete.
         match page["pageInfo"]["endCursor"].as_str() {
-            Some(c) if next => after = json!(c),
-            _ => {
-                next = false;
-                break;
-            }
+            Some(c) => after = json!(c),
+            None => break,
         }
     }
     // Whole pages overshoot the limit, so dropped issues count as more too.
     let more = next || issues.len() > LIMIT;
-    issues.truncate(LIMIT);
+    // Sort before the cut, so the issues in progress are the ones kept.
     sort(&mut issues);
+    issues.truncate(LIMIT);
     Ok(Assigned { issues, more })
 }
 
@@ -303,5 +305,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!((got.issues.len(), got.more), (250, false));
+    }
+    #[test]
+    fn a_next_page_without_a_cursor_has_more() {
+        let mut calls = 0;
+        let got = collect(|_| {
+            calls += 1;
+            let mut p = page(40, true);
+            p["pageInfo"]["endCursor"] = Value::Null;
+            Ok(p)
+        })
+        .unwrap();
+        assert_eq!((got.issues.len(), got.more, calls), (40, true, 1));
+    }
+    #[test]
+    fn issues_in_progress_survive_the_cut() {
+        let mut calls = 0;
+        let got = collect(|_| {
+            calls += 1;
+            let state = if calls < 3 { "backlog" } else { "started" };
+            let nodes: Vec<Value> = (0..100)
+                .map(|i| node(&format!("{calls}-{i}"), state, "2026-11-25T10:00:00.000Z"))
+                .collect();
+            Ok(json!({"nodes": nodes, "pageInfo": {"hasNextPage": calls < 3, "endCursor": "c"}}))
+        })
+        .unwrap();
+        assert_eq!((got.issues.len(), got.more, calls), (250, true, 3));
+        let started = got
+            .issues
+            .iter()
+            .filter(|i| i.group == Group::Started)
+            .count();
+        assert_eq!(started, 100);
+        assert_eq!(got.issues[0].group, Group::Started);
     }
 }

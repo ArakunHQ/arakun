@@ -47,6 +47,8 @@ fn loaded() -> Option<&'static Fixture> {
     .as_ref()
 }
 
+/// The fixture always supplies this same list, so with a fixture, signing in
+/// or out in the tab looks like it does nothing.
 pub(super) fn sessions() -> Option<Vec<Session>> {
     loaded().map(|f| f.sessions.clone())
 }

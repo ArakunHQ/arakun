@@ -10,6 +10,7 @@ import { ago, clock } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon, type IconName } from "../lib/icons";
 import { useLink } from "../lib/link";
+import { deviceName } from "../lib/pair";
 import { notifyState } from "../lib/push";
 import { mode, setPairMessage } from "../lib/start";
 import { toast } from "../lib/toast";
@@ -17,19 +18,6 @@ import { forgetToken } from "../lib/token";
 
 type Notices = { done: boolean; input: boolean; error: boolean };
 const ALL_ON: Notices = { done: true, input: true, error: true };
-
-/** What the computer will call this phone. */
-function deviceName(): string {
-  const ua = navigator.userAgent;
-  if (/iPhone/.test(ua)) return "iPhone";
-  // iPad Safari calls itself a Mac; the touchscreen gives it away.
-  if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
-  if (/Android/.test(ua)) return /Mobile/.test(ua) ? "Android phone" : "Android tablet";
-  if (/Windows/.test(ua)) return "Browser on Windows";
-  if (/Macintosh/.test(ua)) return "Browser on a Mac";
-  if (/Linux/.test(ua)) return "Browser on Linux";
-  return "This phone";
-}
 
 /** How this page reaches the computer, from the address it was opened at. */
 function wayIn(): string {

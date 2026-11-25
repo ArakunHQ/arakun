@@ -1,0 +1,50 @@
+name: Dependency review
+
+# Checks the dependencies a pull request adds or updates against GitHub's
+# advisory database: the cloud Worker's npm packages, the actions in the
+# workflows and the crates. cargo-deny (deny.yml) checks the crates more
+# closely and owns their licenses; this covers the rest at review time, where
+# Dependabot alerts only show up after the merge.
+#
+# It fails on a new dependency with a high or critical advisory. Lower ones are
+# listed in the job summary and left to Dependabot.
+#
+# Pull requests run it only when they change a manifest, a lockfile or a
+# workflow. Safe because it is not a required check, so a skipped run leaves
+# nothing pending.
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "cloud/package.json"
+      - "cloud/package-lock.json"
+      - "android/gradle/libs.versions.toml"
+      - "**/*.gradle.kts"
+      - "ios/project.yml"
+      - "ios/ArakunKit/Package.swift"
+      - ".github/workflows/**"
+      - ".github/actions/**"
+
+permissions: {}
+
+concurrency:
+  group: dependency-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Dependency review
+    runs-on: depot-ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # No checkout: the action compares the base and head through the
+      # dependency graph API. No summary comment on the pull request either,
+      # as that needs pull-requests: write, which a pull request from a fork
+      # doesn't get; the result is in the job summary.
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          license-check: false

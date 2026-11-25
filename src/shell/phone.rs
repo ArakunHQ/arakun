@@ -1552,6 +1552,9 @@ impl Shell {
                     }
                 }
             }
+            // Said by an app to the servers it follows. This app reads its
+            // own idle time, and a phone's would not be about this computer.
+            ClientMsg::Idle { .. } => {}
             // What the app asks of a server, to install there. A phone has
             // the Marketplace tab of this computer for that.
             ClientMsg::Market

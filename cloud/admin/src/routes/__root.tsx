@@ -57,7 +57,7 @@ function Shell() {
         </Link>
         <nav className="nav" aria-label="Screens">
           {NAV.map((item) => (
-            <Link key={String(item.to)} to={item.to} className="nav-item" activeOptions={{ exact: item.to === "/" }}>
+            <Link key={String(item.to)} to={item.to} className="nav-item" activeOptions={{ exact: item.to === "/", includeSearch: false }}>
               {item.label}
             </Link>
           ))}

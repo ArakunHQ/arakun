@@ -69,7 +69,7 @@ describe("signing up for a beta", () => {
   it("keeps the platforms apart", async () => {
     const me = await user(3004, "both");
     expect((await signUp(me.session, "ios")).status).toBe(201);
-    // An empty object, as the app sends with no email typed, is no email.
+    // An empty object is no email, as no body is.
     expect((await call("POST", "/beta/android", { ...as(me.session), "Content-Type": "application/json" }, "{}")).status).toBe(201);
     expect((await signUp(me.session, "android", "me@gmail.com")).status).toBe(200);
     const all = await signups(me.session);

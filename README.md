@@ -518,6 +518,12 @@ after a week).
   push notifications on the page come only from the computer opened last: a browser
   keeps one subscription per site. The iOS and Android apps reach your computers the
   same way, only by signing in with GitHub; they have no link or code for the relay.
+  They are in beta: under **Phone app beta**, signed in, type the email to invite
+  (your Apple ID for iOS, your Google account for Android; it starts as your GitHub
+  email) and press **Join the iOS beta** or **Join the Android beta**. Testers are
+  added by hand, so the row says you signed up until the TestFlight or Google Play
+  invite is on its way, then that you are in. **Change email** fixes the address
+  while you wait.
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
   every computer of the account: sign out what you do not know. A message from the
   service's operator to your account shows as a notice with its link; opening it or

@@ -4,6 +4,9 @@
 // one a minute per object for the plan. No edge cache on them, so a change
 // lands at once. Which plan an account is on is `users.plan` in D1.
 //
+// `free` and `internal` are built in, so they work before KV names them; KV
+// still overrides any of their fields.
+//
 // Keys: `plans` → `{ free: Plan, … }`; `disabled` → any text (shown to whoever
 // asks why).
 
@@ -22,16 +25,28 @@ export interface Plan {
 
 export const FREE: Plan = { machines: 5, phones: 3, burst: 50, daily: 20_000, frame: 256 * 1024 };
 
-/// The plan under a name, over the free plan's defaults for anything KV left out.
+/// For the team's own accounts, put on it from the admin panel. High enough
+/// not to get in the way, but still a ceiling on a runaway client.
+export const INTERNAL: Plan = { machines: 50, phones: 10, burst: 500, daily: 1_000_000, frame: 1024 * 1024 };
+
+/// The plans that exist without KV, by name.
+export const BUILT_IN: Readonly<Record<string, Plan>> = { free: FREE, internal: INTERNAL };
+
+/// The plan under a name: KV's fields over the built-in plan of that name.
+/// A name that is neither in KV nor built in is the free plan.
 export async function planFor(kv: KVNamespace, name = "free"): Promise<Plan> {
   const plans = await kv.get<Record<string, Partial<Plan>>>("plans", "json").catch(() => null);
-  const given = plans?.[name] ?? plans?.["free"] ?? {};
+  const kvPlans = plans !== null && typeof plans === "object" ? plans : {};
+  // Own keys only: a name like `constructor` must not find Object's.
+  const key = Object.hasOwn(BUILT_IN, name) || Object.hasOwn(kvPlans, name) ? name : "free";
+  const base = Object.hasOwn(BUILT_IN, key) ? BUILT_IN[key]! : FREE;
+  const given = (Object.hasOwn(kvPlans, key) ? kvPlans[key] : null) ?? {};
   return {
-    machines: positive(given.machines, FREE.machines),
-    phones: positive(given.phones, FREE.phones),
-    burst: positive(given.burst, FREE.burst),
-    daily: positive(given.daily, FREE.daily),
-    frame: positive(given.frame, FREE.frame),
+    machines: positive(given.machines, base.machines),
+    phones: positive(given.phones, base.phones),
+    burst: positive(given.burst, base.burst),
+    daily: positive(given.daily, base.daily),
+    frame: positive(given.frame, base.frame),
   };
 }
 

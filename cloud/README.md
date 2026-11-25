@@ -408,7 +408,7 @@ Worker, not one per computer.
    that issued it, so with only `relay_base` set the relay stays signed out. The app
    reads the client ID from `/auth/config` and signs in there.
 
-The free plan's limits apply until you set `plans` in KV (see below).
+The built-in plans' limits apply until you set `plans` in KV (see below).
 
 If you hosted the old relay, you have one Worker per computer, each named after its
 label and deployed from the old `relay/` folder. One Worker now serves them all, so
@@ -425,7 +425,7 @@ Everything is tuned in KV without redeploying:
 
 | Key | Value | Effect |
 |---|---|---|
-| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan; a plan KV does not have is the free plan |
+| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register (default 5), then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
 | `disabled` | `true` or a message | Both sockets close with `bye` `disabled` and the message (`message`); a plain request to them answers 503 with it |
 
 ```sh
@@ -468,7 +468,7 @@ auth | curl -fsS -H @- "https://<host>/admin/users?q=octo&limit=20"
 auth | curl -fsS -H @- "https://<host>/admin/users/<github_id>"
 # every notice, newest first, at most 500, each with how many accounts read it
 auth | curl -fsS -H @- "https://<host>/admin/notices"
-# the plan names in the KV `plans`, `free` first: {"plans": ["free", "pro"]}
+# the built-in plans and those in the KV `plans`, `free` first: {"plans": ["free", "internal", "pro"]}
 auth | curl -fsS -H @- "https://<host>/admin/plans"
 # what was changed and by whom, newest first: {"entries": [...], "next": "<cursor>" or null}.
 # github_id narrows it to one account, limit is 1 to 100, before is the last next

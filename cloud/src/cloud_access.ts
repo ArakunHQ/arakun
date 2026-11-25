@@ -13,6 +13,7 @@
 // account may ask again. To keep someone out, block the account, or decline
 // the request they make next.
 
+import { record, type Operator } from "./admin_log";
 import { githubHeaders, GITHUB_TIMEOUT_MS, session } from "./auth";
 import { DAY, GITHUB_ID, GITHUB_LOGIN, discard, error, isObject, jsonBody, now, type Env } from "./util";
 
@@ -287,6 +288,8 @@ interface RequestRow {
   blocked: number;
 }
 
+export type RequestJson = ReturnType<typeof requestJson>;
+
 function requestJson(r: RequestRow) {
   return {
     github_id: r.github_id,
@@ -311,6 +314,12 @@ function requestJson(r: RequestRow) {
   };
 }
 
+/// The request as GET /admin/cloud/requests lists it, or null.
+export async function requestFor(env: Env, githubId: number): Promise<RequestJson | null> {
+  const row = await env.DB.prepare(`SELECT ${REQUEST_COLUMNS} WHERE r.github_id = ?2`).bind(CLOUD_FLAG, githubId).first<RequestRow>();
+  return row ? requestJson(row) : null;
+}
+
 export async function listRequests(env: Env, url: URL): Promise<Response> {
   const status = url.searchParams.get("status");
   if (status !== null && !(STATUSES as readonly string[]).includes(status)) {
@@ -332,7 +341,7 @@ export async function listRequests(env: Env, url: URL): Promise<Response> {
 /// Grant sets the request and the `cloud` flag together, the flag as the flag
 /// route does; granting a declined request is how the operator changes their
 /// mind. Decline takes only a pending request.
-export async function decideRequest(request: Request, env: Env, idText: string, decision: "grant" | "decline"): Promise<Response> {
+export async function decideRequest(request: Request, env: Env, idText: string, decision: "grant" | "decline", op: Operator): Promise<Response> {
   const id = GITHUB_ID.test(idText) ? Number(idText) : NaN;
   if (!Number.isSafeInteger(id)) return error(400, "the GitHub ID must be a positive integer");
   const body = request.headers.get("Content-Length") === "0" || !request.body ? {} : await jsonBody(request, MAX_BODY);
@@ -344,16 +353,11 @@ export async function decideRequest(request: Request, env: Env, idText: string, 
   const db = env.DB;
   const t = now();
   if (decision === "grant") {
-    const [updated] = await db.batch([
-      // A second grant keeps the time of the first.
+    const [updated, flagged] = await db.batch([
+      // A second grant changes nothing: it keeps the time of the first, and
+      // the log gets no second entry.
       db
-        .prepare(
-          `UPDATE cloud_access_requests SET
-             decided_at = CASE WHEN status = 'granted' THEN decided_at ELSE ?2 END,
-             decided_by = CASE WHEN status = 'granted' THEN decided_by ELSE ?3 END,
-             status = 'granted'
-           WHERE github_id = ?1`,
-        )
+        .prepare("UPDATE cloud_access_requests SET status = 'granted', decided_at = ?2, decided_by = ?3 WHERE github_id = ?1 AND status != 'granted'")
         .bind(id, t, by ?? null),
       db
         .prepare(
@@ -363,7 +367,13 @@ export async function decideRequest(request: Request, env: Env, idText: string, 
         )
         .bind(id, CLOUD_FLAG, t),
     ]);
-    if (updated!.meta.changes === 0) return error(404, "no request from this account");
+    if (updated!.meta.changes === 0 && flagged!.meta.changes === 0) {
+      const row = await db.prepare("SELECT 1 FROM cloud_access_requests WHERE github_id = ?").bind(id).first();
+      if (!row) return error(404, "no request from this account");
+    } else {
+      // A grant that only restores a revoked flag is a change too.
+      await record(env, op, "cloud.grant", id);
+    }
   } else {
     // Only a pending request: a granted one is ended by revoking the flag.
     const updated = await db
@@ -375,6 +385,7 @@ export async function decideRequest(request: Request, env: Env, idText: string, 
       if (!row) return error(404, "no request from this account");
       return error(409, `the request is ${row.status}, not pending`);
     }
+    await record(env, op, "cloud.decline", id);
   }
   const row = await db.prepare(`SELECT ${REQUEST_COLUMNS} WHERE r.github_id = ?2`).bind(CLOUD_FLAG, id).first<RequestRow>();
   return Response.json(requestJson(row!));

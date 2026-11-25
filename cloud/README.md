@@ -42,7 +42,11 @@ cloud/
                         PUT /admin/users/<github_id>/plan, GET /admin/machines,
                         POST /admin/notices, DELETE /admin/notices/<id>,
                         GET /admin/cloud/requests,
-                        PUT /admin/cloud/requests/<github_id>/grant|decline
+                        PUT /admin/cloud/requests/<github_id>/grant|decline,
+                        GET /admin/log
+  src/admin_lists.ts    GET /admin/users, GET /admin/users/<github_id>,
+                        GET /admin/notices, GET /admin/plans
+  src/admin_log.ts      the admin log: record() and GET /admin/log
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
@@ -455,6 +459,34 @@ auth | curl -fsS -X POST -H @- -H "Content-Type: application/json" \
   "https://<host>/admin/notices"
 # take a notice back, with the reads of it
 auth | curl -fsS -X DELETE -H @- "https://<host>/admin/notices/<id>"
+# accounts, last seen first: {"users": [...], "next": "<cursor>" or null}.
+# q is a login prefix or a GitHub ID, limit is 1 to 100 (default 50), after is the last next
+auth | curl -fsS -H @- "https://<host>/admin/users?q=octo&limit=20"
+# one account: user, sessions (no token hashes), machines, cloud_request and notices
+auth | curl -fsS -H @- "https://<host>/admin/users/<github_id>"
+# every notice, newest first, at most 500, each with how many accounts read it
+auth | curl -fsS -H @- "https://<host>/admin/notices"
+# the plan names in the KV `plans`, `free` first: {"plans": ["free", "pro"]}
+auth | curl -fsS -H @- "https://<host>/admin/plans"
+# what was changed and by whom, newest first: {"entries": [...], "next": "<cursor>" or null}.
+# github_id narrows it to one account, limit is 1 to 100, before is the last next
+auth | curl -fsS -H @- "https://<host>/admin/log?github_id=<github_id>&limit=20"
+```
+
+Every admin route that changes something adds one row to the `admin_log` table:
+when, which operator, what was done, which account and a short detail. The Worker
+only appends to it and has no route that edits or deletes a row, and a row stays
+after its account is deleted. The reads above change nothing and write no row.
+
+The admin panel names the operator in the record with two optional headers,
+`X-Arakun-Operator-Id` (a GitHub ID) and `X-Arakun-Operator-Login`. The Worker reads
+them only after the bearer check. A call without them, such as the curl above, is
+recorded with no operator. Add them to a call to name yourself:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X PUT -H @- \
+  -H "X-Arakun-Operator-Id: <your GitHub ID>" -H "X-Arakun-Operator-Login: <your login>" \
+  "https://<host>/admin/users/<github_id>/flags/teams"
 ```
 
 `GET /me` lists an account's unread notices, oldest first, at most 5, as

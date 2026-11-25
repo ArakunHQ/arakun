@@ -542,6 +542,14 @@ textarea.input {
   font-size: var(--text-sm);
 }
 
+/* On a narrow screen the meta text wraps to its own line: left-aligned, like the rest of the row. */
+@media (max-width: 40em) {
+  .row-meta {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

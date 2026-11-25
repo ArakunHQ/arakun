@@ -213,7 +213,7 @@ internal object P256 {
         generateKeyPair()
     }
 
-    private fun fixed(n: BigInteger): ByteArray {
+    fun fixed(n: BigInteger): ByteArray {
         val b = n.toByteArray()
         return when {
             b.size == 32 -> b

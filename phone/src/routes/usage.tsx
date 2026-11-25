@@ -93,6 +93,13 @@ export function Usage() {
   useEffect(() => {
     if (connected) link?.send({ type: "usage" });
   }, [link, connected]);
+  // Looking at Usage keeps the numbers fresh, as the computer re-reads them
+  // when they are stale.
+  useEffect(() => {
+    if (!connected) return;
+    const every = setInterval(() => link?.send({ type: "usage" }), 60_000);
+    return () => clearInterval(every);
+  }, [link, connected]);
 
   const agents = (usage?.agents || []) as Agent[];
   const at = Math.max(0, ...agents.map((a) => a.at || 0));

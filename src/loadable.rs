@@ -2,8 +2,11 @@
 //! whether a read is under way, and the task doing it. One shape for every
 //! view, so no path forgets to clear `loading`.
 
+use std::convert::Infallible;
 use std::future::Future;
 
+use futures::StreamExt as _;
+use futures::channel::mpsc::UnboundedSender;
 use gpui::{AppContext as _, Context, Task};
 
 use crate::guard::Fallback;
@@ -82,13 +85,54 @@ impl<T, E> Loadable<T, E> {
         W: Future + Send + 'static,
         W::Output: Fallback + Send + 'static,
     {
+        self.start_streaming(
+            cx,
+            slot,
+            |_: UnboundedSender<Infallible>| work,
+            |_, never, _| match never {},
+            apply,
+        );
+    }
+
+    /// [`Self::start`] for a read that has something to show before it
+    /// ends: `work` gets a sender, and each value it sends reaches `progress`
+    /// on the view, which is notified after each. `loading` stays set through
+    /// them; `apply` runs after the last one, as in `start`.
+    pub fn start_streaming<V, P, W>(
+        &mut self,
+        cx: &mut Context<V>,
+        slot: fn(&mut V) -> &mut Self,
+        work: impl FnOnce(UnboundedSender<P>) -> W,
+        progress: impl Fn(&mut V, P, &mut Context<V>) + 'static,
+        apply: impl FnOnce(&mut V, W::Output, &mut Context<V>) + 'static,
+    ) where
+        V: 'static,
+        T: 'static,
+        E: 'static,
+        P: Send + 'static,
+        W: Future + Send + 'static,
+        W::Output: Fallback + Send + 'static,
+    {
         if self.loading {
             return;
         }
         self.loading = true;
         cx.notify();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let work = work(tx);
         self.task = Some(cx.spawn(async move |this, cx| {
-            let out = cx.background_spawn(crate::guard::task(work)).await;
+            let work = cx.background_spawn(crate::guard::task(work));
+            // Ends when `work` drops its sender, by finishing or panicking.
+            while let Some(p) = rx.next().await {
+                let alive = this.update(cx, |view, cx| {
+                    progress(view, p, cx);
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            let out = work.await;
             this.update(cx, |view, cx| {
                 slot(view).loading = false;
                 apply(view, out, cx);

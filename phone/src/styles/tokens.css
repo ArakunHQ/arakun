@@ -30,6 +30,8 @@
   /* The one accent: what needs you and the one primary button in a view. */
   --color-accent: #ffb547;
   --color-on-accent: #0b0b0b;
+  /* Amber as a thin line, a small dot or text: darker on white (Brandbook). */
+  --color-accent-ink: #ffb547;
   /* Claude's own mark, and nothing else. */
   --color-agent-claude: #d97757;
   --color-scrim: rgba(0, 0, 0, 0.55);
@@ -83,6 +85,7 @@
     --color-diff-del-bg: rgba(207, 34, 46, 0.12);
     --color-accent: #d47f00;
     --color-on-accent: #121212;
+    --color-accent-ink: #995c00;
     --color-scrim: rgba(0, 0, 0, 0.4);
   }
 }

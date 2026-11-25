@@ -226,7 +226,7 @@ export function Settings() {
         sub="For permissions, questions, finished turns and errors."
         right={
           <button
-            className="btn small"
+            className="btn outline small"
             onClick={async () => {
               await turnOnNotifications(pushKey);
               redraw();

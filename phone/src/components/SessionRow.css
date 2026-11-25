@@ -24,7 +24,7 @@
 .badge .dot { width: 6px; height: 6px; }
 .badge.working .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-link); animation: pulse 1.2s ease-in-out infinite; }
 .badge.needs_input { color: var(--color-text); }
-.badge.needs_input .dot { background: var(--color-accent); }
+.badge.needs_input .dot { background: var(--color-accent-ink); }
 .badge.error { color: var(--color-error); }
 .badge.error .dot { background: var(--color-error); }
 .badge.idle .dot { background: var(--color-success); }

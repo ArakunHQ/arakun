@@ -1,5 +1,5 @@
-/* The + in the tab bar: strong, but not amber; amber is for what needs you. */
-.tplus { width: 52px; height: 52px; border-radius: 50%; background: var(--color-text); color: var(--color-background); display: grid; place-items: center; flex: none; }
+/* The + in the tab bar: the tab screens' one primary action, in amber. */
+.tplus { width: 52px; height: 52px; border-radius: 50%; background: var(--color-accent); color: var(--color-on-accent); display: grid; place-items: center; flex: none; }
 .tplus svg { width: 20px; height: 20px; }
 .tplus:disabled { opacity: 0.35; }
 /* New session: the quick sheet over the screen, and the + menu. */

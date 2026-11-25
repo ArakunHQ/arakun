@@ -19,7 +19,7 @@
 .siline code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; font: var(--text-sm) var(--font-mono); color: var(--color-text-muted); padding: 10px 0; }
 .siline code::-webkit-scrollbar { display: none; }
 .siprompt { color: var(--color-text-faint); }
-.siurl { color: var(--color-accent); }
+.siurl { color: var(--color-accent-ink); }
 .sicopybtn { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--color-text-faint); }
 .sicopybtn:active { background: var(--color-fill-hover); color: var(--color-text); }
 .sicopybtn svg { width: 14px; height: 14px; }
@@ -34,15 +34,10 @@
 /* Narrow: the mascot sits over the title at 160 px. */
 .simascot { width: 160px; height: auto; margin-bottom: 28px; align-self: flex-start; }
 
-/* Amber as text on white is darker, as the brand book asks (about #995C00). */
-@media (prefers-color-scheme: light) {
-  .siurl { color: color-mix(in srgb, var(--color-accent) 72%, var(--color-text)); }
-}
-
 @media (min-width: 768px) {
   .signin { padding: 28px 40px; }
   .simain { padding: 0 0 0 max(0px, calc(8vw - 40px)); }
-  .sicopy h1 { font-size: clamp(var(--text-page-section), 4vw, 56px); }
+  .sicopy h1 { font-size: var(--text-page-section); }
   .siline code { font-size: var(--text-lg); }
   /* Wide: the mascot fills the right side and runs off the edge. */
   .simascot {

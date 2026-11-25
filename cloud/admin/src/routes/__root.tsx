@@ -21,6 +21,7 @@ export interface RouterContext {
 /// so the list never links to a route that does not exist.
 export const NAV: { to: LinkProps["to"]; label: string }[] = [
   { to: "/", label: "Cloud access" },
+  { to: "/beta", label: "Phone betas" },
   { to: "/users", label: "Users" },
   { to: "/machines", label: "Machines" },
   { to: "/notices", label: "Notices" },

@@ -53,3 +53,8 @@ export function parseGithubId(text: string): number | null {
   const id = Number(text);
   return Number.isSafeInteger(id) ? id : null;
 }
+
+/// A beta platform as people write it. Anything else is shown as it came.
+export function platformName(platform: unknown): string {
+  return platform === "ios" ? "iOS" : platform === "android" ? "Android" : String(platform);
+}

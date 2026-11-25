@@ -576,7 +576,7 @@ printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
 ## The admin panel
 
 `admin/` is a second Worker, `arakun-admin`, with its own package. It serves a React page
-for operators (users, cloud access, machines, notices, the activity log) and signs them
+for operators (users, cloud access, phone betas, machines, notices, the activity log) and signs them
 in with GitHub, using its own OAuth App, not the desktop app's. The browser never holds
 `ADMIN_SECRET`: the admin Worker checks the sign-in, then forwards `/api/*` to this
 Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
@@ -737,6 +737,10 @@ Admitting invites no one. To admit someone:
 3. Mark it admitted, so the app says the invite is on its way.
 
 To remove a tester, remove them in the store, then decline the sign-up.
+
+The admin panel's **Phone betas** screen does this: it lists sign-ups by status and
+platform, copies one platform's emails at once to paste into the store, and asks
+before it admits or declines. Without the panel, use curl as below.
 
 With `BETA_REQUESTS_WEBHOOK` set, each new sign-up is posted to that Discord webhook,
 with the platform and the same public facts as a cloud access request. Never the

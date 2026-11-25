@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ActivityRouteImport } from './routes/activity'
+import { Route as BetaRouteImport } from './routes/beta'
 import { Route as MachinesRouteImport } from './routes/machines'
 import { Route as NoticesRouteImport } from './routes/notices'
 import { Route as SignInRouteImport } from './routes/sign-in'
@@ -25,6 +26,11 @@ const IndexRoute = IndexRouteImport.update({
 const ActivityRoute = ActivityRouteImport.update({
   id: '/activity',
   path: '/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BetaRoute = BetaRouteImport.update({
+  id: '/beta',
+  path: '/beta',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MachinesRoute = MachinesRouteImport.update({
@@ -56,6 +62,7 @@ const UsersGithubIdRoute = UsersGithubIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
@@ -65,6 +72,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
@@ -75,6 +83,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
   '/sign-in': typeof SignInRoute
@@ -86,6 +95,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/activity'
+    | '/beta'
     | '/machines'
     | '/notices'
     | '/sign-in'
@@ -95,6 +105,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/activity'
+    | '/beta'
     | '/machines'
     | '/notices'
     | '/sign-in'
@@ -104,6 +115,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/activity'
+    | '/beta'
     | '/machines'
     | '/notices'
     | '/sign-in'
@@ -114,6 +126,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
+  BetaRoute: typeof BetaRoute
   MachinesRoute: typeof MachinesRoute
   NoticesRoute: typeof NoticesRoute
   SignInRoute: typeof SignInRoute
@@ -135,6 +148,13 @@ declare module '@tanstack/react-router' {
       path: '/activity'
       fullPath: '/activity'
       preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/beta': {
+      id: '/beta'
+      path: '/beta'
+      fullPath: '/beta'
+      preLoaderRoute: typeof BetaRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/machines': {
@@ -178,6 +198,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
+  BetaRoute: BetaRoute,
   MachinesRoute: MachinesRoute,
   NoticesRoute: NoticesRoute,
   SignInRoute: SignInRoute,

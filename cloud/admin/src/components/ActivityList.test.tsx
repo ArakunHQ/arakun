@@ -43,6 +43,8 @@ function json(body: unknown): Response {
 }
 
 const ALL: LogEntry[] = [
+  entry(12, { action: "beta.admit", detail: { platform: "ios" } }),
+  entry(11, { action: "beta.decline", detail: { platform: "android" } }),
   entry(10, { action: "flag.grant", detail: { flag: "cloud" } }),
   entry(9, { action: "flag.revoke", detail: { flag: "cloud" } }),
   entry(8, { action: "sessions.close", detail: { closed: 3 } }),
@@ -98,6 +100,8 @@ describe("ActivityList", () => {
       "sent a notice",
       "took back a notice",
       "granted cloud access",
+      "admitted to the iOS beta",
+      "declined for the Android beta",
     ]) {
       expect(await screen.findByText(text)).toBeTruthy();
     }

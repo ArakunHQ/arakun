@@ -13,6 +13,13 @@ export interface InboxSession {
   agent?: string;
   status?: SessionStatus;
   project?: string;
+  env?: string;
+  /** Unix time of the last change. */
+  updated?: number;
+  added?: number;
+  removed?: number;
+  /** What a waiting session asks, so the inbox alone says it. */
+  asks?: { kind: string; text: string };
   [k: string]: unknown;
 }
 

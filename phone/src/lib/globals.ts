@@ -40,7 +40,7 @@ export interface RelayApi {
   removeQuestion(name: string): string;
   sessions(): Promise<{ list: unknown[] } | { signedOut: true }>;
   signOutSession(id: string): Promise<ActResult>;
-  signedInRows(list: unknown[], esc: (s: unknown) => string, ago: (unix: number) => string): string;
+  signedInRows(list: unknown[], esc: (s: unknown) => string, ago: (unix: number) => string): string[];
   accountHost(): string;
   unreachable(): string;
   loggedOut(status: number): boolean;

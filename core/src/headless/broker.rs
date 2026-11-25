@@ -175,6 +175,12 @@ fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
         jail.workspace.join(raw)
     };
     let real = crate::platform::canonicalize(&p).map_err(|e| format!("{raw}: {e}"))?;
+    allowed(jail, raw, &real)?;
+    Ok(real)
+}
+
+/// [`inside`]'s rules for a path already resolved.
+fn allowed(jail: &Jail, raw: &str, real: &Path) -> Result<(), String> {
     if !real.starts_with(&jail.workspace) {
         return Err(format!(
             "{raw} is not inside the workspace {}",
@@ -186,7 +192,193 @@ fn inside(jail: &Jail, raw: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("{raw} is hidden from the sandbox"));
     }
-    Ok(real)
+    Ok(())
+}
+
+/// Opens an attachment to read, as the file it is now: a link at its last
+/// component is refused, not followed, and the path the open file really has
+/// must pass [`inside`]'s rules. The agent can change the workspace while the
+/// user reads the request, so a path checked earlier proves nothing here.
+fn open_attachment(jail: &Jail, path: &Path) -> Result<(std::fs::File, std::fs::Metadata), String> {
+    let raw = path.display().to_string();
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // O_NONBLOCK: a FIFO put in its place must not hang the host.
+        o.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_FLAG_OPEN_REPARSE_POINT: open a link itself, not where it leads.
+        o.custom_flags(0x0020_0000);
+    }
+    let f = o.open(path).map_err(|e| format!("{raw}: {e}"))?;
+    let m = f.metadata().map_err(|e| format!("{raw}: {e}"))?;
+    if !m.is_file() {
+        return Err(format!("{raw} is not a file"));
+    }
+    // A hard link to a file the sandbox hides has a path inside the workspace.
+    #[cfg(unix)]
+    if std::os::unix::fs::MetadataExt::nlink(&m) > 1 {
+        return Err(format!("{raw} has other hard links; arakun won't send it"));
+    }
+    let real = match open_path(&f) {
+        Some(p) => p,
+        None => crate::platform::canonicalize(path).map_err(|e| format!("{raw}: {e}"))?,
+    };
+    allowed(jail, &raw, &real)?;
+    Ok((f, m))
+}
+
+/// Where an open file really is, as the kernel has it.
+#[cfg(target_os = "linux")]
+fn open_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd as _;
+    std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn open_path(f: &std::fs::File) -> Option<PathBuf> {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL included, into buf.
+    let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if r == -1 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_path(_: &std::fs::File) -> Option<PathBuf> {
+    None
+}
+
+/// The device and inode of a file, where the platform has them.
+fn file_id(m: &std::fs::Metadata) -> Value {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        json!([m.dev(), m.ino()])
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        Value::Null
+    }
+}
+
+/// Reads `from` to the end, writing it to `to`, and returns its SHA-256 in hex.
+fn copy_hashed(
+    mut from: impl std::io::Read,
+    mut to: impl std::io::Write,
+) -> std::io::Result<String> {
+    use sha2::Digest as _;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        hash.update(&buf[..n]);
+        to.write_all(&buf[..n])?;
+    }
+    to.flush()?;
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// An attachment as the user approves it: its path, size, identity and
+/// contents' hash, so the send can tell it is still that file.
+fn stamp_attachment(jail: &Jail, raw: &str) -> Result<Value, String> {
+    let path = inside(jail, raw)?;
+    let (f, m) = open_attachment(jail, &path)?;
+    let sha256 = copy_hashed(f, std::io::sink()).map_err(|e| format!("{raw}: {e}"))?;
+    Ok(json!({"path": path, "size": m.len(), "id": file_id(&m), "sha256": sha256}))
+}
+
+fn size_label(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut v = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while v >= 1024.0 && unit + 1 < UNITS.len() {
+        v /= 1024.0;
+        unit += 1;
+    }
+    format!("{v:.1} {}", UNITS[unit])
+}
+
+/// A folder only this user can read, removed with everything in it on drop.
+struct Private(PathBuf);
+
+impl Private {
+    fn new(what: &str) -> Result<Self, String> {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!("arakun-{what}-{}-{t}", std::process::id()));
+        private_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        Ok(Self(d))
+    }
+}
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Makes a new folder, mode 0700 on Unix. It fails if the folder is there:
+/// someone else may have made it.
+fn private_dir(d: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(d)
+}
+
+/// Copies an approved attachment into `dir`, under its own name, and returns
+/// the copy. Refuses if the file is not the one the user approved.
+fn snapshot(jail: &Jail, a: &Value, dir: &Path) -> Result<PathBuf, String> {
+    let path = PathBuf::from(a["path"].as_str().unwrap_or_default());
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file", path.display()))?;
+    let changed = || {
+        format!(
+            "{} changed since you approved it; nothing was sent",
+            path.display()
+        )
+    };
+    let (f, m) = open_attachment(jail, &path).map_err(|e| format!("{}: {e}", changed()))?;
+    if Some(m.len()) != a["size"].as_u64() || file_id(&m) != a["id"] {
+        return Err(changed());
+    }
+    private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let copy = dir.join(name);
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let out = o
+        .open(&copy)
+        .map_err(|e| format!("{}: {e}", copy.display()))?;
+    let sha256 = copy_hashed(f, out).map_err(|e| format!("{}: {e}", path.display()))?;
+    if Some(sha256.as_str()) != a["sha256"].as_str() {
+        return Err(changed());
+    }
+    Ok(copy)
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -332,13 +524,8 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 .to_string();
             let attachments = list(args, "attachments")
                 .iter()
-                .map(|a| inside(jail, a))
+                .map(|a| stamp_attachment(jail, a))
                 .collect::<Result<Vec<_>, _>>()?;
-            for a in &attachments {
-                if !a.is_file() {
-                    return Err(format!("{} is not a file", a.display()));
-                }
-            }
             let more = if to.len() > 1 {
                 format!(" and {} more", to.len() - 1)
             } else {
@@ -356,10 +543,12 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 let names: Vec<String> = attachments
                     .iter()
                     .map(|a| {
-                        a.file_name()
+                        let name = Path::new(a["path"].as_str().unwrap_or_default())
+                            .file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
-                            .into_owned()
+                            .into_owned();
+                        format!("{name} ({})", size_label(a["size"].as_u64().unwrap_or(0)))
                     })
                     .collect();
                 summary.push_str(&format!(", attachments: {}", names.join(", ")));
@@ -563,11 +752,12 @@ fn scratch(what: &str) -> Result<PathBuf, String> {
 }
 
 /// Runs an approved action on the host; what comes back goes to the model.
-pub fn execute(v: &Value, workspace: &Path) -> Result<String, String> {
-    execute_with(v, workspace, &crate::agent::which)
+pub fn execute(v: &Value, jail: &Jail) -> Result<String, String> {
+    execute_with(v, jail, &crate::agent::which)
 }
 
-fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, String> {
+fn execute_with(v: &Value, jail: &Jail, find: Find) -> Result<String, String> {
+    let workspace = jail.workspace.as_path();
     let strs = |k: &str| {
         v[k].as_array()
             .into_iter()
@@ -588,15 +778,26 @@ fn execute_with(v: &Value, workspace: &Path, find: Find) -> Result<String, Strin
                 cmd.arg("--cc").arg(a);
             }
             cmd.arg("--subject").arg(str_of("subject"));
-            for a in strs("attachments") {
-                cmd.arg("--attach").arg(a);
+            // himalaya gets copies the broker made and owns, taken from the files
+            // the user approved: the workspace's paths may lead elsewhere by now.
+            let tmp = Private::new("mail")?;
+            for (i, a) in v["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let copy = snapshot(jail, a, &tmp.0.join(i.to_string()))?;
+                cmd.arg("--attach").arg(copy);
             }
             cmd.arg("--send").current_dir(workspace);
-            finish(run_with_timeout(
+            let out = run_with_timeout(
                 cmd,
                 Some(str_of("body").as_bytes()),
                 Duration::from_secs(120),
-            )?)
+            );
+            drop(tmp);
+            finish(out?)
         }
         "git_push" => {
             let (repo, url, branch, sha) = (
@@ -741,7 +942,10 @@ mod tests {
                 .unwrap()
                 .starts_with("Send mail to juan@x.com with subject \"Hola\"")
         );
-        assert_eq!(v["attachments"][0], json!(j.workspace.join("report.pdf")));
+        assert_eq!(
+            v["attachments"][0]["path"],
+            json!(j.workspace.join("report.pdf"))
+        );
         let v = prepare(
             &json!({"action": "send_email", "to": "a@x.com, b@y.com", "subject": "S", "body": "b"}),
             &j,
@@ -857,9 +1061,7 @@ mod tests {
         fake(&bin, "himalaya", &log);
         let j = jail(&ws);
         let v = prepare(&json!({"action": "send_email", "to": ["juan@x.com"], "cc": ["ana@y.com"], "subject": "Hola", "body": "cuerpo\n"}), &j).unwrap();
-        let out = execute_with(&v, &j.workspace, &|n| {
-            Some(bin.join(n)).filter(|p| p.exists())
-        });
+        let out = execute_with(&v, &j, &|n| Some(bin.join(n)).filter(|p| p.exists()));
         assert_eq!(out.unwrap().trim(), "sent");
         let logged = std::fs::read_to_string(&log).unwrap();
         assert_eq!(
@@ -903,7 +1105,7 @@ mod tests {
         .unwrap();
         assert_eq!(v["arakun_phrase"], "confirm: git push main to origin");
         assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
-        execute(&v, &j.workspace).unwrap();
+        execute(&v, &j).unwrap();
         assert!(!ws.join("pwned").exists());
         let pushed = crate::git::unpinned(&mut Command::new("git"))
             .args(["-C", "remote.git", "rev-parse", "main"])
@@ -919,7 +1121,7 @@ mod tests {
             &ws,
             "cd repo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two",
         );
-        assert!(execute(&v, &j.workspace).unwrap_err().contains("moved"));
+        assert!(execute(&v, &j).unwrap_err().contains("moved"));
         std::fs::remove_dir_all(&ws).unwrap();
     }
 
@@ -1058,9 +1260,153 @@ gpgsig -----BEGIN PGP SIGNATURE-----\\n \\n abc\\n -----END PGP SIGNATURE-----\\
             );
             assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
             assert!(!ws.join("pwned").exists(), "prepare ran {settings:?}");
-            execute(&v, &j.workspace).unwrap();
+            execute(&v, &j).unwrap();
             assert!(!ws.join("pwned").exists(), "execute ran {settings:?}");
         }
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    /// A himalaya that logs the path and contents of each attachment it gets.
+    #[cfg(unix)]
+    fn fake_mailer(dir: &Path, log: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let p = dir.join("himalaya");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --attach ]; then\n    \
+                 printf 'path %s\\n' \"$2\" >> '{log}'; cat \"$2\" >> '{log}'; printf '\\n' >> '{log}'; shift\n  \
+                 fi\n  shift\ndone\ncat > /dev/null\necho sent\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn mail_with(j: &Jail, attachment: &str) -> Value {
+        prepare(
+            &json!({"action": "send_email", "to": ["juan@x.com"], "subject": "S", "body": "b", "attachments": [attachment]}),
+            j,
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mail_attaches_a_private_copy_of_the_approved_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let ws = tmpdir("attach");
+        let bin = ws.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = ws.join("log");
+        fake_mailer(&bin, &log);
+        std::fs::write(ws.join("report.pdf"), "approved contents").unwrap();
+        let j = jail(&ws);
+        let v = mail_with(&j, "report.pdf");
+        assert!(
+            v["arakun_summary"]
+                .as_str()
+                .unwrap()
+                .ends_with("attachments: report.pdf (17 B)"),
+            "{v}"
+        );
+        let out = execute_with(&v, &j, &|n| Some(bin.join(n)).filter(|p| p.exists()));
+        assert_eq!(out.unwrap().trim(), "sent");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let (first, rest) = logged.split_once('\n').unwrap();
+        let copy = Path::new(first.strip_prefix("path ").unwrap());
+        assert!(!copy.starts_with(&j.workspace), "{}", copy.display());
+        assert_eq!(copy.file_name().unwrap(), "report.pdf");
+        assert_eq!(rest, "approved contents\n");
+        assert!(!copy.exists(), "the copy outlived the send");
+
+        // The copy and its folder are the user's alone.
+        let dir = scratch("attach-modes").unwrap().join("0");
+        let copy = snapshot(&j, &v["attachments"][0], &dir).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&copy), 0o600);
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mail_refuses_a_link_swapped_in_after_approval() {
+        let ws = tmpdir("attach-link");
+        let away = tmpdir("attach-link-away");
+        let bin = ws.join("bin");
+        std::fs::create_dir_all(ws.join("docs")).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = ws.join("log");
+        fake_mailer(&bin, &log);
+        std::fs::write(ws.join("report.pdf"), "approved").unwrap();
+        std::fs::write(ws.join("docs/report.pdf"), "approved").unwrap();
+        std::fs::write(away.join("report.pdf"), "approved").unwrap();
+        std::fs::write(away.join("id_ed25519"), "secret").unwrap();
+        let j = jail(&ws);
+        let find = |n: &str| Some(bin.join(n)).filter(|p| p.exists());
+
+        // The file itself becomes a link to a secret.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::remove_file(ws.join("report.pdf")).unwrap();
+        std::os::unix::fs::symlink(away.join("id_ed25519"), ws.join("report.pdf")).unwrap();
+        let e = execute_with(&v, &j, &find).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // A folder on its path becomes a link out of the workspace.
+        let v = mail_with(&j, "docs/report.pdf");
+        std::fs::rename(ws.join("docs"), ws.join("docs-old")).unwrap();
+        std::os::unix::fs::symlink(&away, ws.join("docs")).unwrap();
+        let e = execute_with(&v, &j, &find).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        assert!(!log.exists(), "himalaya ran");
+        // A hard link to a file outside is refused up front.
+        std::fs::hard_link(away.join("id_ed25519"), ws.join("key")).unwrap();
+        let e = prepare(
+            &json!({"action": "send_email", "to": ["juan@x.com"], "subject": "S", "body": "b", "attachments": ["key"]}),
+            &j,
+        )
+        .unwrap_err();
+        assert!(e.contains("hard links"), "{e}");
+        std::fs::remove_dir_all(&ws).unwrap();
+        std::fs::remove_dir_all(&away).unwrap();
+    }
+
+    #[test]
+    fn mail_refuses_a_file_replaced_after_approval() {
+        let ws = tmpdir("attach-replaced");
+        let j = jail(&ws);
+        let out = scratch("attach-replaced-out").unwrap();
+        std::fs::write(ws.join("report.pdf"), "approved").unwrap();
+
+        // Another file, of the same size, moved over it.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::write(ws.join("other"), "replaced").unwrap();
+        std::fs::rename(ws.join("other"), ws.join("report.pdf")).unwrap();
+        let e = snapshot(&j, &v["attachments"][0], &out.join("0")).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // The same file, rewritten in place to the same size.
+        let v = mail_with(&j, "report.pdf");
+        std::fs::write(ws.join("report.pdf"), "rewrote!").unwrap();
+        let e = snapshot(&j, &v["attachments"][0], &out.join("1")).unwrap_err();
+        assert!(e.contains("changed since you approved it"), "{e}");
+
+        // Unchanged, it is copied.
+        let v = mail_with(&j, "report.pdf");
+        let copy = snapshot(&j, &v["attachments"][0], &out.join("2")).unwrap();
+        assert_eq!(std::fs::read_to_string(copy).unwrap(), "rewrote!");
+        std::fs::remove_dir_all(&out).unwrap();
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn sizes_read_as_people_write_them() {
+        assert_eq!(size_label(17), "17 B");
+        assert_eq!(size_label(2048), "2.0 KB");
+        assert_eq!(size_label(5 * 1024 * 1024 + 1024 * 512), "5.5 MB");
     }
 }

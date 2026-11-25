@@ -77,8 +77,11 @@ pub fn agent_feedback(
     limits: &mut RateLimit,
     decide: impl Fn() -> Result<(), Refused>,
 ) -> Result<Prepared, String> {
-    let Some(kind_at) = ids::KINDS.iter().position(|k| *k == kind) else {
-        return Err(format!("kind must be one of {}", ids::KINDS.join(", ")));
+    let Some(kind_at) = ids::AGENT_KINDS.iter().position(|k| *k == kind) else {
+        return Err(format!(
+            "kind must be one of {}",
+            ids::AGENT_KINDS.join(", ")
+        ));
     };
     let text = text.trim();
     if text.is_empty() {
@@ -194,10 +197,10 @@ mod tests {
         let mut l = RateLimit::default();
         let home = telemetry::home();
         let text = format!("  see {home}/secret/file.rs and https://x.io/a?t=1 \nmore");
-        for (i, k) in ids::KINDS.iter().enumerate() {
+        for (i, k) in ids::AGENT_KINDS.iter().enumerate() {
             let p = run(k, &text, "/e", Instant::now(), &mut l, Ok(())).unwrap();
             let got = kind_of(&s.questions[0], &p.answers[0].1).unwrap();
-            assert_eq!(got.as_str(), ids::KINDS[i]);
+            assert_eq!(got.as_str(), ids::AGENT_KINDS[i]);
             assert_eq!(p.agent, "codex");
             if home.len() >= 2 {
                 let Answer::Text(t) = &p.answers[1].1 else {
@@ -214,6 +217,8 @@ mod tests {
         let mut l = RateLimit::default();
         let t = Instant::now();
         assert!(run("nope", "x", "/e", t, &mut l, Ok(())).is_err());
+        // A support question needs a person to answer it.
+        assert!(run("support", "x", "/e", t, &mut l, Ok(())).is_err());
         assert!(run("bug", " \n ", "/e", t, &mut l, Ok(())).is_err());
         assert!(run("bug", &"a".repeat(4001), "/e", t, &mut l, Ok(())).is_err());
         assert!(run("bug", &"é".repeat(4000), "/e", t, &mut l, Ok(())).is_ok());

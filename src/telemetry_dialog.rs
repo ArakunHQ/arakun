@@ -55,7 +55,7 @@ pub const POINTS: [(&str, &str); 4] = [
     ),
     (
         "message01",
-        "Feedback you choose to send, even with these off. Bug reports may become a public GitHub issue, without paths, links or keys.",
+        "Feedback you choose to send, even with these off. Apart from support questions, it may become a public GitHub issue, without paths, links or keys.",
     ),
     (
         "view-off",

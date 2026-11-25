@@ -189,7 +189,7 @@ the account host. Do these once, in this order:
 3. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
    grant it if it lacks it, since the deploy applies the migrations. The environment's
    deployment rules must let `cloud-hotfix/*` branches through, where they named
-   `relay-hotfix/*` before.
+   `relay-hotfix/*` before, and `main`, for a manual deploy of `main`.
 4. Set the secrets on the new Worker (see Deploying, step 3):
 
    ```sh
@@ -252,7 +252,16 @@ A published release deploys the production Worker by itself:
 `npx wrangler deploy --env production` from the release's tag, so a change on `main`
 waits for the next version. A hotfix without a new version goes on a
 `cloud-hotfix/v<version>` branch made from the latest release's tag; the steps are at
-the top of that workflow. The deploy's message names the release or the hotfix. The
+the top of that workflow. To ship what is on `main` without a new version, run the
+workflow by hand on `main`:
+
+```sh
+gh workflow run cloud-deploy.yml --ref main
+```
+
+It deploys only if `main` contains the latest release's tag. A later redeploy of that
+tag, or a hotfix made from it, goes back to the release without `main`'s changes. The
+deploy's message names the release, the hotfix or `main`'s commit. The
 commands below do the same by hand. They use `--env production`,
 which deploys the Worker `arakun-cloud`. Without it, wrangler deploys the top-level
 Worker `arakun-cloud-dev`, a separate Worker with its own database, rate-limit

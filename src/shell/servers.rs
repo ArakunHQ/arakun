@@ -1846,6 +1846,13 @@ impl Shell {
         let Some(agent) = env.session_index(new).map(|i| env.sessions[i].agent) else {
             return;
         };
+        self.rename_phone_session(
+            &phone_session_id(server, old),
+            &phone_session_id(server, new),
+        );
+        let Some(env) = self.find_env_mut(&env_path) else {
+            return;
+        };
         if let Some(i) = env.session_index(old) {
             let gone = env.sessions.remove(i);
             if let Some(live) = gone.live {

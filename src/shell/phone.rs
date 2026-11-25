@@ -195,6 +195,17 @@ impl Shell {
             .collect()
     }
 
+    /// A session took a new id: phones that muted it keep it muted.
+    pub(super) fn rename_phone_session(&mut self, old: &str, new: &str) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        let changed = link.access.lock().unwrap().rename_muted(old, new);
+        if changed {
+            self.save_devices();
+        }
+    }
+
     /// Sessions are deleted: no phone keeps them muted.
     pub(super) fn forget_phone_sessions(&mut self, pids: &[String]) {
         let Some(link) = &self.phone else {

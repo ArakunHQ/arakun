@@ -1403,6 +1403,7 @@ impl Shell {
             return;
         };
         let old = self.env_mut().sessions.remove(ix);
+        let old_pid = self.phone_id(&env_path, &old_id).to_string();
         let mut agent_session = old.meta.as_ref().and_then(|m| m.session_id.clone());
         if let Some(live) = &old.live {
             let t = live.thread.read(cx);
@@ -1416,6 +1417,7 @@ impl Shell {
         forget_alerts(&old_id);
 
         let id = new_session_id();
+        self.rename_phone_session(&old_pid, &id);
         let mut session = Session::new(id.clone(), old.title.clone(), agent);
         (session.added, session.removed) = (old.added, old.removed);
         session.ci_run = old.ci_run;

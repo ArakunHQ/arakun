@@ -772,6 +772,23 @@ impl Access {
         changed
     }
 
+    /// A session took a new id (it was continued with another agent): a
+    /// device that muted it keeps it muted. Whether any changed.
+    pub fn rename_muted(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for d in &mut self.devices {
+            if let Some(i) = d.muted.iter().position(|s| s == old) {
+                if d.muted.iter().any(|s| s == new) {
+                    d.muted.remove(i);
+                } else {
+                    d.muted[i] = new.to_string();
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// The device with this id that came in through `door`. The relay names
     /// ids itself, so one could equal the id of a device paired on the
     /// network: a request through one door must never change the other's.
@@ -2641,6 +2658,21 @@ mod tests {
         assert!(a.set_muted("same", Door::Relay, "s", true));
         assert!(a.devices[0].muted.is_empty());
         assert_eq!(a.devices[1].muted, vec!["s".to_string()]);
+    }
+
+    #[test]
+    fn rename_muted_carries_the_mute_to_the_new_id() {
+        let mut a = relay_device("a");
+        a.muted = vec!["x".into(), "old".into()];
+        let mut b = relay_device("b");
+        b.muted = vec!["old".into(), "new".into()];
+        let access = Access::new(vec![a, b, relay_device("c")], "pk".into());
+        let mut g = access.lock().unwrap();
+        assert!(g.rename_muted("old", "new"));
+        assert_eq!(g.devices[0].muted, vec!["x".to_string(), "new".to_string()]);
+        assert_eq!(g.devices[1].muted, vec!["new".to_string()]);
+        assert!(g.devices[2].muted.is_empty());
+        assert!(!g.rename_muted("old", "new"));
     }
 
     #[test]

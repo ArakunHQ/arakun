@@ -2028,6 +2028,10 @@ impl Daemon {
                         place.pick(agent, *s, value);
                     }
                 }
+                // Before the old one goes: a phone that muted it keeps the new one muted.
+                if this.access.lock().unwrap().rename_muted(&id, &new) {
+                    this.save_devices();
+                }
                 this.drop_session(&id, cx);
                 this.attach(&new, thread.clone(), cx);
                 // Its adapter may have gone missing before anything listened.

@@ -13,13 +13,18 @@
 //   GET    /admin/cloud/requests                  → requests for cloud access, pending first
 //   PUT    /admin/cloud/requests/<github_id>/grant   → grants one and the `cloud` flag, { by? }
 //   PUT    /admin/cloud/requests/<github_id>/decline → declines a pending one, { by? }
+//   GET    /admin/log                             → what was changed and by whom, newest first (admin_log.ts)
 //
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
 // Block, plan and notice delete answer 204; a new notice answers { id }. Each of them, and the sessions route, makes the
 // account's machine objects recheck their sockets at once. The cloud request
 // routes answer with the request (cloud_access.ts).
+//
+// Every route that changes something writes one row to the log, with the
+// operator named by the X-Arakun-Operator-* headers (null for curl).
 
+import { listLog, operator, record, type Operator } from "./admin_log";
 import { decideRequest, listRequests } from "./cloud_access";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
@@ -34,22 +39,24 @@ const MAX_BODY = 4096;
 export async function admin(request: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   if (!(await authorized(request, env))) return error(401, "unauthorized");
+  const op = operator(request);
   const flag = /^\/admin\/users\/([^/]+)\/flags\/([^/]+)$/.exec(path);
-  if (flag && (request.method === "PUT" || request.method === "DELETE")) return setFlag(request.method, env, flag[1]!, flag[2]!);
+  if (flag && (request.method === "PUT" || request.method === "DELETE")) return setFlag(request.method, env, op, flag[1]!, flag[2]!);
   const sessions = /^\/admin\/users\/([^/]+)\/sessions$/.exec(path);
-  if (sessions && request.method === "DELETE") return closeSessions(env, sessions[1]!);
+  if (sessions && request.method === "DELETE") return closeSessions(env, op, sessions[1]!);
   const block = /^\/admin\/users\/([^/]+)\/block$/.exec(path);
-  if (block && request.method === "PUT") return setBlock(request, env, block[1]!);
-  if (block && request.method === "DELETE") return unblock(env, block[1]!);
+  if (block && request.method === "PUT") return setBlock(request, env, op, block[1]!);
+  if (block && request.method === "DELETE") return unblock(env, op, block[1]!);
   const plan = /^\/admin\/users\/([^/]+)\/plan$/.exec(path);
-  if (plan && request.method === "PUT") return setPlan(request, env, plan[1]!);
+  if (plan && request.method === "PUT") return setPlan(request, env, op, plan[1]!);
   if (path === "/admin/machines" && request.method === "GET") return listMachines(env);
-  if (path === "/admin/notices" && request.method === "POST") return createNotice(request, env);
+  if (path === "/admin/notices" && request.method === "POST") return createNotice(request, env, op);
   const notice = /^\/admin\/notices\/([^/]+)$/.exec(path);
-  if (notice && request.method === "DELETE") return deleteNotice(env, notice[1]!);
+  if (notice && request.method === "DELETE") return deleteNotice(env, notice[1]!, op);
+  if (path === "/admin/log" && request.method === "GET") return listLog(env, url);
   if (path === "/admin/cloud/requests" && request.method === "GET") return listRequests(env, url);
   const decide = /^\/admin\/cloud\/requests\/([^/]+)\/(grant|decline)$/.exec(path);
-  if (decide && request.method === "PUT") return decideRequest(request, env, decide[1]!, decide[2] as "grant" | "decline");
+  if (decide && request.method === "PUT") return decideRequest(request, env, decide[1]!, decide[2] as "grant" | "decline", op);
   return error(404, "not found");
 }
 
@@ -59,7 +66,7 @@ function githubId(text: string): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
-async function setFlag(method: "PUT" | "DELETE", env: Env, idText: string, flag: string): Promise<Response> {
+async function setFlag(method: "PUT" | "DELETE", env: Env, op: Operator, idText: string, flag: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   if (!FLAG.test(flag)) return error(400, "a flag is a lower-case letter, then up to 31 of a-z, 0-9 and _");
@@ -78,23 +85,25 @@ async function setFlag(method: "PUT" | "DELETE", env: Env, idText: string, flag:
           flagsQuery(db, id),
         ])
       : await db.batch([db.prepare("DELETE FROM user_flags WHERE github_id = ? AND flag = ?").bind(id, flag), flagsQuery(db, id)]);
+  await record(env, op, method === "PUT" ? "flag.grant" : "flag.revoke", id, { flag });
   return Response.json({ github_id: id, flags: flagList(results[results.length - 1]!) });
 }
 
 /// Ends every session of the user, as when a session token may have leaked.
 /// The user can sign in again; take their flags away to keep them out.
-async function closeSessions(env: Env, idText: string): Promise<Response> {
+async function closeSessions(env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   const result = await env.DB.prepare("DELETE FROM sessions WHERE github_id = ?").bind(id).run();
   await recheckAccount(env, id);
+  await record(env, op, "sessions.close", id, { closed: result.meta.changes });
   return Response.json({ github_id: id, closed: result.meta.changes });
 }
 
 /// Keeps the account off the relay: its sockets close now and new ones are
 /// refused. It can still sign in; `GET /machines` answers it 403 with
 /// `{ error: "blocked", reason }`, which is how it learns why.
-async function setBlock(request: Request, env: Env, idText: string): Promise<Response> {
+async function setBlock(request: Request, env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   const body = request.headers.get("Content-Length") === "0" || !request.body ? {} : await jsonBody(request, MAX_BODY);
@@ -111,19 +120,21 @@ async function setBlock(request: Request, env: Env, idText: string): Promise<Res
     .bind(id, now(), reason ?? null)
     .run();
   await recheckAccount(env, id);
+  await record(env, op, "block", id, { reason: reason ?? null });
   return new Response(null, { status: 204 });
 }
 
-async function unblock(env: Env, idText: string): Promise<Response> {
+async function unblock(env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   await env.DB.prepare("UPDATE users SET blocked_at = NULL, blocked_reason = NULL WHERE github_id = ?").bind(id).run();
+  await record(env, op, "unblock", id);
   return new Response(null, { status: 204 });
 }
 
 /// The plan names a key of the KV `plans`; one KV does not know is the free
 /// plan. Open sockets go by the new plan after the recheck.
-async function setPlan(request: Request, env: Env, idText: string): Promise<Response> {
+async function setPlan(request: Request, env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   const body = await jsonBody(request, MAX_BODY);
@@ -136,6 +147,7 @@ async function setPlan(request: Request, env: Env, idText: string): Promise<Resp
     .bind(id, now(), plan)
     .run();
   await recheckAccount(env, id);
+  await record(env, op, "plan.set", id, { plan });
   return new Response(null, { status: 204 });
 }
 

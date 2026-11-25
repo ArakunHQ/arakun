@@ -66,4 +66,48 @@ struct ModelTests {
         #expect(s.changes.added == 2)
         #expect(s.turnStarted != nil)
     }
+
+    @Test func readsTheChangesTurnByTurn() {
+        let turns = ChangedTurn.list(json(#"""
+        {"type":"changes","id":"s1","turns":[
+         {"entry":4,"text":"Fix the limit","at":1700000000,"files":[
+          {"path":"cloud/src/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[8,1]]},
+          {"path":"README.md","name":"README.md","added":1,"removed":0,"diffs":[[9,0],["x",1],[3],[1e20,0]]}]},
+         {"entry":0,"text":"","at":0,"files":[]}]}
+        """#))
+        #expect(turns.count == 2)
+        #expect(turns[0].text == "Fix the limit")
+        #expect(turns[0].at == Date(timeIntervalSince1970: 1_700_000_000))
+        #expect(turns[1].at == nil)
+        let relay = turns[0].files[0]
+        #expect(relay.diffs == [DiffRef(entry: 6, index: 0), DiffRef(entry: 8, index: 1)])
+        #expect(relay.dir == "cloud/src")
+        #expect(relay.added == 12)
+        // A pair that names no diff is left out, the file stays.
+        #expect(turns[0].files[1].diffs == [DiffRef(entry: 9, index: 0)])
+        #expect(turns[0].files[1].dir == "")
+        #expect(ChangedTurn.list(json(#"{"type":"changes"}"#)).isEmpty)
+    }
+
+    @Test func readsADiffWithItsHunksAndLines() throws {
+        let d = try #require(FileDiff(json(#"""
+        {"type":"diff","id":"s1","entry":6,"index":0,"path":"src/a.rs","name":"a.rs","added":1,"removed":1,
+         "new_file":false,"deleted":false,"cut":40,
+         "lines":["@@ -1,3 +1,3 @@ fn main",[" ",1,"fn main() {"],["-",2,"    old();"],["+",2,"    new();"],["+",null,""],[1,2],{"x":1}]}
+        """#)))
+        #expect(d.ref == DiffRef(entry: 6, index: 0))
+        #expect(d.path == "src/a.rs")
+        #expect(d.cut == 40)
+        #expect(d.lines == [
+            .hunk("@@ -1,3 +1,3 @@ fn main"),
+            .text(mark: " ", number: 1, text: "fn main() {"),
+            .text(mark: "-", number: 2, text: "    old();"),
+            .text(mark: "+", number: 2, text: "    new();"),
+            .text(mark: "+", number: nil, text: ""),
+        ])
+        let new = try #require(FileDiff(json(#"{"entry":1,"index":2,"new_file":true,"lines":[]}"#)))
+        #expect(new.newFile && new.cut == 0)
+        // Without its place there is nowhere to show it.
+        #expect(FileDiff(json(#"{"type":"diff","path":"a"}"#)) == nil)
+    }
 }

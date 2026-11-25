@@ -10,6 +10,8 @@ struct SessionView: View {
     /// Whether the end of the transcript is on screen; new entries follow only then.
     @State private var atEnd = true
     @State private var unseen = false
+    /// The files the session changed and their diffs, in a sheet over it.
+    @State private var showingChanges = false
     @Environment(\.accessibilityReduceMotion) private var still
 
     var body: some View {
@@ -18,7 +20,7 @@ struct SessionView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     if let s {
-                        SessionHeader(session: s)
+                        SessionHeader(session: s) { showingChanges = true }
                         if s.from > 0 {
                             Button(model.loadingOlder ? "Loading…" : "Show \(s.from) earlier entries") { model.loadOlder() }
                                 .buttonStyle(.outline)
@@ -122,6 +124,7 @@ struct SessionView: View {
                 .frame(maxWidth: 260)
             }
         }
+        .sheet(isPresented: $showingChanges) { ChangesView(id: id) }
         .onAppear { if model.session?.id != id { model.open(id) } }
         .onDisappear { if model.session?.id == id { model.close() } }
     }
@@ -150,6 +153,7 @@ struct SessionView: View {
 /// What the session has cost and changed so far, above its first entry.
 private struct SessionHeader: View {
     let session: LiveSession
+    let openChanges: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -159,11 +163,23 @@ private struct SessionHeader: View {
                 }
                 Spacer(minLength: 0)
                 if session.changes.files > 0 {
-                    HStack(spacing: 6) {
-                        Icon("file-diff", size: 13).foregroundStyle(Color.textFaint)
-                        Text("\(session.changes.files) files").font(.mono(11.5)).foregroundStyle(Color.textMuted)
-                        Changes(added: session.changes.added, removed: session.changes.removed)
+                    // The counts open the list of files; the outline says they can be tapped.
+                    Button(action: openChanges) {
+                        HStack(spacing: 6) {
+                            Icon("file-diff", size: 13).foregroundStyle(Color.textFaint)
+                            Text(session.changes.files == 1 ? "1 file" : "\(session.changes.files) files")
+                                .font(.mono(11.5))
+                                .foregroundStyle(Color.textMuted)
+                            Changes(added: session.changes.added, removed: session.changes.removed)
+                            Icon("arrow-right01", size: 11).foregroundStyle(Color.textFaint)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(minHeight: 32)
+                        .background(RoundedRectangle(cornerRadius: Radius.control).strokeBorder(Color.line))
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show changes")
                 }
             }
         }

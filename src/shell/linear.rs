@@ -32,6 +32,9 @@ impl Shell {
     ) {
         match ev {
             LinearEvent::Open(url) => {
+                if !may_open(url) {
+                    return;
+                }
                 if self.has_projects() {
                     let env_path = self.env().path.clone();
                     self.push_browser_tab(&env_path, url.clone(), true, true, window, cx);
@@ -60,6 +63,30 @@ impl Shell {
                     cx,
                 );
             }
+        }
+    }
+}
+
+/// The link comes from Linear's answer; only a web page may open, never a
+/// `file:` or `javascript:` link.
+fn may_open(url: &str) -> bool {
+    url.starts_with("https://")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::may_open;
+
+    #[test]
+    fn only_https_links_open() {
+        assert!(may_open("https://linear.app/a/issue/ENG-1"));
+        for url in [
+            "http://linear.app",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "",
+        ] {
+            assert!(!may_open(url), "{url}");
         }
     }
 }

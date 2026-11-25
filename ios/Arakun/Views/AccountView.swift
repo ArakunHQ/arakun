@@ -151,6 +151,10 @@ struct AccountView: View {
                 noticeSwitch(.input, "Needs permission or answer")
                 divider
                 noticeSwitch(.error, "Something went wrong")
+                divider
+                noticeTime("Only when I'm away for", NoticeChoice.awayChoices, \.awayAfterSecs)
+                divider
+                noticeTime("Turns shorter than this stay quiet", NoticeChoice.shortestChoices, \.minTurnSecs)
             }
         }
     }
@@ -171,6 +175,28 @@ struct AccountView: View {
                 model.setNotices(choice)
             }
         ))
+        .font(.body16)
+        .padding(16)
+    }
+
+    /// One of the times the computer waits for; 0 turns the rule off.
+    private func noticeTime(_ title: String, _ options: [NoticeChoice.Option],
+                            _ key: WritableKeyPath<NoticeChoice, Int> & Sendable) -> some View {
+        let value = model.notices?[keyPath: key] ?? NoticeChoice()[keyPath: key]
+        return Picker(title, selection: Binding(
+            get: { value },
+            set: { secs in
+                guard var choice = model.notices else { return }
+                choice[keyPath: key] = secs
+                model.setNotices(choice)
+            }
+        )) {
+            ForEach(NoticeChoice.Option.list(options, keeping: value), id: \.secs) { o in
+                Text(o.label).tag(o.secs)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(Color.textMuted)
         .font(.body16)
         .padding(16)
     }

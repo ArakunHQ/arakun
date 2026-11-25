@@ -143,23 +143,69 @@ public struct NoticeChoice: Equatable, Sendable {
     public var done: Bool
     public var input: Bool
     public var error: Bool
+    /// How long the person must have been away from the computer before a
+    /// notice comes; 0 sends them always.
+    public var awayAfterSecs: Int
+    /// A turn that finishes sooner than this sends no notice; 0 lets every
+    /// one through.
+    public var minTurnSecs: Int
 
-    public init(done: Bool = true, input: Bool = true, error: Bool = true) {
+    public init(done: Bool = true, input: Bool = true, error: Bool = true, awayAfterSecs: Int = 120, minTurnSecs: Int = 30) {
         self.done = done
         self.input = input
         self.error = error
+        self.awayAfterSecs = awayAfterSecs
+        self.minTurnSecs = minTurnSecs
     }
 
-    /// The computer's `notices`; what it leaves out stays on.
+    /// The computer's `notices`; what it leaves out stays on, and the times
+    /// it leaves out are the computer's defaults.
     public init(_ j: JSON) {
         func on(_ key: String) -> Bool {
             if case .bool(let b) = j[key] { return b }
             return true
         }
-        self.init(done: on("done"), input: on("input"), error: on("error"))
+        func secs(_ key: String, _ fallback: Int) -> Int {
+            guard let n = j[key].int, n >= 0 else { return fallback }
+            return n
+        }
+        self.init(done: on("done"), input: on("input"), error: on("error"),
+                  awayAfterSecs: secs("away_after_secs", 120), minTurnSecs: secs("min_turn_secs", 30))
     }
 
-    public var json: [String: Any] { ["done": done, "input": input, "error": error] }
+    public var json: [String: Any] {
+        ["done": done, "input": input, "error": error, "away_after_secs": awayAfterSecs, "min_turn_secs": minTurnSecs]
+    }
+
+    /// One entry of a list of times to pick from.
+    public struct Option: Equatable, Hashable, Sendable {
+        public let secs: Int
+        public let label: String
+
+        public init(secs: Int, label: String) {
+            self.secs = secs
+            self.label = label
+        }
+
+        /// `options`, with `secs` added when it is not one of them (set from
+        /// another device), so a picker always shows what the computer keeps.
+        public static func list(_ options: [Option], keeping secs: Int) -> [Option] {
+            if options.contains(where: { $0.secs == secs }) { return options }
+            return options + [Option(secs: secs, label: "\(secs) s")]
+        }
+    }
+
+    /// "Only when I'm away for", as the phone page offers it.
+    public static let awayChoices: [Option] = [
+        Option(secs: 0, label: "Always"), Option(secs: 60, label: "1 min"), Option(secs: 120, label: "2 min"),
+        Option(secs: 300, label: "5 min"), Option(secs: 900, label: "15 min"),
+    ]
+
+    /// "Turns shorter than this stay quiet", as the phone page offers it.
+    public static let shortestChoices: [Option] = [
+        Option(secs: 0, label: "Off"), Option(secs: 15, label: "15 s"), Option(secs: 30, label: "30 s"),
+        Option(secs: 60, label: "1 min"), Option(secs: 300, label: "5 min"),
+    ]
 
     public subscript(_ kind: NoticeKind) -> Bool {
         get {
@@ -195,16 +241,35 @@ public struct PushState: Equatable, Sendable {
     /// Whether the computer holds a subscription for this phone.
     public let notifying: Bool
     public let notices: NoticeChoice
+    /// The sessions this phone hears nothing about, from `GET /me`. Empty from
+    /// a computer that knows no muting, and in the answer to `POST /push`.
+    public let muted: [String]
 
-    public init(notifying: Bool, notices: NoticeChoice) {
+    public init(notifying: Bool, notices: NoticeChoice, muted: [String] = []) {
         self.notifying = notifying
         self.notices = notices
+        self.muted = muted
     }
 
     public init?(_ j: JSON) {
         guard case .object = j else { return nil }
         notifying = j["notifying"].bool
         notices = NoticeChoice(j["notices"])
+        muted = j["muted"].array.compactMap(\.string)
+    }
+}
+
+/// `POST /mute` to the computer: one session's notices off, or on again.
+public enum Mute {
+    /// The request's body.
+    public static func body(session: String, muted: Bool) -> [String: Any] {
+        ["session": session, "muted": muted]
+    }
+
+    /// The muted sessions in the computer's answer; nil when it sent none.
+    public static func list(_ j: JSON) -> [String]? {
+        guard case .array(let a) = j["muted"] else { return nil }
+        return a.compactMap(\.string)
     }
 }
 

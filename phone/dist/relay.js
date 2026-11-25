@@ -5,8 +5,8 @@
 // the relay only passes bytes along. Inside the channel the phone speaks the
 // same JSON it would on a socket of its own, plus `{req}` for what it would
 // ask over HTTP; the computer answers `{res}` in pieces, and sends any other
-// message too big for one relay frame as `{part}` pieces. Loaded before
-// app.js, which uses `RELAY.detect()`, `RELAY.boot()` and the link `open` gives.
+// message too big for one relay frame as `{part}` pieces. Loaded before the
+// page's bundle, which uses `RELAY.detect()`, `RELAY.boot()` and the link `open` gives.
 "use strict";
 
 const RELAY = (() => {

@@ -108,7 +108,9 @@ OpenSSF Scorecard run on `main` and weekly, with results in the Security tab.
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
 you touched (`cargo test --locked --no-default-features <module>`, for example
-`terminal` or `design_lint` for a UI change). The full test suite, cargo-deny, zizmor
+`terminal` or `design_lint` for a UI change). For `phone/`, run
+`(cd phone && npm ci && npm test && npm run build)` and commit the rebuilt
+`phone/dist`. The full test suite, cargo-deny, zizmor
 and the other platforms can be left to CI on your draft pull request; fix what it
 finds there. These are the commands CI runs:
 
@@ -127,7 +129,7 @@ cargo deny check
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npx tsc --noEmit && npx vitest run)
 (cd cloud/admin && npm ci && npm run check && npm test && npm run build)
-(cd phone && node --test "test/*.test.mjs")
+(cd phone && npm ci && npm test && tools/check-dist.sh)
 
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
@@ -185,6 +187,9 @@ Some notes:
 - The phone tests check the phone's encryption against vectors the Rust side writes, and
   so do the Android app's (`android/kit`). If you change the format in
   `core/src/phone`, update every side.
+- The phone page in `phone/` is built: the app embeds `phone/dist` and the Worker in
+  `cloud/` serves it, so `phone/dist` is committed. `npm run build` in `phone/` writes
+  it, and `tools/check-dist.sh` fails when it is not what the build writes now.
 
 ### Git hooks
 

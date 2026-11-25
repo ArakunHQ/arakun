@@ -1,15 +1,10 @@
-/* Arakun's phone page, in the brand's black and white: cards a step off the
-   ground, white (black in light) for the one main action on a screen and
-   amber only for what waits on you. The light set of the same roles is under
-   [data-theme="light"]. */
-/* The brand's type: Geist for what people read, Geist Mono for what a machine
-   reads. Served with the page, since phones rarely have them installed. Only
-   the weights the brand uses (400, 500, 600; mono stops at 500). */
-@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("fonts/Geist-Regular.woff2") format("woff2"); }
-@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("fonts/Geist-Medium.woff2") format("woff2"); }
-@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("fonts/Geist-SemiBold.woff2") format("woff2"); }
-@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); }
-@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("fonts/GeistMono-Medium.woff2") format("woff2"); }
+/* The old page's look, copied from the old public/app.css. It goes when
+   the tokens arrive (Task 8). */
+@font-face { font-family: "Geist"; font-weight: 400; font-display: swap; src: url("/fonts/Geist-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 500; font-display: swap; src: url("/fonts/Geist-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Geist"; font-weight: 600; font-display: swap; src: url("/fonts/Geist-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 400; font-display: swap; src: url("/fonts/GeistMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Geist Mono"; font-weight: 500; font-display: swap; src: url("/fonts/GeistMono-Medium.woff2") format("woff2"); }
 
 :root {
   --bg: #0b0b0b;
@@ -92,7 +87,7 @@
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { height: var(--vvh, 100%); margin: 0; overscroll-behavior: none; }
+html, body { height: var(--vh, 100%); margin: 0; overscroll-behavior: none; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -123,14 +118,6 @@ a { color: var(--link); }
 .hdr h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.03em; }
 .hdr .sub { font-size: 12px; color: var(--subtle); margin-top: 1px; }
 .hdr .grow { flex: 1; min-width: 0; }
-.hdr .title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.iconbtn {
-  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none;
-  color: var(--text); background: var(--card); box-shadow: inset 0 1px 0 var(--fill), 0 0 0 1px var(--border);
-}
-.iconbtn:active { background: var(--fill-hover); }
-.iconbtn svg { width: 18px; height: 18px; }
-
 .badge {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
@@ -187,6 +174,67 @@ a.btn { text-decoration: none; }
 /* Why the list of computers is shown again: the relay sent the page back. */
 .settings .err { font-size: 13px; color: var(--error); padding: 0 4px; }
 
+/* ---- the cards that get the app on the home screen and notifications on ---- */
+.setup {
+  display: flex; gap: 12px; align-items: center; margin: 10px 0 0;
+  padding: 12px 10px 12px 12px; border-radius: var(--r-xl);
+  background: rgba(255, 181, 71, 0.08); border: 1px solid rgba(255, 181, 71, 0.22);
+}
+.setup .sicon { width: 22px; height: 22px; flex: none; color: var(--accent); }
+.setup .sicon svg { width: 100%; height: 100%; }
+.setup .body { flex: 1; min-width: 0; }
+.setup .t { font-weight: 500; font-size: 14px; }
+.setup .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
+.setup .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.setup .x { width: 44px; height: 44px; margin: -8px -8px -8px 0; flex: none; color: var(--faint); display: flex; align-items: center; justify-content: center; }
+.setup .x svg { width: 16px; height: 16px; }
+
+/* ---- phone: grouped settings rows ---- */
+.settings { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 18px; }
+.settings .group { margin-top: 0; background: none; padding: 0; border-radius: 0; }
+.glabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); padding: 0 4px 6px; }
+.gbox { background: var(--fill); border: 1px solid var(--border); border-radius: var(--r-xl); overflow: hidden; }
+.prow {
+  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  padding: 12px 14px; border-top: 1px solid var(--border);
+}
+.prow:first-child { border-top: 0; }
+.prow .ricon { width: 20px; height: 20px; flex: none; color: var(--subtle); }
+.prow .ricon svg { width: 100%; height: 100%; }
+.prow .rbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.prow .rt { font-size: 14px; font-weight: 500; }
+.prow .rs { font-size: 12px; line-height: 16px; color: var(--subtle); }
+.prow .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.prow.danger .rt, .prow.danger .ricon { color: var(--error); }
+button.prow:active { background: var(--fill-hover); }
+/* A row with two buttons: the pick takes the room, the action sits at the end. */
+.prow.mrow { padding: 0 14px 0 0; }
+.prow.mrow .mpick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; padding: 12px 0 12px 14px; }
+.prow.mrow .mpick:active { background: var(--fill-hover); }
+
+/* The session while the computer is out of reach. */
+.offline {
+  display: flex; align-items: center; gap: 10px; margin: 0 var(--gr) 8px var(--gl); padding: 10px 12px;
+  border-radius: var(--r-lg); background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4);
+}
+.offline > svg { width: 18px; height: 18px; flex: none; color: var(--error); }
+.offline .grow { flex: 1; min-width: 0; }
+.offline .t { font-size: 14px; font-weight: 500; }
+.offline .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
+.offline .btn.small { height: 36px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--bot) + 110px); transform: translateX(-50%);
+  background: var(--card); border: 1px solid var(--border-strong); color: var(--text);
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* Waiting on something that is not here yet. */
+.pair .wait { display: inline-flex; align-items: center; gap: 8px; }
+.spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- inbox, sessions, tab bar, phone and usage (Task 5), from the old public/app.css ---- */
 /* ---- inbox ---- */
 .inbox { flex: 1; overflow-y: auto; padding: 0 var(--gr) 12px var(--gl); }
 /* The computer on top: its mark, its name, whether it answers. */
@@ -268,21 +316,6 @@ a.btn { text-decoration: none; }
 .proj .pcount { font-size: 11px; font-weight: 500; color: var(--faint); }
 .srow .right .badge { padding: 1px 7px; font-size: 10px; }
 
-/* ---- the cards that get the app on the home screen and notifications on ---- */
-.setup {
-  display: flex; gap: 12px; align-items: center; margin: 10px 0 0;
-  padding: 12px 10px 12px 12px; border-radius: var(--r-xl);
-  background: rgba(255, 181, 71, 0.08); border: 1px solid rgba(255, 181, 71, 0.22);
-}
-.setup .sicon { width: 22px; height: 22px; flex: none; color: var(--accent); }
-.setup .sicon svg { width: 100%; height: 100%; }
-.setup .body { flex: 1; min-width: 0; }
-.setup .t { font-weight: 500; font-size: 14px; }
-.setup .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
-.setup .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
-.setup .x { width: 44px; height: 44px; margin: -8px -8px -8px 0; flex: none; color: var(--faint); display: flex; align-items: center; justify-content: center; }
-.setup .x svg { width: 16px; height: 16px; }
-
 /* ---- tab bar under the top-level screens, a new session in the middle ---- */
 .tabs {
   display: flex; align-items: center; justify-content: space-around; gap: 4px; padding: 6px var(--gr) var(--bot) var(--gl);
@@ -302,28 +335,6 @@ a.btn { text-decoration: none; }
 .tplus svg { width: 20px; height: 20px; }
 .tplus:disabled { opacity: 0.35; }
 
-/* ---- phone: grouped settings rows ---- */
-.settings { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 18px; }
-.settings .group { margin-top: 0; background: none; padding: 0; border-radius: 0; }
-.glabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); padding: 0 4px 6px; }
-.gbox { background: var(--fill); border: 1px solid var(--border); border-radius: var(--r-xl); overflow: hidden; }
-.prow {
-  display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
-  padding: 12px 14px; border-top: 1px solid var(--border);
-}
-.prow:first-child { border-top: 0; }
-.prow .ricon { width: 20px; height: 20px; flex: none; color: var(--subtle); }
-.prow .ricon svg { width: 100%; height: 100%; }
-.prow .rbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.prow .rt { font-size: 14px; font-weight: 500; }
-.prow .rs { font-size: 12px; line-height: 16px; color: var(--subtle); }
-.prow .btn.small { height: 40px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
-.prow.danger .rt, .prow.danger .ricon { color: var(--error); }
-button.prow:active { background: var(--fill-hover); }
-/* A row with two buttons: the pick takes the room, the action sits at the end. */
-.prow.mrow { padding: 0 14px 0 0; }
-.prow.mrow .mpick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; padding: 12px 0 12px 14px; }
-.prow.mrow .mpick:active { background: var(--fill-hover); }
 .switch {
   width: 44px; height: 26px; border-radius: 13px; flex: none; position: relative;
   background: rgba(230, 232, 239, 0.16); transition: background 0.15s;
@@ -345,7 +356,7 @@ button.prow:active { background: var(--fill-hover); }
 .uhead .grow { flex: 1; min-width: 0; }
 .uhead .logo { width: 18px; height: 18px; flex: none; }
 .uhead .logo.factory {
-  background: var(--text); -webkit-mask: url(factory.svg) center / contain no-repeat; mask: url(factory.svg) center / contain no-repeat;
+  background: var(--text); -webkit-mask: url(/factory.svg) center / contain no-repeat; mask: url(/factory.svg) center / contain no-repeat;
 }
 .uname { font-size: 15px; font-weight: 600; }
 .uplan { font-size: 12px; color: var(--subtle); margin-top: 1px; }
@@ -367,6 +378,16 @@ button.prow:active { background: var(--fill-hover); }
 .unote.danger { color: var(--error); }
 .ufoot { font-size: 12px; line-height: 17px; color: var(--faint); }
 
+.hdr .grow { flex: 1; min-width: 0; }
+.hdr .title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iconbtn {
+  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; flex: none;
+  color: var(--text); background: var(--card); box-shadow: inset 0 1px 0 var(--fill), 0 0 0 1px var(--border);
+}
+.iconbtn:active { background: var(--fill-hover); }
+.iconbtn svg { width: 18px; height: 18px; }
+
+/* ---- the session screen (Task 6), from the old public/app.css ---- */
 /* ---- session ---- */
 .chg {
   display: flex; align-items: center; gap: 8px; margin: -4px var(--gr) 8px var(--gl); padding: 6px 10px; min-height: 44px;
@@ -766,47 +787,6 @@ button.prow:active { background: var(--fill-hover); }
 .pending { padding-bottom: 8px; }
 .pending .entry { position: static; }
 .pending .bubble { opacity: 0.7; }
-/* The session while the computer is out of reach. */
-.offline {
-  display: flex; align-items: center; gap: 10px; margin: 0 var(--gr) 8px var(--gl); padding: 10px 12px;
-  border-radius: var(--r-lg); background: rgba(248, 81, 73, 0.12); border: 1px solid rgba(248, 81, 73, 0.4);
-}
-.offline > svg { width: 18px; height: 18px; flex: none; color: var(--error); }
-.offline .grow { flex: 1; min-width: 0; }
-.offline .t { font-size: 14px; font-weight: 500; }
-.offline .s { font-size: 12px; color: var(--subtle); margin-top: 2px; }
-.offline .btn.small { height: 36px; padding: 0 12px; font-size: 13px; border-radius: var(--r-lg); flex: none; }
-.toast {
-  position: fixed; left: 50%; bottom: calc(var(--bot) + 110px); transform: translateX(-50%);
-  background: var(--card); border: 1px solid var(--border-strong); color: var(--text);
-  padding: 8px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none;
-}
-.toast.show { opacity: 1; }
-
-/* Waiting on something that is not here yet. */
-.pair .wait { display: inline-flex; align-items: center; gap: 8px; }
-.spin { width: 14px; height: 14px; flex: none; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.prow:has(.switch) { cursor: pointer; }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation: none !important; transition: none !important; }
-}
-
-/* New session: project, agent and the first message. Fields at 16px (see the composer). */
-.newform { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); }
-.newform .chips { padding: 0; margin: 0; }
-.nlabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
-.nfield {
-  width: 100%; background: var(--card); color: var(--text); border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg); padding: 10px 12px; font: 16px/1.35 var(--sans); outline: none;
-}
-.nfield:focus { border-color: rgba(255, 181, 71, 0.5); }
-select.nfield { height: 44px; -webkit-appearance: none; appearance: none; }
-textarea.nfield { resize: none; min-height: 140px; }
-.newform .btn { height: 44px; margin-top: 12px; }
-/* A column that scrolls: its parts keep their size instead of squeezing to fit. */
-.newform > * { flex: none; }
-
 /* Model and reasoning choices: in the session's sheet and in the New session form. */
 .setform { padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); overflow-y: auto; }
 .setform .glabel, .newform .glabel { padding: 12px 4px 6px; }
@@ -832,8 +812,26 @@ textarea.nfield { resize: none; min-height: 140px; }
 /* With the keyboard up there is no home bar under the composer: it sits just over the keys. */
 :root.kb .composer { margin-bottom: 8px; }
 
+/* ---- New session (Task 7), from the old public/app.css ---- */
+/* New session: project, agent and the first message. Fields at 16px (see the composer). */
+.newform { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); }
+.newform .chips { padding: 0; margin: 0; }
+.nlabel { font: 500 11px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
+.nfield {
+  width: 100%; background: var(--card); color: var(--text); border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg); padding: 10px 12px; font: 16px/1.35 var(--sans); outline: none;
+}
+.nfield:focus { border-color: rgba(255, 181, 71, 0.5); }
+select.nfield { height: 44px; -webkit-appearance: none; appearance: none; }
+textarea.nfield { resize: none; min-height: 140px; }
+.newform .btn { height: 44px; margin-top: 12px; }
+/* A column that scrolls: its parts keep their size instead of squeezing to fit. */
+.newform > * { flex: none; }
+
+.prow:has(.switch) { cursor: pointer; }
+
 /* ---- new session: the quick sheet over the screen, and the + menu ---- */
-#quick { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; justify-content: flex-end; height: var(--vvh, 100%); }
+#quick { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; justify-content: flex-end; height: var(--vh, 100%); }
 #quick .qscrim, #plusmenu .pmscrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
 .qsheet {
   position: relative; background: var(--group); border-radius: 28px 28px 0 0; padding: 0 var(--gr) var(--float) var(--gl);
@@ -897,7 +895,7 @@ textarea.nfield { resize: none; min-height: 140px; }
 .ppmark { display: grid; place-items: center; overflow: hidden; border-radius: 11px; flex: none; }
 .ppmark img, .ppmark span { width: 100%; height: 100%; display: grid; place-items: center; font-weight: 600; font-size: 15px; }
 #projpick {
-  position: fixed; inset: 0; z-index: 40; background: var(--bg); height: var(--vvh, 100%); overflow-y: auto;
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); height: var(--vh, 100%); overflow-y: auto;
   padding: var(--top) var(--gr) calc(var(--bot) + 16px) var(--gl); animation: ppin 0.18s ease-out;
 }
 @keyframes ppin { from { opacity: 0; transform: translateY(16px); } }
@@ -915,3 +913,7 @@ textarea.nfield { resize: none; min-height: 140px; }
 .pptile small { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--subtle); margin-top: 2px; }
 .pptile small .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
 .pmic.ppmark { border-radius: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

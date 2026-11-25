@@ -3,7 +3,7 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
-    /// The phone page (`../phone`), served on the account host and on the old
+    /// The phone page (`../phone/dist`), served on the account host and on the old
     /// relay hosts.
     ASSETS: Fetcher;
     /// One object per computer, named by its label: the relay.

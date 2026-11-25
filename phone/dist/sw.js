@@ -19,7 +19,7 @@ self.addEventListener("push", (ev) => {
   }
   ev.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
-      const looking = wins.some((w) => w.visibilityState === "visible" && w.url.includes(`#s=${encodeURIComponent(msg.session)}`));
+      const looking = wins.some((w) => w.visibilityState === "visible" && showing(w.url) === String(msg.session));
       if (looking) return;
       return self.registration.showNotification(msg.title || "Arakun", {
         body: msg.body || "",
@@ -33,6 +33,19 @@ self.addEventListener("push", (ev) => {
     })
   );
 });
+
+// The session a window's address shows: `#/s/<id>`, or `#s=<id>` from before
+// the router. Whole ids only: `abc` is not `abcd`. A sheet open over the
+// session adds `?sheet=…`, and the session is still on screen.
+function showing(url) {
+  const m = /#(?:\/s\/|s=)([^/?#]+)(?:\?[^#]*)?$/.exec(url);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch (e) {
+    return null;
+  }
+}
 
 // Tapping the notice opens that session: in the page already open, or in a new one.
 self.addEventListener("notificationclick", (ev) => {

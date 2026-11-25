@@ -1219,7 +1219,7 @@ fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Resu
 /// Joins the `{part}` pieces of [`parts`] back into the message they carry,
 /// for the desktop app when it is the one a server talks to: arakun-server
 /// sends through this same client, so its big messages come in pieces too.
-/// The phone's page does the same in `phone/relay.js` (`joiner`).
+/// The phone's page does the same in `phone/public/relay.js` (`joiner`).
 #[derive(Default)]
 pub struct Joiner {
     bytes: Vec<u8>,
@@ -1260,7 +1260,7 @@ impl Joiner {
 }
 
 /// `text` as `{part: {body, more}}` messages that each carry `chunk` of its
-/// bytes; `phone/relay.js` joins them (`joiner`), and [`Joiner`] does here.
+/// bytes; `phone/public/relay.js` joins them (`joiner`), and [`Joiner`] does here.
 pub fn parts(text: &str, chunk: usize) -> Vec<String> {
     let last = text.len().div_ceil(chunk).saturating_sub(1);
     text.as_bytes()
@@ -2414,7 +2414,7 @@ mod tests {
         assert!(parts(&text, CHUNK).iter().all(|p| p.len() <= WHOLE));
     }
 
-    /// What `phone/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
+    /// What `phone/public/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
     /// phone::relay::tests::part_vectors` writes it; the plain run checks Rust
     /// still splits the same way, so a change on either side shows up.
     const PART_VECTORS: &str = "../phone/test/vectors/part.json";

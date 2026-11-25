@@ -26,7 +26,7 @@ For Windows it writes src/arakun.ico: the tile at 16 to 256 px, the small
 face up to 48 px. build.rs puts it in arakun.exe as icon 1, the one gpui loads
 for the window and the taskbar, and Explorer shows for the file.
 
-For the phone remote (phone/) it writes icon.svg, icon-192.png and icon-512.png
+For the phone remote (phone/public/) it writes icon.svg, icon-192.png and icon-512.png
 (the tile), and apple-touch-icon.png and icon-maskable-512.png (full-bleed ink,
 which iOS and Android round or mask themselves).
 Needs rsvg-convert.
@@ -195,7 +195,7 @@ def main():
     brand = os.path.join(ROOT, "assets", "brand")
     with open(os.path.join(brand, "arakun.svg"), "w") as f:
         f.write(svg(parts, False) + "\n")
-    phone = os.path.join(ROOT, "phone")
+    phone = os.path.join(ROOT, "phone", "public")
     with open(os.path.join(phone, "icon.svg"), "w") as f:
         f.write(svg(parts, False) + "\n")
     for draw, small, out, size in [

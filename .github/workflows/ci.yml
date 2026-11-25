@@ -108,7 +108,7 @@ jobs:
               .github/workflows/ci.yml | .github/actions/*) rust=true cloud=true ios=true android=true ;;
               # The cloud job also runs the phone tests.
               cloud/*) cloud=true ;;
-              # The app embeds phone/ (rust_embed) and tests against its vectors,
+              # The app embeds phone/dist (rust_embed) and tests against its vectors,
               # as the iOS and Android apps' protocol tests do.
               phone/*) rust=true cloud=true ios=true android=true ;;
               # The iOS app alone: nothing the Rust build reads.
@@ -449,6 +449,7 @@ jobs:
           cache-dependency-path: |
             cloud/package-lock.json
             cloud/admin/package-lock.json
+            phone/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -470,10 +471,11 @@ jobs:
         working-directory: cloud/admin
         run: npm run build
 
-      # The phone's encryption against the vectors the Rust side wrote.
-      - name: phone e2e vectors
+      # The phone's encryption against the vectors the Rust side wrote, and
+      # the committed phone/dist against a fresh build.
+      - name: phone tests and dist
         working-directory: phone
-        run: node --test "test/*.test.mjs"
+        run: npm ci && npm test && tools/check-dist.sh
 
   # The iOS app (ios/): its protocol package's tests, which check the Swift
   # crypto against phone/test/vectors, and an unsigned build for the

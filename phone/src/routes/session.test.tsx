@@ -224,4 +224,25 @@ describe("the session at each width", () => {
     expect(container.querySelector(".cuts")).toBeTruthy();
     expect(getComputedStyle(container.querySelector(".cuts")!).display).toBe("none");
   });
+
+  it("mutes the session from its header, and offers to unmute it", async () => {
+    const link = fakeLink({ session: session() as never, me: { muted: [] } as never });
+    (link.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(new Response(JSON.stringify({ muted: ["a"] })));
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    await tick();
+    await act(async () => screen.getByRole("button", { name: "Mute" }).click());
+    const [path, init] = (link.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(path).toBe("/mute");
+    expect(JSON.parse(init.body)).toEqual({ session: "a", muted: true });
+    expect(screen.getByRole("button", { name: "Unmute" })).toBeTruthy();
+  });
+
+  it("keeps it unmuted and says so when the computer cannot be reached", async () => {
+    const link = fakeLink({ session: session() as never, me: { muted: [] } as never });
+    (link.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("offline"));
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    await tick();
+    await act(async () => screen.getByRole("button", { name: "Mute" }).click());
+    expect(screen.getByRole("button", { name: "Mute" })).toBeTruthy();
+  });
 });

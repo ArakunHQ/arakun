@@ -4,6 +4,7 @@ import { ago, statusLabel } from "../lib/format";
 import { Icon } from "../lib/icons";
 import { LinkContext } from "../lib/link";
 import type { InboxSession } from "../lib/model";
+import { useMuted } from "../lib/mute";
 import { asksKind, asksLine } from "../lib/sessions";
 import { openSession } from "../lib/start";
 import "./SessionRow.css";
@@ -40,6 +41,7 @@ export function useOpenSession(): (id: string) => void {
 export function SessionRow({ s, variant }: { s: InboxSession; variant: "inbox" | "list" }) {
   const openRow = useOpenSession();
   const open = () => openRow(s.id);
+  const muted = useMuted().includes(s.id);
   const asks = variant === "inbox" ? asksLine(s) : "";
   const status = s.status ?? "idle";
   const sub =
@@ -65,7 +67,14 @@ export function SessionRow({ s, variant }: { s: InboxSession; variant: "inbox" |
         )}
       </span>
       <span className="right">
-        <span className="time">{ago(s.updated ?? 0)}</span>
+        <span className="time">
+          {muted ? (
+            <span className="muted" role="img" aria-label="Muted">
+              <Icon name="bell-off" size={12} />
+            </span>
+          ) : null}
+          {ago(s.updated ?? 0)}
+        </span>
         {variant === "inbox" ? (
           s.added || s.removed ? (
             <span className="stats">

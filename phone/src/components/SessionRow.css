@@ -10,6 +10,7 @@
 }
 .av svg { width: 20px; height: 20px; }
 .av.claude { color: var(--color-agent-claude); }
+.srow .muted { display: inline-flex; vertical-align: -2px; margin-right: 4px; color: var(--color-text-faint); }
 .srow .body { flex: 1; min-width: 0; }
 .srow .t { font-size: var(--text-m-body); font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .srow .s { font: var(--text-md) var(--font-mono); color: var(--color-text-faint); margin-top: 4px; display: flex; gap: 8px; overflow: hidden; white-space: nowrap; }

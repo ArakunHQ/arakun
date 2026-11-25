@@ -814,6 +814,11 @@ pub struct Thread {
     /// The session running this one as a subagent; set on the read-only
     /// thread that holds a subagent's transcript.
     parent: Option<WeakEntity<Thread>>,
+    /// A subagent's latest step, from the transcript Claude Code writes for
+    /// it (see `subagent_trail.rs`); set on its read-only thread.
+    trail: Option<super::subagent_trail::Activity>,
+    /// Reads the transcripts of the running subagents while any runs.
+    _trail_watch: Option<Task<()>>,
     /// Counts ACP prompts; a response to an older one than the last is stale.
     prompt_seq: u64,
     /// The last ACP prompt is unanswered.
@@ -1292,6 +1297,8 @@ impl Thread {
             notes: Vec::new(),
             subagents: Vec::new(),
             parent: None,
+            trail: None,
+            _trail_watch: None,
             prompt_seq: 0,
             prompting: false,
             held: false,

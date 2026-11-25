@@ -41,6 +41,7 @@ mod shell_diff;
 pub mod skills_sh;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod ssh_request;
+pub mod subagent_trail;
 mod thread;
 mod view;
 mod web;

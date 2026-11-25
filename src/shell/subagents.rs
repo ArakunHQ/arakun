@@ -125,6 +125,8 @@ struct Row {
     task: String,
     state: SubagentState,
     secs: u64,
+    /// What its transcript file says it did last, while it runs.
+    trail: Option<String>,
 }
 
 fn tone(state: SubagentState) -> Tone {
@@ -438,6 +440,7 @@ impl Shell {
             (None, Some(thread)) => {
                 let pr = self.session_pr(thread, cx);
                 // Newest first: the one just started is the one to look at.
+                let now = crate::account::unix_now();
                 let rows: Vec<Row> = thread
                     .read(cx)
                     .subagents()
@@ -455,6 +458,7 @@ impl Shell {
                             .to_string(),
                         state: s.state,
                         secs: s.elapsed_secs(),
+                        trail: s.thread.read(cx).trail().map(|a| a.label(now)),
                     })
                     .collect();
                 if rows.is_empty() && pr.is_none() {
@@ -629,6 +633,7 @@ impl Shell {
             task,
             state,
             secs,
+            trail,
         } = row;
         let session = session.clone();
         let running = state.is_running();
@@ -674,6 +679,16 @@ impl Shell {
                                 .ty(Type::Caption)
                                 .text_color(theme::text_subtle())
                                 .child(task),
+                        )
+                    })
+                    .when_some(trail, |d, trail| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .ty(Type::Caption)
+                                .text_color(theme::text_faint())
+                                .child(trail),
                         )
                     }),
             )

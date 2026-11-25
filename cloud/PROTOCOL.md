@@ -125,7 +125,7 @@ without it, `403` if it is not one of the caller's devices.
 
 1. An admin invites by GitHub login: `POST /teams/<team_id>/invites
    { "github_login": "rikvisser-dev" }` → `201 { invite_id, expires_at,
-   github_id, login }`. The server asks GitHub which user has the login now and
+   github_id, login, invitee_state }`. The server asks GitHub which user has the login now and
    keeps that user's numeric ID; the invite is theirs, whatever login they have
    when they sign in. `login` is that user's login as GitHub spells it. `404` if
    no GitHub user has the login (an organization's login included), `502` if
@@ -133,8 +133,11 @@ without it, `403` if it is not one of the caller's devices.
    Invites expire after 7 days. Inviting the same person again replaces their
    invite; `409` if they are a member or pending already.
    Admins see the team's open invites in `GET /teams/<team_id>/invites` →
-   `[{ invite_id, login, invited_by_login, created_at, expires_at }]`, newest
-   first, without expired ones (`login` is lower case). An admin withdraws one
+   `[{ invite_id, login, invited_by_login, created_at, expires_at,
+   invitee_state }]`, newest first, without expired ones (`login` is lower
+   case). `invitee_state` says whether the invitee can see the invite yet:
+   `no_account` (they never signed in), `not_enabled` (signed in, but Teams is
+   not on for their account) or `ready`. Only `ready` sees it in `GET /invites`. An admin withdraws one
    with `DELETE /teams/<team_id>/invites/<invite_id>` → `204`; `404` if the team
    has no such open invite.
 2. The invitee sees it in `GET /invites` → `[{ invite_id, team_id, team_name,

@@ -75,6 +75,32 @@ describe("api", () => {
     expect(e.message).toBe("not signed in");
   });
 
+  it("keeps the operator signed in on the cloud Worker's own 401", async () => {
+    const signedOut = vi.fn();
+    setOnSignedOut(signedOut);
+    fetchMock.mockResolvedValue(answer(401, { error: "unauthorized" }));
+    const e = await failure(api("GET", "users"));
+    expect(signedOut).not.toHaveBeenCalled();
+    expect(e.status).toBe(401);
+    expect(e.message).toBe("unauthorized");
+  });
+
+  it("keeps the operator signed in on a 401 that is not JSON", async () => {
+    const signedOut = vi.fn();
+    setOnSignedOut(signedOut);
+    fetchMock.mockResolvedValue(answer(401, "<html>no</html>"));
+    const e = await failure(api("GET", "users"));
+    expect(signedOut).not.toHaveBeenCalled();
+    expect(e.message).toBe("the server answered 401");
+  });
+
+  it("throws an ApiError for a 2xx answer that is not JSON", async () => {
+    fetchMock.mockResolvedValue(answer(200, "<html>captive portal</html>"));
+    const e = await failure(api("GET", "users"));
+    expect(e.status).toBe(200);
+    expect(e.message).toBe("the server sent an answer the panel could not read");
+  });
+
   it("does not call onSignedOut for other errors", async () => {
     const signedOut = vi.fn();
     setOnSignedOut(signedOut);

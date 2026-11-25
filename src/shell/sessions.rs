@@ -177,12 +177,20 @@ impl Shell {
             .collect()
     }
 
+    /// The person sees the sessions on screen: their phone notices that
+    /// wait for the person to leave are moot.
+    pub(super) fn phone_seen_on_screen(&mut self) {
+        for (env, id) in self.sessions_on_screen() {
+            self.phone_seen(&env, &id);
+        }
+    }
+
     /// What the user has on screen is read: it no longer waits on them, and
     /// its phone notices that wait for the user to leave are moot.
     pub(super) fn mark_on_screen_read(&mut self, cx: &mut Context<Self>) {
+        self.phone_seen_on_screen();
         let mut changed = false;
         for (env, id) in self.sessions_on_screen() {
-            self.phone_seen(&env, &id);
             if let Some(s) = self.session_mut(&env, &id)
                 && s.unread
             {

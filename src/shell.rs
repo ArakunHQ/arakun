@@ -758,6 +758,9 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                // Back at the window: what it shows was seen, so a notice
+                // waiting for the person to leave would come too late.
+                this.phone_seen_on_screen();
                 // The system's settings may have changed while Arakun was behind.
                 crate::ui::contrast::follow_system(cx);
                 crate::ui::motion::follow_system(cx);

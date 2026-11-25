@@ -74,9 +74,9 @@ pub fn question_body(q: &AskUserRequest) -> String {
 /// How long the last turn took, in whole seconds, once it has settled.
 pub fn turn_secs(entries: &[Entry]) -> Option<u64> {
     entries.iter().rev().find_map(|e| match e {
-        Entry::User { elapsed_ms, .. } => elapsed_ms.map(|ms| ms / 1000),
+        Entry::User { elapsed_ms, .. } => Some(elapsed_ms.map(|ms| ms / 1000)),
         _ => None,
-    })
+    })?
 }
 
 /// The command, address or file a tool call works on.
@@ -133,14 +133,25 @@ fn plain(md: &str) -> String {
         }
     }
     out.push_str(rest);
-    let out: String = out
-        .chars()
-        .map(|c| {
-            if matches!(c, '#' | '*' | '_' | '`') {
-                ' '
-            } else {
-                c
+    // `*` and `_` inside a word (`my_file.rs`, `a*b`) are part of it, not emphasis.
+    let chars: Vec<char> = out.chars().collect();
+    let out: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| match c {
+            '#' | '`' => ' ',
+            '*' | '_' => {
+                let word = |j: Option<usize>| {
+                    j.and_then(|j| chars.get(j))
+                        .is_some_and(|c| c.is_alphanumeric())
+                };
+                if word(i.checked_sub(1)) && word(Some(i + 1)) {
+                    c
+                } else {
+                    ' '
+                }
             }
+            c => c,
         })
         .collect();
     out.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -201,6 +212,18 @@ mod tests {
     }
 
     #[test]
+    fn emphasis_marks_go_but_word_characters_stay() {
+        assert_eq!(
+            finished_body(&[agent("Edited my_file.rs and **fixed** _it_")]),
+            "Edited my_file.rs and fixed it"
+        );
+        assert_eq!(
+            finished_body(&[agent("snake_case a*b *it* __b__")]),
+            "snake_case a*b it b"
+        );
+    }
+
+    #[test]
     fn finished_body_falls_back_and_fits() {
         assert_eq!(finished_body(&[user(None)]), "Finished its turn.");
         assert_eq!(
@@ -254,6 +277,9 @@ mod tests {
     fn turn_secs_from_last_user() {
         let entries = [user(Some(1000)), agent("x"), user(Some(65_400))];
         assert_eq!(turn_secs(&entries), Some(65));
+        // The last turn has not settled: an earlier turn's time is not its own.
+        let entries = [user(Some(1000)), agent("x"), user(None)];
+        assert_eq!(turn_secs(&entries), None);
         assert_eq!(turn_secs(&[agent("x")]), None);
     }
 }

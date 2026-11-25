@@ -95,8 +95,8 @@ async function closeSessions(env: Env, op: Operator, idText: string): Promise<Re
   const id = githubId(idText);
   if (id === null) return error(400, "the GitHub ID must be a positive integer");
   const result = await env.DB.prepare("DELETE FROM sessions WHERE github_id = ?").bind(id).run();
-  await recheckAccount(env, id);
   await record(env, op, "sessions.close", id, { closed: result.meta.changes });
+  await recheckAccount(env, id);
   return Response.json({ github_id: id, closed: result.meta.changes });
 }
 
@@ -119,8 +119,8 @@ async function setBlock(request: Request, env: Env, op: Operator, idText: string
   )
     .bind(id, now(), reason ?? null)
     .run();
-  await recheckAccount(env, id);
   await record(env, op, "block", id, { reason: reason ?? null });
+  await recheckAccount(env, id);
   return new Response(null, { status: 204 });
 }
 
@@ -146,8 +146,8 @@ async function setPlan(request: Request, env: Env, op: Operator, idText: string)
   )
     .bind(id, now(), plan)
     .run();
-  await recheckAccount(env, id);
   await record(env, op, "plan.set", id, { plan });
+  await recheckAccount(env, id);
   return new Response(null, { status: 204 });
 }
 

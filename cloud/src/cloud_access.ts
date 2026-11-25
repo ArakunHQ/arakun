@@ -345,7 +345,7 @@ export async function decideRequest(request: Request, env: Env, idText: string, 
   const db = env.DB;
   const t = now();
   if (decision === "grant") {
-    const [updated] = await db.batch([
+    const [updated, flagged] = await db.batch([
       // A second grant changes nothing: it keeps the time of the first, and
       // the log gets no second entry.
       db
@@ -359,10 +359,11 @@ export async function decideRequest(request: Request, env: Env, idText: string, 
         )
         .bind(id, CLOUD_FLAG, t),
     ]);
-    if (updated!.meta.changes === 0) {
+    if (updated!.meta.changes === 0 && flagged!.meta.changes === 0) {
       const row = await db.prepare("SELECT 1 FROM cloud_access_requests WHERE github_id = ?").bind(id).first();
       if (!row) return error(404, "no request from this account");
     } else {
+      // A grant that only restores a revoked flag is a change too.
       await record(env, op, "cloud.grant", id);
     }
   } else {

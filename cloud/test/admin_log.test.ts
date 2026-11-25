@@ -123,6 +123,31 @@ describe("the admin log", () => {
     expect((await log()).entries.filter((e) => e.action === "cloud.grant")).toHaveLength(1);
   });
 
+  it("records a grant that only restores the flag", async () => {
+    await ask(2002);
+    await call("PUT", "/admin/cloud/requests/2002/grant", OP);
+    expect((await call("DELETE", "/admin/users/2002/flags/cloud", OP)).status).toBe(200);
+    expect((await call("PUT", "/admin/cloud/requests/2002/grant", OP)).status).toBe(200);
+    expect((await log()).entries.filter((e) => e.action === "cloud.grant")).toHaveLength(2);
+  });
+
+  it("records a notice for everyone with no account", async () => {
+    await call("POST", "/admin/notices", OP, JSON.stringify({ text: "hello" }));
+    expect((await log()).entries[0]).toMatchObject({ action: "notice.create", github_id: null });
+  });
+
+  it("counts the sessions it closed", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare("INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (2002, 'two', 1, 0)").run();
+    await env.DB.batch(
+      ["a", "b"].map((id) =>
+        env.DB.prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, 2002, ?, ?, ?)").bind(id, now, now + 1000, now),
+      ),
+    );
+    await call("DELETE", "/admin/users/2002/sessions", OP);
+    expect((await log()).entries[0]).toMatchObject({ action: "sessions.close", detail: { closed: 2 } });
+  });
+
   it("filters by account and pages", async () => {
     const rows = Array.from({ length: 60 }, (_, i) => env.DB.prepare("INSERT INTO admin_log (at, action, github_id) VALUES (?, 'plan.set', ?)").bind(i + 1, i < 5 ? 2002 : 3003));
     await env.DB.batch(rows);

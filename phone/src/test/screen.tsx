@@ -59,13 +59,19 @@ export function fakeLink(over: Partial<LinkState> = {}): FakeLink {
   } as unknown as FakeLink;
 }
 
-const PATHS = ["/inbox", "/sessions", "/usage", "/settings", "/new", "/s/$session"];
+const PATHS = ["/inbox", "/sessions", "/usage", "/settings", "/new", "/computers", "/s/$session"];
 
 // Whether `path` is an address of route `p`, such as /s/a of /s/$session.
 const matches = (p: string, path: string) => new RegExp(`^${p.replace(/\$\w+/g, "[^/]+")}$`).test(path);
 
 /** `screen` shown at `path`; the other screens are empty. */
-export async function renderScreen(screen: ReactNode, path: string, link: Link, wrap: (n: ReactNode) => ReactNode = (n) => n) {
+export async function renderScreen(
+  screen: ReactNode,
+  path: string,
+  link: Link,
+  wrap: (n: ReactNode) => ReactNode = (n) => n,
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   const root = createRootRoute();
   const routes = PATHS.map((p) =>
     createRoute({
@@ -76,7 +82,6 @@ export async function renderScreen(screen: ReactNode, path: string, link: Link, 
     }),
   );
   const router = createRouter({ routeTree: root.addChildren(routes), history: createMemoryHistory({ initialEntries: [path] }) });
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await router.load();
   const out = render(
     wrap(

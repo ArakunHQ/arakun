@@ -29,7 +29,10 @@ export interface Notice {
 
 export type SessionsResult = { list: unknown[] } | { signedOut: true };
 
-export const meQuery = { queryKey: ["me"], queryFn: () => RELAY.boot() as Promise<Boot>, staleTime: Infinity } as const;
+// No retries: a host that does not answer shows "Could not reach" with Try
+// again at once, not a blank list for the seconds three retries take. The list
+// asks again by itself while it shows the error.
+export const meQuery = { queryKey: ["me"], queryFn: () => RELAY.boot() as Promise<Boot>, staleTime: Infinity, retry: false } as const;
 
 // ---- the sentence over the list of computers ----------------------------------
 // Why the page shows the list: the relay sent it back, or a tap could not be

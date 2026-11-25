@@ -920,7 +920,7 @@ impl Access {
 
 /// The way a device came in: through the relay, by its account, or on the
 /// network or Tailscale, with a token.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Door {
     Relay,
     Local,
@@ -930,6 +930,15 @@ impl Door {
     /// Whether `d` came in through this door: the relay's devices have no token.
     pub fn admits(self, d: &Device) -> bool {
         d.token_hash.is_empty() == (self == Door::Relay)
+    }
+
+    /// The door `d` came in through.
+    pub fn of(d: &Device) -> Door {
+        if Door::Relay.admits(d) {
+            Door::Relay
+        } else {
+            Door::Local
+        }
     }
 }
 

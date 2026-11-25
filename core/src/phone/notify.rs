@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::agent::{AskUserRequest, Entry, PermissionRequest, ToolCall};
-use crate::phone::{Device, Notices, push};
+use crate::phone::{Device, Door, Notices, push};
 
 /// What the notice is about. The apps read it as `kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,9 @@ pub struct Presence {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
     pub device: String,
+    /// Which of the devices with that id: one id can be paired on the
+    /// network and through the relay.
+    pub door: Door,
     pub sub: push::Subscription,
     pub payload: String,
 }
@@ -71,8 +74,8 @@ enum Fate {
 /// away from the computer, or never. Pure: the caller brings the time.
 #[derive(Default)]
 pub struct Notifier {
-    /// At most one per (device id, session); a newer one replaces it.
-    pending: BTreeMap<(String, String), Pending>,
+    /// At most one per (device id, door, session); a newer one replaces it.
+    pending: BTreeMap<(String, Door, String), Pending>,
 }
 
 impl Notifier {
@@ -88,6 +91,11 @@ impl Notifier {
     ) -> Vec<Delivery> {
         let mut out = Vec::new();
         for d in devices {
+            // The newest notice wins, even one that stays quiet: the older
+            // one is about a state the session has left.
+            let door = Door::of(d);
+            let key = (d.id.clone(), door, c.session.clone());
+            self.pending.remove(&key);
             let Some(sub) = &d.push else { continue };
             if !wants(&d.notices, c.kind) || looking.contains(&d.id) {
                 continue;
@@ -98,11 +106,10 @@ impl Notifier {
             if c.kind == Kind::Done && short {
                 continue;
             }
-            let key = (d.id.clone(), c.session.clone());
-            self.pending.remove(&key);
             match fate(&d.notices, c.kind, p, None) {
                 Fate::Send => out.push(Delivery {
                     device: d.id.clone(),
+                    door,
                     sub: sub.clone(),
                     payload: c.payload.clone(),
                 }),
@@ -134,9 +141,9 @@ impl Notifier {
         now: Instant,
     ) -> Vec<Delivery> {
         let mut out = Vec::new();
-        self.pending.retain(|(id, session), item| {
+        self.pending.retain(|(id, door, session), item| {
             // The phone as it is now: its subscription may have changed.
-            let Some(d) = devices.iter().find(|d| &d.id == id) else {
+            let Some(d) = devices.iter().find(|d| &d.id == id && door.admits(d)) else {
                 return false;
             };
             let Some(sub) = &d.push else { return false };
@@ -151,6 +158,7 @@ impl Notifier {
                 Fate::Send => {
                     out.push(Delivery {
                         device: id.clone(),
+                        door: *door,
                         sub: sub.clone(),
                         payload: item.payload.clone(),
                     });
@@ -165,7 +173,7 @@ impl Notifier {
 
     /// The person opened the session on the computer.
     pub fn seen(&mut self, session: &str) {
-        self.pending.retain(|(_, s), _| s != session);
+        self.pending.retain(|(_, _, s), _| s != session);
     }
 
     pub fn has_pending(&self) -> bool {
@@ -365,7 +373,7 @@ fn plain(md: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::{Question, SpecPlan, ToolStatus};
-    use crate::phone::push;
+    use crate::phone::{Door, push};
 
     fn user(elapsed_ms: Option<u64>) -> Entry {
         Entry::User {
@@ -962,5 +970,125 @@ mod tests {
         let out = n.tick(&[phone()], &nobody(), idle(120), always, later);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].payload, cand("t", Kind::Input, None).payload);
+    }
+
+    /// The same id paired on the network (with a token) and through the relay.
+    fn twins(network: Notices, relay: Notices) -> [Device; 2] {
+        let mut lan = device("same", network);
+        lan.token_hash = "hash".into();
+        lan.push.as_mut().unwrap().endpoint = "https://push.example/lan".into();
+        let mut rel = device("same", relay);
+        rel.push.as_mut().unwrap().endpoint = "https://push.example/relay".into();
+        [lan, rel]
+    }
+
+    #[test]
+    fn a_twin_without_a_subscription_does_not_lose_the_other_ones_notice() {
+        let [mut lan, rel] = twins(Notices::default(), Notices::default());
+        lan.push = None;
+        let devices = [lan, rel];
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert!(out.is_empty());
+        let later = now + Duration::from_secs(200);
+        let out = n.tick(&devices, &nobody(), idle(200), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/relay");
+        assert_eq!(out[0].door, Door::Relay);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn twins_each_follow_their_own_away_time() {
+        let at_once = Notices {
+            away_after_secs: 0,
+            ..Notices::default()
+        };
+        let devices = twins(at_once, Notices::default());
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/lan");
+        assert_eq!(out[0].door, Door::Local);
+        let soon = now + Duration::from_secs(15);
+        assert!(
+            n.tick(&devices, &nobody(), idle(20), always, soon)
+                .is_empty()
+        );
+        let later = now + Duration::from_secs(130);
+        let out = n.tick(&devices, &nobody(), idle(120), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/relay");
+        assert_eq!(out[0].door, Door::Relay);
+        let end = now + Duration::from_secs(300);
+        assert!(
+            n.tick(&devices, &nobody(), idle(300), always, end)
+                .is_empty()
+        );
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn away_zero_sends_at_once_in_tick() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert!(n.has_pending());
+        let at_once = device(
+            "p",
+            Notices {
+                away_after_secs: 0,
+                ..Notices::default()
+            },
+        );
+        let soon = now + Duration::from_secs(15);
+        let out = n.tick(&[at_once], &nobody(), idle(20), always, soon);
+        assert_eq!(out.len(), 1);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn a_skipped_newer_notice_still_replaces_the_pending_one() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        let short = n.offer(
+            cand("s", Kind::Done, Some(1)),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        assert!(short.is_empty());
+        assert!(
+            !n.has_pending(),
+            "the newest notice wins, even one that stays quiet"
+        );
     }
 }

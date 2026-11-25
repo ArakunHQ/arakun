@@ -23,7 +23,9 @@ export interface Plan {
   frame: number;
 }
 
-export const FREE: Plan = { machines: 5, phones: 3, burst: 50, daily: 20_000, frame: 256 * 1024 };
+/// A frame costs the relay 1/20 of a request, so a full day here is about
+/// 5,000 requests: less than a phone left open used to cost in alarms.
+export const FREE: Plan = { machines: 10, phones: 5, burst: 100, daily: 100_000, frame: 256 * 1024 };
 
 /// For the team's own accounts, put on it from the admin panel. High enough
 /// not to get in the way, but still a ceiling on a runaway client.

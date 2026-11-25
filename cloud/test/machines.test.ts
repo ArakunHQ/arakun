@@ -66,14 +66,14 @@ describe("the recheck on the alarm", () => {
     expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "blocked" });
   });
 
-  it("leaves sockets alone while everything holds, and comes back every five minutes", async () => {
+  it("leaves sockets alone while everything holds, and comes back within fifteen minutes", async () => {
     const { me, pc, phone } = await computerAndPhone();
     await recheckDue(me.label);
     await expect(phone.inbox.next(200)).rejects.toThrow();
     expect(pc.inbox.closed).toBeNull();
     const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
     const at = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
-    expect((at as number) - Date.now()).toBeLessThanOrEqual(5 * 60_000);
+    expect((at as number) - Date.now()).toBeLessThanOrEqual(15 * 60_000);
     expect((at as number) - Date.now()).toBeGreaterThan(60_000);
   });
 });

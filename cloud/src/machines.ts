@@ -152,7 +152,7 @@ export async function recheckAccount(env: Env, githubId: number): Promise<void> 
 }
 
 /// A recheck that fails is not the caller's failure: the object's alarm
-/// rechecks within minutes anyway.
+/// rechecks within 15 minutes anyway.
 async function recheckMachine(env: Env, label: string): Promise<void> {
   try {
     const res = await relayStub(env, label).fetch("https://relay/_recheck", { method: "POST", headers: { "x-arakun-label": label } });

@@ -12,9 +12,9 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Task, UTF16Selection, Window, div, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta, ScrollEvent,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, UTF16Selection,
+    Window, div, px,
 };
 
 use super::element::{FONT_SIZE, Geometry, TerminalElement};
@@ -548,7 +548,7 @@ impl TerminalView {
         }
     }
 
-    pub(crate) fn scroll_wheel(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
+    pub(crate) fn scroll_wheel(&mut self, e: &ScrollEvent, cx: &mut Context<Self>) {
         let Some(g) = self.geometry else {
             return;
         };

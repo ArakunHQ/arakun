@@ -13,7 +13,7 @@ use gpui::{
     App, BorderStyle, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId,
     ElementInputHandler, Entity, FocusHandle, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, ShapedLine,
     SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill,
     outline, point, px, relative, size,
 };
@@ -839,7 +839,7 @@ impl TerminalElement {
         });
         let view = self.view.clone();
         let hb = hitbox.clone();
-        window.on_mouse_event(move |e: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |e: &ScrollEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hb.should_handle_scroll(window) {
                 view.update(cx, |view, cx| view.scroll_wheel(e, cx));
                 cx.stop_propagation();

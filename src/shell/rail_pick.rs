@@ -123,7 +123,7 @@ impl Shell {
             let anchor = anchor.filter(|a| order.contains(a));
             self.rail_pick = range(&order, anchor.as_deref(), &path);
             self.rail_pick_anchor = anchor.or(Some(path));
-        } else if modifiers.secondary() {
+        } else if modifiers.secondary(cx) {
             if self.rail_pick.is_empty() {
                 // The open row is part of it, as in a file manager; not the
                 // main checkout, which most of these leave alone.

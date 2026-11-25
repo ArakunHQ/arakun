@@ -14,7 +14,7 @@ use std::time::Duration;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, ElementId, FocusHandle,
     ImageSource, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseMoveEvent,
-    ObjectFit, ParentElement as _, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, ScrollDelta, ScrollEvent,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, canvas, div, img,
     prelude::FluentBuilder as _, px,
 };
@@ -339,9 +339,9 @@ fn build(
             .size_full(),
         )
         .child(image)
-        .on_scroll_wheel({
+        .on_scroll({
             let state = state.clone();
-            move |ev: &ScrollWheelEvent, _, cx| {
+            move |ev: &ScrollEvent, _, cx| {
                 let zoom_key =
                     ev.modifiers.control || (cfg!(target_os = "macos") && ev.modifiers.platform);
                 if inline && !zoom_key {

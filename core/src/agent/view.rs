@@ -17,8 +17,8 @@ use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollHandle,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollEvent,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
     StyledText, Subscription, Task, TextRun, Transformation, Window, anchored, deferred, div, font,
     linear_color_stop, linear_gradient, list, point, px, radians,
 };
@@ -2272,7 +2272,7 @@ impl ThreadView {
                     .min_w_0()
                     // The window takes the wheel while it can move that way;
                     // at either end the conversation scrolls instead.
-                    .on_scroll_wheel(move |ev: &ScrollWheelEvent, window, cx| {
+                    .on_scroll(move |ev: &ScrollEvent, window, cx| {
                         let dy = ev.delta.pixel_delta(window.line_height()).y;
                         let before = wheel.offset().y - dy;
                         let max = wheel.max_offset().y;

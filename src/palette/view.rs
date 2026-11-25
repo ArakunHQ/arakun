@@ -182,7 +182,7 @@ impl Palette {
         .child(end)
         .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, _, cx| {
             this.selected = i;
-            if ev.modifiers().secondary() || ev.modifiers().shift {
+            if ev.modifiers().secondary(cx) || ev.modifiers().shift {
                 if let Some(k) = this.entries.get(i).map(|e| e.item.key.clone())
                     && !this.marked.remove(&k)
                 {

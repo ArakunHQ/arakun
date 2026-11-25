@@ -126,7 +126,7 @@ fn bind<A: gpui::Action>(keys: &str, action: A, context: &str) -> KeyBinding {
         k if k.starts_with("cmd-") && k != "cmd-f" => context.replace(" && !Terminal", ""),
         _ => context.to_string(),
     };
-    KeyBinding::new(&keys, action, Some(&context))
+    KeyBinding::new(crate::platform::static_keys(&keys), action, Some(&context))
 }
 
 /// The saved window and the display to open it on; see `WindowState::place`.

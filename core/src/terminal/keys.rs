@@ -190,7 +190,7 @@ fn modifier_code(ks: &Keystroke) -> u32 {
 mod tests {
     use super::*;
 
-    fn esc(s: &str, mode: TermMode) -> Option<String> {
+    fn esc(s: &'static str, mode: TermMode) -> Option<String> {
         to_esc_str(&Keystroke::parse(s).unwrap(), mode).map(|c| c.into_owned())
     }
 

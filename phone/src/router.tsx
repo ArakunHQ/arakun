@@ -21,6 +21,7 @@ import { activeLink, subscribeActiveLink } from "./lib/api";
 import type { LinkEvent } from "./lib/link";
 import { mode, setPairMessage, tappedNotice, whereTo } from "./lib/start";
 import { Toaster, toast } from "./lib/toast";
+import { Resubscribe } from "./components/Resubscribe";
 import { Computers } from "./routes/computers";
 import { Fatal } from "./routes/fatal";
 import { Inbox } from "./routes/inbox";
@@ -151,6 +152,7 @@ function Root() {
   return (
     <>
       <Outlet />
+      <Resubscribe />
       <Toaster />
     </>
   );

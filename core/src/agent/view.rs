@@ -1494,6 +1494,11 @@ impl ThreadView {
         let status = t.status();
         let cancelling = t.is_cancelling();
         let elapsed_live = t.turn_elapsed();
+        // A subagent whose live updates don't come still shows it works.
+        let working_label = t
+            .trail()
+            .map(|a| a.label(super::rpc::unix_now()))
+            .unwrap_or_else(|| "Thinking…".to_string());
 
         let mut col = div()
             .group(SharedString::from(format!("turn-{ix}")))
@@ -1660,7 +1665,7 @@ impl ThreadView {
                         .text_size(px(crate::ui::TEXT_LG))
                         .child(shimmer(
                             self.active,
-                            "Thinking…",
+                            &working_label,
                             theme::text_faint(),
                             theme::text_muted(),
                         )),

@@ -9,18 +9,24 @@
 //! call whose calls carry its id as their parent; those are mirrored into a
 //! child thread too, so the sidebar lists every subagent the same way.
 
-use std::time::Instant;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    Entry, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolStatus, content_text, str_of, unix_now,
+    AgentKind, Entry, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolStatus, content_text,
+    str_of, unix_now,
 };
+use crate::agent::subagent_trail::{self, Activity};
 
 /// Where AIR's left-out Agent call is stood in for in the transcript that started the subagent.
 const MARKER: &str = "subagent:";
+
+/// How often the transcripts of running subagents are read.
+const TRAIL_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,6 +220,12 @@ impl Thread {
         self.parent.is_some()
     }
 
+    /// A running subagent's latest step, as its transcript file shows it.
+    /// It shows the subagent works when its live updates don't come.
+    pub fn trail(&self) -> Option<&Activity> {
+        self.trail.as_ref().filter(|_| self.is_busy())
+    }
+
     // ---- child threads ---------------------------------------------------
 
     /// A read-only thread for a subagent's transcript.
@@ -275,6 +287,7 @@ impl Thread {
         }
         self.permissions.clear();
         self.native.questions.clear();
+        self.trail = None;
         self.set_status(ThreadStatus::Idle, cx);
     }
 
@@ -484,6 +497,7 @@ impl Thread {
             thread,
         });
         cx.emit(ThreadEvent::SubagentsChanged { spawned: Some(id) });
+        self.watch_trails(cx);
         cx.notify();
     }
 
@@ -499,6 +513,9 @@ impl Thread {
         let (thread, host) = (s.thread.clone(), s.host.clone());
         thread.update(cx, |c, cx| c.child_state(state, cx));
         self.set_stand_in(id, host.as_deref(), state, cx);
+        if state.is_running() {
+            self.watch_trails(cx);
+        }
         // Requests a subagent left unanswered go with it.
         if !state.is_running() {
             let reply = self.permission_cancelled();
@@ -548,6 +565,70 @@ impl Thread {
             Some(h) => h.update(cx, set),
             None => set(self, cx),
         }
+    }
+
+    // ---- transcript files ------------------------------------------------
+
+    /// Where Claude Code writes the transcript of each running subagent.
+    fn trail_paths(&self) -> Vec<(Entity<Thread>, PathBuf)> {
+        let Some(session) = self.session_id.as_deref() else {
+            return Vec::new();
+        };
+        self.subagents
+            .iter()
+            .filter(|s| s.state.is_running() && !s.mirrored)
+            .map(|s| {
+                let path = subagent_trail::transcript_path(&self.cwd, session, &s.id);
+                (s.thread.clone(), path)
+            })
+            .collect()
+    }
+
+    /// Reads the transcripts of Claude's running subagents every few seconds,
+    /// until none runs. A session on a server has them there, not here.
+    fn watch_trails(&mut self, cx: &mut Context<Self>) {
+        if self._trail_watch.is_some()
+            || self.remote
+            || self.parent.is_some()
+            || self.kind != AgentKind::Claude
+            || self.trail_paths().is_empty()
+        {
+            return;
+        }
+        self._trail_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(paths) = this.update(cx, |t, _| t.trail_paths()) else {
+                    return;
+                };
+                if paths.is_empty() {
+                    let _ = this.update(cx, |t, _| t._trail_watch = None);
+                    return;
+                }
+                let (threads, files): (Vec<_>, Vec<_>) = paths.into_iter().unzip();
+                let found: Vec<Option<Activity>> = cx
+                    .background_executor()
+                    .spawn(async move { files.iter().map(|f| subagent_trail::read(f)).collect() })
+                    .await;
+                let shown = this.update(cx, |_, cx| {
+                    for (thread, activity) in threads.into_iter().zip(found) {
+                        thread.update(cx, |c, cx| c.set_trail(activity, cx));
+                    }
+                });
+                if shown.is_err() {
+                    return;
+                }
+                cx.background_executor().timer(TRAIL_EVERY).await;
+            }
+        }));
+    }
+
+    /// Takes what a subagent's transcript says, and redraws so its age counts.
+    fn set_trail(&mut self, activity: Option<Activity>, cx: &mut Context<Self>) {
+        if !self.is_busy() {
+            return;
+        }
+        self.trail = activity;
+        cx.notify();
     }
 
     /// Ends every subagent still running: the agent behind them is gone.
@@ -758,6 +839,7 @@ impl Thread {
         if unmirrored || self.subagents.len() != before {
             cx.emit(ThreadEvent::SubagentsChanged { spawned: None });
         }
+        self.watch_trails(cx);
     }
 
     /// Mirrors every Task call in the transcript, with the time of the prompt it answered.

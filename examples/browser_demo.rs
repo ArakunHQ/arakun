@@ -175,7 +175,7 @@ impl Render for Demo {
             .child(div().text_size(px(11.)).text_color(theme::mix(0.35)).child(
                 match browser::cdp_port() {
                     Some(p) => format!("CDP 127.0.0.1:{p}"),
-                    None if browser::ENABLED => "CEF not started".into(),
+                    None if browser::ENABLED => "CDP off (ARAKUN_CDP_PORT turns it on)".into(),
                     None => "built without the browser feature".into(),
                 },
             ));

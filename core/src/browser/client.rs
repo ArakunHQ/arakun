@@ -451,12 +451,9 @@ fn copy_bitmap(buffer: *const u8, width: i32, height: i32) -> Option<Bitmap> {
 
 // --- App / browser process -----------------------------------------------------------------
 
-/// The CDP port, baked into `--remote-allow-origins` so a DevTools frontend tab served by
-/// Chromium itself may connect back.
 #[derive(Clone)]
 pub struct AppState {
     pub pump: Option<Arc<PumpSignal>>,
-    pub cdp_port: u16,
 }
 
 wrap_app! {
@@ -493,13 +490,6 @@ wrap_app! {
             #[cfg(target_os = "linux")]
             if std::env::var_os("DISPLAY").is_some() && !gpu_frames() {
                 command_line.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
-            }
-            if self.state.cdp_port != 0 {
-                let origin = format!("http://127.0.0.1:{}", self.state.cdp_port);
-                command_line.append_switch_with_value(
-                    Some(&"remote-allow-origins".into()),
-                    Some(&origin.as_str().into()),
-                );
             }
         }
 
@@ -1263,6 +1253,26 @@ pub fn frame_rate() -> i32 {
 /// page, so a frame the window cannot import shows nothing.
 pub fn gpu_frames() -> bool {
     cfg!(target_os = "linux") && std::env::var("ARAKUN_BROWSER_GPU").is_ok_and(|v| v == "1")
+}
+
+/// Opens Chromium's DevTools for the page in a window of its own. DevTools talks to the
+/// page inside the browser process, so it needs no debugging port. It is the one native
+/// window the browser opens: an Arakun tab cannot host it without a port.
+pub fn show_dev_tools(host: &BrowserHost) {
+    #[cfg(windows)]
+    let window_info = WindowInfo::default().set_as_popup(std::ptr::null_mut(), "DevTools");
+    #[cfg(not(windows))]
+    let window_info = WindowInfo {
+        window_name: CefString::from("DevTools"),
+        bounds: Rect {
+            x: 80,
+            y: 80,
+            width: 1100,
+            height: 760,
+        },
+        ..Default::default()
+    };
+    host.show_dev_tools(Some(&window_info), None, None, None);
 }
 
 pub fn create_browser(url: &str, tab: &Tab) -> Option<Browser> {

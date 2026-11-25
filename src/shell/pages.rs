@@ -123,6 +123,9 @@ impl Shell {
             Ok(None) => return Err(Reply::ok(self.page_listing(&env_path, &place, cx))),
             Err(e) => return Err(Reply::err(e)),
         };
+        if matches!(&action, Action::Open(target) if crate::browser::is_debug_endpoint(target)) {
+            return Err(Reply::err(DEBUG_PORT_REFUSED));
+        }
         let tabs = self.browser_tabs(&env_path);
         let mut fresh = false;
         let index = match req.args.first().map_or("", String::as_str) {
@@ -161,6 +164,9 @@ impl Shell {
             .ensure_page(index, window, cx)
             .ok_or_else(|| Reply::err("could not open the page"))?;
         let url = view.read(cx).url();
+        if !matches!(action, Action::Open(_)) && crate::browser::is_debug_endpoint(&url) {
+            return Err(Reply::err(DEBUG_PORT_REFUSED));
+        }
         if action.drives() && !is_local(&url) && !drive_any_page() {
             let sub = req.args.get(1).map_or("", String::as_str);
             return Err(Reply::err(format!(
@@ -797,6 +803,11 @@ pub(crate) fn set_drive_any_page(on: bool) {
 fn drive_any_page_path() -> std::path::PathBuf {
     crate::platform::app_dir().join("drive-any-page")
 }
+
+/// A page on the browser's debugging port can drive every tab and read local files, so
+/// agents may neither open it nor read or drive it, whatever the settings say.
+const DEBUG_PORT_REFUSED: &str =
+    "agents may not use the browser's debugging port (ARAKUN_CDP_PORT)";
 
 fn is_local(url: &str) -> bool {
     if url.is_empty()

@@ -219,6 +219,11 @@ copy of it, rename it back, and start a version that can read it.
   GitHub" opens the page. A tab shows its site's icon even before its page loads again:
   the icons that loaded are kept, by site, in `~/.local/share/arakun/cache/favicons/`
   (`%LOCALAPPDATA%\arakun\cache\favicons\` on Windows), never in redacted mode.
+  Inspect (F12) opens Chromium's DevTools in a window of its own. The browser opens no
+  remote debugging port unless `ARAKUN_CDP_PORT=<port>` is set, for tools such as
+  Playwright. That port has no password: any program on the machine can use it to drive
+  your signed-in browser and read your files, sandboxed agents and other users included.
+  Agents may not open or drive pages on it.
 
 ### Agents
 

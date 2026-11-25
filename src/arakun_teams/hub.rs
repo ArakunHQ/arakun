@@ -19,8 +19,8 @@ use gpui::{AppContext as _, Context, Entity, Task};
 
 use super::Teams;
 use super::api::{
-    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
-    SenderRow, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
+    ApiError, Call, DeviceRow, Endorsement, InviteRow, InviteeState, Me, MemberRow, PendingRow,
+    Remind, Role, SenderRow, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
 use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
@@ -1878,13 +1878,18 @@ impl Hub {
                     // know of it, and an older server lists no invites.
                     Ok((invited, typed)) => {
                         let by = hub.me.as_ref().map(|m| m.login.clone());
+                        let shown = if invited.login.is_empty() {
+                            typed
+                        } else {
+                            invited.login
+                        };
+                        match invite_sent(&shown, invited.invitee_state) {
+                            Some(Ok(said)) => hub.info = Some(said),
+                            Some(Err(said)) => hub.error = Some(said),
+                            None => {}
+                        }
                         if let Some(t) = hub.team.get_mut(&team_id) {
-                            let login = if invited.login.is_empty() {
-                                typed
-                            } else {
-                                invited.login
-                            }
-                            .to_ascii_lowercase();
+                            let login = shown.to_ascii_lowercase();
                             let list = t.invites.get_or_insert_with(Vec::new);
                             list.retain(|i| i.login != login);
                             list.insert(
@@ -1895,6 +1900,7 @@ impl Hub {
                                     invited_by_login: by,
                                     created_at: now(),
                                     expires_at: invited.expires_at,
+                                    invitee_state: invited.invitee_state,
                                 },
                             );
                         }
@@ -3537,6 +3543,23 @@ fn stored_already(
     }
 }
 
+/// What to say once an invite went out: `Ok` when it shows in their Team tab,
+/// `Err` when it waits there unseen, so the admin is not told it worked.
+/// `None` when the server did not say, as an older one does not.
+fn invite_sent(login: &str, state: Option<InviteeState>) -> Option<Result<String, String>> {
+    match state? {
+        InviteeState::Ready => Some(Ok(format!("Invited @{login}. It shows in their Team tab."))),
+        InviteeState::NoAccount => Some(Err(format!(
+            "Invited @{login}, but they have not signed in to Arakun yet, so they can't see it."
+        ))),
+        InviteeState::NotEnabled => Some(Err(format!(
+            "Invited @{login}, but Teams is not on for their account yet, so they can't see it. \
+             Ask an Arakun admin to turn it on."
+        ))),
+        InviteeState::Unknown => None,
+    }
+}
+
 /// The invite list a team read leaves: the server's, unless the read started
 /// before an invite or a withdraw from here (`changed`) or the server lists
 /// none, when the list `here` stays.
@@ -4915,6 +4938,7 @@ mod tests {
             invited_by_login: None,
             created_at: 1,
             expires_at: 2,
+            invitee_state: None,
         };
         let here = Some(vec![inv("new")]);
         let read = Some(vec![inv("old")]);
@@ -4923,6 +4947,32 @@ mod tests {
         // An older server lists none: what was sent from here stays.
         assert_eq!(invites_after_read(None, here.clone(), false), here);
         assert_eq!(invites_after_read(None, None, false), None);
+    }
+
+    #[test]
+    fn an_invite_that_waits_unseen_does_not_say_it_worked() {
+        let said = |state| invite_sent("Rik", Some(state));
+        assert!(
+            said(InviteeState::Ready)
+                .unwrap()
+                .unwrap()
+                .contains("Team tab")
+        );
+        assert!(
+            said(InviteeState::NoAccount)
+                .unwrap()
+                .unwrap_err()
+                .contains("not signed in")
+        );
+        assert!(
+            said(InviteeState::NotEnabled)
+                .unwrap()
+                .unwrap_err()
+                .contains("Arakun admin")
+        );
+        // An older server, or a state this app does not know, says nothing.
+        assert_eq!(said(InviteeState::Unknown), None);
+        assert_eq!(invite_sent("Rik", None), None);
     }
 
     #[test]

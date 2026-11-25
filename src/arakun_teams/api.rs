@@ -271,6 +271,23 @@ pub struct Invited {
     pub login: String,
     #[serde(default)]
     pub expires_at: u64,
+    #[serde(default)]
+    pub invitee_state: Option<InviteeState>,
+}
+
+/// Whether the person invited can see the invite yet. Older servers leave it
+/// out, and a state this app does not know reads as `Unknown`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InviteeState {
+    /// They never signed in to Arakun.
+    NoAccount,
+    /// Signed in, but Teams is not on for their account.
+    NotEnabled,
+    /// It shows in their Team tab.
+    Ready,
+    #[serde(other)]
+    Unknown,
 }
 
 /// An open invite of a team, as its admins see it (`GET /teams/<id>/invites`).
@@ -283,6 +300,8 @@ pub struct TeamInvite {
     pub invited_by_login: Option<String>,
     pub created_at: u64,
     pub expires_at: u64,
+    #[serde(default)]
+    pub invitee_state: Option<InviteeState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -869,6 +888,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(new.member_count, Some(3));
+        let sent: Vec<TeamInvite> = serde_json::from_str(
+            r#"[{"invite_id":"I","login":"a","created_at":1,"expires_at":2},
+                {"invite_id":"J","login":"b","created_at":1,"expires_at":2,"invitee_state":"not_enabled"},
+                {"invite_id":"K","login":"c","created_at":1,"expires_at":2,"invitee_state":"later"}]"#,
+        )
+        .unwrap();
+        let states: Vec<_> = sent.iter().map(|i| i.invitee_state).collect();
+        assert_eq!(
+            states,
+            [
+                None,
+                Some(InviteeState::NotEnabled),
+                Some(InviteeState::Unknown)
+            ]
+        );
+        let invited: Invited = serde_json::from_str(
+            r#"{"invite_id":"I","expires_at":2,"github_id":7,"login":"A","invitee_state":"no_account"}"#,
+        )
+        .unwrap();
+        assert_eq!(invited.invitee_state, Some(InviteeState::NoAccount));
         let w: Vec<WaitingRow> = serde_json::from_str(
             r#"[{"team_id":"T","team_name":"Arakun","requested_at":5,"invited_by_login":"karlo","invited_by_id":7,"reminded_at":null}]"#,
         )

@@ -20,7 +20,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
-use super::api::{DeviceRow, InviteRow, MemberRow, Role};
+use super::api::{DeviceRow, InviteRow, InviteeState, MemberRow, Role};
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
 use super::{Access, Teams};
@@ -2236,7 +2236,7 @@ impl TeamsView {
                     .collect()
             })
             .unwrap_or_default();
-        let sent: Vec<(String, String, u64, bool)> = t
+        let sent: Vec<(String, String, u64, Option<InviteeState>, bool)> = t
             .and_then(|t| t.invites.clone())
             .unwrap_or_default()
             .into_iter()
@@ -2244,7 +2244,7 @@ impl TeamsView {
             .filter(|i| !members.contains(&i.login.to_ascii_lowercase()))
             .map(|i| {
                 let busy = hub.busy.contains(&format!("withdraw:{}", i.invite_id));
-                (i.invite_id, i.login, i.created_at, busy)
+                (i.invite_id, i.login, i.created_at, i.invitee_state, busy)
             })
             .collect();
         let tid = team_id.to_string();
@@ -2318,12 +2318,17 @@ impl TeamsView {
             .child(card);
         if !sent.is_empty() {
             let mut rows = Self::rows();
-            for (i, (invite_id, login, at, busy)) in sent.into_iter().enumerate() {
+            for (i, (invite_id, login, at, state, busy)) in sent.into_iter().enumerate() {
                 let note = if pending.contains(&login.to_ascii_lowercase()) {
-                    format!("Invited {} · accepted, waiting for approval", ago(at))
+                    "accepted, waiting for approval"
                 } else {
-                    format!("Invited {} · has not answered", ago(at))
+                    match state {
+                        Some(InviteeState::NoAccount) => "has not signed in to Arakun yet",
+                        Some(InviteeState::NotEnabled) => "Teams is not on for their account",
+                        _ => "has not answered",
+                    }
                 };
+                let note = format!("Invited {} · {note}", ago(at));
                 let t = tid.clone();
                 rows = rows.child(
                     Self::person_row(faces.avatar(&login, AVATAR), login, note, false).child(
@@ -2354,7 +2359,7 @@ impl TeamsView {
         Self::scrolling(
             "teams-invite-page",
             page.child(Self::footnote(
-                "An invite lasts 7 days. It shows in their Team tab once they sign in.",
+                "An invite lasts 7 days. They see it in their Team tab once they sign in to Arakun with Teams on.",
             )),
         )
     }

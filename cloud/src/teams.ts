@@ -338,6 +338,23 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
 
 // ---- invites and approval ----------------------------------------------------
 
+/// Whether the invitee of an invite can see it yet, for the admin who sent it.
+/// `GET /invites` answers only a signed-in account with the flag, so an invite
+/// to anyone else waits unseen until it expires.
+///   no_account:  never signed in to Arakun. An operator's flag, block or plan
+///                makes a users row first, with last_seen_at 0 until sign-in.
+///   not_enabled: signed in, but without the flag, or blocked. A block reads
+///                as not_enabled so the team does not learn of it.
+///   ready:       it shows in their Team tab.
+/// `id` is the SQL for the invitee's GitHub ID: a column or a parameter.
+function inviteeState(id: string): string {
+  return `CASE
+    WHEN NOT EXISTS (SELECT 1 FROM users v WHERE v.github_id = ${id} AND v.last_seen_at > 0) THEN 'no_account'
+    WHEN EXISTS (SELECT 1 FROM users v JOIN user_flags f ON f.github_id = v.github_id AND f.flag = '${FLAG}'
+                 WHERE v.github_id = ${id} AND v.blocked_at IS NULL) THEN 'ready'
+    ELSE 'not_enabled' END`;
+}
+
 async function invite(c: Ctx, teamId: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
@@ -372,7 +389,7 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   const inviteId = ulid();
   const t = now();
   const expiresAt = t + INVITE_DAYS * DAY;
-  await db.batch([
+  const results = await db.batch([
     db.prepare("DELETE FROM invites WHERE expires_at <= ?").bind(t),
     // One open invite per person: one under a login they had before goes.
     db.prepare("DELETE FROM invites WHERE team_id = ? AND github_id = ? AND login <> ?").bind(teamId, account.id, login),
@@ -384,8 +401,13 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
            invited_by = excluded.invited_by, created_at = excluded.created_at, expires_at = excluded.expires_at`,
       )
       .bind(inviteId, teamId, login, account.id, c.me.githubId, t, expiresAt),
+    db.prepare(`SELECT ${inviteeState("?1")} AS invitee_state`).bind(account.id),
   ]);
-  return Response.json({ invite_id: inviteId, expires_at: expiresAt, github_id: account.id, login: account.login }, { status: 201 });
+  const state = (results[3]!.results[0] as { invitee_state: string }).invitee_state;
+  return Response.json(
+    { invite_id: inviteId, expires_at: expiresAt, github_id: account.id, login: account.login, invitee_state: state },
+    { status: 201 },
+  );
 }
 
 async function teamInvites(c: Ctx, teamId: string): Promise<Response> {
@@ -393,7 +415,8 @@ async function teamInvites(c: Ctx, teamId: string): Promise<Response> {
   if (!team) return notFound();
   if (!isAdmin(team.role)) return notAdmin();
   const { results } = await c.env.DB.prepare(
-    `SELECT i.invite_id, i.login, u.login AS invited_by_login, i.created_at, i.expires_at
+    `SELECT i.invite_id, i.login, u.login AS invited_by_login, i.created_at, i.expires_at,
+       ${inviteeState("i.github_id")} AS invitee_state
      FROM invites i LEFT JOIN users u ON u.github_id = i.invited_by
      WHERE i.team_id = ? AND i.expires_at > ? ORDER BY i.created_at DESC, i.invite_id DESC`,
   )

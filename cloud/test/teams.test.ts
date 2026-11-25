@@ -506,8 +506,8 @@ describe("teams", () => {
     await env.DB.prepare("UPDATE invites SET expires_at = ? WHERE invite_id = ?").bind(nowSeconds() - 1, old.invite_id).run();
     const list = await expectJson(api(t.owner.user, "GET", path), 200);
     expect(list).toEqual([
-      { invite_id: second.invite_id, login: "second", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: second.expires_at },
-      { invite_id: first.invite_id, login: "first-one", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: first.expires_at },
+      { invite_id: second.invite_id, login: "second", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: second.expires_at, invitee_state: "no_account" },
+      { invite_id: first.invite_id, login: "first-one", invited_by_login: t.owner.user.login, created_at: expect.any(Number), expires_at: first.expires_at, invitee_state: "no_account" },
     ]);
 
     // Another team's admin cannot touch it, nor can an expired one be withdrawn.
@@ -525,6 +525,36 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
     await expectJson(api(u, "POST", `/invites/${first.invite_id}/accept`, { device: d }), 404);
+  });
+
+  it("tells the admin whether the invitee can see the invite yet", async () => {
+    const t = await team();
+    const path = `/teams/${t.teamId}/invites`;
+    const send = (login: string) => expectJson<{ invitee_state: string }>(api(t.owner.user, "POST", path, { body: { github_login: login } }), 201);
+    const states = async () =>
+      Object.fromEntries((await expectJson<{ login: string; invitee_state: string }[]>(api(t.owner.user, "GET", path), 200)).map((i) => [i.login, i.invitee_state]));
+
+    // Never signed in, even with the flag an operator gave ahead of sign-in.
+    onGitHub(2001, "stranger");
+    onGitHub(2002, "early");
+    expect((await call("PUT", "/admin/users/2002/flags/teams", ADMIN)).status).toBe(200);
+    // Signed in without the flag, and signed in with it but blocked.
+    const plain = await user(2003, "plain", false);
+    await user(2004, "blocked");
+    expect((await call("PUT", "/admin/users/2004/block", ADMIN)).status).toBe(204);
+    await user(2005, "ready");
+
+    const expected = { stranger: "no_account", early: "no_account", plain: "not_enabled", blocked: "not_enabled", ready: "ready" };
+    for (const [login, state] of Object.entries(expected)) expect((await send(login)).invitee_state, login).toBe(state);
+    expect(await states()).toEqual(expected);
+
+    // What `ready` promises: the invitee sees it. Before that they cannot.
+    await expectJson(api(plain, "GET", "/invites"), 403);
+    // The list reads the state now, not when the invite went out.
+    await user(2001, "stranger", false);
+    expect((await call("PUT", "/admin/users/2003/flags/teams", ADMIN)).status).toBe(200);
+    expect(await states()).toMatchObject({ stranger: "not_enabled", plain: "ready" });
+    expect((await expectJson<{ team_id: string }[]>(api(plain, "GET", "/invites"), 200)).map((i) => i.team_id)).toEqual([t.teamId]);
   });
 
   it("invites the account that has the login on GitHub now, not whoever had it when they signed in", async () => {

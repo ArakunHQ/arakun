@@ -278,7 +278,7 @@ async fn run(
             // The check in `page_target` read the address before the wait, and a
             // navigation under way still shows the old one: check again here, on the
             // document the action will run in.
-            let pin = if action.drives() && !drive_any_page() {
+            let pin = if action.drives() && !crate::page_drive::any_page() {
                 may_drive(finished, state(page, cx)?.dialog.as_deref())?;
                 Some(pin_local(page, cx).await?)
             } else {

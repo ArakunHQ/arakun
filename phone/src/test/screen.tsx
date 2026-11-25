@@ -113,13 +113,20 @@ export function widthIs(px: number) {
 }
 
 /**
- * The page's CSS as a window `px` wide applies it, put in the document. jsdom
- * measures its queries against its own window, 1024 px, so each min-width
- * query becomes one that always or never holds. Gives back how to take it out.
+ * The page's CSS as a window of `size` applies it (a number is a width, as
+ * tall as a phone), put in the document. jsdom measures its queries against
+ * its own window, 1024 by 768 px, so each min-width and max-height query
+ * becomes one that always or never holds. Gives back how to take it out.
  */
-export function styleAt(px: number, ...css: string[]): () => void {
+export function styleAt(size: number | { width: number; height: number }, ...css: string[]): () => void {
+  const { width, height } = typeof size === "number" ? { width: size, height: 844 } : size;
   const el = document.createElement("style");
-  el.textContent = css.join("\n").replace(/@media\s*\(min-width:\s*(\d+)px\)/g, (_, n) => (px >= Number(n) ? "@media screen" : "@media not all"));
+  el.textContent = css
+    .join("\n")
+    .replace(/@media\s*\((min-width|max-height):\s*(\d+)px\)/g, (_, kind, n) => {
+      const holds = kind === "min-width" ? width >= Number(n) : height <= Number(n);
+      return holds ? "@media screen" : "@media not all";
+    });
   document.head.append(el);
   return () => el.remove();
 }

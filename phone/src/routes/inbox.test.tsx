@@ -16,8 +16,9 @@ describe("inbox", () => {
     const titles = [...container.querySelectorAll(".srow .t")].map((e) => e.textContent);
     expect(titles).toEqual(["t-c", "t-d", "t-a", "t-b"]);
     expect(container.querySelector(".group.needs h2")?.textContent).toBe("Needs you");
-    // One word with the sidebar's group.
+    // One word with the sidebar's groups.
     expect(container.querySelector(".group.done h2")?.textContent).toBe("Done");
+    expect(container.querySelector(".group.working h2")?.textContent).toBe("Working");
     expect(screen.getByText("Run: rm x")).toBeTruthy();
     expect(screen.getByText("Stopped with an error")).toBeTruthy();
   });

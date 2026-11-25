@@ -17,20 +17,30 @@
 .screen[data-session] > .hdr .sub { margin-top: 2px; }
 
 /* What is read and written, under the header. A tablet gives it more room at
-   the sides; a desktop reads it in a column of its own in the middle. */
+   the sides, clear of a notch on a phone on its side. On a desktop the column
+   still spans the pane, so the wheel works over the sides and the scrollbar is
+   at its edge, but its gutters leave 760 px of text in the middle. */
 .scol { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; }
 @media (min-width: 768px) {
-  .screen[data-session] > .hdr { padding: 8px 24px 10px; }
-  .scol { --gl: 32px; --gr: 32px; }
+  .screen[data-session] > .hdr { padding: 8px max(24px, var(--gr)) 10px max(24px, var(--gl)); }
+  .scol { --gl: max(32px, env(safe-area-inset-left, 0px)); --gr: max(32px, env(safe-area-inset-right, 0px)); }
 }
 @media (min-width: 1200px) {
-  .scol { max-width: 760px; margin: 0 auto; --gl: 0px; --gr: 0px; }
+  .scol { --gl: max(0px, calc(50% - 380px)); --gr: max(0px, calc(50% - 380px)); }
 }
-/* A phone on its side is 390 px high. A tighter header and a shorter card,
-   which scrolls inside as it does at any height, keep the composer on the
-   screen. The place is in the header already. */
+/* A phone on its side is 390 px high. The card's buttons and the composer
+   must fit without a scroll: a swipe that starts on Hold to allow cannot
+   scroll. So the card does not scroll, the command scrolls sideways on one
+   line, the place (in the header already) and the shortcuts go, and the
+   rest gets tighter. */
 @media (max-height: 560px) {
   .screen[data-session] > .hdr { padding-top: 0; padding-bottom: 4px; }
-  .screen[data-session] .perm { max-height: 34vh; }
+  .screen[data-session] .perm { max-height: none; }
+  .screen[data-session] .perm .pbody { overflow: visible; padding-bottom: 8px; }
   .screen[data-session] .perm .where { display: none; }
+  .screen[data-session] .perm .what { overflow-x: auto; white-space: nowrap; word-break: normal; padding: 6px 10px; scrollbar-width: none; }
+  .screen[data-session] .perm .opts { margin-top: 8px; }
+  .screen[data-session] .perm .opts .btn { height: 44px; }
+  .screen[data-session] .perm .always { min-height: 44px; margin-top: 8px; padding-top: 4px; }
+  .screen[data-session] .cuts { display: none; }
 }

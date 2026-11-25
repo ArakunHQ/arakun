@@ -69,7 +69,7 @@ export function Inbox() {
           </div>
         ) : null}
         {needs.length ? <Group kind="needs" name="Needs you" items={needs} /> : null}
-        {working.length ? <Group kind="working" name="Working now" items={working} /> : null}
+        {working.length ? <Group kind="working" name="Working" items={working} /> : null}
         {recent.length ? <Group kind="done" name="Done" items={recent} /> : null}
         {older > 0 ? (
           <button className="more" onClick={toSessions}>

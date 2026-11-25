@@ -45,8 +45,8 @@ BASE_DOMAIN = "arakun.dev"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
-# so every id here is used once: this Worker has 1003, 1004 and 1005,
-# production 1001, 1002 and 1006.
+# so every id here is used once: this Worker has 1003, 1004, 1005 and 1007,
+# production 1001, 1002, 1006 and 1008.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -74,6 +74,16 @@ namespace_id = "1005"
   limit = 30
   period = 60
 
+# Each request for cloud access asks GitHub about the account: 5 a minute per
+# user is room for retries and none for a script.
+[[ratelimits]]
+name = "CLOUD_ACCESS_LIMIT"
+namespace_id = "1007"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
 # One SQLite-backed object per channel: its messages, their seq and the live
 # sockets.
 [[durable_objects.bindings]]
@@ -97,8 +107,8 @@ tag = "v2"
 new_sqlite_classes = ["Channel"]
 
 # The hosted Worker (`npx wrangler deploy --env production`), which
-# .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET and
-# GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings,
+# .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET,
+# GITHUB_CLIENT_SECRET and CLOUD_REQUESTS_WEBHOOK stay Worker secrets. An environment inherits no bindings,
 # so they are all here again. The one route covers the account host
 # app.arakun.dev and the old label hosts, which tell old apps to update.
 [env.production]
@@ -134,6 +144,14 @@ namespace_id = "1006"
 
   [env.production.ratelimits.simple]
   limit = 30
+  period = 60
+
+[[env.production.ratelimits]]
+name = "CLOUD_ACCESS_LIMIT"
+namespace_id = "1008"
+
+  [env.production.ratelimits.simple]
+  limit = 5
   period = 60
 
 [[env.production.durable_objects.bindings]]

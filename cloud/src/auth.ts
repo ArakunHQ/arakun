@@ -526,7 +526,7 @@ export async function githubAccount(login: string, env: Env): Promise<GitHubUser
   return user;
 }
 
-function githubHeaders(clientId: string, clientSecret: string): Record<string, string> {
+export function githubHeaders(clientId: string, clientSecret: string): Record<string, string> {
   return {
     Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
     Accept: "application/vnd.github+json",

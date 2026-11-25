@@ -4,6 +4,7 @@
 // error is JSON: { "error": "..." }. A GET outside the API is the phone page.
 
 import { admin } from "./admin";
+import { cloudAccess } from "./cloud_access";
 import { authConfig, deleteSession, ForeignOrigin, listSessions, logout, me, signIn } from "./auth";
 import { machines } from "./machines";
 import { notices } from "./notices";
@@ -13,13 +14,13 @@ import { error, type Env } from "./util";
 
 /// The API's paths: the first segment of each route, so an unknown path under
 /// one stays a JSON 404 and never turns into the page.
-const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "healthz", "devices", "users", "teams", "invites", "pending", "_relay"]);
+const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "cloud", "healthz", "devices", "users", "teams", "invites", "pending", "_relay"]);
 
-export async function teamsFetch(request: Request, env: Env): Promise<Response> {
+export async function teamsFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   // The page and its files are the same for every account, so the assets'
   // own caching stands.
   if (isPage(request)) return withPagePolicy(await env.ASSETS.fetch(request), new URL(request.url).host);
-  const res = await route(request, env);
+  const res = await route(request, env, ctx);
   // Every answer is about one account (sessions, flags, teams, keys), so no
   // cache, a browser's included, may keep it for the next account. A 101
   // carries the socket and no body. A copy, since an answer from the channel
@@ -70,11 +71,13 @@ function isPage(request: Request): boolean {
   return !API.has(first);
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const { pathname } = url;
   try {
-    if (pathname.startsWith("/admin/")) return await admin(request, env, pathname);
+    if (pathname.startsWith("/admin/")) return await admin(request, env, url);
+    const cloud = await cloudAccess(request, env, url, ctx);
+    if (cloud) return cloud;
     const machine = await machines(request, env, url);
     if (machine) return machine;
     const notice = await notices(request, env, url);

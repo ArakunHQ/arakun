@@ -22,6 +22,9 @@ declare namespace Cloudflare {
     SEND_LIMIT: RateLimit;
     /// Counts the invites each user makes, since each one asks GitHub.
     INVITE_LIMIT: RateLimit;
+    /// Counts the requests for cloud access each user makes, since each one
+    /// asks GitHub and may post to the webhook.
+    CLOUD_ACCESS_LIMIT: RateLimit;
     /// One object per channel: its messages and live sockets.
     CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.
@@ -31,5 +34,8 @@ declare namespace Cloudflare {
     /// Its client secret, from `wrangler secret put GITHUB_CLIENT_SECRET`; it
     /// lets us ask GitHub whether our app issued a token. Unset = no sign-in.
     GITHUB_CLIENT_SECRET?: string;
+    /// A Discord webhook URL, from `wrangler secret put CLOUD_REQUESTS_WEBHOOK`:
+    /// each new request for cloud access is posted there. Unset = no post.
+    CLOUD_REQUESTS_WEBHOOK?: string;
   }
 }

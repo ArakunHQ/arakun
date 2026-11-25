@@ -2676,11 +2676,6 @@ fn notice_row(text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
         .into_any_element()
 }
 
-thread_local! {
-    /// Syntax colors of the diff cards on screen, by their content.
-    static DIFF_SPANS: RefCell<HashMap<u64, Option<Rc<Vec<LineSpans>>>>> = RefCell::new(HashMap::new());
-}
-
 impl Focusable for ThreadView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()

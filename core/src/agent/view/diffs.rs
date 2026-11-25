@@ -194,30 +194,64 @@ pub(super) fn diff_counts(added: u32, removed: u32) -> gpui::Div {
         })
 }
 
-/// Highlights the lines a diff card shows, once per diff: cards are drawn
-/// every frame while they are visible.
-pub(super) fn diff_spans(
-    path: &Path,
-    old: Option<&str>,
-    new: &str,
-    lines: &[String],
-) -> Option<Rc<Vec<LineSpans>>> {
+/// What a diff card shows, worked out once per diff: cards are drawn every
+/// frame while they are visible, and the line diff is quadratic in places.
+pub(super) struct DiffCard {
+    added: u32,
+    removed: u32,
+    /// Lines in the hunks, of which `rows` holds the first `PREVIEW_LINES`.
+    total: usize,
+    /// `None` is the gap between two hunks.
+    rows: Vec<Option<(LineKind, Option<u32>)>>,
+    texts: Vec<String>,
+    spans: Option<Rc<Vec<LineSpans>>>,
+}
+
+thread_local! {
+    /// The diff cards on screen, by their content.
+    static DIFF_CARDS: RefCell<HashMap<u64, Rc<DiffCard>>> = RefCell::new(HashMap::new());
+}
+
+pub(super) fn diff_card_model(path: &Path, old: Option<&str>, new: &str) -> Rc<DiffCard> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (path, old, new).hash(&mut h);
     let key = h.finish();
-    DIFF_SPANS.with(|cache| {
+    if let Some(card) = DIFF_CARDS.with(|cache| cache.borrow().get(&key).cloned()) {
+        return card;
+    }
+    let card = Rc::new(build_card(path, old, new));
+    DIFF_CARDS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some(spans) = cache.get(&key) {
-            return spans.clone();
-        }
         if cache.len() > 256 {
             cache.clear();
         }
-        let spans = crate::highlight::highlight(&path.to_string_lossy(), lines).map(Rc::new);
-        cache.insert(key, spans.clone());
-        spans
-    })
+        cache.insert(key, card.clone());
+    });
+    card
+}
+
+fn build_card(path: &Path, old: Option<&str>, new: &str) -> DiffCard {
+    let lines = diff::line_diff(old.unwrap_or(""), new);
+    let (added, removed) = diff::stats(&lines);
+    let hunks = diff::hunks(&lines, 3);
+    let shown = &hunks[..hunks.len().min(PREVIEW_LINES)];
+    let texts: Vec<String> = shown
+        .iter()
+        .map(|l| l.map_or(String::new(), |l| l.text.replace('\t', "    ")))
+        .collect();
+    let spans = crate::highlight::highlight(&path.to_string_lossy(), &texts).map(Rc::new);
+    DiffCard {
+        added,
+        removed,
+        total: hunks.len(),
+        rows: shown
+            .iter()
+            .map(|l| l.map(|l| (l.kind, l.number)))
+            .collect(),
+        texts,
+        spans,
+    }
 }
 
 /// One line of code in its syntax colors over `base`; `dim` fades the colors.
@@ -268,17 +302,14 @@ pub(super) fn diff_bg(kind: LineKind) -> Option<Hsla> {
 /// A file edit as a card: file header with +/- counts, then the changed
 /// lines with a little context.
 pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -> AnyElement {
-    let lines = diff::line_diff(old.unwrap_or(""), new);
-    let (added, removed) = diff::stats(&lines);
-    let hunks = diff::hunks(&lines, 3);
-    let total = hunks.len();
+    let card = diff_card_model(path, old, new);
+    let DiffCard {
+        added,
+        removed,
+        total,
+        ..
+    } = *card;
     let name = rel_path(path, cwd);
-    let texts: Vec<String> = hunks
-        .iter()
-        .take(PREVIEW_LINES)
-        .map(|l| l.map_or(String::new(), |l| l.text.replace('\t', "    ")))
-        .collect();
-    let spans = diff_spans(path, old, new, &texts);
     div()
         .flex()
         .flex_col()
@@ -342,114 +373,106 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                 .flex_none()
                                 .min_w_full()
                                 .py(crate::ui::sp(2.))
-                                .children(hunks.iter().take(PREVIEW_LINES).enumerate().map(
-                                    |(n, line)| {
-                                        match line {
-                                            None => div()
+                                .children(card.rows.iter().enumerate().map(|(n, row)| {
+                                    match *row {
+                                        None => div()
+                                            .h(px(18.))
+                                            .pl(crate::ui::sp(28.))
+                                            .font_family(theme::FONT_MONO)
+                                            .text_size(px(crate::ui::TEXT_XS))
+                                            .text_color(theme::text_faint())
+                                            .child("⋯"),
+                                        Some((kind, number)) => {
+                                            let (mark, mark_color, bar) = match kind {
+                                                LineKind::Add => (
+                                                    "+",
+                                                    Hsla::from(theme::diff_add()),
+                                                    Some(theme::diff_add_bar()),
+                                                ),
+                                                LineKind::Del => (
+                                                    "−",
+                                                    Hsla::from(theme::diff_del()),
+                                                    Some(theme::diff_del_bar()),
+                                                ),
+                                                LineKind::Context => {
+                                                    (" ", gpui::transparent_black(), None)
+                                                }
+                                            };
+                                            div()
+                                                .relative()
+                                                .flex()
+                                                .items_center()
                                                 .h(px(18.))
-                                                .pl(crate::ui::sp(28.))
-                                                .font_family(theme::FONT_MONO)
-                                                .text_size(px(crate::ui::TEXT_XS))
-                                                .text_color(theme::text_faint())
-                                                .child("⋯"),
-                                            Some(l) => {
-                                                let (mark, mark_color, bar) = match l.kind {
-                                                    LineKind::Add => (
-                                                        "+",
-                                                        Hsla::from(theme::diff_add()),
-                                                        Some(theme::diff_add_bar()),
-                                                    ),
-                                                    LineKind::Del => (
-                                                        "−",
-                                                        Hsla::from(theme::diff_del()),
-                                                        Some(theme::diff_del_bar()),
-                                                    ),
-                                                    LineKind::Context => {
-                                                        (" ", gpui::transparent_black(), None)
-                                                    }
-                                                };
-                                                div()
-                                                    .relative()
-                                                    .flex()
-                                                    .items_center()
-                                                    .h(px(18.))
-                                                    .when_some(diff_bg(l.kind), |d, bg| d.bg(bg))
-                                                    .when_some(bar, |d, bar| {
-                                                        d.child(
-                                                            div()
-                                                                .absolute()
-                                                                .left_0()
-                                                                .top_0()
-                                                                .bottom_0()
-                                                                .w(px(2.))
-                                                                .bg(bar),
-                                                        )
-                                                    })
-                                                    .child(
+                                                .when_some(diff_bg(kind), |d, bg| d.bg(bg))
+                                                .when_some(bar, |d, bar| {
+                                                    d.child(
                                                         div()
-                                                            .flex_none()
-                                                            .w(px(28.))
-                                                            .pr(crate::ui::sp(4.))
-                                                            .flex()
-                                                            .justify_end()
-                                                            .font_family(theme::FONT_MONO)
-                                                            .text_size(px(crate::ui::TEXT_XS))
-                                                            .text_color(theme::text_faint())
-                                                            .child(
-                                                                l.number
-                                                                    .map_or(String::new(), |n| {
-                                                                        n.to_string()
-                                                                    }),
-                                                            ),
+                                                            .absolute()
+                                                            .left_0()
+                                                            .top_0()
+                                                            .bottom_0()
+                                                            .w(px(2.))
+                                                            .bg(bar),
                                                     )
-                                                    .child(
-                                                        div()
-                                                            .flex_none()
-                                                            .w(px(12.))
-                                                            .flex()
-                                                            .justify_center()
-                                                            .font_family(theme::FONT_MONO)
-                                                            .text_size(px(crate::ui::TEXT_XS))
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .text_color(mark_color)
-                                                            .child(mark),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .flex_none()
-                                                            .pr(crate::ui::sp(8.))
-                                                            .whitespace_nowrap()
-                                                            .font_family(theme::FONT_MONO)
-                                                            .text_size(px(crate::ui::TEXT_XS))
-                                                            .child({
-                                                                let base = if l.kind
-                                                                    == LineKind::Context
-                                                                {
-                                                                    theme::mix(0.55)
-                                                                } else {
-                                                                    theme::mix(0.85)
-                                                                };
-                                                                let dim = if l.kind
-                                                                    == LineKind::Context
-                                                                {
-                                                                    0.7
-                                                                } else {
-                                                                    1.
-                                                                };
-                                                                colored_line(
-                                                                    &texts[n],
-                                                                    spans
-                                                                        .as_ref()
-                                                                        .and_then(|s| s.get(n)),
-                                                                    base,
-                                                                    dim,
-                                                                )
-                                                            }),
-                                                    )
-                                            }
+                                                })
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .w(px(28.))
+                                                        .pr(crate::ui::sp(4.))
+                                                        .flex()
+                                                        .justify_end()
+                                                        .font_family(theme::FONT_MONO)
+                                                        .text_size(px(crate::ui::TEXT_XS))
+                                                        .text_color(theme::text_faint())
+                                                        .child(number.map_or(String::new(), |n| {
+                                                            n.to_string()
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .w(px(12.))
+                                                        .flex()
+                                                        .justify_center()
+                                                        .font_family(theme::FONT_MONO)
+                                                        .text_size(px(crate::ui::TEXT_XS))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(mark_color)
+                                                        .child(mark),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .pr(crate::ui::sp(8.))
+                                                        .whitespace_nowrap()
+                                                        .font_family(theme::FONT_MONO)
+                                                        .text_size(px(crate::ui::TEXT_XS))
+                                                        .child({
+                                                            let base = if kind == LineKind::Context
+                                                            {
+                                                                theme::mix(0.55)
+                                                            } else {
+                                                                theme::mix(0.85)
+                                                            };
+                                                            let dim = if kind == LineKind::Context {
+                                                                0.7
+                                                            } else {
+                                                                1.
+                                                            };
+                                                            colored_line(
+                                                                &card.texts[n],
+                                                                card.spans
+                                                                    .as_ref()
+                                                                    .and_then(|s| s.get(n)),
+                                                                base,
+                                                                dim,
+                                                            )
+                                                        }),
+                                                )
                                         }
-                                    },
-                                )),
+                                    }
+                                })),
                         ),
                 )
                 .when(total > PREVIEW_LINES, |d| {
@@ -464,4 +487,23 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                 })
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_diff_card_is_worked_out_once_per_diff() {
+        let path = Path::new("src/lib.rs");
+        let old = "fn a() {}\nfn b() {}\n";
+        let new = "fn a() {}\nfn c() {}\n";
+        let first = diff_card_model(path, Some(old), new);
+        let again = diff_card_model(path, Some(old), new);
+        assert!(Rc::ptr_eq(&first, &again));
+        assert_eq!((first.added, first.removed), (1, 1));
+        assert_eq!(first.rows.len(), first.texts.len());
+        let other = diff_card_model(path, Some(old), "fn a() {}\n");
+        assert!(!Rc::ptr_eq(&first, &other));
+    }
 }

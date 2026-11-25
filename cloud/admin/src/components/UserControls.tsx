@@ -166,7 +166,7 @@ export function Block({ id, blockedAt, reason }: { id: number; blockedAt: number
           />
           <Confirm
             title={`Block GitHub ID ${id}?`}
-            body={<p>The account is signed out and cannot sign in until it is unblocked.</p>}
+            body={<p>Its computers and devices are disconnected now and cannot connect until it is unblocked. It stays signed in: use Sign out everywhere to end that too.</p>}
             confirmLabel="Block"
             danger
             disabled={busy || why.length > MAX_REASON}

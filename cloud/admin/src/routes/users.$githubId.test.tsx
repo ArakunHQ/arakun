@@ -118,7 +118,10 @@ describe("one user", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Reason" }), "spam");
     await userEvent.click(screen.getByRole("button", { name: "Block" }));
     expect(writes()).toEqual(["DELETE /api/users/1002/flags/cloud"]);
-    await userEvent.click(within(screen.getByRole("dialog", { name: "Block GitHub ID 1002?" })).getByRole("button", { name: "Block" }));
+    const blockDialog = within(screen.getByRole("dialog", { name: "Block GitHub ID 1002?" }));
+    // A block ends the relay sockets, not the sign-in; the text must not say it does.
+    expect(blockDialog.getByText(/disconnected now and cannot connect until it is unblocked\. It stays signed in: use Sign out everywhere/)).toBeTruthy();
+    await userEvent.click(blockDialog.getByRole("button", { name: "Block" }));
     await waitFor(() => expect(calls).toContain("PUT /api/users/1002/block"));
     expect(bodies["PUT /api/users/1002/block"]).toEqual({ reason: "spam" });
 

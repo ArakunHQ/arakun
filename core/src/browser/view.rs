@@ -411,6 +411,12 @@ impl BrowserView {
         self.tab.call(method, params)
     }
 
+    /// The unique id of a frame's newest main-world script context; known once
+    /// `Runtime.enable` was sent through [`Self::devtools`].
+    pub fn script_context(&self, frame: &str) -> Option<String> {
+        self.tab.contexts.borrow().main_world(frame)
+    }
+
     /// What the page logged since it last started loading, oldest first.
     pub fn console(&self) -> Vec<ConsoleLine> {
         self.tab.console.borrow().iter().cloned().collect()

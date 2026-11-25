@@ -4117,7 +4117,7 @@ impl Shell {
                 .gap(crate::ui::sp(10.))
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(agent_icon(env.agent, 22.))
+                .child(env.agent.icon(22.))
                 .child("New session")
                 .child(
                     div()
@@ -4778,22 +4778,6 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
-    match agent {
-        AgentKind::Claude => img("providers/claude.svg")
-            .size(px(size))
-            .flex_none()
-            .into_any_element(),
-        AgentKind::Droid => ui::factory_logo(size).into_any_element(),
-        AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
-        AgentKind::Codex
-        | AgentKind::Devin
-        | AgentKind::Cursor
-        | AgentKind::Antigravity
-        | AgentKind::WorkersAi => agent.icon(size),
-    }
-}
-
 impl Shell {
     /// The Notes tab: the active project's scratch list.
     fn render_notes(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5172,5 +5156,50 @@ mod tests {
         assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
         assert!(in_modal(&[ctx("Shell"), ctx(ui::MODAL_CONTEXT)]));
         assert!(!in_modal(&[ctx("Shell"), ctx("ThreadView")]));
+    }
+
+    /// `shell` sits at the top: it shows every other module, and none of them
+    /// reaches back into it. A path back makes a cycle, which keeps any of
+    /// them from moving into a crate of its own (#614). Put what they share
+    /// in that module, `ui` or a small module of its own instead.
+    #[test]
+    fn nothing_outside_the_shell_depends_on_it() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(
+            files.len() > 50,
+            "found only {} files in {}",
+            files.len(),
+            src.display()
+        );
+        let mut found = Vec::new();
+        for file in files {
+            let rel = file.strip_prefix(&src).unwrap();
+            if rel == std::path::Path::new("shell.rs") || rel.starts_with("shell") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&file).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if line.contains("crate::shell") {
+                    found.push(format!("{}:{}: {}", rel.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these reach into `shell`:\n{}",
+            found.join("\n")
+        );
     }
 }

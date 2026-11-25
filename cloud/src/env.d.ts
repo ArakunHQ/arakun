@@ -25,6 +25,9 @@ declare namespace Cloudflare {
     /// Counts the requests for cloud access each user makes, since each one
     /// asks GitHub and may post to the webhook.
     CLOUD_ACCESS_LIMIT: RateLimit;
+    /// Counts the beta sign-ups each user makes, since each one asks GitHub
+    /// and may post to the webhook.
+    BETA_LIMIT: RateLimit;
     /// One object per channel: its messages and live sockets.
     CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.
@@ -37,6 +40,9 @@ declare namespace Cloudflare {
     /// A Discord webhook URL, from `wrangler secret put CLOUD_REQUESTS_WEBHOOK`:
     /// each new request for cloud access is posted there. Unset = no post.
     CLOUD_REQUESTS_WEBHOOK?: string;
+    /// A Discord webhook URL, from `wrangler secret put BETA_REQUESTS_WEBHOOK`:
+    /// each new sign-up for a phone app beta is posted there. Unset = no post.
+    BETA_REQUESTS_WEBHOOK?: string;
     /// Counts the messages pushed to each native app's token (src/push.ts).
     PUSH_LIMIT: RateLimit;
     /// Apple's push key for the iOS app: the .p8 file's text, from

@@ -1468,7 +1468,7 @@ impl Shell {
                                             .flex()
                                             .items_center()
                                             .gap(crate::ui::sp(3.))
-                                            .child(agent_icon(agent, 14.))
+                                            .child(agent.icon(14.))
                                             .when(fast, |d| {
                                                 d.child(
                                                     icon("flash", 12.)

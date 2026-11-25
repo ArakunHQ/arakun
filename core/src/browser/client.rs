@@ -14,8 +14,8 @@ use cef::*;
 use futures::channel::oneshot;
 use serde_json::Value;
 
-use super::ConsoleLine;
 use super::runtime::{self, PumpSignal};
+use super::{ConsoleLine, ScriptContexts};
 
 // The `cef` crate binds the native cursor of `on_cursor_change` as a byte pointer on macOS.
 #[cfg(target_os = "macos")]
@@ -152,6 +152,8 @@ pub struct TabState {
     /// DevTools commands waiting for their answer, by message id.
     calls: RefCell<HashMap<i32, oneshot::Sender<DevToolsResult>>>,
     last_call: Cell<i32>,
+    /// The page's script contexts, from DevTools events.
+    pub contexts: RefCell<ScriptContexts>,
     /// The icon URLs still to try for the page's icon, after the one downloading.
     favicon_queue: RefCell<VecDeque<String>>,
     /// The page those icons are for.
@@ -184,6 +186,7 @@ impl TabState {
             console_seq: Cell::new(0),
             calls: RefCell::new(HashMap::new()),
             last_call: Cell::new(0),
+            contexts: RefCell::new(ScriptContexts::default()),
             favicon_queue: RefCell::new(VecDeque::new()),
             favicon_page: RefCell::new(String::new()),
             favicon_round: Cell::new(0),
@@ -1158,7 +1161,12 @@ wrap_dev_tools_message_observer! {
     impl DevToolsMessageObserver {
         fn on_dev_tools_message(&self, _browser: Option<&mut Browser>, message: Option<&[u8]>) -> ::std::os::raw::c_int {
             let Some(message) = message.and_then(|m| serde_json::from_slice::<Value>(m).ok()) else { return 0 };
-            let Some(id) = message.get("id").and_then(Value::as_i64) else { return 0 };
+            let Some(id) = message.get("id").and_then(Value::as_i64) else {
+                if let Some(method) = message.get("method").and_then(Value::as_str) {
+                    self.page.tab.contexts.borrow_mut().event(method, &message["params"]);
+                }
+                return 0;
+            };
             let Some(reply) = self.page.tab.calls.borrow_mut().remove(&(id as i32)) else { return 0 };
             let _ = reply.send(devtools_result(message));
             1
@@ -1260,7 +1268,8 @@ pub fn gpu_frames() -> bool {
 /// window the browser opens: an Arakun tab cannot host it without a port.
 pub fn show_dev_tools(host: &BrowserHost) {
     #[cfg(windows)]
-    let window_info = WindowInfo::default().set_as_popup(std::ptr::null_mut(), "DevTools");
+    let window_info =
+        WindowInfo::default().set_as_popup(cef::sys::HWND(std::ptr::null_mut()), "DevTools");
     #[cfg(not(windows))]
     let window_info = WindowInfo {
         window_name: CefString::from("DevTools"),

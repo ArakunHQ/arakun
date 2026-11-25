@@ -116,6 +116,64 @@ pub struct PageState {
     pub dialog: Option<String>,
 }
 
+/// The pages' main-world JavaScript contexts, kept from DevTools `Runtime` events once
+/// `Runtime.enable` was sent. A navigation replaces a frame's context, so a script sent
+/// to one of these ids can only run in the document that id was looked up for.
+#[derive(Debug, Default)]
+pub struct ScriptContexts {
+    /// `(id, uniqueId, frame id)`, oldest first.
+    live: Vec<(i64, String, String)>,
+}
+
+/// More are stale: a page that lives long and makes many frames.
+const MAX_CONTEXTS: usize = 64;
+
+impl ScriptContexts {
+    /// Takes in a DevTools event; ignores everything but the `Runtime` context events.
+    pub fn event(&mut self, method: &str, params: &serde_json::Value) {
+        match method {
+            "Runtime.executionContextCreated" => {
+                let c = &params["context"];
+                if c["auxData"]["isDefault"] != true {
+                    return;
+                }
+                let (Some(id), Some(unique), Some(frame)) = (
+                    c["id"].as_i64(),
+                    c["uniqueId"].as_str(),
+                    c["auxData"]["frameId"].as_str(),
+                ) else {
+                    return;
+                };
+                if self.live.len() >= MAX_CONTEXTS {
+                    self.live.remove(0);
+                }
+                self.live.push((id, unique.to_string(), frame.to_string()));
+            }
+            // Ids repeat across renderer processes; the unique id does not.
+            "Runtime.executionContextDestroyed" => {
+                match params["executionContextUniqueId"].as_str() {
+                    Some(unique) => self.live.retain(|(_, u, _)| u != unique),
+                    None => {
+                        let id = params["executionContextId"].as_i64();
+                        self.live.retain(|(i, _, _)| Some(*i) != id);
+                    }
+                }
+            }
+            "Runtime.executionContextsCleared" => self.live.clear(),
+            _ => {}
+        }
+    }
+
+    /// The unique id of the newest main-world context of a frame.
+    pub fn main_world(&self, frame: &str) -> Option<String> {
+        self.live
+            .iter()
+            .rev()
+            .find(|(_, _, f)| f == frame)
+            .map(|(_, unique, _)| unique.clone())
+    }
+}
+
 /// The argument the Linux sandbox check (`runtime::userns_sandbox_works`) runs this
 /// binary with, in a child process, to see whether it starts in a nested user namespace.
 pub const SANDBOX_PROBE: &str = "--arakun-sandbox-probe";
@@ -277,7 +335,12 @@ fn parse_links_choice(text: &str) -> Option<bool> {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{SANDBOX_PROBE, cdp_port_from, is_sandbox_probe, parse_links_choice, url_port};
+    use serde_json::json;
+
+    use super::{
+        SANDBOX_PROBE, ScriptContexts, cdp_port_from, is_sandbox_probe, parse_links_choice,
+        url_port,
+    };
 
     #[test]
     fn the_debugging_port_is_off_unless_asked_for() {
@@ -333,5 +396,46 @@ mod tests {
             "https://example.com",
             SANDBOX_PROBE
         ])));
+    }
+
+    #[test]
+    fn a_navigation_replaces_the_script_context() {
+        let created = |id: i64, unique: &str, frame: &str, default: bool| {
+            json!({ "context": { "id": id, "uniqueId": unique,
+                "auxData": { "isDefault": default, "frameId": frame } } })
+        };
+        let mut c = ScriptContexts::default();
+        c.event(
+            "Runtime.executionContextCreated",
+            &created(1, "a", "main", true),
+        );
+        c.event(
+            "Runtime.executionContextCreated",
+            &created(2, "b", "main", false),
+        );
+        c.event(
+            "Runtime.executionContextCreated",
+            &created(3, "c", "child", true),
+        );
+        assert_eq!(c.main_world("main").as_deref(), Some("a"));
+        // The next document, maybe in another process that reuses the id.
+        c.event(
+            "Runtime.executionContextCreated",
+            &created(1, "d", "main", true),
+        );
+        assert_eq!(c.main_world("main").as_deref(), Some("d"));
+        c.event(
+            "Runtime.executionContextDestroyed",
+            &json!({ "executionContextId": 1, "executionContextUniqueId": "d" }),
+        );
+        assert_eq!(c.main_world("main").as_deref(), Some("a"));
+        c.event(
+            "Runtime.executionContextDestroyed",
+            &json!({ "executionContextId": 1 }),
+        );
+        assert_eq!(c.main_world("main"), None);
+        assert_eq!(c.main_world("child").as_deref(), Some("c"));
+        c.event("Runtime.executionContextsCleared", &json!({}));
+        assert_eq!(c.main_world("child"), None);
     }
 }

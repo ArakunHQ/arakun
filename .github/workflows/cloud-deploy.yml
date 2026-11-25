@@ -1,12 +1,13 @@
 name: Cloud deploy
 
-# Deploys the hosted cloud Worker (cloud/: the relay and the teams API) and the
-# phone page it serves (phone/) to *.arakun.dev. It ships with the app's
+# Deploys the hosted cloud Worker (cloud/: the relay and the teams API), the
+# phone page it serves (phone/) and the admin Worker (cloud/admin/: the operator
+# panel at admin.arakun.dev) to arakun.dev. It ships with the app's
 # versions: release.yml calls this workflow after it publishes a release, so
-# the Worker that runs is always the one from the latest release, and a change
-# merged on main waits for the next version like any other change.
+# the Worker that runs is the one from the latest release, and a change merged
+# on main waits for the next version, unless someone deploys main by hand.
 #
-# Three ways in:
+# Four ways in:
 #
 # - A release: release.yml calls this after its publish job, on the v* tag.
 #   Pre-releases (a `-` in the tag) don't deploy: most installs still run the
@@ -26,23 +27,38 @@ name: Cloud deploy
 #     gh workflow run cloud-deploy.yml --ref cloud-hotfix/v1.2.3
 #
 #   The branch may only change cloud/ and phone/, so what runs is the release
-#   plus the fix. A second hotfix for the same release goes on the same branch.
+#   plus the fix; the admin Worker is under cloud/, so a hotfix can change it too.
+#   A second hotfix for the same release goes on the same branch.
 #   A commit that is not on main gets a warning: the next release deploys
 #   main, and a fix only on the hotfix branch would go away again.
 #
-# A manual run on any other ref, such as main, fails and names the tag to use.
+# - What is on main, without a new version: run this workflow by hand on main.
 #
-# Whatever the way in, only the latest published release, or a hotfix branch
-# made from it, deploys. So re-running an old release's run can't put an old
-# Worker back.
+#     gh workflow run cloud-deploy.yml --ref main
+#
+#   main must contain the latest release's tag, which it does unless a release
+#   was tagged off main. The next release deploys again from its tag, and a
+#   redeploy of the latest release's tag or a hotfix branch made from it goes
+#   back to the release without main's later changes.
+#
+# A manual run on any other ref fails and names the refs to use.
+#
+# Whatever the way in, only the latest published release, a hotfix branch made
+# from it, or main (which contains it) deploys. So re-running an old release's
+# run can't put an old Worker back.
 #
 # The `production` environment holds CLOUDFLARE_API_TOKEN, a token for the
 # CoderLabs account that can edit Workers scripts and routes, read KV and edit D1 (it needs D1 edit
 # permission because the deploy applies the migrations); it can
 # also require a reviewer before a deploy. Its deployment rules must let v*
-# tags and cloud-hotfix/* branches through. The settings live in
-# cloud/wrangler.toml under [env.production]. The deploy's message names the
-# tag, or the hotfix branch and its commit.
+# tags, cloud-hotfix/* branches and main through. The settings live in
+# cloud/wrangler.toml under [env.production] (the admin Worker's, in
+# cloud/admin/wrangler.toml). The deploy's message names the tag, the hotfix
+# branch and its commit, or main's commit. The admin Worker deploys with the
+# rest. Its client ID for arakun.dev is committed, and a person sets its four
+# secrets (see "The admin panel" in cloud/README.md). A copy of the repository
+# keeps PLACEHOLDER until it has an OAuth App of its own; the step then says so
+# and is skipped.
 
 on:
   workflow_call:
@@ -56,14 +72,15 @@ on:
 permissions: {}
 
 jobs:
-  # A manual run on main (the default in the Actions tab) would skip the deploy
-  # below and show no reason. Fail instead, and say which ref to run it on.
+  # A manual run on another branch would skip the deploy below and show no
+  # reason. Fail instead, and say which ref to run it on.
   wrong-ref:
     name: Check the ref
     if: >-
       github.event_name == 'workflow_dispatch'
       && !(startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))
       && !startsWith(github.ref, 'refs/heads/cloud-hotfix/v')
+      && github.ref != 'refs/heads/main'
     runs-on: depot-ubuntu-24.04
     permissions:
       contents: read
@@ -74,16 +91,17 @@ jobs:
           REF: ${{ github.ref }}
         run: |
           latest=$(gh release view --json tagName --jq .tagName || echo 'v<latest>')
-          echo "::error::$REF does not deploy. A release deploys from its v* tag: run this on the latest release's tag (gh workflow run cloud-deploy.yml --ref $latest), or on a cloud-hotfix/$latest branch. To ship what is on main, publish a release."
+          echo "::error::$REF does not deploy. Run this on main to ship what is on main (gh workflow run cloud-deploy.yml --ref main), on the latest release's tag (--ref $latest), or on a cloud-hotfix/$latest branch."
           exit 1
 
   deploy:
-    name: Deploy the cloud Worker
-    # Pre-releases don't deploy; a branch other than a hotfix one never does.
-    # The step below checks the rest exactly.
+    name: Deploy the cloud Worker and the admin Worker
+    # Pre-releases don't deploy; a branch other than a hotfix one or main never
+    # does, and main only by hand. The step below checks the rest exactly.
     if: >-
       (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))
       || startsWith(github.ref, 'refs/heads/cloud-hotfix/v')
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: depot-ubuntu-24.04
     environment:
       name: production
@@ -105,7 +123,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The release's tag and main, to compare a hotfix branch with.
+          # The release's tags and main, to compare a hotfix branch or main with.
           fetch-depth: 0
 
       # Production has no database until a person creates it (see "First
@@ -146,15 +164,30 @@ jobs:
           GH_REPO: ${{ github.repository }}
           REF: ${{ github.ref }}
         run: |
+          # GitHub's latest release: published, not a draft or pre-release.
+          latest=$(gh release view --json tagName --jq .tagName)
+
           case "$REF" in
             refs/tags/v*) tag=${REF#refs/tags/} kind=release ;;
             refs/heads/cloud-hotfix/v*) tag=${REF#refs/heads/cloud-hotfix/} kind=hotfix ;;
-            *) echo "::error::$REF is neither a v* tag nor a cloud-hotfix/v* branch"; exit 1 ;;
+            refs/heads/main) tag=$latest kind=main ;;
+            *) echo "::error::$REF is neither a v* tag, a cloud-hotfix/v* branch nor main"; exit 1 ;;
           esac
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$tag is not a release version"; exit 1; }
 
-          # GitHub's latest release: published, not a draft or pre-release.
-          latest=$(gh release view --json tagName --jq .tagName)
+          if [ "$kind" = main ]; then
+            # Main is ahead of every release tagged from it; one tagged off main
+            # would be undone by this deploy.
+            git merge-base --is-ancestor "$latest" HEAD || {
+              echo "::error::main does not contain the latest release $latest; deploying it would drop that release's changes"
+              exit 1
+            }
+            message="main $(git rev-parse --short HEAD) (after $latest)"
+            echo "message=$message" >> "$GITHUB_OUTPUT"
+            echo "::notice::deploying: $message"
+            exit 0
+          fi
+
           if [ "$tag" != "$latest" ]; then
             echo "::error::$tag is not the latest release ($latest); only the latest release's Worker deploys"
             exit 1
@@ -186,7 +219,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: cloud/package-lock.json
+          cache-dependency-path: |
+            cloud/package-lock.json
+            cloud/admin/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -207,6 +242,79 @@ jobs:
 
       # wrangler from package-lock.json, so the version is the one tested.
       - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8
+          MESSAGE: ${{ steps.ref.outputs.message }}
+        run: npx wrangler deploy --env production --message "$MESSAGE"
+
+      # The admin Worker's sign-in needs a GitHub OAuth App. arakun.dev's ID is
+      # committed; a copy of the repository creates its own (see "The admin
+      # panel" in cloud/README.md). While the client ID is PLACEHOLDER, skip the
+      # deploy instead of shipping a Worker that nobody can sign in to. A
+      # missing value is a broken file: fail.
+      - name: Check the admin Worker is set up
+        id: admin
+        working-directory: .
+        run: |
+          file=cloud/admin/wrangler.toml
+          # GITHUB_CLIENT_ID of the [env.production.vars] block, with either
+          # quote style and any spacing. Empty if anything is missing.
+          id=$(awk '
+            /^[[:space:]]*\[/ { inblock = ($0 ~ /^[[:space:]]*\[env\.production\.vars\][[:space:]]*(#.*)?$/) }
+            inblock && /^[[:space:]]*GITHUB_CLIENT_ID[[:space:]]*=/ {
+              v = $0
+              sub(/^[^=]*=[[:space:]]*/, "", v)
+              sub(/[[:space:]]*(#.*)?$/, "", v)
+              gsub(/^["\x27]|["\x27]$/, "", v)
+              print v
+              exit
+            }' "$file") || id=
+          if [ -z "$id" ]; then
+            echo "::error file=$file::No GITHUB_CLIENT_ID found under [env.production.vars]. See \"The admin panel\" in cloud/README.md"
+            exit 1
+          fi
+          if [ "$id" = PLACEHOLDER ]; then
+            echo "::notice file=$file::The admin Worker is not set up (GITHUB_CLIENT_ID is still PLACEHOLDER), so it is not deployed. See \"The admin panel\" in cloud/README.md"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # After the cloud Worker, so the /admin/* routes it proxies to are there
+      # first. The admin Worker has its own dependencies and page build.
+      # If one of these steps fails, the run is red with the cloud Worker
+      # already live and the admin Worker old or absent. Re-run the same tag:
+      # every step is safe to repeat and deploys both again.
+      - name: Install the admin Worker
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        run: npm ci
+
+      # The Cloudflare Vite plugin picks the wrangler environment when it
+      # builds, not when wrangler deploys. Without CLOUDFLARE_ENV the build is
+      # the dev Worker (arakun-admin-dev, no route, the dev service binding)
+      # and `wrangler deploy --env production` would publish that.
+      - name: Build the admin panel
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        env:
+          CLOUDFLARE_ENV: production
+        run: npm run build
+
+      - name: Check the build is production's
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
+        run: |
+          name=$(node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(c.name)' "$(node -e 'const d = JSON.parse(require("fs").readFileSync(".wrangler/deploy/config.json", "utf8")); console.log(require("path").resolve(".wrangler/deploy", d.configPath))')")
+          if [ "$name" != arakun-admin ]; then
+            echo "::error::The admin build is for the Worker \"$name\", not arakun-admin. Build it with CLOUDFLARE_ENV=production."
+            exit 1
+          fi
+
+      - name: Deploy the admin Worker
+        if: steps.admin.outputs.ready == 'true'
+        working-directory: cloud/admin
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8

@@ -322,7 +322,7 @@ impl TeamsView {
             .mt(px(2.))
             .rounded(ui::rad(ui::RADIUS_SM))
             .bg(theme::fill_selected())
-            .child(crate::shell::agent_icon(Agent::Claude, 14.))
+            .child(Agent::Claude.icon(14.))
     }
 
     /// "@bot will read 23 messages, from that one down to here".
@@ -339,7 +339,7 @@ impl TeamsView {
             Err(e) => ("@bot can't read this range".to_string(), format!(": {e}")),
         };
         Self::above_row()
-            .child(crate::shell::agent_icon(Agent::Claude, 12.))
+            .child(Agent::Claude.icon(12.))
             .child(
                 div()
                     .flex()
@@ -384,7 +384,7 @@ impl TeamsView {
             .tooltip(ui::tip(
                 "Ask @bot. Reply to a message first and it reads from there down",
             ))
-            .child(crate::shell::agent_icon(Agent::Claude, 12.))
+            .child(Agent::Claude.icon(12.))
             .child("@bot")
             .on_click(cx.listener(|this, _, window, cx| {
                 let text = this.composer.read(cx).text().to_string();

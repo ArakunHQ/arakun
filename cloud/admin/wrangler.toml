@@ -1,0 +1,77 @@
+# Arakun's operator panel, a second Worker: it signs operators in with GitHub,
+# forwards /api/* to the cloud Worker over the CLOUD service binding, and
+# serves the React page that vite builds into dist/client.
+# The top-level Worker is for tests; production is `--env production` below.
+name = "arakun-admin-dev"
+main = "worker/index.ts"
+compatibility_date = "2026-11-01"
+
+# The page is a single-page app: any path that is not a file gets index.html.
+# The Worker runs first for every request: it puts the page policy on each
+# page, and a path list would let the assets answer without it. The Worker
+# asks env.ASSETS, which still falls back to index.html.
+[assets]
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+# The cloud Worker keeps the database and the /admin/* routes. The browser
+# never reaches it: this Worker adds the bearer secret.
+[[services]]
+binding = "CLOUD"
+service = "arakun-cloud-dev"
+
+# The GitHub OAuth App for operator sign-in is not the desktop app's. Its
+# secret, ADMIN_SECRET, SESSION_SECRET and ADMIN_GITHUB_IDS are Worker secrets.
+[vars]
+CLOUD_ORIGIN = "http://localhost:8787"
+GITHUB_CLIENT_ID = "PLACEHOLDER"
+
+# Sign-in calls GitHub, so each client IP gets a few a minute. Rate limits with
+# the same namespace_id in one account share their counters, so every id is
+# used once: cloud/wrangler.toml has 1001 to 1008, 1011 and 1012, this Worker
+# 1009 and production 1010.
+[[ratelimits]]
+name = "SIGN_IN_LIMIT"
+namespace_id = "1009"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+# The hosted Worker (`npm run deploy`). An environment inherits no bindings, so
+# they are all here again.
+# The cloud Worker's route is `*.arakun.dev/*`, which also matches
+# admin.arakun.dev. The more specific pattern wins, so this one takes the host:
+# https://developers.cloudflare.com/workers/configuration/routing/routes/
+# ("When more than one route pattern could match a request URL, the most
+# specific route pattern wins.")
+[env.production]
+name = "arakun-admin"
+workers_dev = false
+routes = [{ pattern = "admin.arakun.dev/*", zone_name = "arakun.dev" }]
+
+[env.production.assets]
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[env.production.services]]
+binding = "CLOUD"
+service = "arakun-cloud"
+
+# The GitHub OAuth App "Arakun Admin" (ArakunHQ), whose callback is
+# https://admin.arakun.dev/auth/github/callback. The ID is public; its secret
+# is the Worker secret GITHUB_CLIENT_SECRET. cloud-deploy.yml skips this Worker
+# while the value is PLACEHOLDER, which a copy without an app of its own keeps.
+[env.production.vars]
+CLOUD_ORIGIN = "https://app.arakun.dev"
+GITHUB_CLIENT_ID = "Ov23lipWB4v8e5aAC8j9"
+
+[[env.production.ratelimits]]
+name = "SIGN_IN_LIMIT"
+namespace_id = "1010"
+
+  [env.production.ratelimits.simple]
+  limit = 10
+  period = 60

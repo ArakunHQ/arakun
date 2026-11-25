@@ -24,6 +24,7 @@ use crate::cloudflare::{
     Worker, Zone, bytes, count,
 };
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
@@ -163,9 +164,8 @@ impl Page {
 
 pub struct CloudflareView {
     page: Page,
-    snap: Option<Snapshot>,
-    error: Option<LoadError>,
-    loading: bool,
+    /// The account as last read, and what went wrong reading it.
+    snap: Loadable<Snapshot, LoadError>,
     /// The quick answers are in; the analytics still on their way.
     analytics_pending: bool,
     /// The projects on this machine; their wrangler configs name D1 databases.
@@ -209,7 +209,6 @@ pub struct CloudflareView {
     scroll: ScrollHandle,
     _subs: [Subscription; 2],
     _poll: Task<()>,
-    _load: Option<Task<()>>,
     /// A reload waiting for Cloudflare's analytics rate limit to reset.
     _retry: Option<Task<()>>,
     _warm: Task<()>,
@@ -268,16 +267,14 @@ impl CloudflareView {
         });
         // Signed in before: keep the account warm in the background.
         let warm = crate::poll::poll_every(cx, WARM_FIRST, WARM, |this, cx| {
-            if this.snap.is_some() {
+            if this.snap.data.is_some() {
                 this.refresh_if_stale(cx);
             }
         });
         Self {
             page: Page::Summary,
             // What the last load found shows at once; a new one follows.
-            snap: cloudflare::cached(),
-            error: None,
-            loading: false,
+            snap: Loadable::new(cloudflare::cached()),
             analytics_pending: false,
             roots: Vec::new(),
             agent: AgentKind::Claude,
@@ -310,7 +307,6 @@ impl CloudflareView {
             scroll: ScrollHandle::new(),
             _subs: subs,
             _poll: poll,
-            _load: None,
             _retry: None,
             _warm: warm,
         }
@@ -379,71 +375,55 @@ impl CloudflareView {
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         let fresh = self
             .snap
+            .data
             .as_ref()
             .is_some_and(|s| crate::model::unix_now().saturating_sub(s.fetched) < STALE);
-        if !fresh && self.error.is_none() {
+        if !fresh && self.snap.error.is_none() {
             self.refresh(cx);
         }
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
+        if self.snap.loading() {
             return;
         }
-        self.loading = true;
         self.check_mcp(cx);
-        cx.notify();
         let roots = self.roots.clone();
-        self._load = Some(cx.spawn(async move |this, cx| {
-            use futures::StreamExt as _;
-            // The quick answers arrive first (through `early`), the analytics with the result.
-            let (tx, mut early) = futures::channel::mpsc::unbounded::<cloudflare::Snapshot>();
-            let load = cx.background_spawn(crate::guard::task(async move {
-                cloudflare::load(&roots, &move |s: &cloudflare::Snapshot| {
-                    let _ = tx.unbounded_send(s.clone());
+        self.snap.start_streaming(
+            cx,
+            |this| &mut this.snap,
+            // The quick answers arrive first, the analytics with the result.
+            move |early| async move {
+                cloudflare::load(&roots, &move |s: &Snapshot| {
+                    let _ = early.unbounded_send(s.clone());
                 })
-            }));
-            while let Some(snap) = early.next().await {
-                let alive = this.update(cx, |this, cx| {
-                    // Keep the last analytics on screen until the new ones are in.
-                    let mut snap = snap;
-                    if let Some(old) = &this.snap {
-                        keep_analytics(&mut snap, old);
-                    }
-                    this.snap = Some(snap);
-                    this.analytics_pending = true;
-                    this.error = None;
-                    cx.notify();
-                });
-                if alive.is_err() {
-                    return;
+            },
+            |this, mut snap, _| {
+                // Keep the last analytics on screen until the new ones are in.
+                if let Some(old) = &this.snap.data {
+                    keep_analytics(&mut snap, old);
                 }
-            }
-            let result = load.await;
-            let _ = this.update(cx, |this, cx| {
-                this.loading = false;
+                this.snap.settle(Ok(snap));
+                this.analytics_pending = true;
+            },
+            |this, result, cx| {
                 this.analytics_pending = false;
-                match result {
-                    Ok(snap) => {
-                        if snap.problems.iter().any(|p| rate_limited(p)) {
-                            this._retry = Some(cx.spawn(async move |this, cx| {
-                                cx.background_executor().timer(RATE_LIMIT_RESET).await;
-                                let _ = this.update(cx, |this, cx| this.refresh(cx));
-                            }));
-                        }
-                        if this.emails.read(cx).text().trim().is_empty() && !snap.email.is_empty() {
-                            let email = snap.email.clone();
-                            this.emails.update(cx, |i, cx| i.set_text(email, cx));
-                        }
-                        this.notify_new(&snap, cx);
-                        this.snap = Some(snap);
-                        this.error = None;
+                if let Ok(snap) = &result {
+                    if snap.problems.iter().any(|p| rate_limited(p)) {
+                        this._retry = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(RATE_LIMIT_RESET).await;
+                            let _ = this.update(cx, |this, cx| this.refresh(cx));
+                        }));
                     }
-                    Err(e) => this.error = Some(e),
+                    if this.emails.read(cx).text().trim().is_empty() && !snap.email.is_empty() {
+                        let email = snap.email.clone();
+                        this.emails.update(cx, |i, cx| i.set_text(email, cx));
+                    }
+                    this.notify_new(snap, cx);
                 }
-                cx.notify();
-            });
-        }));
+                this.snap.settle(result);
+            },
+        );
     }
 
     /// Tells (on the desktop) what broke since the last look; the first look
@@ -487,7 +467,7 @@ impl CloudflareView {
 
     /// Notes that a terminal for `cf auth login` was opened, so the next open retries.
     pub fn signing_in(&mut self, cx: &mut Context<Self>) {
-        self.error = None;
+        self.snap.error = None;
         cx.notify();
     }
 
@@ -522,7 +502,7 @@ impl CloudflareView {
     }
 
     fn open(&self, path: &str, cx: &mut Context<Self>) {
-        if let Some(s) = &self.snap {
+        if let Some(s) = &self.snap.data {
             cx.emit(CloudflareEvent::Open(s.dash(path)));
         }
     }
@@ -530,6 +510,7 @@ impl CloudflareView {
     fn ask(&self, subject: &Subject, cx: &mut Context<Self>) {
         if let Some(a) = self
             .snap
+            .data
             .as_ref()
             .and_then(|s| s.ask(subject, self.mcp(), crate::model::unix_now()))
         {
@@ -2132,7 +2113,7 @@ impl CloudflareView {
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
         };
-        match &self.error {
+        match &self.snap.error {
             Some(LoadError::NoCli) => center()
                 .child("Cloudflare's cf CLI isn't installed.")
                 .child(quiet(
@@ -2706,6 +2687,7 @@ impl Render for CloudflareView {
         let header = self.render_header(now, cx);
         let problems = self
             .snap
+            .data
             .as_ref()
             .map(|s| s.problems.clone())
             .unwrap_or_default();
@@ -2737,8 +2719,9 @@ impl Render for CloudflareView {
                 .iter()
                 .map(|p| p.split(':').next().unwrap_or_default())
                 .collect();
-            let command =
-                cloudflare::access_command(self.snap.as_ref().map_or("", |s| s.profile.as_str()));
+            let command = cloudflare::access_command(
+                self.snap.data.as_ref().map_or("", |s| s.profile.as_str()),
+            );
             div()
                 .flex()
                 .items_center()
@@ -2768,7 +2751,7 @@ impl Render for CloudflareView {
                 )
         });
         let lay = self.layout();
-        let content = match self.snap.clone() {
+        let content = match self.snap.data.clone() {
             Some(s) => div()
                 .flex()
                 .flex_1()

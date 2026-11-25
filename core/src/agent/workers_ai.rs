@@ -2821,7 +2821,7 @@ impl Agent {
             sid,
             json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}),
         );
-        let (status, text) = match broker::execute(&prepared, &jail.workspace) {
+        let (status, text) = match broker::execute(&prepared, &jail) {
             Ok(out) => ("completed", format!("Approved and done.\n{out}")),
             Err(e) => ("failed", format!("Approved, but it failed: {e}")),
         };

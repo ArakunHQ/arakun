@@ -24,8 +24,8 @@ use crate::phone::{
     self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
 };
 use crate::phone_view::{
-    AccountComputer, Address, ComputerList, DeviceInfo, PairingInfo, PhoneEvent, PhoneState,
-    RelayAccount, RelayInfo, SignedInDevice, SignedInList,
+    AccountComputer, Address, BetaState, BetaStatus, ComputerList, DeviceInfo, PairingInfo,
+    PhoneEvent, PhoneState, RelayAccount, RelayInfo, SignedInDevice, SignedInList,
 };
 use crate::state;
 
@@ -100,6 +100,15 @@ pub(super) struct SignedIn {
     /// key each time.
     own_label: Option<String>,
     _task: Option<Task<()>>,
+    /// The phone app betas, asked with the session in `beta_asked` whatever
+    /// the way in: signing up needs only the account.
+    beta_asked: Option<String>,
+    beta: Option<cloud::BetaSignups>,
+    beta_error: Option<String>,
+    /// The sign-up on its way, and why the last one failed, by platform.
+    beta_joining: Option<cloud::BetaPlatform>,
+    beta_join_error: Option<(cloud::BetaPlatform, String)>,
+    _beta_task: Option<Task<()>>,
 }
 
 /// Whether the relay turned down the sign-in it was given, which the rest
@@ -241,6 +250,7 @@ impl Shell {
         strip.active_tab = index;
         self.note_active_tab(cx);
         self.list_signed_in(window, cx);
+        self.list_beta(window, cx);
         self.sync_phone_view(cx);
         self.phone_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -267,9 +277,10 @@ impl Shell {
             self.start_phone(&phone::Settings::load(), window, cx);
         }
         let session = account.map(|(_, s)| s);
-        if self.signed_in.asked != session {
+        if self.signed_in.asked != session || self.signed_in.beta_asked != session {
             self.signed_in = SignedIn::default();
             self.list_signed_in(window, cx);
+            self.list_beta(window, cx);
         }
         self.sync_phone_view(cx);
     }
@@ -339,6 +350,152 @@ impl Shell {
                 this.sync_phone_view(cx);
             });
         }));
+    }
+
+    /// Asks the account where it stands with the phone app betas.
+    fn list_beta(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(account) = self.teams.read(cx).account() else {
+            return;
+        };
+        let session = account.session.clone();
+        self.signed_in.beta_asked = Some(session.clone());
+        self.signed_in._beta_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let (base, token) = (account.base, account.session);
+            let answer = cx
+                .background_spawn(async move {
+                    // The fixture's session is made up: the service would
+                    // answer 401 and sign it out.
+                    if crate::arakun_teams::fixture().is_some() {
+                        let none = cloud::BetaSignup {
+                            status: "none".into(),
+                            email: None,
+                            retry_at: None,
+                        };
+                        return Ok(cloud::BetaSignups {
+                            email: Some("you@example.com".into()),
+                            ios: none.clone(),
+                            android: none,
+                        });
+                    }
+                    cloud::beta(&base, &token)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.signed_in.beta_asked.as_deref() != Some(session.as_str()) {
+                    return;
+                }
+                this.signed_in._beta_task = None;
+                match answer {
+                    Ok(b) => {
+                        this.signed_in.beta = Some(b);
+                        this.signed_in.beta_error = None;
+                    }
+                    Err(cloud::Error::SignedOut) => {
+                        this.teams.update(cx, |t, cx| t.session_ended(cx));
+                    }
+                    Err(e) => this.signed_in.beta_error = Some(e.to_string()),
+                }
+                this.sync_phone_view(cx);
+            });
+        }));
+    }
+
+    /// Signs the account up for one beta; the operator admits by hand.
+    fn join_beta(
+        &mut self,
+        platform: cloud::BetaPlatform,
+        email: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(account) = self.teams.read(cx).account() else {
+            return;
+        };
+        if self.signed_in.beta_joining.is_some() {
+            return;
+        }
+        self.signed_in.beta_joining = Some(platform);
+        self.signed_in.beta_join_error = None;
+        self.sync_phone_view(cx);
+        let session = account.session.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let (base, token) = (account.base, account.session);
+            let done = cx
+                .background_spawn(async move {
+                    if crate::arakun_teams::fixture().is_some() {
+                        return Ok(cloud::BetaSignup {
+                            status: "pending".into(),
+                            email: Some(email),
+                            retry_at: None,
+                        });
+                    }
+                    cloud::join_beta(&base, &token, platform, &email)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.signed_in.beta_joining = None;
+                if this.signed_in.beta_asked.as_deref() != Some(session.as_str()) {
+                    return;
+                }
+                match done {
+                    Ok(signup) => {
+                        if let Some(b) = &mut this.signed_in.beta {
+                            match platform {
+                                cloud::BetaPlatform::Ios => b.ios = signup,
+                                cloud::BetaPlatform::Android => b.android = signup,
+                            }
+                        }
+                    }
+                    Err(cloud::Error::SignedOut) => {
+                        this.teams.update(cx, |t, cx| t.session_ended(cx));
+                    }
+                    Err(e) => this.signed_in.beta_join_error = Some((platform, e.to_string())),
+                }
+                this.sync_phone_view(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// What the Phone tab says of the phone app betas, and the account's
+    /// email to offer.
+    fn beta_state(&self, cx: &App) -> (BetaState, Option<String>) {
+        let teams = self.teams.read(cx);
+        if teams.account().is_none() {
+            // A session the service has not answered about yet is not a sign-out.
+            let checking = !teams.ready() || teams.session().is_some();
+            return (
+                if checking {
+                    BetaState::Loading
+                } else {
+                    BetaState::SignedOut
+                },
+                None,
+            );
+        }
+        let s = &self.signed_in;
+        let Some(b) = &s.beta else {
+            return match &s.beta_error {
+                Some(e) => (BetaState::Failed(e.clone()), None),
+                None => (BetaState::Loading, None),
+            };
+        };
+        let status = |platform, signup: &cloud::BetaSignup| BetaStatus {
+            status: signup.status.clone(),
+            email: signup.email.clone(),
+            retry_at: signup.retry_at,
+            busy: s.beta_joining == Some(platform),
+            error: s
+                .beta_join_error
+                .as_ref()
+                .filter(|(p, _)| *p == platform)
+                .map(|(_, e)| e.clone()),
+        };
+        let state = BetaState::Ready {
+            ios: status(cloud::BetaPlatform::Ios, &b.ios),
+            android: status(cloud::BetaPlatform::Android, &b.android),
+        };
+        (state, b.email.clone())
     }
 
     /// Removes one of the account's computers; the lists are asked again after.
@@ -682,6 +839,9 @@ impl Shell {
             PhoneEvent::SignIn => self.open_account_sign_in(window, cx),
             PhoneEvent::SignOutDevice(id) => self.sign_out_device(id.clone(), window, cx),
             PhoneEvent::RemoveComputer(label) => self.remove_computer(label.clone(), window, cx),
+            PhoneEvent::JoinBeta { platform, email } => {
+                self.join_beta(*platform, email.clone(), window, cx)
+            }
             PhoneEvent::OpenHere(url) => {
                 if self.has_projects() {
                     let env_path = self.env().path.clone();
@@ -937,7 +1097,11 @@ impl Shell {
             }
             None => PhoneState::Off { reach, relay },
         };
-        self.phone_view.update(cx, |v, cx| v.set_state(state, cx));
+        let (beta, email) = self.beta_state(cx);
+        self.phone_view.update(cx, |v, cx| {
+            v.set_state(state, cx);
+            v.set_beta(beta, email.as_deref(), cx);
+        });
     }
 
     fn phone_incoming(&mut self, msg: Incoming, window: &mut Window, cx: &mut Context<Self>) {

@@ -1,7 +1,7 @@
 import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { DATA, pcFrame, phoneFrame } from "../../src/relay/frames";
-import { FREE, disabledReason, planFor } from "../../src/relay/limits";
+import { FREE, INTERNAL, disabledReason, planFor } from "../../src/relay/limits";
 import { ADMIN, as, call } from "../helpers";
 import { HOST, account, claim, computer, computerAndPhone, connectedComputer, device, openPc, openPhone, opened, stored } from "./helpers";
 
@@ -33,6 +33,18 @@ describe("what KV says", () => {
     expect(await planFor(env.CONFIG, "pro")).toEqual({ ...FREE, phones: 9 });
     // A plan KV does not know is the free plan.
     expect(await planFor(env.CONFIG, "gold")).toEqual({ ...FREE, machines: 2 });
+  });
+
+  it("has a built-in internal plan well above free, which KV may still change", async () => {
+    expect(await planFor(env.CONFIG, "internal")).toEqual(INTERNAL);
+    for (const key of Object.keys(FREE) as (keyof typeof FREE)[]) expect(INTERNAL[key], key).toBeGreaterThan(FREE[key]);
+    // KV's free plan does not drag it down.
+    await plans({ machines: 2, phones: 1 });
+    expect(await planFor(env.CONFIG, "internal")).toEqual(INTERNAL);
+    await env.CONFIG.put("plans", JSON.stringify({ free: {}, internal: { phones: 20 } }));
+    expect(await planFor(env.CONFIG, "internal")).toEqual({ ...INTERNAL, phones: 20 });
+    // A name that only Object.prototype has is not a plan.
+    expect(await planFor(env.CONFIG, "constructor")).toEqual(FREE);
   });
 
   it("reads the switch", async () => {
@@ -113,6 +125,16 @@ describe("the plan's limits", () => {
     const { me: other, owner: free } = await connectedComputer();
     for (let i = 1; i <= 3; i++) {
       const p = await openPhone(other.label, (await device(free)).session);
+      expect(await p.inbox.control()).toEqual({ type: "open", channel: i });
+    }
+  });
+
+  it("let an account the operator put on internal past the free plan", async () => {
+    const owner = await account();
+    expect((await call("PUT", `/admin/users/${owner.github_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "internal" }))).status).toBe(204);
+    const { me } = await connectedComputer(owner);
+    for (let i = 1; i <= FREE.phones + 1; i++) {
+      const p = await openPhone(me.label, (await device(owner)).session);
       expect(await p.inbox.control()).toEqual({ type: "open", channel: i });
     }
   });

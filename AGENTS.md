@@ -138,6 +138,7 @@ cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # only the modules you touched
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npm run check)
+(cd cloud/admin && npm ci && npm run check && npm test && npm run build)
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \

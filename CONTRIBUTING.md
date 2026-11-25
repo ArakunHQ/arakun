@@ -126,6 +126,7 @@ cargo deny check
 
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npx tsc --noEmit && npx vitest run)
+(cd cloud/admin && npm ci && npm run check && npm test && npm run build)
 (cd phone && node --test "test/*.test.mjs")
 
 # ios/ changed (macOS with Xcode; brew install xcodegen)

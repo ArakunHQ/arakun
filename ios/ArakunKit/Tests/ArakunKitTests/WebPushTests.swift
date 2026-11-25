@@ -32,6 +32,25 @@ struct WebPushTests {
         #expect(try WebPush.open(paddedNotice + "==", keys: rfcKeys) == n)
     }
 
+    @Test func aNoticeWithTheEnvironmentAndTurnLengthHasASubtitle() throws {
+        let n = try #require(PushNotice(json: Data(#"{"kind":"done","session":"s1","title":"t","body":"b","env":"app","secs":252}"#.utf8)))
+        #expect(n.env == "app")
+        #expect(n.secs == 252)
+        #expect(n.subtitle == "app \u{b7} 4m 12s")
+        #expect(PushNotice.subtitle(env: "app", secs: 42) == "app \u{b7} 42s")
+        #expect(PushNotice.subtitle(env: "app", secs: 60) == "app \u{b7} 1m 0s")
+        #expect(PushNotice.subtitle(env: "app", secs: nil) == "app")
+        #expect(PushNotice.subtitle(env: "", secs: 90) == "")
+    }
+
+    @Test func aNoticeWithoutThemHasNoSubtitleAndAnOldOneStillReads() throws {
+        let old = try #require(PushNotice(json: Data(#"{"kind":"done","session":"s1","title":"t","body":"b"}"#.utf8)))
+        #expect(old == PushNotice(kind: "done", session: "s1", title: "t", body: "b"))
+        #expect(old.env == "")
+        #expect(old.secs == nil)
+        #expect(old.subtitle == "")
+    }
+
     @Test func refusesWhatIsNotForThesePhoneKeys() {
         #expect(throws: WebPush.Failure.doesNotDecrypt) { try WebPush.decrypt(rfcBody, keys: PushKeys.generate()) }
         var other = rfcKeys.stored

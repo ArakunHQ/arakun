@@ -184,6 +184,7 @@ object Push {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(n.title.ifEmpty { "Arakun" })
             .setContentText(n.body)
+            .setSubText(n.subtitle.ifEmpty { null })
             .setStyle(NotificationCompat.BigTextStyle().bigText(n.body))
             .setCategory(if (n.kind == INPUT) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)

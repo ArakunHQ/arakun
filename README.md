@@ -826,10 +826,12 @@ agent or you moved it. Sessions pinned to the title bar go first in every order,
 a pin at the end of the row and a rule under them. Recent and Name put the sessions
 with a tab open next, a rule under them; a session with no tab open is dimmed. Manual is the order you drag the
 sessions into within each project, kept for each project in `state.json`; dragging a
-session onto another switches to Manual from the order on screen. The rows hold still
-while the pointer is over the tree. The sort button in the tree's heading says the
-order in use and opens a menu to pick another, with Group by project and Show
-archived. Options that mean nothing with the others are off: with sessions only in the title bar there is nothing
+session onto another switches its project to Manual from the order on screen. The rows
+hold still while the pointer is over the tree. The sort button in the tree's heading
+says the order in use and opens a menu to pick another, with Group by project and Show
+archived; its Applies to gives the order to every project, or with Select projects… to
+the projects ticked in a list beside it, the rest keeping the order for all. Each
+project's own order is kept in `state.json` too. Options that mean nothing with the others are off: with sessions only in the title bar there is nothing
 to pin from or fold. Moving to pinned tabs pins every open session first. The choice is
 kept in `state.json` as `tabs`.
 

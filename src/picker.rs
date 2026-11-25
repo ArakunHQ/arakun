@@ -2,7 +2,8 @@
 //! found under the home folder (scanned once in the background, then cached);
 //! typing a path (`~/`, `/`, `./`) browses folders like a shell completion;
 //! pasting a clone URL (`https://github.com/o/r`, `git@host:o/r.git`,
-//! `gh repo clone o/r`, or just `o/r`) offers to clone it.
+//! `gh repo clone o/r`, or just `o/r`) offers to clone it, here or on a
+//! connected server.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,12 @@ use crate::ui::{self, ButtonKind, icon};
 
 pub enum PickerEvent {
     Picked(PathBuf),
+    /// Clone `url` on the server with this id. The server adds the folder
+    /// itself, so the picker has nothing to wait for.
+    CloneOnServer {
+        server: String,
+        url: String,
+    },
     Dismissed,
 }
 
@@ -44,6 +51,17 @@ enum RowKind {
     Folder,
     /// Clone `source` into the row's path, then add it.
     Clone(CloneSource),
+    /// Clone `source` on a server, with that machine's git and its logins.
+    CloneOn {
+        server: String,
+        source: CloneSource,
+    },
+}
+
+/// A connected server a repository can be cloned on.
+pub struct CloneServer {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Clone)]
@@ -88,6 +106,8 @@ pub struct FolderPicker {
     inline: bool,
     /// Why the picker opened, in place of its usual line under the title.
     why: Option<SharedString>,
+    /// Connected servers, each offered for a pasted clone URL.
+    servers: Vec<CloneServer>,
     _input_events: Subscription,
 }
 
@@ -116,6 +136,7 @@ impl FolderPicker {
             cloning: None,
             inline: false,
             why: None,
+            servers: Vec::new(),
             _input_events: sub,
         };
         this.refilter(cx);
@@ -147,6 +168,13 @@ impl FolderPicker {
         self
     }
 
+    /// Offers to clone a pasted URL on these servers too.
+    pub fn servers(mut self, servers: Vec<CloneServer>, cx: &mut Context<Self>) -> Self {
+        self.servers = servers;
+        self.refilter(cx);
+        self
+    }
+
     /// What Enter would add, for a button outside the picker: the
     /// highlighted repository's name, or the folder being browsed.
     pub fn target_name(&self) -> Option<SharedString> {
@@ -154,6 +182,7 @@ impl FolderPicker {
             (Some(dir), _) => Some(crate::model::dir_name(dir).into()),
             (None, Some(row)) => match &row.kind {
                 RowKind::Clone(_) => Some(crate::model::dir_name(&row.path).into()),
+                RowKind::CloneOn { source, .. } => Some(source.name.clone().into()),
                 _ => Some(row.name.clone()),
             },
             (None, None) => None,
@@ -263,17 +292,12 @@ impl FolderPicker {
                 .collect();
             if let Some(source) = parse_clone_source(&query) {
                 let path = clone_parent(&self.repos).join(&source.name);
-                let row = Row {
-                    name: format!("Clone {}", source.label).into(),
-                    detail: format!("into {}", pretty_path(&path)).into(),
-                    path,
-                    kind: RowKind::Clone(source.clone()),
-                };
+                let clones = clone_rows(&source, path, &self.servers);
                 // A pasted URL means clone; a bare `owner/repo` may be a search.
                 if source.shorthand {
-                    self.rows.push(row);
+                    self.rows.extend(clones);
                 } else {
-                    self.rows = vec![row];
+                    self.rows = clones;
                 }
             }
         }
@@ -344,12 +368,18 @@ impl FolderPicker {
             RowKind::Repo { .. } => self.pick(row.path, cx),
             RowKind::Folder => self.browse_into(&row.path, window, cx),
             RowKind::Clone(source) => self.clone_and_pick(source, row.path, cx),
+            RowKind::CloneOn { server, source } => cx.emit(PickerEvent::CloneOnServer {
+                server,
+                url: source.url,
+            }),
         }
     }
 
     /// Tab: open the highlighted folder (or repository) to browse inside it.
     fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get(self.selected).cloned() {
+        if let Some(row) = self.rows.get(self.selected).cloned()
+            && !matches!(row.kind, RowKind::CloneOn { .. })
+        {
             self.browse_into(&row.path, window, cx);
         }
     }
@@ -492,8 +522,9 @@ impl FolderPicker {
                     .child(ui::project_icon(icon, 2., color))
                     .into_any_element()
             }
-            RowKind::Folder | RowKind::Clone(_) => {
+            RowKind::Folder | RowKind::Clone(_) | RowKind::CloneOn { .. } => {
                 let name = match &row.kind {
+                    RowKind::CloneOn { .. } => "computer",
                     RowKind::Clone(s) if s.on_github => "github",
                     RowKind::Clone(_) => "download04",
                     _ => "folder01",
@@ -538,7 +569,7 @@ impl FolderPicker {
                     .text_color(theme::text_faint())
                     .child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
                     .into_any_element(),
-                RowKind::Clone(_) => div()
+                RowKind::Clone(_) | RowKind::CloneOn { .. } => div()
                     .flex_none()
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_subtle())
@@ -588,7 +619,7 @@ impl FolderPicker {
                 if ev.click_count() >= 2
                     || matches!(
                         this.rows.get(ix).map(|r| &r.kind),
-                        Some(RowKind::Repo { .. } | RowKind::Clone(_))
+                        Some(RowKind::Repo { .. } | RowKind::Clone(_) | RowKind::CloneOn { .. })
                     )
                 {
                     this.activate(ix, window, cx);
@@ -903,6 +934,27 @@ fn classify(path: &Path) -> Choice {
         Ok(top) if !same_dir(&top, path) => Choice::Nested(root),
         _ => Choice::Project(root),
     }
+}
+
+/// The rows for a pasted clone URL: here into `path`, then on each server.
+fn clone_rows(source: &CloneSource, path: PathBuf, servers: &[CloneServer]) -> Vec<Row> {
+    let mut rows = vec![Row {
+        name: format!("Clone {}", source.label).into(),
+        detail: format!("into {}", pretty_path(&path)).into(),
+        path,
+        kind: RowKind::Clone(source.clone()),
+    }];
+    rows.extend(servers.iter().map(|s| Row {
+        name: format!("Clone {} on {}", source.label, crate::redact::text(&s.name)).into(),
+        detail: "with that machine's git and its logins".into(),
+        // Not a folder here: Tab does not browse into it.
+        path: PathBuf::from(&source.name),
+        kind: RowKind::CloneOn {
+            server: s.id.clone(),
+            source: source.clone(),
+        },
+    }));
+    rows
 }
 
 /// What `clone_or_reuse` found at the destination.
@@ -1269,6 +1321,39 @@ mod tests {
         let other = clone_or_reuse(&source("https://github.com/owner-b/app"), &dest);
         assert!(other.is_err_and(|e| e.to_string().ends_with("already holds owner-a/app")));
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn a_pasted_url_can_be_cloned_here_or_on_each_server() {
+        let source = parse_clone_source("https://github.com/owner/app").unwrap();
+        let here = PathBuf::from("/home/me/code/app");
+        assert_eq!(clone_rows(&source, here.clone(), &[]).len(), 1);
+
+        let servers = [
+            CloneServer {
+                id: "s1".into(),
+                name: "box".into(),
+            },
+            CloneServer {
+                id: "s2".into(),
+                name: "build".into(),
+            },
+        ];
+        let rows = clone_rows(&source, here.clone(), &servers);
+        assert!(matches!(&rows[0].kind, RowKind::Clone(_)));
+        assert_eq!(rows[0].path, here);
+        let on: Vec<_> = rows[1..]
+            .iter()
+            .map(|r| match &r.kind {
+                RowKind::CloneOn { server, source } => (server.as_str(), source.url.as_str()),
+                _ => panic!("not a server clone"),
+            })
+            .collect();
+        assert_eq!(
+            on,
+            [("s1", source.url.as_str()), ("s2", source.url.as_str())]
+        );
+        assert_eq!(rows[1].name.as_ref(), "Clone owner/app on box");
     }
 
     #[test]

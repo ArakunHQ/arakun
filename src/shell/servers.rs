@@ -230,6 +230,11 @@ pub(super) struct ServersLink {
     retired: HashSet<PathBuf>,
     /// Servers asked to clone or add a folder, until they answer.
     adding: HashSet<String>,
+    /// Of those, the ones asked from the project picker. It is closed by
+    /// then, so a failure is told in a notice, not in the Computers tab.
+    from_picker: HashSet<String>,
+    /// Failures of those, by server, waiting to be told.
+    picker_failed: Vec<(String, String)>,
     /// A folder a server just added, by server and path: it opens once listed.
     added: Option<(String, String)>,
     /// A new environment asked of each server, until it answers.
@@ -337,6 +342,33 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
         return None;
     }
     Some("The request did not reach the server. Try again once it is connected.".into())
+}
+
+impl ServersLink {
+    /// A folder `server` was asked for is not coming: said where it was asked.
+    fn folder_failed(&mut self, server: &str, why: String) {
+        if let Some(why) =
+            route_folder_failure(&mut self.from_picker, &mut self.picker_failed, server, why)
+        {
+            self.error = Some(why);
+        }
+    }
+}
+
+/// Queues the failure for a notice when the project picker asked for the
+/// folder, else hands it back for the Computers tab.
+fn route_folder_failure(
+    from_picker: &mut HashSet<String>,
+    picker_failed: &mut Vec<(String, String)>,
+    server: &str,
+    why: String,
+) -> Option<String> {
+    if from_picker.remove(server) {
+        picker_failed.push((server.to_string(), why));
+        None
+    } else {
+        Some(why)
+    }
 }
 
 /// The first prompt of a session a server was asked to start.
@@ -993,7 +1025,8 @@ impl Shell {
             while let Some((id, event)) = heard.next().await {
                 if this
                     .update_in(cx, |this, window, cx| {
-                        this.servers_heard(&id, event, window, cx)
+                        this.servers_heard(&id, event, window, cx);
+                        this.servers_tell_picker_failed(cx);
                     })
                     .is_err()
                 {
@@ -1034,6 +1067,8 @@ impl Shell {
             starting_id: None,
             retired: HashSet::new(),
             adding: HashSet::new(),
+            from_picker: HashSet::new(),
+            picker_failed: Vec::new(),
             added: None,
             new_env: HashMap::new(),
             no_new_env: HashSet::new(),
@@ -1216,6 +1251,94 @@ impl Shell {
         link.conns.get(server).map(|c| c.reach.clone())
     }
 
+    /// The connected servers, for the project picker to offer a clone on.
+    pub(super) fn clone_servers(&self) -> Vec<crate::picker::CloneServer> {
+        let Some(link) = &self.servers else {
+            return Vec::new();
+        };
+        link.saved
+            .iter()
+            .filter(|s| {
+                link.conns
+                    .get(&s.id)
+                    .is_some_and(|c| c.reach == Reach::Connected)
+            })
+            .map(|s| crate::picker::CloneServer {
+                id: s.id.clone(),
+                name: Self::server_name(s),
+            })
+            .collect()
+    }
+
+    /// Asks `server` to clone `url`, for the project picker. The new folder
+    /// opens once the server lists it (`servers_open_added`).
+    pub(super) fn servers_clone_from_picker(
+        &mut self,
+        server: &str,
+        url: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let machine = link
+            .saved
+            .iter()
+            .find(|s| s.id == server)
+            .map(Self::server_name)
+            .unwrap_or_default();
+        let problem = match link.conns.get(server) {
+            Some(c) if c.reach == Reach::Connected => {
+                // One at a time per server: its answer says only which folder.
+                link.adding.contains(server).then(|| {
+                    format!("A folder is being made on {machine}; try again once it is there.")
+                })
+            }
+            _ => Some(format!("{machine} is not connected right now.")),
+        };
+        if problem.is_none()
+            && let Some(conn) = link.conns.get(server)
+        {
+            conn.client.send(&json!({ "type": "clone", "url": url }));
+            link.adding.insert(server.to_string());
+            link.from_picker.insert(server.to_string());
+            self.sync_servers_view(cx);
+            return;
+        }
+        if let Some(why) = problem {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                &format!("Could not clone on {machine}"),
+                &why,
+                None,
+                cx,
+            );
+        }
+    }
+
+    /// Tells the clones asked from the project picker that failed.
+    fn servers_tell_picker_failed(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = &mut self.servers else {
+            return;
+        };
+        let failed = std::mem::take(&mut link.picker_failed);
+        for (server, why) in failed {
+            let machine = self
+                .servers
+                .as_ref()
+                .and_then(|l| l.saved.iter().find(|s| s.id == server))
+                .map(Self::server_name)
+                .unwrap_or_default();
+            self.notify(
+                crate::island::AlertKind::Warning,
+                &format!("Could not clone on {machine}"),
+                &why,
+                None,
+                cx,
+            );
+        }
+    }
+
     pub(super) fn on_servers_event(
         &mut self,
         ev: &ServersEvent,
@@ -1297,12 +1420,14 @@ impl Shell {
                     conn.client
                         .send(&json!({ "type": "add_place", "path": path }));
                     link.adding.insert(server.clone());
+                    link.from_picker.remove(server);
                 }
             }
             ServersEvent::Clone { server, url } => {
                 if let Some(conn) = link.conns.get(server) {
                     conn.client.send(&json!({ "type": "clone", "url": url }));
                     link.adding.insert(server.clone());
+                    link.from_picker.remove(server);
                 }
             }
             ServersEvent::Remove(_) | ServersEvent::OpenHere { .. } | ServersEvent::SignIn => {}
@@ -1346,6 +1471,7 @@ impl Shell {
         link.following.retain(|f| f.server != *id);
         // What it was asked is not coming: the others' requests stay.
         link.adding.remove(id);
+        link.from_picker.remove(id);
         if link.added.as_ref().is_some_and(|(s, _)| s == id) {
             link.added = None;
         }
@@ -2171,7 +2297,7 @@ impl Shell {
                 if let Some(link) = &mut self.servers
                     && let Some(why) = folder_request_lost(&mut link.adding, server, kind)
                 {
-                    link.error = Some(why);
+                    link.folder_failed(server, why);
                     self.sync_servers_view(cx);
                 }
                 return;
@@ -2849,7 +2975,8 @@ impl Shell {
                 // but the server may still finish: the form says to look first.
                 let lost_env = if back { None } else { link.new_env.remove(id) };
                 if !back && link.adding.remove(id) && lost_env.is_none() {
-                    link.error = Some(
+                    link.folder_failed(
+                        id,
                         "The connection dropped before the server said whether the folder was added. Check its folders before you try again.".into(),
                     );
                 }
@@ -2995,6 +3122,7 @@ impl Shell {
                     self.sync_remote_projects(window, cx);
                 } else if msg["type"] == "place_added" {
                     if link.adding.remove(id) {
+                        link.from_picker.remove(id);
                         link.added = Some((id.to_string(), text(&msg, "path")));
                         self.servers_view.update(cx, |v, cx| v.place_added(id, cx));
                     }
@@ -3019,7 +3147,7 @@ impl Shell {
                                 self.start_queued_on_server(&from, prompt, cx);
                             }
                             Some(new) => self.servers_new_env_failed(new, message, cx),
-                            None => link.error = Some(message),
+                            None => link.folder_failed(id, message),
                         }
                     }
                 } else if msg["type"] == "error"
@@ -3029,7 +3157,8 @@ impl Shell {
                     // A server from before folders could be added: it does not
                     // know the request, and says so in a plain error.
                     link.adding.remove(id);
-                    link.error = Some(
+                    link.folder_failed(
+                        id,
                         "This server cannot add folders yet. Update arakun-server on it and try again."
                             .into(),
                     );
@@ -3682,6 +3811,19 @@ mod tests {
 
     fn pair(k: Setting, v: &str) -> (String, String) {
         (k.key().to_string(), v.to_string())
+    }
+
+    #[test]
+    fn a_failed_clone_from_the_picker_is_told_in_a_notice_once() {
+        let mut from_picker = HashSet::from(["a".to_string()]);
+        let mut failed = Vec::new();
+        let why = route_folder_failure(&mut from_picker, &mut failed, "a", "no".into());
+        assert_eq!(why, None);
+        assert_eq!(failed, [("a".to_string(), "no".to_string())]);
+        // The next failure there came from the Computers tab.
+        let why = route_folder_failure(&mut from_picker, &mut failed, "a", "again".into());
+        assert_eq!(why.as_deref(), Some("again"));
+        assert_eq!(failed.len(), 1);
     }
 
     #[test]

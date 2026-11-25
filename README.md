@@ -165,6 +165,8 @@ copy of it, rename it back, and start a version that can read it.
   line) or type a GitHub `o/r` to clone it and add it in one step. GitHub repositories
   are cloned with `gh` when it is installed, so private ones use its sign-in. The clone
   goes in the folder that already holds most of your repositories, or `~/code`.
+  With a server connected, the picker also offers to clone the URL on that server,
+  with its git and logins. The new folder opens in its project once the server has it.
   Each project gets its own 8×8 pixel-art icon, drawn from its path. "Edit icon…" in
   the project's menu lets you draw it pixel by pixel (mirrored or not), shuffle a new
   one, start from a classic drawing, or change its color.

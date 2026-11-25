@@ -1668,6 +1668,7 @@ mod tests {
             ended: None,
             host: None,
             call: None,
+            earlier: Vec::new(),
             entries: vec![said(text)],
         };
         // One small and one too big for a frame: it all comes in parts.

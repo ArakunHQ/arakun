@@ -108,6 +108,9 @@ pub struct SubagentRecord {
     /// Without it, a reopened transcript would mirror that call as a second subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call: Option<String>,
+    /// The session ids of its earlier generations, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub earlier: Vec<String>,
     #[serde(default)]
     pub entries: Vec<Entry>,
 }
@@ -125,6 +128,9 @@ pub struct Subagent {
     pub mirrored: bool,
     /// The Agent call that started it, when the parent's transcript has one.
     pub call: Option<String>,
+    /// The session ids of its earlier generations, oldest first: AIR runs a
+    /// subagent that SendMessage resumes as a new child session.
+    pub earlier: Vec<String>,
     host: Option<String>,
     pub thread: Entity<Thread>,
 }
@@ -137,10 +143,19 @@ impl Subagent {
             .saturating_sub(self.started)
     }
 
-    /// Whether `id` names it: its own id or the Agent call that started it.
+    /// Whether `id` names it: its own id, an earlier generation's, or the
+    /// Agent call that started it.
     pub fn answers_to(&self, id: &str) -> bool {
-        self.id == id || self.call.as_deref() == Some(id)
+        self.id == id || self.call.as_deref() == Some(id) || self.earlier.iter().any(|e| e == id)
     }
+}
+
+/// The agent a child session runs: AIR names a resumed one's session
+/// `<agent>:generation:<n>`.
+pub fn agent_of(session: &str) -> &str {
+    session
+        .split_once(":generation:")
+        .map_or(session, |(agent, _)| agent)
 }
 
 impl ToolCall {
@@ -460,6 +475,13 @@ impl Thread {
         if self.subagents.iter().any(|s| s.id == id) {
             return;
         }
+        if let Some(ix) = self
+            .subagents
+            .iter()
+            .rposition(|s| !s.mirrored && agent_of(&s.id) == agent_of(&id))
+        {
+            return self.resume_subagent(ix, id, task, prompt, host, stand_in, cx);
+        }
         let thread = self.child_thread(&name, cx);
         thread.update(cx, |c, cx| {
             if let Some(p) = prompt {
@@ -493,9 +515,64 @@ impl Thread {
             ended: None,
             mirrored: false,
             call: None,
+            earlier: Vec::new(),
             host,
             thread,
         });
+        cx.emit(ThreadEvent::SubagentsChanged { spawned: Some(id) });
+        self.watch_trails(cx);
+        cx.notify();
+    }
+
+    /// A new generation `id` of the subagent at `ix`, which SendMessage
+    /// resumed: it goes on in the same row and transcript, under its new id.
+    #[allow(clippy::too_many_arguments)]
+    fn resume_subagent(
+        &mut self,
+        ix: usize,
+        id: String,
+        task: String,
+        prompt: Option<String>,
+        host: Option<&str>,
+        stand_in: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let host = host
+            .filter(|h| self.subagents.iter().any(|s| s.id == *h))
+            .map(str::to_string);
+        let s = &mut self.subagents[ix];
+        let previous = std::mem::replace(&mut s.id, id.clone());
+        s.earlier.push(previous);
+        if !task.trim().is_empty() {
+            s.task = task.clone();
+        }
+        s.state = SubagentState::Running;
+        s.started = unix_now();
+        s.ended = None;
+        s.host = host.clone();
+        let (name, thread) = (s.name.clone(), s.thread.clone());
+        thread.update(cx, |c, cx| {
+            match prompt {
+                Some(p) => c.child_prompt(p, cx),
+                None => c.notice("Resumed", false, cx),
+            }
+            c.child_state(SubagentState::Running, cx);
+        });
+        // The parent's transcript marks where it sent the subagent more work.
+        if stand_in {
+            let call = marker_call(&id, &name, &task);
+            match host
+                .as_deref()
+                .and_then(|h| self.subagents.iter().find(|s| s.id == h))
+            {
+                Some(h) => h.thread.clone().update(cx, |c, cx| {
+                    c.push_entry(Entry::Tool(call), cx);
+                }),
+                None => {
+                    self.push_entry(Entry::Tool(call), cx);
+                }
+            }
+        }
         cx.emit(ThreadEvent::SubagentsChanged { spawned: Some(id) });
         self.watch_trails(cx);
         cx.notify();
@@ -693,6 +770,7 @@ impl Thread {
                         ended: (!state.is_running()).then(unix_now),
                         mirrored: true,
                         call: None,
+                        earlier: Vec::new(),
                         host: None,
                         thread,
                     });
@@ -739,6 +817,7 @@ impl Thread {
                 ended: s.ended,
                 host: s.host.clone(),
                 call: s.call.clone(),
+                earlier: s.earlier.clone(),
                 entries: s.thread.read(cx).entries().to_vec(),
             })
             .collect()
@@ -793,6 +872,7 @@ impl Thread {
                     if r.call.is_some() {
                         s.call = r.call;
                     }
+                    s.earlier = r.earlier;
                     let thread = s.thread.clone();
                     // The saved entries already say how it ended.
                     thread.update(cx, |c, cx| {
@@ -819,6 +899,7 @@ impl Thread {
                         ended,
                         mirrored: false,
                         call: r.call,
+                        earlier: r.earlier,
                         host: r.host,
                         thread,
                     });
@@ -943,6 +1024,32 @@ mod tests {
         let mut bash = task.clone();
         (bash.tool_name, bash.raw_input, bash.title) = (Some("Bash".into()), None, "ls".into());
         assert_eq!(bash.subagent_id(), None);
+    }
+
+    #[test]
+    fn a_resumed_generation_runs_the_same_agent() {
+        assert_eq!(agent_of("a0d2:generation:2"), "a0d2");
+        assert_eq!(agent_of("a0d2:generation:1760000000000"), "a0d2");
+        assert_eq!(agent_of("a0d2"), "a0d2");
+        assert_ne!(agent_of("a0d2"), agent_of("b1c3:generation:2"));
+    }
+
+    #[test]
+    fn a_record_keeps_its_earlier_generations() {
+        let old: SubagentRecord = serde_json::from_value(json!({
+            "id": "a1", "name": "Fix", "state": "completed", "started": 5
+        }))
+        .unwrap();
+        assert!(old.earlier.is_empty());
+        assert!(!serde_json::to_string(&old).unwrap().contains("earlier"));
+        let resumed = SubagentRecord {
+            id: "a1:generation:2".into(),
+            earlier: vec!["a1".into()],
+            ..old
+        };
+        let back: SubagentRecord =
+            serde_json::from_str(&serde_json::to_string(&resumed).unwrap()).unwrap();
+        assert_eq!(back.earlier, ["a1"]);
     }
 
     #[test]

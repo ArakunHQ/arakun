@@ -34,11 +34,14 @@ pub fn close(window: &mut Window, cx: &mut App) {
 }
 
 /// Wired to `Window::on_window_should_close`: `false` keeps the window.
-pub fn should_close(window: &mut Window) -> bool {
-    if !enabled() {
-        return true;
-    }
-    hide(window);
+///
+/// Never lets the system close the window itself. The shell's quit steps
+/// (saving state, installing a staged update, removing the control socket)
+/// are bound to the shell, which is released with its window before the app
+/// quits, so they would be skipped. Quitting first runs them with the window
+/// still open.
+pub fn should_close(window: &mut Window, cx: &mut App) -> bool {
+    close(window, cx);
     false
 }
 

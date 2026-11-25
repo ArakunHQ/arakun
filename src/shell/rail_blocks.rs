@@ -55,6 +55,27 @@ fn inbox_count_label(n: usize) -> String {
     if n > 9 { "9+".into() } else { n.to_string() }
 }
 
+/// How many servers run, on the corner of the Running piece's icon.
+fn running_mark(count: usize) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(-4.))
+        .right(px(-4.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .h(px(17.))
+        .min_w(px(17.))
+        .px(crate::ui::sp(3.))
+        .rounded_full()
+        .bg(theme::accent())
+        .font_family(theme::FONT_MONO)
+        .text_size(px(ui::TEXT_XS))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme::on_accent())
+        .child(inbox_count_label(count))
+}
+
 pub(super) fn view_id(view: View) -> &'static str {
     match view {
         View::Inbox => "nav-inbox",
@@ -820,6 +841,32 @@ impl Shell {
                     cx.notify();
                 }))
                 .into_any_element(),
+            Piece::Running => {
+                let (count, _) = self.running_total();
+                let open = self.running_open();
+                let end = (count > 0).then(|| {
+                    ui::text(
+                        crate::ui::Type::Caption,
+                        theme::text_faint(),
+                        count.to_string(),
+                    )
+                    .font_family(theme::FONT_MONO)
+                    .into_any_element()
+                });
+                row(end)
+                    .relative()
+                    .map(|d| ui::labelled(d, gpui::Role::Button, name.clone()))
+                    .map(ui::focusable)
+                    .when(open, |d| {
+                        d.bg(theme::fill_selected()).text_color(theme::content())
+                    })
+                    // Narrowed to its icon, the count goes on the corner.
+                    .when(narrow && count > 0, |d| d.child(running_mark(count)))
+                    .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                        this.open_running(ev.position(), cx)
+                    }))
+                    .into_any_element()
+            }
             Piece::Settings if help.is_some() => {
                 let end = div()
                     .flex()

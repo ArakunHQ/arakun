@@ -211,7 +211,8 @@ copy of it, rename it back, and start a version that can read it.
   agent, or something outside Arakun whose folder is in an environment), its memory
   and how long it has run. Under the pointer a row can open the port in the browser,
   show its terminal or stop it. Stopping ends that process and what it started,
-  never the terminal's shell or the agent.
+  never the terminal's shell or the agent. The **Running** piece (Customize ›
+  Sidebar) opens the same list from the sidebar, with the count on its icon.
 - **Built-in browser.** Browser tabs based on CEF (Chromium Embedded Framework), behind
   the optional `browser` cargo feature. Agents can drive pages on localhost through
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a

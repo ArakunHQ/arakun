@@ -2189,11 +2189,19 @@ impl Shell {
             let secs = (kind == Kind::Done)
                 .then(|| notify::turn_secs(t.entries()))
                 .flatten();
+            let phone_body = phone_text(
+                kind,
+                matches!(ev, ThreadEvent::NeedsPermission),
+                &body,
+                t.entries(),
+                t.pending_permission(),
+                t.pending_question(),
+            );
             self.notify_phones(
                 &pid,
                 kind,
                 &title,
-                &body,
+                &phone_body,
                 &env.unwrap_or_default(),
                 secs,
                 cx,
@@ -2465,6 +2473,23 @@ thread_local! {
     static NOTIFIED: RefCell<HashMap<String, Kind>> = RefCell::new(HashMap::new());
     /// The AskUser question last read aloud per session, by tool call id.
     static SPOKEN: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// What a phone is told: the agent's words, the command or the question. An error
+/// or an install notice keeps the desktop's `short` text.
+fn phone_text(
+    kind: Kind,
+    needs_input: bool,
+    short: &str,
+    entries: &[crate::agent::Entry],
+    permission: Option<&crate::agent::PermissionRequest>,
+    question: Option<&crate::agent::AskUserRequest>,
+) -> String {
+    match kind {
+        Kind::Done => notify::finished_body(entries),
+        Kind::Input if needs_input => notify::input_body(entries, permission, question),
+        _ => short.to_string(),
+    }
 }
 
 /// The short line the desktop shows for a session that waits for the user.
@@ -2775,6 +2800,40 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_phone_hears_the_agents_words_not_the_desktops_short_line() {
+        use super::{Kind, phone_text};
+        use crate::agent::Entry;
+        let entries = [Entry::Agent {
+            text: "Done: 3 files".into(),
+        }];
+        assert_eq!(
+            phone_text(
+                Kind::Done,
+                false,
+                "Finished its turn.",
+                &entries,
+                None,
+                None
+            ),
+            "Done: 3 files"
+        );
+        // Waiting with nothing pending reads the same as the desktop's fallback.
+        assert_eq!(
+            phone_text(Kind::Input, true, "x", &entries, None, None),
+            "Needs your input."
+        );
+        // An error or an install notice keeps its text.
+        assert_eq!(
+            phone_text(Kind::Error, false, "Boom", &entries, None, None),
+            "Boom"
+        );
+        assert_eq!(
+            phone_text(Kind::Input, false, "Install it", &entries, None, None),
+            "Install it"
+        );
+    }
+
     #[test]
     fn a_server_gets_only_the_model_and_reasoning_picked() {
         use super::{Setting, model, server_picks};

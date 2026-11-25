@@ -4,7 +4,9 @@
 // so the relay only passes bytes along and checked against the key the
 // account lists, then the same JSON the phone page speaks. The relay admits
 // only the account's own devices, so nothing more is proven inside the
-// channel. A message too big for a relay frame comes as `{part}`.
+// channel. Inside it `{req}` asks what the page would ask over HTTP, the
+// computer answers `{res}` in pieces, and a message too big for a relay frame
+// comes as `{part}`.
 import Foundation
 import Security
 
@@ -19,6 +21,15 @@ public final class RelayLink {
         case computer(online: Bool, since: Date?)
         case closed(EndKind, String)
     }
+
+    /// The computer's answer to `fetch`.
+    public struct Reply: Sendable {
+        public let status: Int
+        public let body: Data
+    }
+
+    /// The link went down, or was never up, before the computer answered.
+    public struct Closed: Error {}
 
     /// The page pings the relay this often and the relay answers on its own; a
     /// link that hears nothing for two pings and some is dead.
@@ -50,6 +61,9 @@ public final class RelayLink {
     private var heard = Date()
     private var helloDeadline: Date?
     private var timer: Task<Void, Never>?
+    private var nextReq = 1
+    private var replies = Replies()
+    private var waiting: [Int: CheckedContinuation<Reply, Error>] = [:]
 
     /// A link to `machine`, one of the account's computers as `/machines`
     /// lists it, on the relay at `base`.
@@ -176,6 +190,8 @@ public final class RelayLink {
     private func greet() {
         session = nil
         ready = false
+        // A new channel: nobody answers what was asked on the old one.
+        failPending()
         // Pieces from before belong to a message that will not be finished.
         joiner = Joiner()
         let h = E2E.Handshake()
@@ -194,6 +210,7 @@ public final class RelayLink {
             helloDeadline = nil
             session = nil
             ready = false
+            failPending()
             let since = (msg["since"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
             onEvent(.computer(online: false, since: since))
         case "pc_online":
@@ -216,12 +233,21 @@ public final class RelayLink {
         } catch {
             return end(.untrusted, "\(error)")
         }
-        guard let msg = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
+        guard var msg = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
         if let part = msg["part"] as? [String: Any] {
-            guard let whole = joiner.add(part) else { return }
+            guard let whole = joiner.add(part),
+                  let joined = try? JSONSerialization.jsonObject(with: whole) as? [String: Any]
+            else { return }
             plain = whole
+            msg = joined
         }
+        if let res = msg["res"] as? [String: Any] { return answered(res) }
         onEvent(.message(plain))
+    }
+
+    private func answered(_ res: [String: Any]) {
+        guard let r = replies.add(res), let done = waiting.removeValue(forKey: r.id) else { return }
+        done.resume(returning: Reply(status: r.status, body: r.body))
     }
 
     private func say(_ obj: [String: Any]) {
@@ -238,6 +264,33 @@ public final class RelayLink {
     /// A message to the computer, as the phone page sends it.
     public func send(_ obj: [String: Any]) {
         if isReady { say(obj) }
+    }
+
+    /// What the phone page would ask over HTTP, as `{req}`: the computer's
+    /// status and body come back. Throws `Closed` when the link is not up, or
+    /// goes down before the answer.
+    public func fetch(_ path: String, method: String = "GET", body: String? = nil) async throws -> Reply {
+        guard isReady else { throw Closed() }
+        let id = nextReq
+        nextReq += 1
+        return try await withCheckedThrowingContinuation { done in
+            waiting[id] = done
+            replies.expect(id)
+            say(Self.request(id: id, method: method, path: path, body: body))
+        }
+    }
+
+    /// The `{req}` message, as phone/relay.js writes it: a body is text, or null.
+    public nonisolated static func request(id: Int, method: String, path: String, body: String?) -> [String: Any] {
+        let req: [String: Any] = ["id": id, "method": method, "path": path, "body": body ?? NSNull()]
+        return ["req": req]
+    }
+
+    private func failPending() {
+        let all = Array(waiting.values)
+        waiting = [:]
+        replies = Replies()
+        for done in all { done.resume(throwing: Closed()) }
     }
 
     /// Ends with what the relay said: a refusal as its sentence, else the reason.
@@ -263,7 +316,36 @@ public final class RelayLink {
         ended = true
         ready = false
         timer?.cancel()
+        failPending()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+    }
+}
+
+/// The answers to `{req}`s under way. The computer sends each as one or more
+/// `{res: {id, status, body, more}}`, the body in base64url pieces.
+public struct Replies {
+    private var open: [Int: (status: Int, body: Data)] = [:]
+
+    public init() {}
+
+    /// Starts collecting the answer to request `id`.
+    public mutating func expect(_ id: Int) {
+        open[id] = (0, Data())
+    }
+
+    /// Takes one `res`. With its last piece, the request's id and whole
+    /// answer; nil before that, and for an id nobody asked.
+    public mutating func add(_ res: [String: Any]) -> (id: Int, status: Int, body: Data)? {
+        guard let id = res["id"] as? Int, var r = open[id] else { return nil }
+        if let status = res["status"] as? Int { r.status = status }
+        r.body.append(Base64URL.decode(res["body"] as? String ?? "") ?? Data())
+        if res["more"] as? Bool == true {
+            open[id] = r
+            return nil
+        }
+        open[id] = nil
+        // An answer that never gave its status counts as failed, as the page reads it.
+        return (id, r.status == 0 ? 500 : r.status, r.body)
     }
 }

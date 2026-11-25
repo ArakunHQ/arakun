@@ -77,6 +77,17 @@ final class AppModel {
     /// in the form, so closing and reopening it cannot send a second start.
     private(set) var starting = false
 
+    /// Whether the person turned notifications on for this phone.
+    private(set) var notifying = UserDefaults.standard.bool(forKey: PushSetup.wantedKey)
+    /// What the system says about notifications for Arakun.
+    private(set) var permission: PushPermission = .ask
+    /// Which notices the computer picked sends this phone; nil until it says.
+    private(set) var notices: NoticeChoice?
+    /// APNs's token for this install. It comes again at every launch.
+    private var pushToken: Data?
+    /// A session a notification tap asked for, until a computer is picked.
+    private var openAfterPick: String?
+
     private var link: RelayLink?
     private var retry: Duration = .milliseconds(500)
     private var retryTask: Task<Void, Never>?
@@ -116,6 +127,8 @@ final class AppModel {
             UserDefaults.standard.set(true, forKey: Self.hasRunKey)
             // Deleting the app must sign the phone out: installed again, it starts signed out.
             keeper.signOut()
+            // The Keychain kept the push keys too, which no computer should still use.
+            PushSetup.keys.forget()
         }
         signedIn = keeper.token
         if signedIn != nil { Task { await loadAccount(openOne: true) } }
@@ -256,6 +269,7 @@ final class AppModel {
         loadFailed = false
         signInError = nil
         pairSaid = nil
+        forgetPush()
     }
 
     // ---- the account ----------------------------------------------------------
@@ -283,7 +297,12 @@ final class AppModel {
             guard openOne, machine == nil else { return }
             if list.count == 1 { return pick(list[0]) }
             let last = UserDefaults.standard.string(forKey: Self.lastMachineKey)
-            if let m = list.first(where: { $0.label == last }) { pick(m) }
+            if let m = list.first(where: { $0.label == last }) {
+                pick(m)
+            } else if openAfterPick != nil {
+                openAfterPick = nil
+                accountSaid = Self.tapSentence
+            }
         } catch {
             accountFailed(error, token, quiet: quiet)
         }
@@ -454,6 +473,10 @@ final class AppModel {
         retry = .milliseconds(500)
         limitTries = 0
         connect()
+        if let id = openAfterPick {
+            openAfterPick = nil
+            open(id)
+        }
     }
 
     /// Back to the list of computers, with a sentence when the relay sent us there.
@@ -479,6 +502,7 @@ final class AppModel {
         openWhenLinked = nil
         loadingOlder = false
         starting = false
+        notices = nil
     }
 
     func connect() {
@@ -595,6 +619,7 @@ final class AppModel {
                 openWhenLinked = nil
                 open(id)
             }
+            linkedPush()
         case .message(let data):
             if let msg = JSON.parse(data) { receive(msg) }
         case .computer(let online, let since):
@@ -729,6 +754,8 @@ final class AppModel {
     func visible(_ yes: Bool) {
         send(["type": "visible", "visible": yes])
         guard yes else { return }
+        // Notifications may have been turned off or on in Settings meanwhile.
+        if !Self.isDemoLaunch { Task { permission = await PushPermission.current() } }
         guard machine != nil else {
             // A start that never reached the account is made again.
             if signedIn != nil, me == nil || !machinesLoaded { Task { await poll() } }
@@ -740,6 +767,160 @@ final class AppModel {
     }
 
     var isLinked: Bool { connection == .connected }
+
+    // ---- notifications --------------------------------------------------------
+
+    /// What the list says after a tap it could not follow to a computer: a
+    /// notice does not say which computer sent it.
+    static let tapSentence = "Pick the computer that notification came from to open its session."
+
+    /// At launch: APNs gives the token again, and a new one goes to the computer.
+    func launched() {
+        guard !Self.isDemoLaunch else { return }
+        Task { permission = await PushPermission.current() }
+        if notifying { UIApplication.shared.registerForRemoteNotifications() }
+    }
+
+    /// Notifications on or off for this phone, from Settings. On asks the
+    /// system first; off tells the computer open now, and APNs then answers
+    /// every other computer that the token is gone, so they forget it too.
+    func setNotifying(_ on: Bool) {
+        #if DEBUG
+        if Self.isDemo {
+            notifying = on
+            return
+        }
+        #endif
+        guard on else {
+            wantNotifications(false)
+            UIApplication.shared.unregisterForRemoteNotifications()
+            pushToken = nil
+            if let l = link, l.isReady, let body = Self.text(["subscription": NSNull()]) {
+                Task { await post(body, on: l) }
+            }
+            return
+        }
+        Task {
+            let granted = await PushPermission.request()
+            permission = await PushPermission.current()
+            // Refused: the switch stays off, and Settings says where to allow them.
+            guard granted else { return }
+            guard PushSetup.keys.loadOrMake() != nil else {
+                notice = "Notifications could not be turned on: the Keychain did not keep their keys."
+                return
+            }
+            wantNotifications(true)
+            // The token comes back through tookPushToken, which tells the computer.
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+
+    private func wantNotifications(_ on: Bool) {
+        notifying = on
+        UserDefaults.standard.set(on, forKey: PushSetup.wantedKey)
+    }
+
+    func tookPushToken(_ token: Data) {
+        pushToken = token
+        guard notifying, let l = link, l.isReady, let body = subscriptionBody() else { return }
+        Task { await post(body, on: l) }
+    }
+
+    /// One kind of notice on or off; the computer keeps the choice.
+    func setNotices(_ choice: NoticeChoice) {
+        #if DEBUG
+        if Self.isDemo {
+            notices = choice
+            return
+        }
+        #endif
+        guard let before = notices, let l = link, l.isReady, let body = Self.text(["notices": choice.json]) else { return }
+        notices = choice
+        Task {
+            let saved = await post(body, on: l)
+            guard !saved, link === l else { return }
+            notices = before
+            notice = "Could not save that. Try again."
+        }
+    }
+
+    /// Whether a notice about `id` would show what is already on screen.
+    func isOnScreen(_ id: String?) -> Bool {
+        guard let id else { return false }
+        return session?.id == id
+    }
+
+    /// A tap on a notification: its session, on the computer open now. With
+    /// none open yet, the one the app would open at launch, as phone/relay.js
+    /// `tapRoute` does.
+    func tapped(session id: String) {
+        guard signedIn != nil, !id.isEmpty, !blocked else { return }
+        if machine != nil { return open(id) }
+        openAfterPick = id
+        // Still loading: `loadAccount` picks a computer, which opens it.
+        guard machinesLoaded else { return }
+        let last = UserDefaults.standard.string(forKey: Self.lastMachineKey)
+        if let m = machines.count == 1 ? machines.first : machines.first(where: { $0.label == last }) {
+            pick(m)
+        } else {
+            openAfterPick = nil
+            if !machines.isEmpty { accountSaid = Self.tapSentence }
+        }
+    }
+
+    /// The link is up: the computer says which notices it sends, and learns
+    /// where to send them, or that this phone wants none any more.
+    private func linkedPush() {
+        guard let l = link, !Self.isDemoLaunch else { return }
+        Task {
+            guard let reply = try? await l.fetch("/me"), reply.status == 200,
+                  let me = JSON.parse(reply.body), let state = PushState(me), link === l
+            else { return }
+            notices = state.notices
+            if notifying {
+                if let body = subscriptionBody() { await post(body, on: l) }
+            } else if state.notifying, let body = Self.text(["subscription": NSNull()]) {
+                await post(body, on: l)
+            }
+        }
+    }
+
+    /// `{"subscription": …}` for `POST /push`: this phone's keys, and where
+    /// the Worker takes its notices for APNs. Nil until APNs gave a token.
+    private func subscriptionBody() -> String? {
+        guard let token = pushToken, let keys = PushSetup.keys.loadOrMake(),
+              let endpoint = PushEndpoint.url(base: keeper.client.base, token: token, sandbox: PushSetup.sandbox)
+        else { return nil }
+        return Self.text(["subscription": keys.subscription(endpoint: endpoint)])
+    }
+
+    /// `POST /push` to the computer of `l`. Its answer says which notices it
+    /// sends. Whether it took the change.
+    @discardableResult
+    private func post(_ body: String, on l: RelayLink) async -> Bool {
+        guard let reply = try? await l.fetch("/push", method: "POST", body: body), reply.status == 200 else { return false }
+        if link === l, let j = JSON.parse(reply.body), let state = PushState(j) { notices = state.notices }
+        return true
+    }
+
+    private nonisolated static func text(_ obj: [String: Any]) -> String? {
+        (try? JSONSerialization.data(withJSONObject: obj)).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Signed out: no computer may reach this phone any more. APNs tells them
+    /// the token is gone, and notices already on the way can no longer be
+    /// read. The next sign-in makes new keys.
+    private func forgetPush() {
+        notices = nil
+        openAfterPick = nil
+        guard !Self.isDemoLaunch else { return }
+        if notifying {
+            wantNotifications(false)
+            UIApplication.shared.unregisterForRemoteNotifications()
+        }
+        pushToken = nil
+        PushSetup.keys.forget()
+    }
 }
 
 #if DEBUG
@@ -773,9 +954,12 @@ extension AppModel {
             SignedInDevice(id: "d2", name: "studio", kind: "app", createdAt: now - 864000, lastUsedAt: now - 60, current: false),
             SignedInDevice(id: "d3", name: "build-box", kind: "server", createdAt: now - 864000, lastUsedAt: now - 7200, current: false),
         ]
+        notifying = true
+        permission = .granted
         if defaults.bool(forKey: "demoMachines") { return }
         machine = machines[0]
         connection = .connected
+        notices = NoticeChoice(done: false)
         let inboxJSON = """
         {"host":"studio","sessions":[
          {"id":"s1","title":"Fix the relay pairing limit","agent":"Opus 5.5","status":"needs_input","updated":\(now - 40),"added":42,"removed":7,"project":"arakun","env":"env/brave-otter","place":"/w/a","pr":"#631","asks":{"kind":"permission","text":"cargo test -p arakun relay"}},

@@ -36,6 +36,8 @@ targets:
     dependencies:
       - package: ArakunKit
       - package: PostHog
+      # Embedded in the app: it decrypts each notice before iOS shows it.
+      - target: Notifications
     info:
       path: Arakun/Info.plist
       properties:
@@ -57,11 +59,29 @@ targets:
             CFBundleURLSchemes: [arakun]
         # Answers App Store Connect's export compliance question for every
         # build, so a new upload doesn't wait on someone to answer it by hand.
-        # The only encryption is HTTPS and the end-to-end encryption in
-        # ArakunKit's E2E.swift, both from Apple's own CryptoKit and
+        # The only encryption is HTTPS, the end-to-end encryption in
+        # ArakunKit's E2E.swift and the decryption of push notices in its
+        # WebPush.swift (RFC 8291), all from Apple's own CryptoKit and
         # URLSession, which Apple counts as exempt. Revisit this if the app
         # ships its own cryptography.
         ITSAppUsesNonExemptEncryption: false
+        # The Keychain group the push keys live in, which the notification
+        # service extension reads too. The build fills in the team.
+        ArakunKeychainGroup: $(AppIdentifierPrefix)com.arakun.ios.shared
+    entitlements:
+      path: Arakun/Arakun.entitlements
+      properties:
+        # Xcode signs every build with a development profile, which only
+        # takes `development`; exporting for the App Store re-signs it as
+        # `production`. So a Debug build gets its token from APNs's sandbox
+        # and a TestFlight or App Store build from production, as
+        # PushSetup.sandbox (#if DEBUG) assumes.
+        aps-environment: development
+        # The app's own group first: new Keychain items without a group go
+        # in the first one, and only the push keys are for the extension.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.arakun.ios
+          - $(AppIdentifierPrefix)com.arakun.ios.shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.arakun.ios
@@ -70,5 +90,37 @@ targets:
         SUPPORTED_PLATFORMS: iphoneos iphonesimulator
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+
+  # The notification service extension: it decrypts the notice the Worker
+  # passes on in an APNs alert (Notifications/NotificationService.swift).
+  Notifications:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Notifications
+    dependencies:
+      - package: ArakunKit
+    info:
+      path: Notifications/Info.plist
+      properties:
+        CFBundleDisplayName: Arakun
+        # The same versions as the app, or App Store Connect refuses the upload.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ArakunKeychainGroup: $(AppIdentifierPrefix)com.arakun.ios.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    entitlements:
+      path: Notifications/Notifications.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.arakun.ios.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arakun.ios.notifications
+        SUPPORTED_PLATFORMS: iphoneos iphonesimulator
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic

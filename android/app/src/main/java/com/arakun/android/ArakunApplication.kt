@@ -7,5 +7,6 @@ class ArakunApplication : Application() {
         super.onCreate()
         // First, so a crash anywhere after it can be reported.
         Telemetry.start(this)
+        Push.start(this)
     }
 }

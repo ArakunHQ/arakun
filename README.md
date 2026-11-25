@@ -524,6 +524,8 @@ after a week).
   added by hand, so the row says you signed up until the TestFlight or Google Play
   invite is on its way, then that you are in. **Change email** fixes the address
   while you wait.
+  The Android app gets notifications from every computer it has opened while they are
+  on (Account in its inbox's menu).
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
   every computer of the account: sign out what you do not know. A message from the
   service's operator to your account shows as a notice with its link; opening it or

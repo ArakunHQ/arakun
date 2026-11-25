@@ -1,5 +1,11 @@
 package com.arakun.android.ui
 
+import android.Manifest
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -19,6 +26,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -31,19 +40,24 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.arakun.android.AppModel
+import com.arakun.android.Push
 import com.arakun.android.R
 import com.arakun.kit.Notice
 import com.arakun.kit.SignedInDevice
 
 /**
- * The account on this phone: who is signed in, the operator's notices, the
- * account's signed-in devices (any can be signed out) and Sign out.
+ * The account on this phone: who is signed in, the operator's notices,
+ * notifications, the account's signed-in devices (any can be signed out) and
+ * Sign out.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,6 +95,11 @@ fun AccountSheet(model: AppModel, onDismiss: () -> Unit) {
                     Eyebrow("Notices")
                     notices.forEach { n -> NoticeCard(n) { model.dismissNotice(n) } }
                 }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Eyebrow("Notifications")
+                Notifications(model)
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -130,6 +149,104 @@ fun AccountSheet(model: AppModel, onDismiss: () -> Unit) {
                 TextButton(onClick = { confirmSignOut = false }) { Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium)) }
             },
             containerColor = c.raised,
+        )
+    }
+}
+
+/**
+ * Notifications on or off, and which notices, as the phone page has them.
+ * Every computer this phone links to gets the same choice.
+ */
+@Composable
+private fun Notifications(model: AppModel) {
+    val c = Palette.current
+    val context = LocalContext.current
+    if (!Push.available) {
+        Text("This build of the app cannot get notifications.", style = Type.small, color = c.textFaint)
+        return
+    }
+    // Android's own switch for the app can change while the app is away.
+    var allowed by remember { mutableStateOf(Push.allowed(context)) }
+    var refused by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        allowed = Push.allowed(context)
+        onPauseOrDispose {}
+    }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { yes ->
+        allowed = Push.allowed(context)
+        refused = !yes
+        if (yes) model.notifications(true)
+    }
+    val w = Push.wanted
+    Column(Modifier.fillMaxWidth().card()) {
+        SwitchRow("Notifications", "For permissions, questions, finished turns and errors.", Push.on) { on ->
+            when {
+                !on -> model.notifications(false)
+                Build.VERSION.SDK_INT >= 33 && !allowed -> ask.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else -> model.notifications(true)
+            }
+        }
+        if (Push.on) {
+            listOf(
+                Triple("Turn finished", w.done) { on: Boolean -> w.copy(done = on) },
+                Triple("Needs permission or answer", w.input) { on: Boolean -> w.copy(input = on) },
+                Triple("Something went wrong", w.error) { on: Boolean -> w.copy(error = on) },
+            ).forEach { (title, on, change) ->
+                Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
+                SwitchRow(title, null, on) { model.want(change(it)) }
+            }
+        }
+    }
+    if (!allowed && (Push.on || refused)) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Android blocks notifications from Arakun. Allow them in its settings.", style = Type.small, color = c.attention)
+            TextButton(
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                        )
+                    }
+                },
+                contentPadding = ZeroPadding,
+            ) { Text("Open settings", color = c.amberInk, style = geist(14f, FontWeight.Medium)) }
+        }
+    }
+    Text(
+        "A computer sends them once this phone has opened it with notifications on.",
+        style = Type.small,
+        color = c.textFaint,
+    )
+}
+
+/** A row that is all one switch, so the whole row is the target. */
+@Composable
+private fun SwitchRow(title: String, detail: String?, on: Boolean, change: (Boolean) -> Unit) {
+    val c = Palette.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .toggleable(value = on, role = Role.Switch, onValueChange = change)
+            .padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = geist(15f, FontWeight.Medium))
+            if (detail != null) Text(detail, style = Type.small, color = c.textFaint)
+        }
+        Switch(
+            checked = on,
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Brand.onAmber,
+                checkedTrackColor = Brand.amber,
+                checkedBorderColor = Brand.amber,
+                uncheckedThumbColor = c.textFaint,
+                uncheckedTrackColor = c.deep,
+                uncheckedBorderColor = c.lineStrong,
+            ),
         )
     }
 }

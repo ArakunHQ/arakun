@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 use crate::agent::{AskUserRequest, Entry, PermissionRequest, ToolCall};
 use crate::phone::{Device, Door, Notices, push};
 
+/// How often a sender checks the notices waiting in its `Notifier`.
+pub const CHECK_EVERY: Duration = Duration::from_secs(15);
+
 /// What the notice is about. The apps read it as `kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

@@ -15,11 +15,11 @@ use serde_json::json;
 use super::Shell;
 use super::sessions::summary;
 use crate::agent::AgentKind;
-use crate::agent::{Setting, Thread, ThreadEvent};
+use crate::agent::{Setting, Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::island::AlertKind;
 use crate::model::TabKind;
-use crate::phone::notify::Kind;
+use crate::phone::notify::{self, Kind, Notifier, Presence};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
     self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
@@ -54,6 +54,10 @@ pub(super) struct PhoneLink {
     relay_problem: Option<String>,
     /// Signs the push notifications this computer sends.
     vapid: Arc<push::Vapid>,
+    /// Phone notices waiting for the person to be away.
+    notifier: Notifier,
+    /// Checks the waiting notices while there are any.
+    notice_timer: Option<Task<()>>,
     /// Where phones find this computer through Tailscale, as last worked out.
     remote: Address,
     _remote: Option<Task<()>>,
@@ -969,6 +973,8 @@ impl Shell {
             account: signed_in,
             relay_problem,
             vapid,
+            notifier: Notifier::default(),
+            notice_timer: None,
             remote,
             _remote: watch,
             access,
@@ -2001,9 +2007,10 @@ impl Shell {
         }
     }
 
-    /// Pushes a notice about a session to every phone that asked for them,
-    /// except the ones looking at that very session right now. Subscriptions
-    /// the push service says are gone are forgotten.
+    /// Offers a notice about a session to every phone that asked for them,
+    /// except the ones looking at that very session right now. It goes now,
+    /// or once the person is away from the computer.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn notify_phones(
         &mut self,
         id: &SharedString,
@@ -2012,9 +2019,10 @@ impl Shell {
         body: &str,
         env: &str,
         secs: Option<u64>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(link) = &self.phone else {
+        let Some(link) = &mut self.phone else {
             return;
         };
         // Phones with this session on screen see the change already.
@@ -2024,24 +2032,123 @@ impl Shell {
             .filter(|(client, watched)| *watched == id && !link.hidden.contains(client))
             .filter_map(|(client, _)| link.server.device_of(*client))
             .collect();
-        let wanted = |d: &phone::Device| match kind {
-            Kind::Done => d.notices.done,
-            Kind::Input => d.notices.input,
-            Kind::Error => d.notices.error,
+        let c = notify::Candidate {
+            session: id.to_string(),
+            kind,
+            turn_secs: secs,
+            payload: push::notice(kind.as_str(), id, title, body, env, secs),
         };
-        let targets: Vec<(String, push::Subscription)> = link
-            .access
-            .lock()
-            .unwrap()
-            .devices
-            .iter()
-            .filter(|d| !looking.contains(&d.id) && wanted(d))
-            .filter_map(|d| d.push.clone().map(|s| (d.id.clone(), s)))
-            .collect();
-        if targets.is_empty() {
+        let now = link.notifier.offer(
+            c,
+            &link.access.lock().unwrap().devices,
+            &looking,
+            presence(window),
+            Instant::now(),
+        );
+        self.push_notices(now, cx);
+        self.time_notices(window, cx);
+    }
+
+    /// The person opened the session on the computer: its waiting notices
+    /// are moot.
+    pub(super) fn phone_seen(&mut self, env_path: &Path, id: &str) {
+        let pid = self.phone_id(env_path, id);
+        if let Some(link) = &mut self.phone {
+            link.notifier.seen(&pid);
+        }
+    }
+
+    /// Checks the waiting notices about every 15 s while there are any.
+    fn time_notices(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        if link.notice_timer.is_some() || !link.notifier.has_pending() {
             return;
         }
-        let payload = push::notice(kind.as_str(), id, title, body, env, secs);
+        let timer = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(notify::CHECK_EVERY).await;
+                let more = this.update_in(cx, |this, window, cx| this.tick_notices(window, cx));
+                if !matches!(more, Ok(true)) {
+                    break;
+                }
+            }
+        });
+        if let Some(link) = &mut self.phone {
+            link.notice_timer = Some(timer);
+        }
+    }
+
+    /// Sends the waiting notices that may go now. False once none wait.
+    fn tick_notices(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let Some(link) = &mut self.phone else {
+            return false;
+        };
+        let mut notifier = std::mem::take(&mut link.notifier);
+        let access = link.access.clone();
+        let due = {
+            let app: &App = cx;
+            let still = |pid: &str, kind| self.phone_still(pid, kind, app);
+            // A phone looking at the session drops it through `still`.
+            let devices = &access.lock().unwrap().devices;
+            notifier.tick(
+                devices,
+                &HashSet::new(),
+                presence(window),
+                still,
+                Instant::now(),
+            )
+        };
+        let more = notifier.has_pending();
+        if let Some(link) = &mut self.phone {
+            link.notifier = notifier;
+            if !more {
+                link.notice_timer = None;
+            }
+        }
+        self.push_notices(due, cx);
+        more
+    }
+
+    /// Whether the session phones call `pid` is still in the state its
+    /// notice is about: still waiting for an answer, or not at work again.
+    /// One a phone has on screen is seen.
+    fn phone_still(&self, pid: &str, kind: Kind, cx: &App) -> bool {
+        let Some(link) = &self.phone else {
+            return false;
+        };
+        let looked_at = link
+            .watching
+            .iter()
+            .any(|(client, watched)| watched == pid && !link.hidden.contains(client));
+        let Some((env_path, id)) = self.phone_session(pid).filter(|_| !looked_at) else {
+            return false;
+        };
+        // A retired session is neither working nor asking anything.
+        let Some(thread) = self.phone_thread(&env_path, &id) else {
+            return kind != Kind::Input;
+        };
+        let t = thread.read(cx);
+        match kind {
+            Kind::Input => {
+                t.pending_permission().is_some()
+                    || t.pending_question().is_some()
+                    || t.needs_install().is_some()
+            }
+            Kind::Done | Kind::Error => t.status() != ThreadStatus::Working,
+        }
+    }
+
+    /// Pushes notices in the background. Subscriptions the push service says
+    /// are gone are forgotten.
+    fn push_notices(&self, notices: Vec<notify::Delivery>, cx: &mut Context<Self>) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        if notices.is_empty() {
+            return;
+        }
         let (vapid, access) = (link.vapid.clone(), link.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -2049,10 +2156,10 @@ impl Shell {
                 .spawn(async move {
                     let now = crate::model::unix_now();
                     let mut gone = Vec::new();
-                    for (device, sub) in targets {
-                        match push::send(&vapid, &sub, payload.as_bytes(), now) {
+                    for n in notices {
+                        match push::send(&vapid, &n.sub, n.payload.as_bytes(), now) {
                             Ok(()) => {}
-                            Err(push::Fail::Gone) => gone.push((device, sub)),
+                            Err(push::Fail::Gone) => gone.push((n.device, n.sub)),
                             Err(e) => eprintln!("arakun: could not notify a phone: {e}"),
                         }
                     }
@@ -2070,6 +2177,15 @@ impl Shell {
             }
         })
         .detach();
+    }
+}
+
+/// Whether the person is at the computer: how long since they last used it,
+/// when the desktop can tell, and whether this window has focus.
+fn presence(window: &Window) -> Presence {
+    Presence {
+        idle: (arakun_core::host::get().idle_for)(),
+        focused: window.is_window_active(),
     }
 }
 

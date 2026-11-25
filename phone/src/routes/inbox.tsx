@@ -70,7 +70,7 @@ export function Inbox() {
         ) : null}
         {needs.length ? <Group kind="needs" name="Needs you" items={needs} /> : null}
         {working.length ? <Group kind="working" name="Working now" items={working} /> : null}
-        {recent.length ? <Group kind="done" name="Finished" items={recent} /> : null}
+        {recent.length ? <Group kind="done" name="Done" items={recent} /> : null}
         {older > 0 ? (
           <button className="more" onClick={toSessions}>
             {older} older in Sessions

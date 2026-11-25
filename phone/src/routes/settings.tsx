@@ -177,11 +177,11 @@ export function Settings() {
     }
   };
 
-  // This phone lets go of the computer it paired with on the network: its token
-  // dies there, and here. On the account host the phone signs out instead.
+  // This device lets go of the computer it paired with on the network: its
+  // token dies there, and here. On the account host it signs out instead.
   const unpair = async () => {
     const name = host || location.hostname;
-    if (!confirm(`Unpair this phone from ${name}?\n\nYou will need a new code from Arakun to pair it again.`)) return;
+    if (!confirm(`Unpair this device from ${name}?\n\nYou will need a new code from Arakun to pair it again.`)) return;
     try {
       await api("/unpair", { method: "POST" });
     } catch {
@@ -207,7 +207,7 @@ export function Settings() {
   const askSignOut = () => {
     if (signOut.isPending) return;
     const login = bootData?.me?.login;
-    if (confirm(`Sign out of ${login || "GitHub"} on this phone?`)) signOut.mutate();
+    if (confirm(`Sign out of ${login || "GitHub"} in this browser?`)) signOut.mutate();
   };
 
   const ns = notifyState();
@@ -271,7 +271,7 @@ export function Settings() {
         ) : null}
         <Group label="Notifications">{notify}</Group>
         {account ? <SignedInDevices /> : null}
-        <Group label="This phone">
+        <Group label="This device">
           {account ? (
             <>
               <Row icon="phone" title={name} sub={bootData?.me?.login ? `Signed in as ${bootData.me.login}` : ""} />
@@ -280,7 +280,7 @@ export function Settings() {
           ) : (
             <>
               <Row icon="phone" title={name} sub={me?.paired_at ? `Paired ${pairedOn(Number(me.paired_at))} · last seen now` : ""} />
-              <Row icon="unlink" title="Unpair this phone" danger onClick={unpair} />
+              <Row icon="unlink" title="Unpair this device" danger onClick={unpair} />
             </>
           )}
         </Group>

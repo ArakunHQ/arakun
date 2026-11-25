@@ -47,7 +47,7 @@ export function Computers() {
   };
   const askSignOut = () => {
     if (signOut.isPending) return;
-    if (confirm(`Sign out of ${login || "GitHub"} on this phone?`)) signOut.mutate();
+    if (confirm(`Sign out of ${login || "GitHub"} in this browser?`)) signOut.mutate();
   };
 
   let body = null;

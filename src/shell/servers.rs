@@ -4110,6 +4110,7 @@ mod tests {
             ended: Some(2),
             host: None,
             call: None,
+            earlier: Vec::new(),
             entries: Vec::new(),
         }];
         let ids: Vec<String> = transcript_of(&f)

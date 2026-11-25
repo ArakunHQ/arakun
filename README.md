@@ -1033,7 +1033,7 @@ check it against `SHA256SUMS` (and its signature, when a verifier is installed; 
 | Platform | Installs to | Uninstall |
 |---|---|---|
 | macOS | `~/Applications/Arakun.app`, linked as `~/.local/bin/arakun` | `rm -rf ~/Applications/Arakun.app ~/.local/bin/arakun` |
-| Linux | `~/.local/bin/arakun`, and the browser's runtime in `~/.local/share/arakun/cef` (`$XDG_DATA_HOME/arakun/cef` if set) | `rm -rf ~/.local/bin/arakun ~/.local/share/arakun/cef` |
+| Linux | `~/.local/bin/arakun`, the browser's runtime in `~/.local/share/arakun/cef`, and the app launcher's entry and icon in `~/.local/share/applications/arakun.desktop` and `~/.local/share/icons/hicolor/*/apps/arakun.*` (under `$XDG_DATA_HOME` if set) | `rm -rf ~/.local/bin/arakun ~/.local/share/arakun/cef ~/.local/share/applications/arakun.desktop ~/.local/share/icons/hicolor/*/apps/arakun.*` |
 | Windows | `%LOCALAPPDATA%\Programs\Arakun`, added to your user `PATH`, and a Start menu shortcut | delete that folder and the shortcut, and remove it from `PATH` |
 
 To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -- --version v0.2.1`,

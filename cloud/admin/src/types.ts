@@ -1,6 +1,7 @@
 // The JSON the panel reads, field for field as the Workers write it:
 // /api/me from worker/index.ts, the rest from the cloud Worker's
-// src/admin_lists.ts, src/admin_log.ts, src/cloud_access.ts and src/admin.ts.
+// src/admin_lists.ts, src/admin_log.ts, src/cloud_access.ts, src/beta.ts and
+// src/admin.ts.
 // Times are Unix seconds.
 
 /// GET /api/me
@@ -88,6 +89,34 @@ export interface CloudRequest {
   };
 }
 
+export type BetaPlatform = "ios" | "android";
+
+/// A row of GET /admin/beta/signups, and the answer of an admit or a decline:
+/// `signupJson` in cloud/src/beta.ts.
+export interface BetaSignup {
+  github_id: number;
+  login: string;
+  platform: BetaPlatform;
+  /// The address to add as a tester: an Apple ID or a Google account.
+  email: string;
+  status: "pending" | "admitted" | "declined";
+  requested_at: number;
+  decided_at: number | null;
+  decided_by: string | null;
+  /// When a declined account may sign up again; null otherwise.
+  retry_at: number | null;
+  blocked: boolean;
+  /// What GitHub said about the account when it signed up. Null where it did not say.
+  github: {
+    login: string;
+    created_at: number | null;
+    age_days: number | null;
+    public_repos: number | null;
+    followers: number | null;
+    following: number | null;
+  };
+}
+
 /// A row of GET /admin/notices (an array) and of a user's notices.
 export interface NoticeRow {
   id: string;
@@ -112,7 +141,9 @@ export type LogAction =
   | "notice.create"
   | "notice.delete"
   | "cloud.grant"
-  | "cloud.decline";
+  | "cloud.decline"
+  | "beta.admit"
+  | "beta.decline";
 
 /// A row of GET /admin/log.
 export interface LogEntry {

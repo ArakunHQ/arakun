@@ -1,11 +1,12 @@
 name: Cloud deploy
 
 # Deploys the hosted cloud Worker (cloud/: the relay and the teams API), the
-# phone page it serves (phone/) and the admin Worker (cloud/admin/: the operator
-# panel at admin.arakun.dev) to arakun.dev. It ships with the app's
-# versions: release.yml calls this workflow after it publishes a release, so
-# the Worker that runs is the one from the latest release, and a change merged
-# on main waits for the next version, unless someone deploys main by hand.
+# phone page it serves (phone/dist, the committed build of phone/) and the admin
+# Worker (cloud/admin/: the operator panel at admin.arakun.dev) to arakun.dev.
+# It ships with the app's versions: release.yml calls this workflow after it
+# publishes a release, so the Worker that runs is the one from the latest
+# release, and a change merged on main waits for the next version, unless
+# someone deploys main by hand.
 #
 # Four ways in:
 #
@@ -222,14 +223,17 @@ jobs:
           cache-dependency-path: |
             cloud/package-lock.json
             cloud/admin/package-lock.json
+            phone/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
 
-      - name: phone e2e vectors
+      # As in ci.yml: the phone's tests, and the committed phone/dist, which
+      # the Worker serves, against a fresh build.
+      - name: phone tests and dist
         working-directory: phone
-        run: node --test "test/*.test.mjs"
+        run: npm ci && npm test && tools/check-dist.sh
 
       # The tables the new code reads, before it runs. Applied migrations are
       # skipped, so this is safe on every deploy. Migrations only add: the

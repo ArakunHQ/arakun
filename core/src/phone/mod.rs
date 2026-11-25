@@ -2640,6 +2640,10 @@ mod tests {
             .find(|d| d.starts_with("script-src"));
         assert_eq!(script, Some("script-src 'self'"), "{policy}");
         assert!(head.contains("X-Content-Type-Options: nosniff"), "{head}");
+        // The built bundle sits in a folder of its own under phone/dist.
+        let bundle = http(&server, "GET", "/assets/app.js", "", "");
+        assert!(bundle.starts_with("HTTP/1.1 200"), "{bundle}");
+        assert!(bundle.contains("text/javascript"));
         assert!(http(&server, "GET", "/nope.txt", "", "").starts_with("HTTP/1.1 404"));
         let refused = http(
             &server,

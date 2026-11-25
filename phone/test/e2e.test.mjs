@@ -1,4 +1,4 @@
-// phone/e2e.js against the vectors core/src/phone/e2e.rs wrote (vectors/e2e.json):
+// phone/public/e2e.js against the vectors core/src/phone/e2e.rs wrote (vectors/e2e.json):
 // the phone must trust the computer's hello, derive the same keys, open the
 // computer's frames and seal its own to the very same bytes. Run with
 // `node --test phone/test/` (Node 20+, WebCrypto built in).
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-vm.runInThisContext(readFileSync(join(here, "..", "e2e.js"), "utf8"), { filename: "e2e.js" });
+vm.runInThisContext(readFileSync(join(here, "..", "public", "e2e.js"), "utf8"), { filename: "e2e.js" });
 const E2E = globalThis.E2E;
 const vectors = JSON.parse(readFileSync(join(here, "vectors", "e2e.json"), "utf8"));
 const bytes = (name) => E2E.fromB64url(vectors[name]);

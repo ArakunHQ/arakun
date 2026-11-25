@@ -1,0 +1,2 @@
+# The committed build of phone/ (npm run build). GitHub folds it in diffs.
+phone/dist/** linguist-generated=true

@@ -139,6 +139,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npm run check)
 (cd cloud/admin && npm ci && npm run check && npm test && npm run build)
+# phone/ changed: commit the rebuilt phone/dist with it
+(cd phone && npm ci && npm test && npm run build)
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
@@ -148,8 +150,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the
-`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the cloud and phone
-tests and the other platforms. If CI fails, fix it with the `triage-ci` skill.
+`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the cloud tests and
+the other platforms. If CI fails, fix it with the `triage-ci` skill.
 Don't rerun the whole suite locally just to be sure. With the Git hooks installed, push
 with `LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite
 either.

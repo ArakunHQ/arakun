@@ -1,0 +1,41 @@
+/* A question: the card is a column: a header that stays put, the question that scrolls, and the
+   buttons that stay in reach. Folded, only the header is left. */
+.ask {
+  margin: 0 var(--gr) 8px var(--gl); border-radius: var(--radius-xl); max-height: 52vh; display: flex; flex-direction: column;
+  background: var(--color-raised); border: 1px solid var(--color-border);
+}
+.ask .ahead { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 12px; text-align: left; flex: none; }
+.ask .ahead:active { background: var(--color-fill-hover); border-radius: var(--radius-xl); }
+.ask .label { display: flex; align-items: center; gap: 8px; font: 500 var(--text-xs) var(--font-mono); color: var(--color-text-subtle); text-transform: uppercase; letter-spacing: 0.08em; flex: none; }
+.ask .ahead .peek { flex: 1; min-width: 0; display: none; font-size: var(--text-md); color: var(--color-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask .ahead .n { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--color-text-subtle); margin-left: auto; flex: none; }
+.ask .segs { display: flex; gap: 3px; }
+.ask .segs i { width: 12px; height: 4px; border-radius: 999px; background: var(--color-border); }
+.ask .segs i.on { background: var(--color-text); }
+.ask .ahead svg { width: 16px; height: 16px; color: var(--color-text-subtle); flex: none; margin-left: auto; transition: transform 0.15s; }
+.ask .ahead .n + svg { margin-left: 0; }
+.ask.folded .ahead .peek { display: block; }
+.ask.folded .ahead svg { transform: rotate(180deg); }
+.ask .body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 12px; }
+.ask.folded .body, .ask.folded .actions { display: none; }
+.ask .topic { font: 400 var(--text-xs) var(--font-mono); color: var(--color-text-faint); text-transform: uppercase; letter-spacing: 0.08em; }
+.ask .text { font-size: var(--text-m-body); font-weight: 600; margin: 2px 0 8px; word-break: break-word; }
+.ask .multi { font-size: var(--text-sm); color: var(--color-text-subtle); margin: -4px 0 8px; }
+.ask .opts { display: flex; flex-direction: column; gap: 6px; }
+.ask .opt {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; text-align: left; padding: 9px 12px; border-radius: var(--radius-md); font-size: var(--text-m-sub);
+  background: var(--color-fill-raised); border: 1px solid var(--color-border); color: var(--color-text);
+}
+.ask .opt .mark { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 1.5px solid var(--color-border); }
+.ask .opt.multi .mark { border-radius: var(--radius-sm); }
+.ask .opt.on { background: var(--color-fill-selected); border-color: var(--color-border-strong); }
+.ask .opt.on .mark { border-color: var(--color-text); background: var(--color-text); box-shadow: inset 0 0 0 3px var(--color-raised); }
+.ask .opt.multi.on .mark { box-shadow: none; }
+.ask .own {
+  width: 100%; margin: 8px 0 4px; padding: 10px 12px; border-radius: var(--radius-md);
+  background: var(--color-sunk); color: var(--color-text); border: 1px solid var(--color-border-subtle); font: 16px var(--font-sans); outline: none;
+}
+.ask .own:focus { border-color: var(--color-border-strong); }
+.ask .actions { display: flex; gap: 8px; padding: 10px 12px 12px; flex: none; border-top: 1px solid var(--color-border-subtle); }
+.ask .actions .btn { height: 48px; }
+.ask .actions .btn.grow { flex: 1; }

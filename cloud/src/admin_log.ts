@@ -18,7 +18,9 @@ export type LogAction =
   | "notice.create"
   | "notice.delete"
   | "cloud.grant"
-  | "cloud.decline";
+  | "cloud.decline"
+  | "beta.admit"
+  | "beta.decline";
 
 export interface Operator {
   id: number | null;

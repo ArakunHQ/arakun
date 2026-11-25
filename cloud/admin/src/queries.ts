@@ -6,6 +6,8 @@ import { queryOptions, useMutation, useQueryClient, type QueryClient, type Query
 import { useNavigate } from "@tanstack/react-router";
 import { ApiError, api } from "./api";
 import type {
+  BetaPlatform,
+  BetaSignup,
   ClosedAnswer,
   CloudRequest,
   FlagsAnswer,
@@ -39,6 +41,14 @@ export const requestsQuery = (status?: RequestStatus) =>
   queryOptions({
     queryKey: ["requests", status ?? "all"],
     queryFn: () => api<CloudRequest[]>("GET", `cloud/requests${search({ status })}`),
+  });
+
+export type SignupStatus = BetaSignup["status"];
+
+export const signupsQuery = ({ status, platform }: { status: SignupStatus; platform?: BetaPlatform }) =>
+  queryOptions({
+    queryKey: ["signups", { status, platform }],
+    queryFn: () => api<BetaSignup[]>("GET", `beta/signups${search({ platform, status })}`),
   });
 
 export const usersQuery = ({ q, after }: { q?: string; after?: string }) =>
@@ -76,6 +86,7 @@ export const logQuery = ({ githubId, before }: { githubId?: number; before?: num
 
 // The prefixes that invalidate every page or filter of a list.
 const REQUESTS: QueryKey = ["requests"];
+const SIGNUPS: QueryKey = ["signups"];
 const USERS: QueryKey = ["users"];
 const ANY_USER: QueryKey = ["user"];
 const NOTICES: QueryKey = ["notices"];
@@ -116,6 +127,18 @@ export function useDecline() {
   );
 }
 
+type SignupDecision = { githubId: number; platform: BetaPlatform; decision: "admit" | "decline" };
+
+/// Admits or declines a beta sign-up. Admitting invites no one: the operator
+/// adds the email in the store first.
+export function useDecideSignup() {
+  return useAccountChange(
+    ({ githubId, platform, decision }: SignupDecision) => api<BetaSignup>("PUT", `beta/signups/${githubId}/${platform}/${decision}`),
+    (v) => v.githubId,
+    [SIGNUPS],
+  );
+}
+
 type FlagChange = { githubId: number; flag: string };
 
 export function useAddFlag() {
@@ -147,8 +170,8 @@ export function useBlock() {
   return useAccountChange(
     ({ githubId, reason }: { githubId: number; reason?: string }) => api<void>("PUT", `users/${githubId}/block`, { reason }),
     (v) => v.githubId,
-    // A request shows whether the account is blocked.
-    [USERS, REQUESTS],
+    // A request and a sign-up show whether the account is blocked.
+    [USERS, REQUESTS, SIGNUPS],
   );
 }
 
@@ -156,7 +179,7 @@ export function useUnblock() {
   return useAccountChange(
     (githubId: number) => api<void>("DELETE", `users/${githubId}/block`),
     (githubId) => githubId,
-    [USERS, REQUESTS],
+    [USERS, REQUESTS, SIGNUPS],
   );
 }
 

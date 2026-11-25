@@ -1,4 +1,4 @@
-// phone/relay.js on the account host: which way in the page takes, what it
+// phone/public/relay.js on the account host: which way in the page takes, what it
 // shows first after sign-in, the socket it opens to a computer, and the
 // sentence for each reason the relay gives. Run with `node --test phone/test/`.
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const here = dirname(fileURLToPath(import.meta.url));
-for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", file), "utf8"), { filename: file });
+for (const file of ["e2e.js", "relay.js"]) vm.runInThisContext(readFileSync(join(here, "..", "public", file), "utf8"), { filename: file });
 const { E2E, RELAY } = globalThis;
 
 /// A fetch that answers each path from `routes`: a status, or [status, body].

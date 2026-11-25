@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { platformName } from "../format";
 import { logQuery } from "../queries";
 import type { LogEntry } from "../types";
 import { Time } from "./Time";
@@ -35,6 +36,12 @@ function words({ action, detail }: LogEntry): string {
       return "granted cloud access";
     case "cloud.decline":
       return "declined cloud access";
+    case "beta.admit":
+      if (has("platform")) return `admitted to the ${platformName(detail!.platform)} beta`;
+      break;
+    case "beta.decline":
+      if (has("platform")) return `declined for the ${platformName(detail!.platform)} beta`;
+      break;
   }
   return String(action);
 }

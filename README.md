@@ -512,12 +512,18 @@ after a week).
   phones paired here with a code.
   On the phone, open `https://app.arakun.dev`,
   sign in with GitHub and pick the computer (with one, the page opens it straight away).
-  Each computer in the list has **Remove**, and the page's Phone tab lists the
+  Each computer in the list has **Remove**, and the page's Settings tab lists the
   account's signed-in devices with **Sign out**. A device unpaired in the Phone tab
   goes back to the list and does not connect again by itself. With several computers,
   push notifications on the page come only from the computer opened last: a browser
   keeps one subscription per site. The iOS and Android apps reach your computers the
   same way, only by signing in with GitHub; they have no link or code for the relay.
+  They are in beta: under **Phone app beta**, signed in, type the email to invite
+  (your Apple ID for iOS, your Google account for Android; it starts as your GitHub
+  email) and press **Join the iOS beta** or **Join the Android beta**. Testers are
+  added by hand, so the row says you signed up until the TestFlight or Google Play
+  invite is on its way, then that you are in. **Change email** fixes the address
+  while you wait.
   The Android app gets notifications from every computer it has opened while they are
   on (Account in its inbox's menu).
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
@@ -1364,6 +1370,24 @@ the same GPUI, with the display code in it. `arakun-server login` needs no brows
 that machine either: you enter its code on another device. On Linux x86_64 and arm64 you can also install
 the release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (see
 [Install](#install)).
+
+### The phone page
+
+The page phones open (the phone remote) is a React app in [`phone/`](phone), built
+with Vite. The app embeds the built copy in `phone/dist`, and the Worker in `cloud/`
+serves the same folder, so `phone/dist` is committed and `cargo build` needs no Node.
+If you change `phone/`, test and build it with Node 24 or newer, and commit
+`phone/dist` with your change:
+
+```sh
+cd phone
+npm ci
+npm test        # the encryption against the Rust side's vectors, and the screens
+npm run build   # writes phone/dist
+```
+
+CI fails a pull request whose `phone/dist` is not what `npm run build` writes
+(`phone/tools/check-dist.sh`).
 
 ### Install for your user (Linux)
 

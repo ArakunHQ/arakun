@@ -3,5 +3,5 @@
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
-#[folder = "../phone"]
+#[folder = "../phone/dist"]
 pub struct Page;

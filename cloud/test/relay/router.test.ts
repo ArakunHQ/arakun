@@ -47,13 +47,13 @@ describe("an old host under a label", () => {
     const res = await SELF.fetch(`https://${LABEL}.arakun.dev/`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("app.js");
-    const js = await SELF.fetch(`https://${LABEL}.arakun.dev/app.js`);
+    expect(await res.text()).toContain("assets/app.js");
+    const js = await SELF.fetch(`https://${LABEL}.arakun.dev/assets/app.js`);
     expect(js.status).toBe(200);
   });
 
   it("serves the page under the account host's policy, for its own host", async () => {
-    for (const path of ["/", "/app.js"]) {
+    for (const path of ["/", "/assets/app.js"]) {
       const res = await SELF.fetch(`https://${LABEL}.arakun.dev${path}`);
       const csp = res.headers.get("Content-Security-Policy") ?? "";
       expect(csp, path).toContain("script-src 'self'");

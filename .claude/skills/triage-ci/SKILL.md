@@ -24,7 +24,7 @@ summary.
 | Tests (Linux, no browser) | `cargo test --locked --no-default-features` (one test: add its name) |
 | Clippy (Linux, browser) | needs CEF; read the log, the error is usually in `core/src/browser/` or `arakun-helper` |
 | Clippy and tests (macOS, no browser) | not reproducible on Linux; see below |
-| Cloud (types and tests) | `(cd cloud && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && node --test "test/*.test.mjs")` |
+| Cloud (types and tests) | `(cd cloud && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && npm ci && npm test && tools/check-dist.sh)` |
 | Dependencies (cargo-deny) | `cargo deny check` |
 | Conventional Commits | `tools/conventional-commits.sh title "<title>"` |
 | CLA | only the person can sign; tell the user |

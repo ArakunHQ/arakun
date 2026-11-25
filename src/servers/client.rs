@@ -5,7 +5,7 @@
 //!
 //! The app is the phone here. To a server with a socket of its own it pairs
 //! over HTTP and then talks JSON on a WebSocket, as the page does. To a server
-//! of the same account it goes through the relay as `phone/relay.js` does:
+//! of the same account it goes through the relay as `phone/public/relay.js` does:
 //! one WebSocket to the relay with the app's sign-in, a handshake that proves
 //! the other end holds the key the account lists for it (`phone::e2e`), and
 //! every message sealed from then on.
@@ -301,7 +301,7 @@ struct Link {
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
-    /// This client's name to the relay, as `phone/relay.js` has one per page.
+    /// This client's name to the relay, as `phone/public/relay.js` has one per page.
     /// It stays the same across reconnects, so the relay replaces the socket
     /// a sleep or a network switch left behind instead of counting it as one
     /// more phone until it is full.

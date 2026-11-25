@@ -16,6 +16,7 @@ use super::{ContextMenu, MenuTarget, Modal, Shell};
 use crate::agent::AgentKind;
 use crate::agent::catalog::{self, AgentSession};
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::model::{self, Status};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
@@ -245,8 +246,7 @@ impl Render for RemoveDialog {
 
 pub struct ImportDialog {
     path: PathBuf,
-    loading: bool,
-    found: Vec<AgentSession>,
+    found: Loadable<Vec<AgentSession>>,
     picked: HashSet<usize>,
     focus: FocusHandle,
 }
@@ -264,28 +264,28 @@ impl ImportDialog {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let p = path.clone();
-        cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(crate::guard::task(async move {
-                    let mut found = catalog::agent_sessions(&p);
-                    found.retain(|s| !known.contains(&s.id));
-                    found
-                }))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.loading = false;
-                this.found = found;
-                cx.notify();
-            });
-        })
-        .detach();
+        let mut found = Loadable::default();
+        found.start(
+            cx,
+            |this: &mut Self| &mut this.found,
+            async move {
+                let mut found = catalog::agent_sessions(&p);
+                found.retain(|s| !known.contains(&s.id));
+                found
+            },
+            |this, found, _| this.found.data = Some(found),
+        );
         Self {
             path,
-            loading: true,
-            found: Vec::new(),
+            found,
             picked: HashSet::new(),
             focus,
         }
+    }
+
+    /// The sessions found so far: none until the read ends.
+    fn found(&self) -> &[AgentSession] {
+        self.found.data.as_deref().unwrap_or_default()
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -293,7 +293,7 @@ impl ImportDialog {
             return;
         }
         let chosen = self
-            .found
+            .found()
             .iter()
             .enumerate()
             .filter(|(i, _)| self.picked.contains(i))
@@ -332,8 +332,8 @@ fn checkbox(on: bool) -> impl IntoElement {
 impl Render for ImportDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let n = self.picked.len();
-        let all = !self.found.is_empty() && n == self.found.len();
-        let body: gpui::AnyElement = if self.loading {
+        let all = !self.found().is_empty() && n == self.found().len();
+        let body: gpui::AnyElement = if self.found.loading() {
             div()
                 .flex()
                 .items_center()
@@ -345,7 +345,7 @@ impl Render for ImportDialog {
                 .child(ui::spinner(14., theme::mix(0.5)))
                 .child("Looking for sessions…")
                 .into_any_element()
-        } else if self.found.is_empty() {
+        } else if self.found().is_empty() {
             div()
                 .py(crate::ui::sp(20.))
                 .text_center()
@@ -365,7 +365,7 @@ impl Render for ImportDialog {
                 .rounded(crate::ui::rad(12.))
                 .border_1()
                 .border_color(theme::border())
-                .children(self.found.iter().enumerate().map(|(i, s)| {
+                .children(self.found().iter().enumerate().map(|(i, s)| {
                     let on = self.picked.contains(&i);
                     div()
                         .id(("import-row", i))
@@ -440,7 +440,7 @@ impl Render for ImportDialog {
                             .flex_none()
                             .items_center()
                             .gap(crate::ui::sp(8.))
-                            .when(!self.found.is_empty(), |d| {
+                            .when(!self.found().is_empty(), |d| {
                                 d.child(
                                     ui::button(
                                         "import-all",
@@ -453,7 +453,7 @@ impl Render for ImportDialog {
                                             this.picked = if all {
                                                 HashSet::new()
                                             } else {
-                                                (0..this.found.len()).collect()
+                                                (0..this.found().len()).collect()
                                             };
                                             cx.notify();
                                         },

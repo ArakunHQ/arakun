@@ -190,7 +190,11 @@ impl Handshake {
 }
 
 /// What the computer signs: everything both sides saw, in a fixed order with
-/// fixed lengths, so no part can be moved into another.
+/// fixed lengths, so no part can be moved into another. It always starts with
+/// `TRANSCRIPT_TAG`, and it is the only thing the identity key signs that
+/// does. Anything else signed by this key must start with a tag of its own
+/// (the relay claim uses `arakun-relay-claim-v1\0`), or a signature over it
+/// could be passed off as a handshake.
 fn transcript(
     label: &str,
     channel: u32,
@@ -524,5 +528,32 @@ mod tests {
             "frames": frames,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_claim_signature_is_never_a_transcript_signature() {
+        let me = Identity::generate();
+        let label = me.label();
+        let e = [4u8; POINT_LEN];
+        let n = [9u8; NONCE_LEN];
+        let handshake = transcript(&label, 7, &e, &e, &n, &n);
+        // The nonce a relay would need us to sign so that the claim reads as
+        // a transcript ending in our label: refused outright.
+        let forged_nonce = &handshake[..handshake.len() - label.len()];
+        assert_eq!(
+            super::super::relay::claim_message(forged_nonce, &label),
+            None
+        );
+        // Any claim we do sign starts with another tag.
+        let claim = super::super::relay::claim_message(&n, &label).unwrap();
+        assert!(handshake.starts_with(TRANSCRIPT_TAG));
+        assert!(!claim.starts_with(TRANSCRIPT_TAG));
+        assert_ne!(claim.len(), handshake.len());
+        // So a claim signature does not verify as a handshake.
+        let sig = me.sign(&claim);
+        let key =
+            signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, me.public_raw());
+        assert!(key.verify(&claim, &sig).is_ok());
+        assert!(key.verify(&handshake, &sig).is_err());
     }
 }

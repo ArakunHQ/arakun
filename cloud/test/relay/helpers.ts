@@ -150,12 +150,18 @@ export async function openPhone(
   return { ws, inbox };
 }
 
+/// What a computer signs to claim `label`: the tag, the nonce, the label.
+/// `untagged` is what computers from before the tag sign.
+export function claimMessage(nonce: Uint8Array, label: string, untagged = false): Uint8Array {
+  return untagged ? concat(nonce, utf8(label)) : concat(utf8("arakun-relay-claim-v1\0"), nonce, utf8(label));
+}
+
 /// Answers the challenge as this computer would, and returns what the relay said next.
-export async function claim(pc: PcSocket, me: Computer, label = me.label): Promise<Record<string, unknown>> {
+export async function claim(pc: PcSocket, me: Computer, label = me.label, untagged = false): Promise<Record<string, unknown>> {
   const challenge = await pc.inbox.control();
   if (challenge["type"] !== "challenge") throw new Error(`expected a challenge, got ${JSON.stringify(challenge)}`);
   const nonce = Uint8Array.from(atob((challenge["nonce"] as string).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
-  const sig = await sign(me.key, concat(nonce, utf8(label)));
+  const sig = await sign(me.key, claimMessage(nonce, label, untagged));
   pc.ws.send(pcControl({ type: "claim", pub: me.pubB64, sig: b64url(sig) }));
   return pc.inbox.control();
 }

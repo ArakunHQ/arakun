@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { b64url, pcControl, pcFrame, parsePcFrame, DATA } from "../../src/relay/frames";
 import { hex, sha256 } from "../../src/util";
 import type { SignedIn } from "../helpers";
-import { Inbox, account, claim, computer, connectedComputer, openPc, sign, type PcSocket } from "./helpers";
+import { Inbox, account, claim, claimMessage, computer, connectedComputer, openPc, sign, type PcSocket } from "./helpers";
 
 async function hashOf(token: string): Promise<string> {
   return hex(await sha256(token));
@@ -38,6 +38,28 @@ describe("the computer's claim", () => {
   it("is accepted when the signature holds and the key derives the label", async () => {
     const { pc } = await connectedComputer();
     expect(pc.inbox.closed).toBeNull();
+  });
+
+  it("is accepted signed with the tag", async () => {
+    const me = await computer();
+    const pc = await openPc(me.label, (await account()).session);
+    expect(await claim(pc, me)).toEqual({ type: "claimed" });
+  });
+
+  it("is still accepted signed without the tag, as older computers sign it", async () => {
+    const me = await computer();
+    const pc = await openPc(me.label, (await account()).session);
+    expect(await claim(pc, me, me.label, true)).toEqual({ type: "claimed" });
+  });
+
+  it("is refused when the tag signs a nonce other than the one sent", async () => {
+    const me = await computer();
+    const pc = await openPc(me.label, (await account()).session);
+    const challenge = await pc.inbox.control();
+    expect(challenge["type"]).toBe("challenge");
+    const sig = await sign(me.key, claimMessage(new Uint8Array(16), me.label));
+    pc.ws.send(pcControl({ type: "claim", pub: me.pubB64, sig: b64url(sig) }));
+    expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "bad_signature" });
   });
 
   it("is refused when the signature is wrong", async () => {

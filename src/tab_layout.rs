@@ -71,18 +71,21 @@ pub enum Sort {
     /// By title, A to Z.
     #[serde(rename = "title")]
     Name,
-    /// Environment by environment, as the projects list shows them.
-    Environment,
+    /// The order the user drags the sessions into (`Project::session_order`).
+    /// It starts as the projects list shows them, environment by environment,
+    /// which is what this order was before it could be dragged.
+    #[serde(rename = "environment")]
+    Manual,
 }
 
 impl Sort {
-    pub const ALL: [Sort; 3] = [Sort::Recent, Sort::Name, Sort::Environment];
+    pub const ALL: [Sort; 3] = [Sort::Recent, Sort::Name, Sort::Manual];
 
     pub fn label(self) -> &'static str {
         match self {
             Sort::Recent => "Recent",
             Sort::Name => "Name",
-            Sort::Environment => "By environment",
+            Sort::Manual => "Manual",
         }
     }
 
@@ -91,17 +94,16 @@ impl Sort {
         match self {
             Sort::Recent => "Latest first",
             Sort::Name => "A to Z",
-            Sort::Environment => "As listed",
+            Sort::Manual => "Drag to order",
         }
     }
 
     /// Whether the sessions with an open tab go above the rest, a rule
-    /// between them. An order that lists the sessions as they are kept
-    /// leaves every one in its place.
+    /// between them. Manual leaves every session where the user put it.
     pub fn open_tabs_first(self) -> bool {
         match self {
             Sort::Recent | Sort::Name => true,
-            Sort::Environment => false,
+            Sort::Manual => false,
         }
     }
 }
@@ -363,12 +365,12 @@ mod tests {
         };
         assert_eq!(read("latest"), Sort::Recent);
         assert_eq!(read("title"), Sort::Name);
-        assert_eq!(read("environment"), Sort::Environment);
+        assert_eq!(read("environment"), Sort::Manual);
         // And writes them back the same, for a build from before the menu.
         for (sort, name) in [
             (Sort::Recent, "latest"),
             (Sort::Name, "title"),
-            (Sort::Environment, "environment"),
+            (Sort::Manual, "environment"),
         ] {
             assert_eq!(serde_json::to_value(sort).unwrap(), name);
         }
@@ -378,7 +380,7 @@ mod tests {
     #[test]
     fn every_order_has_a_name_and_a_hint_for_the_menu() {
         let labels: Vec<_> = Sort::ALL.into_iter().map(Sort::label).collect();
-        assert_eq!(labels, ["Recent", "Name", "By environment"]);
+        assert_eq!(labels, ["Recent", "Name", "Manual"]);
         assert!(Sort::ALL.into_iter().all(|s| !s.hint().is_empty()));
     }
 
@@ -386,6 +388,6 @@ mod tests {
     fn only_the_orders_that_move_sessions_put_open_tabs_first() {
         assert!(Sort::Recent.open_tabs_first());
         assert!(Sort::Name.open_tabs_first());
-        assert!(!Sort::Environment.open_tabs_first());
+        assert!(!Sort::Manual.open_tabs_first());
     }
 }

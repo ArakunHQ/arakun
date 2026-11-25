@@ -818,13 +818,17 @@ the sidebar with projects and worktrees, as before) and **Everything** (the tree
 every open tab). A state file from before this setting opens on Classic, so nobody's
 window changes after an update; pick Focused to switch. Then each option can change:
 Sessions live in (Sidebar, Title bar, Both), Title bar shows (Pinned, This project, All
-open), State (Icon, Dot, Word), Group by project, Sort sessions (Recent, Name, By
-environment), Projects with nothing running (Open, Folded, Hidden), Long titles (Cut,
-Two lines) and Sidebar width. Sort sessions starts on Recent, the session that moved
-last on top of its project, or of the whole tree without project headings, whether
-its agent or you moved it. The sort button in the tree's heading says the order in use
-and opens a menu to pick another, with Group by project and Show archived. Options
-that mean nothing with the others are off: with sessions only in the title bar there is nothing
+open), State (Icon, Dot, Word), Group by project, Sort sessions (Recent, Name,
+Manual), Projects with nothing running (Open, Folded, Hidden), Long titles (Cut, Two
+lines) and Sidebar width. Sort sessions starts on Recent, the session that moved last
+on top of its project, or of the whole tree without project headings, whether its
+agent or you moved it. Recent and Name put the sessions with a tab open first, a rule
+under them; a session with no tab open is dimmed. Manual is the order you drag the
+sessions into within each project, kept for each project in `state.json`; dragging a
+session onto another switches to Manual from the order on screen. The rows hold still
+while the pointer is over the tree. The sort button in the tree's heading says the
+order in use and opens a menu to pick another, with Group by project and Show
+archived. Options that mean nothing with the others are off: with sessions only in the title bar there is nothing
 to pin from or fold. Moving to pinned tabs pins every open session first. The choice is
 kept in `state.json` as `tabs`.
 

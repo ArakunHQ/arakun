@@ -311,6 +311,9 @@ pub struct ProjectState {
     /// Old files hold only name and body; the rest defaults to a manual command.
     #[serde(default)]
     pub automations: Vec<Automation>,
+    /// The sidebar tree's order of its sessions, by id (`Project::session_order`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_order: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "coderlabs")]
     pub coderspace: Option<String>,
@@ -840,6 +843,7 @@ pub fn snapshot_with(
                 notes: p.notes.clone(),
                 monos: p.monos.clone(),
                 automations: p.automations.clone(),
+                session_order: session_order(p),
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace.clone(),
                 active_env: p
@@ -1161,6 +1165,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                 notes: p.notes,
                 monos: p.monos,
                 automations: p.automations,
+                session_order: p.session_order.into_iter().map(Into::into).collect(),
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace,
             }
@@ -1267,9 +1272,25 @@ pub fn new_project(path: &Path) -> Project {
         notes: Vec::new(),
         monos: Vec::new(),
         automations: Vec::new(),
+        session_order: Vec::new(),
         #[cfg(feature = "coderlabs")]
         coderspace: None,
     }
+}
+
+/// The project's order of its sessions as saved: only sessions it still
+/// has, so the list doesn't grow with every session ever deleted.
+fn session_order(p: &Project) -> Vec<String> {
+    let has = |id: &gpui::SharedString| {
+        p.environments
+            .iter()
+            .any(|e| e.sessions.iter().any(|s| &s.id == id))
+    };
+    p.session_order
+        .iter()
+        .filter(|id| has(id))
+        .map(|id| id.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1742,6 +1763,53 @@ mod tests {
         // From before pins, every open session stays in the bar.
         let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
         assert_eq!(pinned, [true, true, false, true]);
+    }
+
+    #[test]
+    fn the_trees_manual_order_survives_a_restart_without_deleted_sessions() {
+        let mut project = new_project(Path::new("/tmp/arakun-session-order-test"));
+        project.environments[0].sessions = vec![
+            Session::new("s1".into(), "One".into(), AgentKind::Droid),
+            Session::new("s2".into(), "Two".into(), AgentKind::Droid),
+        ];
+        // "gone" was deleted after it was dragged.
+        project.session_order = vec!["s2".into(), "gone".into(), "s1".into()];
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            contrast: crate::theme::Contrast::System,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true, true],
+            ui_zoom: 100,
+            window: None,
+        };
+        let bytes = snapshot(std::slice::from_ref(&project), 0, layout.clone());
+        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let order: Vec<&str> = projects[0]
+            .session_order
+            .iter()
+            .map(|id| id.as_ref())
+            .collect();
+        assert_eq!(order, ["s2", "s1"]);
+        // A project never dragged writes nothing, so older builds read the
+        // file as before; and a file without the field reads as no order.
+        project.session_order.clear();
+        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .unwrap()
+                .contains("session_order")
+        );
+        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        assert!(projects[0].session_order.is_empty());
     }
 
     #[test]

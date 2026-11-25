@@ -57,6 +57,9 @@ p256 = { version = "0.14", default-features = false, features = ["ecdh"] }
 # the signature of a release's SHA256SUMS (src/update.rs); no dependencies of its own
 minisign-verify = "0.3"
 rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
+# the processes behind the local servers that run (src/running.rs): parent, command line,
+# folder, memory and start; zed-scap already pulls it in
+sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -128,6 +131,8 @@ cef = { version = "=156.3.0", default-features = false }
 uds_windows = "1.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # What listens on a TCP port, and its pid (src/running.rs)
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",

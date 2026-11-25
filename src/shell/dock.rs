@@ -591,6 +591,8 @@ impl Shell {
             );
         }
 
+        // Built before the header, whose closures hold on to `cx`.
+        let mut running = self.running_chip(cx);
         // The dock's header doubles as the status strip: branch, path and CI
         // chips on the left; terminal controls on the right.
         let header = div()
@@ -767,7 +769,7 @@ impl Shell {
                 )
             })
             .when(dock_open, |d| {
-                d.child(tabs).child(
+                d.child(tabs).children(running.take()).child(
                     div()
                         .flex()
                         .gap(crate::ui::sp(2.))
@@ -788,7 +790,7 @@ impl Shell {
                 )
             })
             .when(!dock_open, |d| {
-                d.child(div().flex_1()).child(
+                d.child(div().flex_1()).children(running.take()).child(
                     div()
                         .id("status-terminal")
                         .flex()

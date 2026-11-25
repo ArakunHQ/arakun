@@ -1040,6 +1040,7 @@ impl Shell {
             .overflow_y_scroll();
         match menu.target {
             MenuTarget::Inbox => return self.render_inbox(cx).into_any_element(),
+            MenuTarget::Running => return self.render_running_menu(cx),
             MenuTarget::Project(pi) => {
                 let path = self
                     .projects

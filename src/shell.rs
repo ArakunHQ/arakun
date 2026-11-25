@@ -60,6 +60,7 @@ mod project_icon;
 mod rail;
 mod rail_blocks;
 mod rail_pick;
+mod running;
 mod runs;
 mod servers;
 mod session_actions;
@@ -256,6 +257,8 @@ enum MenuTarget {
     Sessions,
     /// The rail's Help: the feedback forms and the docs.
     Help,
+    /// The local servers that run, from the status bar or the rail.
+    Running,
 }
 
 /// An environment made with one click, shown while its worktree is made.
@@ -564,6 +567,13 @@ pub struct Shell {
     tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
     /// The tree's row under the pointer, which Alt+P pins.
     tree_hover: Option<(usize, usize, SharedString)>,
+    /// The local servers found by the last look (`shell::running`).
+    running: Vec<crate::running::Server>,
+    /// A look is under way.
+    running_scanning: bool,
+    /// Look once more when the one under way ends.
+    running_again: bool,
+    running_checked: Option<Instant>,
     /// The id of the sidebar's active row under the pointer, which shows
     /// its archive button.
     active_hover: Option<SharedString>,
@@ -1154,6 +1164,10 @@ impl Shell {
             pins_seeded: false,
             tree_open: std::collections::HashMap::new(),
             tree_hover: None,
+            running: Vec::new(),
+            running_scanning: false,
+            running_again: false,
+            running_checked: None,
             active_hover: None,
             tree_filter,
             _tree_filter: tree_filter_sub,
@@ -1691,6 +1705,7 @@ impl Shell {
             return;
         }
         self.maybe_fetch(cx);
+        self.refresh_running(false, cx);
         self.poll = Some(cx.spawn(async move |this, cx| {
             loop {
                 let wait = this
@@ -1717,6 +1732,7 @@ impl Shell {
                         this.refresh_status(&path, cx);
                         this.maybe_fetch(cx);
                         this.refresh_home(cx);
+                        this.refresh_running(false, cx);
                     });
                 }
             }
@@ -4326,7 +4342,8 @@ impl Render for Shell {
             let above = match m.target {
                 MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
                 // Help can be anywhere in the rail; low down it opens upward.
-                MenuTarget::Help => m.at.y.as_f32() > viewport_h / 2.,
+                // So can Running, which the status bar opens too.
+                MenuTarget::Help | MenuTarget::Running => m.at.y.as_f32() > viewport_h / 2.,
                 _ => false,
             };
             // The room between the anchor and the window edge the menu opens toward.

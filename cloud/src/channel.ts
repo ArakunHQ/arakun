@@ -401,7 +401,7 @@ export class Channel extends DurableObject<Env> {
   }
 
   /// Which of these sessions are of a member of the team with the `teams`
-  /// flag, each with when it ends. Expiry is checked where the answer is
+  /// flag whose account is not blocked, each with when it ends. Expiry is checked where the answer is
   /// used: `now()` bound here would be old by then, and a session can end
   /// while the read runs.
   private async allowed(teamId: string, sessions: string[]): Promise<Map<string, number>> {
@@ -409,6 +409,7 @@ export class Channel extends DurableObject<Env> {
       `SELECT s.token_hash, s.expires_at FROM sessions s
        JOIN members m ON m.github_id = s.github_id AND m.team_id = ?1
        JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?3
+       JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
        WHERE s.token_hash IN (SELECT value FROM json_each(?2))`,
     )
       .bind(teamId, JSON.stringify(sessions), TEAMS_FLAG)

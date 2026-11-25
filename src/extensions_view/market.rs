@@ -818,6 +818,91 @@ impl ExtensionsView {
         })
     }
 
+    /// The servers of an installed item that wait for a sign-in on this
+    /// computer: a plugin's OAuth servers, or a registry server added without
+    /// a token. A paired server's sign-in opens a browser there, so not those.
+    fn awaiting_sign_in(&self, item: &Item) -> Vec<&Server> {
+        if self.targets.target.is_some() {
+            return Vec::new();
+        }
+        let Some(x) = self.claude.data.as_ref() else {
+            return Vec::new();
+        };
+        let slug = self.ms.repo_has.as_ref().map(|h| h.slug.as_str());
+        x.servers
+            .iter()
+            .filter(|s| waits_for_sign_in(item, s, slug))
+            .collect()
+    }
+
+    /// Runs the server's sign-in in a terminal, and rereads until it is done.
+    fn sign_in(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.run_and_watch(claude_ext::login_command(name), cx);
+        cx.notify();
+    }
+
+    /// In the details of an installed item: what still waits for a sign-in,
+    /// with a button for each.
+    fn render_sign_ins(&self, item: &Item, cx: &mut Context<Self>) -> Option<Div> {
+        let waiting = self.awaiting_sign_in(item);
+        if waiting.is_empty() {
+            return None;
+        }
+        let warn = Tone::Warning.color();
+        let mut out = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(10.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .bg(warn.opacity(0.10))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .ty(Type::Body)
+                    .text_color(theme::text())
+                    .child(icon("alert-circle", 14.).text_color(warn))
+                    .child(if waiting.len() == 1 {
+                        "Its MCP server needs you to sign in before Claude can use it.".to_string()
+                    } else {
+                        format!(
+                            "{} need you to sign in before Claude can use them.",
+                            plural(waiting.len(), "MCP server")
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child("Sign-in opens your browser once; Claude keeps it fresh after that."),
+            );
+        for (i, s) in waiting.iter().enumerate() {
+            let name = s.name.clone();
+            let label = if waiting.len() == 1 {
+                "Sign in".to_string()
+            } else {
+                format!("Sign in to {}", display_name(&name))
+            };
+            out = out.child(
+                div().flex().child(
+                    ui::button_with(
+                        ("ext-detail-sign-in", i),
+                        Some("user"),
+                        label,
+                        ButtonKind::Primary,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.sign_in(&name, cx))),
+                ),
+            );
+        }
+        Some(out)
+    }
+
     fn select(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
         match item {
             Item::Plugin(p) => {
@@ -1282,6 +1367,25 @@ impl ExtensionsView {
                                 .text_color(theme::text())
                                 .child(what),
                         )
+                        .when(s.health == Health::NeedsAuth, |d| {
+                            let name = s.name.clone();
+                            d.child(
+                                ui::button_with(
+                                    "ext-needs-you-sign-in",
+                                    Some("user"),
+                                    "Sign in",
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        // Not the banner's own click, which opens Installed.
+                                        cx.stop_propagation();
+                                        this.sign_in(&name, cx);
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             div()
                                 .flex_none()
@@ -1430,6 +1534,27 @@ impl ExtensionsView {
 
     /// What a card offers: Installed, a spinner, or Install.
     fn card_action(&self, item: &Item, kind: ButtonKind, cx: &mut Context<Self>) -> AnyElement {
+        // Installed but not usable yet: the card signs in, so nobody has to
+        // find the server under Installed.
+        if let Some(s) = self.awaiting_sign_in(item).first() {
+            let name = s.name.clone();
+            return ui::button_with(
+                SharedString::from(format!("ext-card-sign-in-{}", item.key())),
+                Some("user"),
+                "Sign in",
+                kind,
+                true,
+            )
+            .tooltip(ui::tip_text(format!(
+                "Installed. {} needs you to sign in",
+                display_name(&name)
+            )))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.sign_in(&name, cx);
+            }))
+            .into_any_element();
+        }
         if self.installed(item) {
             return ui::state_pill("checkmark-circle02", "Installed", Tone::Success.color())
                 .into_any_element();
@@ -1732,6 +1857,7 @@ impl ExtensionsView {
         if let Some(picker) = self.render_where(cx) {
             panel = panel.child(picker);
         }
+        panel = panel.children(self.render_sign_ins(&item, cx));
         match &item {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
@@ -2250,6 +2376,22 @@ impl ExtensionsView {
                 }),
             ),
         )
+    }
+}
+
+/// Whether `s` is one of `item`'s servers and waits for a sign-in. `slug` is
+/// the repository's, which a server added for one repository is named after.
+fn waits_for_sign_in(item: &Item, s: &Server, slug: Option<&str>) -> bool {
+    if s.health != Health::NeedsAuth || s.unused_connector() {
+        return false;
+    }
+    match item {
+        Item::Plugin(p) => s.scope == Scope::Plugin(p.name.clone()),
+        Item::Server(r) => {
+            let name = r.short_name();
+            s.name == name || slug.is_some_and(|slug| s.name == mirror::suffixed(&name, slug))
+        }
+        Item::Skill(_) => false,
     }
 }
 
@@ -2772,5 +2914,84 @@ mod tests {
         sync_rows(&list, &mut last, key("github"), 4, None);
         assert_eq!(list.item_count(), 4);
         assert_eq!(list.logical_scroll_top().item_ix, 0);
+    }
+
+    fn server(name: &str, scope: Scope, health: Health) -> Server {
+        Server {
+            name: name.into(),
+            scope,
+            transport: "http".into(),
+            target: "https://example.com/mcp".into(),
+            headers: Vec::new(),
+            env: Vec::new(),
+            health,
+            rules: Vec::new(),
+            diagnosis: None,
+        }
+    }
+
+    fn plugin(name: &str) -> Item {
+        Item::Plugin(
+            serde_json::from_value(json!({
+                "id": format!("{name}@claude-plugins-official"), "name": name,
+                "description": "", "marketplace": "claude-plugins-official",
+                "category": null, "installs": 0, "homepage": null, "installed": true,
+            }))
+            .unwrap(),
+        )
+    }
+
+    fn registry(name: &str) -> Item {
+        Item::Server(
+            serde_json::from_value(json!({
+                "name": name, "title": "", "description": "", "version": "1",
+                "website": null, "repository": null, "installs": [],
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_plugins_server_waiting_for_a_sign_in_is_found() {
+        let posthog = plugin("posthog");
+        let s = server(
+            "plugin:posthog:posthog",
+            Scope::Plugin("posthog".into()),
+            Health::NeedsAuth,
+        );
+        assert!(waits_for_sign_in(&posthog, &s, None));
+        // Signed in already, or another plugin's server.
+        let ok = server(
+            "plugin:posthog:posthog",
+            Scope::Plugin("posthog".into()),
+            Health::Connected,
+        );
+        assert!(!waits_for_sign_in(&posthog, &ok, None));
+        assert!(!waits_for_sign_in(&plugin("stripe"), &s, None));
+    }
+
+    #[test]
+    fn a_registry_server_is_found_by_its_name_or_its_repos() {
+        let linear = registry("app.linear/linear");
+        let mine = server("linear", Scope::User, Health::NeedsAuth);
+        assert!(waits_for_sign_in(&linear, &mine, None));
+        let repo = server(
+            &mirror::suffixed("linear", "arakun"),
+            Scope::Local,
+            Health::NeedsAuth,
+        );
+        assert!(waits_for_sign_in(&linear, &repo, Some("arakun")));
+        assert!(!waits_for_sign_in(&linear, &repo, None));
+    }
+
+    #[test]
+    fn an_unused_claude_ai_connector_is_not_asked_for() {
+        // Offered by the account, not installed from here.
+        let gmail = server("claude.ai Gmail", Scope::ClaudeAi, Health::NeedsAuth);
+        assert!(!waits_for_sign_in(
+            &registry("x/claude.ai Gmail"),
+            &gmail,
+            None
+        ));
     }
 }

@@ -104,6 +104,8 @@ export async function teams(request: Request, env: Env, url: URL): Promise<Respo
     if (!match || request.method !== method) continue;
     const me = await session(request, env, { flag: FLAG });
     if (!me) return error(401, "not signed in");
+    // Before the flag: a blocked account hears why, not that Teams is off.
+    if (me.blocked) return error(403, "blocked");
     if (!me.flagged) return error(403, "teams is not enabled for this account");
     return handler({ request, env, url, me }, ...match.slice(1));
   }
@@ -560,6 +562,7 @@ function stillAdmin(team: string, session: string, t: string): string {
   return `EXISTS (SELECT 1 FROM sessions s
     JOIN members a ON a.github_id = s.github_id AND a.team_id = ${team} AND a.role IN ('owner', 'admin')
     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = '${FLAG}'
+    JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
     WHERE s.token_hash = ${session} AND s.expires_at > ${t})`;
 }
 
@@ -1046,6 +1049,7 @@ async function history(c: Ctx, teamId: string, channelId: string): Promise<Respo
      JOIN members m ON m.github_id = s.github_id AND m.team_id = ?2
      JOIN devices d ON d.github_id = s.github_id AND d.device_id = ?3
      JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?4
+     JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
      WHERE s.token_hash = ?1`,
   ).bind(c.me.hash, teamId, access.device.device_id, FLAG).first<{ expires_at: number }>();
   if (!grant || grant.expires_at <= now()) return notFound();

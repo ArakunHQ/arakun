@@ -118,8 +118,10 @@ async function closeSessions(env: Env, op: Operator, idText: string): Promise<Re
   return Response.json({ github_id: id, closed: result.meta.changes });
 }
 
-/// Keeps the account off the relay: its sockets close now and new ones are
-/// refused. It can still sign in; `GET /machines` answers it 403 with
+/// Keeps the account off the relay and out of Teams: its relay sockets close
+/// now and new ones are refused, the teams API answers it 403, and a channel
+/// closes its socket at the next message or presence check, as for a lost
+/// flag. It can still sign in; `GET /machines` answers it 403 with
 /// `{ error: "blocked", reason }`, which is how it learns why.
 async function setBlock(request: Request, env: Env, op: Operator, idText: string): Promise<Response> {
   const id = githubId(idText);

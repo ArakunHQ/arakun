@@ -33,8 +33,9 @@ Names (devices, teams) are 1 to 100 characters.
 
 ## Server-side checks
 
-Every endpoint below needs a valid session and the user's `teams` flag; otherwise
-`401` (no session) or `403 {"error":"teams is not enabled for this account"}`.
+Every endpoint below needs a valid session, an account the operator has not
+blocked, and the user's `teams` flag; otherwise `401` (no session),
+`403 {"error":"blocked"}` or `403 {"error":"teams is not enabled for this account"}`.
 Team endpoints also need membership (`404` if not a member, so a team's existence
 does not leak), and admin endpoints need `owner` or `admin` (`403`). The one
 exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
@@ -184,8 +185,8 @@ without it, `403` if it is not one of the caller's devices.
    pending, the rotation then covers the new member too. `409` if the team has no
    key yet, has 25 members already, or its newest key or the new member's devices
    changed since the admin read them (fetch them again and retry). `403` if the
-   caller stopped being an owner or admin, or lost the session or the flag, while
-   the approval ran; nobody is added then. `.../reject` `{ "request_id": "..." }`
+   caller stopped being an owner or admin, lost the session or the flag, or was
+   blocked while the approval ran; nobody is added then. `.../reject` `{ "request_id": "..." }`
    drops that request: `204`, or `409` if the request is no longer that one.
 
 The approval happens on the admin's device because only it holds the team key.
@@ -399,15 +400,15 @@ parameter, and every socket counts. Frames are JSON text:
     the GitHub IDs with a counted socket open on this channel, sorted, each once.
     A new counted socket gets one right away. A quiet socket is not listed, gets
     no presence frames, and its opening and closing send none. A socket whose
-    session ended, or whose user is no longer a member or lost the `teams` flag,
-    gets none and is not listed. Clients ignore a `type` they don't know.
+    session ended, or whose user is no longer a member, lost the `teams` flag or
+    was blocked, gets none and is not listed. Clients ignore a `type` they don't know.
 - A frame is at most 96 KiB. Each device may send about 60 messages every 10
   seconds; more are refused. The count is kept in each Cloudflare location on its
   own and catches up with a delay, so a few more can get through.
 - The server closes a socket with `4403` when its user is removed. On every
   message it also checks each socket on the channel, sender and recipients: one
-  whose session ended (logout or expiry), whose user is no longer a member, or who
-  lost the `teams` flag is closed with `4403` and gets nothing more. A socket that
+  whose session ended (logout or expiry), whose user is no longer a member, lost
+  the `teams` flag or was blocked is closed with `4403` and gets nothing more. A socket that
   opened while a message was being checked, too late for that check, gets `4503`
   instead of the message: the client opens a new socket and reads the history.
 

@@ -975,7 +975,7 @@ impl BranchesView {
                                 .flex_none()
                                 .items_center()
                                 .gap(crate::ui::sp(4.))
-                                .child(crate::shell::agent_icon(s.agent, 12.))
+                                .child(s.agent.icon(12.))
                                 .child(
                                     div()
                                         .text_size(px(ui::TEXT_SM))
@@ -1366,7 +1366,7 @@ impl BranchesView {
                             .cursor_pointer()
                             .hover(|st| st.bg(theme::fill_hover()))
                             .text_size(px(ui::TEXT_SM))
-                            .child(crate::shell::agent_icon(s.agent, 12.))
+                            .child(s.agent.icon(12.))
                             .child(div().min_w_0().truncate().child(s.title.clone()))
                             .when(matches!(s.status, SessionStatus::Working), |d| {
                                 d.child(ui::spinner(10., theme::working()))
@@ -1494,7 +1494,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(4.))
-                .child(crate::shell::agent_icon(s.agent, 12.))
+                .child(s.agent.icon(12.))
                 .child(ui::spinner(10., session_color(s.status)))
                 .into_any_element(),
         );
@@ -1817,7 +1817,7 @@ fn face(c: &Commit, name: &str, picture: Option<&std::path::Path>, size: f32) ->
                     .size(px(b))
                     .rounded_full()
                     .bg(theme::background())
-                    .child(crate::shell::agent_icon(agent, b * 0.72)),
+                    .child(agent.icon(b * 0.72)),
             )
         })
 }

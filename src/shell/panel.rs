@@ -576,7 +576,7 @@ pub(super) fn session_card(
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(6.))
-                .child(agent_icon(s.agent, 14.))
+                .child(s.agent.icon(14.))
                 .child(
                     div()
                         .flex_1()

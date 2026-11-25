@@ -878,7 +878,7 @@ impl Shell {
                         .cursor_pointer()
                         .hover(|d| d.bg(theme::fill_hover()))
                         .when(agent == shown, |d| d.bg(theme::fill_selected()))
-                        .child(agent_icon(agent, 16.))
+                        .child(agent.icon(16.))
                         // The agent the composer uses now: a dot under its icon.
                         .when(agent == current, |d| {
                             d.child(

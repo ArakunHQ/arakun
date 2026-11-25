@@ -428,7 +428,7 @@ impl AutomationsDialog {
             facts.push(format!("last {}", schedule::when(last, now)));
         }
         let lead: AnyElement = match a.agent() {
-            Some(agent) => crate::shell::agent_icon(agent, 16.),
+            Some(agent) => agent.icon(16.),
             None => icon("flash", 16.)
                 .text_color(theme::text_subtle())
                 .into_any_element(),
@@ -593,7 +593,7 @@ impl AutomationsDialog {
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::hover()))
                         .child(match t.agent {
-                            Some(agent) => crate::shell::agent_icon(agent, 12.),
+                            Some(agent) => agent.icon(12.),
                             None => icon("flash", 12.)
                                 .text_color(theme::text_subtle())
                                 .into_any_element(),

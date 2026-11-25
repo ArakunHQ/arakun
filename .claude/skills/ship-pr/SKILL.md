@@ -49,6 +49,7 @@ tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo f
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # the modules you touched
 (cd cloud && npx tsc --noEmit)  # cloud/ changed
+(cd phone && npm ci && npm test && npm run build)  # phone/ changed; commit phone/dist
 ```
 
 - Skip the full `cargo test`, `cargo deny check`, `zizmor`, the cloud and phone

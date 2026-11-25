@@ -35,7 +35,7 @@
 - [ ] `cargo clippy --locked --all-targets --no-default-features -- -D warnings` passes
 - [ ] `cargo test --locked --no-default-features` passes (includes `design_lint`: colors, text sizes and fonts come from `theme` and `ui`)
 - [ ] `Cargo.toml`, `Cargo.lock` or `deny.toml` changed: `cargo deny check` passes, `Cargo.lock` is committed, and each new dependency has a comment in `Cargo.toml` saying what uses it
-- [ ] `cloud/` or `phone/` changed: the cloud Worker's `tsc` and `vitest`, and the phone tests pass
+- [ ] `cloud/` or `phone/` changed: the cloud Worker's `tsc` and `vitest`, and the phone tests pass, and `phone/dist` is rebuilt and committed
 - [ ] Code for one platform: it is behind `cfg(...)`, and clippy passes for another target too (for example `--target x86_64-pc-windows-gnu`)
 - [ ] UI changed: screenshots are under Changes, and `tools/layout-audit.sh` passes (Linux with `Xvfb`)
 - [ ] One fix or feature per pull request

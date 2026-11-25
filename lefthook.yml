@@ -16,7 +16,7 @@ pre-commit:
   jobs:
     # Includes design_lint. Same flags as CI, without CI's build tweaks.
     # `&rust` is what the Rust build reads, as in the "What changed" job in
-    # ci.yml; cargo-test reuses it. The app embeds phone/, so it counts too.
+    # ci.yml; cargo-test reuses it. The app embeds phone/dist, so phone/ counts too.
     - name: clippy
       glob: &rust ["*.rs", "src/*", "core/*", "examples/*", "assets/*", "phone/**/*", "Cargo.toml", "Cargo.lock", "clippy.toml", ".cargo/*", "rust-toolchain.toml"]
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo clippy --locked --all-targets --no-default-features -- -D warnings

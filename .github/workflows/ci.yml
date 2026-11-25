@@ -108,7 +108,7 @@ jobs:
               .github/workflows/ci.yml | .github/actions/*) rust=true cloud=true ios=true android=true ;;
               # The cloud job also runs the phone tests.
               cloud/*) cloud=true ;;
-              # The app embeds phone/ (rust_embed) and tests against its vectors,
+              # The app embeds phone/dist (rust_embed) and tests against its vectors,
               # as the iOS and Android apps' protocol tests do.
               phone/*) rust=true cloud=true ios=true android=true ;;
               # The iOS app alone: nothing the Rust build reads.

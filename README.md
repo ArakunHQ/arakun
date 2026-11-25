@@ -1369,6 +1369,24 @@ that machine either: you enter its code on another device. On Linux x86_64 and a
 the release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (see
 [Install](#install)).
 
+### The phone page
+
+The page phones open (the phone remote) is a React app in [`phone/`](phone), built
+with Vite. The app embeds the built copy in `phone/dist`, and the Worker in `cloud/`
+serves the same folder, so `phone/dist` is committed and `cargo build` needs no Node.
+If you change `phone/`, test and build it with Node 24 or newer, and commit
+`phone/dist` with your change:
+
+```sh
+cd phone
+npm ci
+npm test        # the encryption against the Rust side's vectors, and the screens
+npm run build   # writes phone/dist
+```
+
+CI fails a pull request whose `phone/dist` is not what `npm run build` writes
+(`phone/tools/check-dist.sh`).
+
 ### Install for your user (Linux)
 
 `tools/install.sh` builds an optimized binary and installs it to `~/.local/bin`, with a

@@ -139,6 +139,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 # cloud/ or phone/ changed
 (cd cloud && npm ci && npm run check)
 (cd cloud/admin && npm ci && npm run check && npm test && npm run build)
+# phone/ changed: commit the rebuilt phone/dist with it
+(cd phone && npm ci && npm test && npm run build)
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \

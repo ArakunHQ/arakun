@@ -25,9 +25,15 @@ const FALLBACK: &str = "Finished its turn.";
 /// Lines of a plan a notice shows.
 const PLAN_LINES: usize = 3;
 
-/// The last thing the agent said, as plain text. `push::notice` cuts it to fit.
+/// The last thing the agent said in the last turn, as plain text.
+/// `push::notice` cuts it to fit. An answer from before the last prompt is
+/// the previous turn's, so the search stops there.
 pub fn finished_body(entries: &[Entry]) -> String {
-    let text = entries.iter().rev().find_map(|e| match e {
+    let turn = entries
+        .iter()
+        .rposition(|e| matches!(e, Entry::User { .. }))
+        .map_or(entries, |at| &entries[at + 1..]);
+    let text = turn.iter().rev().find_map(|e| match e {
         Entry::Agent { text } => Some(plain(text)),
         _ => None,
     });
@@ -229,6 +235,14 @@ mod tests {
             agent("**Fixed** the `login` bug.\n\nSee [PR](http://x)."),
         ];
         assert_eq!(finished_body(&entries), "Fixed the login bug. See PR.");
+    }
+
+    #[test]
+    fn finished_body_says_nothing_of_the_previous_turn() {
+        let entries = [user(None), agent("Old answer."), user(None)];
+        assert_eq!(finished_body(&entries), "Finished its turn.");
+        let entries = [user(None), agent("Old answer."), user(None), agent("New.")];
+        assert_eq!(finished_body(&entries), "New.");
     }
 
     #[test]

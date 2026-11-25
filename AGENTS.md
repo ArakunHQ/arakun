@@ -24,7 +24,8 @@ browser (`--no-default-features`), as CI does.
 
 ## Tracking work in issues
 
-Every task you work on has a GitHub issue, so the team sees who is doing what.
+Every task has a GitHub issue before work on it starts, for people and agents alike,
+so the team sees who is doing what.
 
 - Before you change anything, find the issue (`gh issue list --search "<words>"`) or
   open one with `gh issue create`: what is wrong or missing, and the plan. One issue
@@ -35,7 +36,7 @@ Every task you work on has a GitHub issue, so the team sees who is doing what.
 - Keep it current while you work: edit the body when the plan or scope changes, and
   comment on decisions, blockers and anything you found that a reader would need.
 - Link the pull request with `Closes #<number>` (`Refs #<number>` for part of the
-  work), as the template asks.
+  work), as the template asks. Every pull request links an issue.
 - If you stop before it is done, comment where you stopped and what is left, then
   `gh issue edit <number> --remove-assignee "@me"`.
 

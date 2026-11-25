@@ -76,6 +76,9 @@ const IDLE_REST: f64 = 8.;
 /// No input for this long and the raccoon starts nodding off, then sleeps.
 const DOZE_AFTER: f64 = 90.;
 const SLEEP_AFTER: f64 = 150.;
+/// Asleep this long, the raccoon stops breathing on screen, so an idle window
+/// stops redrawing.
+const SLEEP_STILL: f64 = 30.;
 /// Below this width the eyes are drawn bigger and the symbols left out.
 const SMALL_W: f32 = 48.;
 /// Typing pauses this long and the raccoon looks up again.
@@ -1296,7 +1299,7 @@ impl Mascot {
             return Next::Idle;
         }
         if self.state == State::Sleeping {
-            if self.small {
+            if self.small || self.now() - self.t0 > SLEEP_STILL {
                 return Next::Idle;
             }
             let elapsed = self.now() - self.last_frame.unwrap_or(0.);
@@ -1332,7 +1335,7 @@ impl Mascot {
         if self.state == State::Sleeping && !self.moving && !self.pointer_dirty {
             // Small mascots (sidebar and island) omit the Zzz prop, so once
             // settled in Sleeping they have nothing left to repaint.
-            if self.small {
+            if self.small || now - self.t0 > SLEEP_STILL {
                 return false;
             }
             return now - self.last_frame.unwrap_or(0.) > 0.2;

@@ -1,0 +1,21 @@
+core/src/phone/mod.rs
+  s_09d25c9e8a6fe9::t_63644a360217a0 2637-2641
+  s_09d25c9e8a6fe9::t_43131ff7a45c4e 1856-1867,1883
+  s_09d25c9e8a6fe9::t_065a808666927f 2631-2636,2642
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8caf5ebc9f752a1407ca4fec9105ac6d610370e8",
+  "prompts": {},
+  "sessions": {
+    "s_09d25c9e8a6fe9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5c7827f-1a63-4365-a527-b478fb4e8573",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

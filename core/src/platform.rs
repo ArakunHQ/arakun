@@ -972,26 +972,41 @@ fn read_login_shell_path() -> Option<String> {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/bin/zsh".into());
-    let mut child = Command::new(shell)
-        .args(["-l", "-i", "-c", r#"printf '\n%s' "$PATH""#])
+    let mut cmd = Command::new(shell);
+    cmd.args(["-l", "-i", "-c", r#"printf '\n%s' "$PATH""#]);
+    let out = stdout_within(cmd, std::time::Duration::from_secs(5))?;
+    // What an interactive rc prints comes before the newline the command starts with.
+    parse_login_path(&out)
+}
+
+/// Runs `cmd` and returns its stdout, or `None` if it does not finish within `limit`.
+/// Stdout is drained on its own thread while the command runs: a command that prints
+/// more than the pipe holds (about 64 KB) would otherwise block until it is killed.
+#[cfg(any(target_os = "macos", all(unix, test)))]
+fn stdout_within(mut cmd: Command, limit: std::time::Duration) -> Option<String> {
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let started = std::time::Instant::now();
-    while matches!(child.try_wait(), Ok(None)) {
-        if started.elapsed() > std::time::Duration::from_secs(5) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Not joined: a daemon the rc file starts can keep the pipe open past the deadline.
+    std::thread::Builder::new()
+        .name("arakun-login-path-read".into())
+        .spawn(move || {
+            let mut out = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+            let _ = tx.send(out);
+        })
+        .ok()?;
+    let out = rx.recv_timeout(limit);
+    if out.is_err() {
+        let _ = child.kill();
     }
-    let mut out = String::new();
-    let _ = std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out);
-    // What an interactive rc prints comes before the newline the command starts with.
-    parse_login_path(&out)
+    let _ = child.wait();
+    Some(String::from_utf8_lossy(&out.ok()?).into_owned())
 }
 
 /// Started from Finder or the Dock, macOS gives an app launchd's `PATH`
@@ -2063,6 +2078,34 @@ mod tests {
         assert_eq!(dirs[0], PathBuf::from("/opt/homebrew/bin"));
         assert!(dirs.contains(&PathBuf::from("/Users/test/.local/bin")));
         assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_output_past_the_pipe_buffer_is_read() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "head -c 200000 /dev/zero | tr '\\0' x; printf '\\n%s' /opt/homebrew/bin:/usr/bin",
+        ]);
+        let started = Instant::now();
+        let out = stdout_within(cmd, Duration::from_secs(5)).expect("finishes in time");
+        assert!(started.elapsed() < Duration::from_secs(4));
+        assert_eq!(out.len(), 200_000 + "\n/opt/homebrew/bin:/usr/bin".len());
+        assert_eq!(
+            parse_login_path(&out),
+            Some("/opt/homebrew/bin:/usr/bin".into())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_shell_that_hangs_is_given_up_on() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec sleep 30"]);
+        let started = Instant::now();
+        assert_eq!(stdout_within(cmd, Duration::from_millis(200)), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[cfg(target_os = "macos")]

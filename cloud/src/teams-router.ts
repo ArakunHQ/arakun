@@ -7,6 +7,7 @@ import { admin } from "./admin";
 import { beta } from "./beta";
 import { cloudAccess } from "./cloud_access";
 import { authConfig, deleteSession, ForeignOrigin, listSessions, logout, me, signIn } from "./auth";
+import { linear } from "./linear";
 import { machines } from "./machines";
 import { notices } from "./notices";
 import { push } from "./push";
@@ -16,7 +17,7 @@ import { error, type Env } from "./util";
 
 /// The API's paths: the first segment of each route, so an unknown path under
 /// one stays a JSON 404 and never turns into the page.
-const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "cloud", "beta", "healthz", "devices", "users", "teams", "invites", "pending", "_relay", "push"]);
+const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "cloud", "beta", "healthz", "devices", "users", "teams", "invites", "pending", "_relay", "push", "linear"]);
 
 export async function teamsFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   // The page and its files are the same for every account, so the assets'
@@ -88,6 +89,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (notice) return notice;
     const pushed = await push(request, env, url);
     if (pushed) return pushed;
+    const linked = await linear(request, env, url);
+    if (linked) return linked;
     const answer = await teams(request, env, url);
     if (answer) return answer;
     switch (`${request.method} ${pathname}`) {

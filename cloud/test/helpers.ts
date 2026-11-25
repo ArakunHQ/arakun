@@ -200,3 +200,10 @@ export async function roomInWindow(periodSeconds: 10 | 60, roomMs = 3_000): Prom
   const left = period - (Date.now() % period);
   if (left < roomMs) await new Promise((r) => setTimeout(r, left + 50));
 }
+
+/// Signs in and gives the user the `linear` flag, as `user()` does for `teams`.
+export async function flagged(id: number, login: string): Promise<{ id: number; login: string; session: string }> {
+  const got = await signIn(id, login);
+  await call("PUT", `/admin/users/${id}/flags/linear`, ADMIN);
+  return { id, login, session: got.session };
+}

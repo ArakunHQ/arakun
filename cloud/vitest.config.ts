@@ -39,7 +39,7 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
-        miniflare: { bindings: { ADMIN_SECRET: "test-secret", GITHUB_CLIENT_ID: "Iv-test", GITHUB_CLIENT_SECRET: "client-secret", TEST_MIGRATIONS: migrations, ...(await pushKeys()) } },
+        miniflare: { bindings: { ADMIN_SECRET: "test-secret", GITHUB_CLIENT_ID: "Iv-test", GITHUB_CLIENT_SECRET: "client-secret", LINEAR_CLIENT_ID: "lin-test", LINEAR_CLIENT_SECRET: "lin-secret", LINEAR_WEBHOOK_SECRET: "lin-hook", LINEAR_TOKEN_KEY: "A".repeat(43), TEST_MIGRATIONS: migrations, ...(await pushKeys()) } },
       }),
     ],
     // Durable Object WebSockets do not work with per-file storage isolation

@@ -54,6 +54,8 @@ cloud/
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
+  src/linear.ts         Linear delegation: the /linear gate (flag and secrets) and its routes
+  src/linear_seal.ts    seals Linear tokens with AES-GCM under LINEAR_TOKEN_KEY
   src/push.ts           the native apps' push service: POST /push/v1/<service>/<token>
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets

@@ -59,5 +59,16 @@ declare namespace Cloudflare {
     /// Cloud Messaging, from `wrangler secret put FCM_SERVICE_ACCOUNT`. Unset =
     /// no push to Android.
     FCM_SERVICE_ACCOUNT?: string;
+    /// The Linear OAuth app's client ID, from `wrangler secret put
+    /// LINEAR_CLIENT_ID`. Without all four LINEAR_* values, /linear is a 404.
+    LINEAR_CLIENT_ID?: string;
+    /// Its client secret.
+    LINEAR_CLIENT_SECRET?: string;
+    /// The secret that signs Linear's webhooks.
+    LINEAR_WEBHOOK_SECRET?: string;
+    /// 32 bytes in base64url: the key Linear's tokens are sealed with.
+    LINEAR_TOKEN_KEY?: string;
+    /// Counts the /linear calls each user makes, since some ask Linear.
+    LINEAR_LIMIT: RateLimit;
   }
 }

@@ -37,6 +37,33 @@ assignee.
     Arakun workspace.
   - Otherwise use GitHub: `gh issue list --search "<words>"`, then
     `gh issue create`. For members, the sync copies it into Linear.
+- In Linear, fill in more than the title and body, so the issue can be sorted and
+  planned. Set these when you create it, and update them when the plan changes:
+  - **Team:** Arakun for everything in this repository. Its Website sub-team is
+    only for the website, which lives in its own repository.
+  - **Labels:** one type, Bug, Feature or Improvement, plus the `area:` label for
+    the code it touches (`area: app`, `area: cloud`, `area: phone`, `area: browser`,
+    `area: iso`). Add `documentation` or `accessibility` when they fit. Leave
+    `Migrated`, `enhancement` and `rust` alone; the GitHub sync sets them.
+  - **Priority:** Urgent (`1`) when it is broken for people now: a crash, lost data,
+    a security problem or a release blocker. High (`2`) for what comes next, such as a
+    bug many people hit. Medium (`3`) for planned work; this is the usual choice. Low
+    (`4`) for nice to have. Never leave it at No priority (`0`). If the user named a
+    priority, use theirs.
+  - **Estimate:** the size of the work in your plan, on the team's T-shirt scale:
+    XS (`1`) a small change in one place, S (`2`) a few files, M (`3`) a day or so,
+    L (`5`) several days, XL (`8`) too big. Split XL work into sub-issues instead.
+  - **Status:** In Progress when you start. The linked pull request moves it on.
+  - **Links:** set the parent when the issue is a sub-issue, and blocked by when it
+    waits on another issue.
+  - If you are not sure of a value, choose the closest and say why in a comment.
+    Don't leave it blank. Don't create teams, labels or cycles; ask the user.
+- An epic (work that needs several pull requests) is a Linear project, not one big
+  issue or a tracking issue. Search the projects first. Otherwise create one in the
+  Arakun team with a short summary, the goal in the description, the person running
+  you as lead, and a priority. Put each part in it as its own issue, one per pull
+  request, and split a part into sub-issues when it has steps. Every issue in the
+  project gets the fields above.
 - Assign it to the person running you as soon as you start: in Linear, or with
   `gh issue edit <number> --add-assignee "@me"` (`@me` is the account `gh` is
   logged in as).

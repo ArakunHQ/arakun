@@ -25,6 +25,13 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
   an issue opened in Linear also appears on GitHub, and the other way round, with
   comments, status and assignees kept in step, so search either one before you open a
   new issue.
+- **Fill in the fields in Linear.** Put the issue in the Arakun team (Website is
+  only for the website's own repository), give it a type label (Bug, Feature or
+  Improvement) and an `area:` label, a priority and an estimate of its size (XS to
+  XL; split anything XL), and link a parent or blocking issue when there is one.
+  Then it can be sorted and planned. An epic, work that needs several pull
+  requests, is a Linear project with one issue per part and sub-issues for the
+  steps. AGENTS.md says how to choose each value.
 - **Coding agents track every task in an issue** the same way. Before it changes
   anything, the agent finds or opens the issue, assigns it to the person running the
   agent while it works, keeps the plan and progress in it up to date, and links the

@@ -90,7 +90,7 @@ pub fn keys(root: &Path) -> Vec<String> {
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy();
-        let env = name.starts_with(".env") || name.ends_with(".env");
+        let env = crate::secrets::env_file(&name);
         let ext = path
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())

@@ -22,8 +22,6 @@ serde_json.workspace = true
 # Cloudflare's API: one client that keeps its connections (src/cloudflare).
 ureq.workspace = true
 ignore.workspace = true
-# @bot redacts keys and tokens from its answers (src/arakun_teams/bot_guard.rs); gpui already pulls it in
-regex = "1"
 unicode-segmentation.workspace = true
 futures.workspace = true
 pulldown-cmark.workspace = true
@@ -117,6 +115,8 @@ serde_json = "1"
 ureq = "3"
 ignore = "0.4"
 unicode-segmentation = "1"
+# gpui already pulls it in
+regex = "1"
 futures = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 base64 = "0.23"

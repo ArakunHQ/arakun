@@ -2,7 +2,7 @@
 use arakun_core::{
     accept, account, agent, assets, browser, caret, clone_source, cloud, durable, explorer, fetch,
     frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
-    redact, schedule, server, signals, terminal, theme, ui, zoom,
+    redact, schedule, secrets, server, signals, terminal, theme, ui, zoom,
 };
 mod account_view;
 mod app_menu;

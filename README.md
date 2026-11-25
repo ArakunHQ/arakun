@@ -518,6 +518,8 @@ after a week).
   push notifications on the page come only from the computer opened last: a browser
   keeps one subscription per site. The iOS and Android apps reach your computers the
   same way, only by signing in with GitHub; they have no link or code for the relay.
+  The Android app gets notifications from every computer it has opened while they are
+  on (Account in its inbox's menu).
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
   every computer of the account: sign out what you do not know. A message from the
   service's operator to your account shows as a notice with its link; opening it or

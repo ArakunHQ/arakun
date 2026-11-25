@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13 and later ask the person before the app shows a notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- The sign-in stays on this device: no backup, no transfer to a new phone. -->
     <application
@@ -34,5 +36,23 @@
                 <data android:scheme="arakun" android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Notices from the computers, sealed for this phone and forwarded by FCM. -->
+        <service
+            android:name=".PushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Firebase starts only from ArakunApplication, with Arakun's own
+             options, and fetches no token until notifications are turned on. -->
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            tools:node="remove" />
+        <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+        <meta-data android:name="firebase_analytics_collection_enabled" android:value="false" />
     </application>
 </manifest>

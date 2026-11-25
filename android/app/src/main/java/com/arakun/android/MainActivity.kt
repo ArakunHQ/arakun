@@ -38,10 +38,14 @@ class MainActivity : ComponentActivity() {
         opened(intent)
     }
 
-    /** A pairing link opened from elsewhere. */
+    /** A pairing link opened from elsewhere, or a notification tapped. */
     private fun opened(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_VIEW) return
-        intent.data?.let { model.openLink(pairingText(it)) }
+        when (intent?.action) {
+            Intent.ACTION_VIEW -> intent.data?.let { model.openLink(pairingText(it)) }
+            // Another app could send this too: the session is only a name the
+            // computer is asked for, so the worst is a session that is not there.
+            Push.OPEN_SESSION -> intent.getStringExtra(Push.EXTRA_SESSION)?.takeIf { it.isNotEmpty() }?.let(model::openFromNotice)
+        }
     }
 
     companion object {

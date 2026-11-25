@@ -15,5 +15,5 @@ npm run dev      # vite dev; needs the cloud Worker running too
 A production build needs `CLOUDFLARE_ENV=production`, or it is the dev Worker's. `npm run
 deploy` sets it.
 
-Running both Workers locally, the production setup (OAuth App, secrets) and how to add
-or remove an operator are in "The admin panel" in [../README.md](../README.md).
+Running both Workers locally, the production setup (the secrets for arakun.dev, an
+OAuth App for a copy of the repository) and how to add or remove an operator are in "The admin panel" in [../README.md](../README.md).

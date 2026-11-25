@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../worker/index";
 import { SESSION_COOKIE } from "../worker/session";
+import { env } from "cloudflare:test";
 import { fakeGitHub, freshIp, github, issue, testEnv } from "./helpers";
 
 const ORIGIN = "https://admin.test";
@@ -37,6 +38,10 @@ function callback(s: { state: string; cookie: string; ip: string }, code: string
   return call(`/auth/github/callback?${query}`, { headers: { Cookie: s.cookie, "CF-Connecting-IP": s.ip, ...extra } }, env);
 }
 
+function stateCleared(res: Response): boolean {
+  return setCookies(res).some((c) => c.startsWith("__Host-arakun_admin_oauth=;") && c.includes("Max-Age=0"));
+}
+
 function revoked(): boolean {
   return github.calls.some((r) => r.method === "DELETE");
 }
@@ -61,6 +66,22 @@ describe("sign-in", () => {
     expect(res.headers.get("Location")).toBe("/?sign_in=failed");
   });
 
+  it("start and callback treat the placeholder client id as unset", async () => {
+    // The env as wrangler.toml gives it, before the OAuth App exists.
+    const res = await call("/auth/github/start", {}, env);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/?sign_in=failed");
+    expect(setCookies(res)).toEqual([]);
+    const s = await start();
+    issue("codeP", "gho_tokenP", { id: 1001, login: "octocat" });
+    const cb = await callback(s, "codeP", {}, env);
+    expect(cb.status).toBe(302);
+    expect(cb.headers.get("Location")).toBe("/?sign_in=failed");
+    expect(stateCleared(cb)).toBe(true);
+    expect(github.exchanges).toEqual([]);
+    expect(github.urls).toEqual([]);
+  });
+
   it("signs a listed account in", async () => {
     issue("code1", "gho_token1", { id: 1001, login: "octocat" });
     const res = await callback(await start(), "code1");
@@ -69,7 +90,7 @@ describe("sign-in", () => {
     const session = setValue(res, SESSION_COOKIE)!;
     expect(session).toBeTruthy();
     // The state cookie is single use.
-    expect(setCookies(res).some((c) => c.startsWith("__Host-arakun_admin_oauth=;") && c.includes("Max-Age=0"))).toBe(true);
+    expect(stateCleared(res)).toBe(true);
     expect(setCookies(res).find((c) => c.startsWith(`${SESSION_COOKIE}=`))).toContain("HttpOnly");
     const me = await call("/api/me", { headers: { Cookie: `${SESSION_COOKIE}=${session}` } });
     expect(me.status).toBe(200);
@@ -86,6 +107,7 @@ describe("sign-in", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("/?sign_in=denied");
     expect(setValue(res, SESSION_COOKIE)).toBeNull();
+    expect(stateCleared(res)).toBe(true);
     expect(revoked()).toBe(true);
     expect(github.users.has("gho_token2")).toBe(false);
   });
@@ -119,6 +141,7 @@ describe("sign-in", () => {
     const res = await callback(await start(), "unknown");
     expect(res.headers.get("Location")).toBe("/?sign_in=failed");
     expect(setValue(res, SESSION_COOKIE)).toBeNull();
+    expect(stateCleared(res)).toBe(true);
     github.codeOutage = "error";
     issue("code5", "gho_token5", { id: 1001, login: "octocat" });
     expect((await callback(await start(), "code5")).headers.get("Location")).toBe("/?sign_in=failed");
@@ -160,6 +183,7 @@ describe("sign-in", () => {
     github.users.set("gho_token8", { id: 1001, login: "bad login" });
     const res = await callback(await start(), "code8");
     expect(res.headers.get("Location")).toBe("/?sign_in=failed");
+    expect(stateCleared(res)).toBe(true);
     expect(revoked()).toBe(true);
   });
 
@@ -181,9 +205,23 @@ describe("sign-in", () => {
     let last: Response | null = null;
     for (let i = 0; i < 12; i++) last = await callback(await start(ip), i === 0 ? "code10" : "none");
     expect(last!.headers.get("Location")).toBe("/?sign_in=failed");
-    // The first callbacks went through to GitHub; the later ones did not.
-    expect(github.exchanges.length).toBeLessThan(12);
-    expect(github.exchanges.length).toBeGreaterThan(0);
+    expect(stateCleared(last!)).toBe(true);
+    // The limit is 10 a minute: exactly ten callbacks reached GitHub.
+    expect(github.exchanges.length).toBe(10);
+  });
+
+  it("fails, clearing the state, when the rate limiter throws", async () => {
+    issue("code11", "gho_token11", { id: 1001, login: "octocat" });
+    const s = await start();
+    const limit = vi.spyOn(testEnv.SIGN_IN_LIMIT, "limit").mockRejectedValue(new Error("limiter down"));
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await callback(s, "code11");
+    expect(limit).toHaveBeenCalled();
+    expect(quiet).toHaveBeenCalled();
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/?sign_in=failed");
+    expect(stateCleared(res)).toBe(true);
+    expect(github.exchanges).toEqual([]);
   });
 
   it("never puts GitHub's token in a cookie, a redirect or a body", async () => {

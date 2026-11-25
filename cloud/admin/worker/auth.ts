@@ -28,10 +28,18 @@ const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 const FAILED = "/?sign_in=failed";
 const DENIED = "/?sign_in=denied";
 
+/// What wrangler.toml holds until a person creates the OAuth App and sets the
+/// real ID. GitHub would be asked with a client that does not exist.
+const UNSET_CLIENT_ID = "PLACEHOLDER";
+
+function configured(env: Env): env is Env & { GITHUB_CLIENT_SECRET: string } {
+  return !!env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_ID !== UNSET_CLIENT_ID && !!env.GITHUB_CLIENT_SECRET;
+}
+
 /// Not counted against the sign-in limit: it asks nothing of GitHub. The
 /// callback counts, so one sign-in counts once.
 export async function authStart(request: Request, env: Env): Promise<Response> {
-  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return redirect(FAILED);
+  if (!configured(env)) return redirect(FAILED);
   const state = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", env.GITHUB_CLIENT_ID);
@@ -63,7 +71,7 @@ async function callback(request: Request, env: Env): Promise<Response> {
   // A stale or doubled callback (the back button, a second tab) ends here.
   if (!(await sameState(url.searchParams.get("state"), cookie(request, OAUTH_COOKIE)))) return redirect(FAILED);
   if (!(await signInAllowed(request, env))) return redirect(FAILED);
-  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET || !env.SESSION_SECRET) return redirect(FAILED);
+  if (!configured(env) || !env.SESSION_SECRET) return redirect(FAILED);
 
   // No code when the user refused on GitHub's page.
   const code = url.searchParams.get("code");

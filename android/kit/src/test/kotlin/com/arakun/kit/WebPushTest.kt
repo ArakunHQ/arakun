@@ -138,4 +138,56 @@ class WebPushTest {
         assertEquals(WebPush.Wanted(error = false), WebPush.Wanted.of(parseJson(WebPush.wantedBody(WebPush.Wanted(error = false)))!!["notices"]))
         assertEquals(WebPush.Wanted(), WebPush.Wanted.of(parseJson("""{"done":"yes"}""")!!))
     }
+
+    @Test
+    fun theAwayTimeAndShortestTurnDefaultWhenLeftOut() {
+        val old = WebPush.Wanted.of(parseJson("""{"done":false}""")!!)
+        assertEquals(120, old.awayAfterSecs)
+        assertEquals(30, old.minTurnSecs)
+        assertEquals(WebPush.Wanted(done = false), old)
+        assertEquals(WebPush.Wanted(), WebPush.Wanted.of(parseJson("null")!!))
+        // Not a number, or below zero: the default.
+        val odd = WebPush.Wanted.of(parseJson("""{"away_after_secs":"soon","min_turn_secs":-5}""")!!)
+        assertEquals(120, odd.awayAfterSecs)
+        assertEquals(30, odd.minTurnSecs)
+        val picked = WebPush.Wanted.of(parseJson("""{"away_after_secs":0,"min_turn_secs":300}""")!!)
+        assertEquals(0, picked.awayAfterSecs)
+        assertEquals(300, picked.minTurnSecs)
+    }
+
+    @Test
+    fun theAwayTimeAndShortestTurnRoundTrip() {
+        val w = WebPush.Wanted(input = false, awayAfterSecs = 900, minTurnSecs = 0)
+        val back = parseJson(WebPush.wantedBody(w))!!["notices"]
+        assertEquals(900, back["away_after_secs"].int)
+        assertEquals(0, back["min_turn_secs"].int)
+        assertEquals(w, WebPush.Wanted.of(back))
+    }
+
+    @Test
+    fun theChoicesMatchThePhonePage() {
+        assertEquals(listOf(0, 60, 120, 300, 900), WebPush.AWAY_CHOICES.map { it.secs })
+        assertEquals(listOf("Always", "1 min", "2 min", "5 min", "15 min"), WebPush.AWAY_CHOICES.map { it.label })
+        assertEquals(listOf(0, 15, 30, 60, 300), WebPush.SHORTEST_CHOICES.map { it.secs })
+        assertEquals(listOf("Off", "15 s", "30 s", "1 min", "5 min"), WebPush.SHORTEST_CHOICES.map { it.label })
+        // A value set elsewhere stays on the list, so the picker never shows nothing.
+        assertEquals(WebPush.AWAY_CHOICES, WebPush.choicesKeeping(WebPush.AWAY_CHOICES, 120))
+        assertEquals(WebPush.Choice(45, "45 s"), WebPush.choicesKeeping(WebPush.SHORTEST_CHOICES, 45).last())
+    }
+
+    @Test
+    fun readsTheMutedSessions() {
+        assertEquals(listOf("s1", "s2"), WebPush.mutedOf(parseJson("""{"muted":["s1","s2",3]}""")!!))
+        // An older computer knows no muting: nothing is muted.
+        assertEquals(emptyList<String>(), WebPush.mutedOf(parseJson("""{"notifying":false}""")!!))
+    }
+
+    @Test
+    fun muteSaysWhichSessionAndWhether() {
+        assertEquals(parseJson("""{"session":"s","muted":true}"""), parseJson(WebPush.muteBody("s", true)))
+        assertEquals(parseJson("""{"session":"s","muted":false}"""), parseJson(WebPush.muteBody("s", false)))
+        assertEquals(listOf("a", "b"), WebPush.muteReply(parseJson("""{"muted":["a","b"]}""")!!))
+        assertEquals(emptyList<String>(), WebPush.muteReply(parseJson("""{"muted":[]}""")!!))
+        assertNull(WebPush.muteReply(parseJson("""{"error":"no"}""")!!))
+    }
 }

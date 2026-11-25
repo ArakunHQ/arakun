@@ -533,7 +533,8 @@ after a week).
   invite is on its way, then that you are in. **Change email** fixes the address
   while you wait.
   The Android app gets notifications from every computer it has opened while they are
-  on (Account in its inbox's menu).
+  on (Account in its inbox's menu), where it also sets **Only when I'm away for** and
+  **Turns shorter than this stay quiet**. The bell in a session mutes its notices.
   In the iOS and Android apps, the count of changed files on top of a session opens
   the files it changed, turn by turn, and each file its diff, read-only, as on the page.
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach

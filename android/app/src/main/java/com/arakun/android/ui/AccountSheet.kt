@@ -24,6 +24,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
@@ -53,6 +55,7 @@ import com.arakun.android.Push
 import com.arakun.android.R
 import com.arakun.kit.Notice
 import com.arakun.kit.SignedInDevice
+import com.arakun.kit.WebPush
 
 /**
  * The account on this phone: who is signed in, the operator's notices,
@@ -195,6 +198,12 @@ private fun Notifications(model: AppModel) {
                 Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
                 SwitchRow(title, null, on) { model.want(change(it)) }
             }
+            Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
+            ChoiceRow("Only when I'm away for", WebPush.AWAY_CHOICES, w.awayAfterSecs) { model.want(w.copy(awayAfterSecs = it)) }
+            Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
+            ChoiceRow("Turns shorter than this stay quiet", WebPush.SHORTEST_CHOICES, w.minTurnSecs) {
+                model.want(w.copy(minTurnSecs = it))
+            }
         }
     }
     if (!allowed && (Push.on || refused)) {
@@ -217,6 +226,44 @@ private fun Notifications(model: AppModel) {
         style = Type.small,
         color = c.textFaint,
     )
+}
+
+/** A row with one of a few times to pick; 0 turns the rule off. A value set elsewhere stays on the list. */
+@Composable
+private fun ChoiceRow(title: String, choices: List<WebPush.Choice>, value: Int, change: (Int) -> Unit) {
+    val c = Palette.current
+    var open by remember { mutableStateOf(false) }
+    val list = WebPush.choicesKeeping(choices, value)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .tap(role = Role.DropdownList) { open = true }
+            .padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = geist(15f, FontWeight.Medium), modifier = Modifier.weight(1f))
+        Box {
+            Text(list.firstOrNull { it.secs == value }?.label ?: "$value s", style = Type.callout, color = c.textMuted)
+            DropdownMenu(
+                expanded = open,
+                onDismissRequest = { open = false },
+                containerColor = c.raised,
+                shape = RoundedCornerShape(Radius.card),
+            ) {
+                list.forEach { choice ->
+                    DropdownMenuItem(
+                        text = { Text(choice.label, style = Type.callout) },
+                        onClick = {
+                            open = false
+                            change(choice.secs)
+                        },
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** A row that is all one switch, so the whole row is the target. */

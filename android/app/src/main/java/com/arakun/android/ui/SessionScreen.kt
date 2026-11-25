@@ -104,7 +104,13 @@ fun SessionScreen(model: AppModel, id: String) {
             // Under a sheet the session is not there for a screen reader either.
             .then(if (sheet != null) Modifier.clearAndSetSemantics {} else Modifier),
     ) {
-        SessionTopBar(s, onBack = model::close)
+        SessionTopBar(
+            s,
+            muted = model.isMuted(id),
+            canMute = model.isLinked,
+            onMute = { model.mute(id, !model.isMuted(id)) },
+            onBack = model::close,
+        )
         Box(Modifier.weight(1f)) {
             LazyColumn(
                 state = list,
@@ -225,7 +231,7 @@ private fun sessionMood(model: AppModel, s: LiveSession?): Mood {
 }
 
 @Composable
-private fun SessionTopBar(s: LiveSession?, onBack: () -> Unit) {
+private fun SessionTopBar(s: LiveSession?, muted: Boolean, canMute: Boolean, onMute: () -> Unit, onBack: () -> Unit) {
     val c = Palette.current
     Box(
         Modifier
@@ -240,6 +246,15 @@ private fun SessionTopBar(s: LiveSession?, onBack: () -> Unit) {
     ) {
         Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) {
             IconTap(R.drawable.ic_arrow_left01, "Back", c.text, onClick = onBack)
+        }
+        Box(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+            IconTap(
+                if (muted) R.drawable.ic_notification_off01 else R.drawable.ic_notification01,
+                if (muted) "Unmute" else "Mute",
+                if (muted) c.textFaint else c.text,
+                enabled = canMute,
+                onClick = onMute,
+            )
         }
         Column(
             Modifier.align(Alignment.Center).widthIn(max = 260.dp),

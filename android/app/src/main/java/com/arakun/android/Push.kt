@@ -39,6 +39,8 @@ object Push {
     private const val DONE = "done"
     private const val INPUT = "input"
     private const val ERROR = "error"
+    private const val AWAY_AFTER = "away_after_secs"
+    private const val MIN_TURN = "min_turn_secs"
 
     /** A tap on a notification: MainActivity opens the session named in [EXTRA_SESSION]. */
     const val OPEN_SESSION = "com.arakun.android.OPEN_SESSION"
@@ -72,7 +74,14 @@ object Push {
         this.app = app
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         on = prefs.getBoolean(ON, false)
-        wanted = WebPush.Wanted(prefs.getBoolean(DONE, true), prefs.getBoolean(INPUT, true), prefs.getBoolean(ERROR, true))
+        val fresh = WebPush.Wanted()
+        wanted = WebPush.Wanted(
+            prefs.getBoolean(DONE, true),
+            prefs.getBoolean(INPUT, true),
+            prefs.getBoolean(ERROR, true),
+            prefs.getInt(AWAY_AFTER, fresh.awayAfterSecs).takeIf { it >= 0 } ?: fresh.awayAfterSecs,
+            prefs.getInt(MIN_TURN, fresh.minTurnSecs).takeIf { it >= 0 } ?: fresh.minTurnSecs,
+        )
         val options = listOf(BuildConfig.FCM_PROJECT_ID, BuildConfig.FCM_APP_ID, BuildConfig.FCM_API_KEY, BuildConfig.FCM_SENDER_ID)
         if (options.all { it.isNotEmpty() }) {
             available = try {
@@ -145,6 +154,8 @@ object Push {
             putBoolean(DONE, w.done)
             putBoolean(INPUT, w.input)
             putBoolean(ERROR, w.error)
+            putInt(AWAY_AFTER, w.awayAfterSecs)
+            putInt(MIN_TURN, w.minTurnSecs)
         }
     }
 

@@ -14,12 +14,21 @@ Thanks for helping out. Issues, ideas and pull requests are all welcome.
   CI only compiles the Windows build, without running its tests (see
   [docs/windows.md](docs/windows.md)). Reports of what works there are useful too, not
   only of what breaks.
-- **Send a pull request.** For anything bigger than a small fix, open an issue first so
-  we can agree on the approach before you spend time on it.
-- **Coding agents track every task in an issue.** Before it changes anything, the agent
-  finds or opens the issue, assigns it to the person running the agent while it works,
-  keeps the plan and progress in it up to date, and links the pull request. AGENTS.md
-  has the commands.
+- **Send a pull request.** Every change starts from an issue, small fixes included.
+  Before you start, find the issue or open one that says what is wrong or missing, and
+  assign it to yourself (or comment that you are on it) so no one else does the same
+  work. For anything bigger than a small fix, wait until we agree on the approach in
+  the issue before you spend time on it. Link the issue from the pull request.
+- **Where issues live.** Members of the ArakunHQ organization open and track issues in
+  [Linear](https://linear.app/arakun). Everyone else uses
+  [GitHub issues](https://github.com/arakunhq/arakun/issues). The two sync both ways:
+  an issue opened in Linear also appears on GitHub, and the other way round, with
+  comments, status and assignees kept in step, so search either one before you open a
+  new issue.
+- **Coding agents track every task in an issue** the same way. Before it changes
+  anything, the agent finds or opens the issue, assigns it to the person running the
+  agent while it works, keeps the plan and progress in it up to date, and links the
+  pull request. AGENTS.md has the commands.
 
 **Security problems:** do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 
@@ -356,6 +365,10 @@ that keeps one on purpose goes on its allow-list.
 ## Pull requests
 
 - **One fix or feature per pull request.** Split unrelated cleanups into their own.
+- **Link the issue.** Every pull request has one: `Closes #<number>` when it does
+  the whole job, `Refs #<number>` when it does part of it. Open the issue first if
+  there is none. For an issue opened in Linear, use the number of its synced GitHub
+  issue, so the link works for readers without Linear access.
 - **Fill in the template:** what changed and why, the issue it fixes, and how you
   checked it (the commands you ran and what you tried by hand).
 - **Commit messages** follow [Conventional Commits](https://www.conventionalcommits.org/):

@@ -4,8 +4,8 @@
 
 <!-- First line: who is affected and what is wrong for them today. A fix says what breaks (and on which platform); a feature names the goal and what stands in the way; a chore says who is blocked. It should stay true under a different solution. The code path goes under Changes. -->
 
-<!-- Fixes an issue? Uncomment the line below so merging closes it. Use "Refs #ISSUE_ID" instead when it only does part of the work. -->
-<!-- Closes #ISSUE_ID -->
+<!-- Required: every pull request links its issue (open one first if there is none). For a Linear issue, use the number of its synced GitHub issue. "Closes" lets merging close it; use "Refs #ISSUE_ID" instead when it only does part of the work. -->
+Closes #ISSUE_ID
 
 ## Changes
 

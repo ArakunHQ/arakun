@@ -168,7 +168,10 @@ interface Open {
   href?: string;
 }
 
-function inline(text: string, h: Handlers): ReactNode[] {
+function inline(raw: string, h: Handlers): ReactNode[] {
+  // The markers are control characters. Text that carries them would point at
+  // spans that do not exist, so they go before anything else.
+  const text = raw.replace(/[\u0000-\u0003]/g, "");
   const codes: string[] = [];
   const shots: { alt: string; url: string }[] = [];
   const opens: Open[] = [];

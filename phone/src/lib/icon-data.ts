@@ -1,5 +1,8 @@
-// Generated once from assets/icons (and the old ICONS in app.js for the few
-// without an asset). Trusted markup, never user text.
+// Generated once, by a throwaway Node script, from assets/icons/*.svg (and the
+// old ICONS in public/app.js for the few without an asset). For each icon it
+// kept the inner markup of the svg, dropped <title>, and turned stroke="#000"
+// into currentColor. To change one, edit its entry here, or redo the same steps
+// from the svg. Trusted markup, never user text.
 
 export interface IconData {
   body: string;

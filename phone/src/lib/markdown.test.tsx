@@ -86,4 +86,11 @@ describe("Markdown", () => {
     expect(onDiagram).not.toHaveBeenCalled();
     expect(container.querySelector("pre code")?.textContent).toBe("x");
   });
+  it("survives control characters that look like its own markers", () => {
+    for (const src of ["a \u00021\u0002 b", "a \u00019\u0001 b", "a \u00000\u0000 b", "a \u00031\u0003 b"]) {
+      const { container } = render(<Markdown src={src} />);
+      expect(container.textContent).toContain("a ");
+      expect(container.textContent).toContain(" b");
+    }
+  });
 });

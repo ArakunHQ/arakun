@@ -212,6 +212,10 @@ pub(super) struct ServersLink {
     events: Events,
     /// The servers' sessions followed, each for whoever looks at it.
     following: Vec<Following>,
+    /// Sessions nobody follows any more, the last let go of last, kept with
+    /// their entries so opening one again shows it at once while it is read
+    /// again.
+    rested: Vec<Following>,
     /// What each server listed last, as kept on disk (`servers::kept_inbox`).
     inboxes: HashMap<String, Value>,
     /// The last write of `inboxes` failed: the next inbox writes them again.
@@ -486,8 +490,9 @@ pub(super) fn split_phone_id(pid: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Tells each server to stop sending the sessions in `gone`.
-fn close_follows(link: &ServersLink, gone: Vec<Following>) {
+/// Tells each server to stop sending the sessions in `gone`, and keeps them
+/// to show again.
+fn close_follows(link: &mut ServersLink, gone: Vec<Following>) {
     for f in gone {
         if let Some(conn) = link.conns.get(&f.server)
             && conn.reach == Reach::Connected
@@ -495,7 +500,42 @@ fn close_follows(link: &ServersLink, gone: Vec<Following>) {
             conn.client
                 .send(&json!({ "type": "close", "session": f.session }));
         }
+        rest(&mut link.rested, f);
     }
+}
+
+/// How many sessions let go of are kept to show again.
+const RESTED: usize = 4;
+
+/// Keeps `f` in `rested`, the newest of at most [`RESTED`]. One that has
+/// nothing to show, or could not be read, is not worth keeping.
+fn rest(rested: &mut Vec<Following>, mut f: Following) {
+    rested.retain(|r| !(r.server == f.server && r.session == f.session));
+    if f.entries.is_empty() || f.broken.is_some() {
+        return;
+    }
+    f.by.clear();
+    rested.push(f);
+    let over = rested.len().saturating_sub(RESTED);
+    rested.drain(..over);
+}
+
+/// The kept copy of `server`'s session `id`, if there is one.
+fn rested_of<'a>(rested: &'a [Following], server: &str, id: &str) -> Option<&'a Following> {
+    rested
+        .iter()
+        .find(|r| r.server == server && r.session == id)
+}
+
+/// Takes the kept copy of `server`'s session `id` out of `rested`, to be
+/// followed again: it shows until the session is read again in full.
+fn wake(rested: &mut Vec<Following>, server: &str, id: &str) -> Option<Following> {
+    let i = rested
+        .iter()
+        .position(|r| r.server == server && r.session == id)?;
+    let mut f = rested.remove(i);
+    f.read_again();
+    Some(f)
 }
 
 /// Whether the error `msg` answers a start. A server from before errors said
@@ -718,8 +758,8 @@ fn project_for(
 
 /// Shows the followed session in `thread` as it is now, and why it stopped
 /// there if it did. The reason goes after what is shown, which would replace it.
-fn show_following(f: &Following, thread: &Entity<Thread>, cx: &mut App) {
-    let (status, transcript) = (thread_status(f.status), transcript_of(f));
+fn show_following(f: &Following, status: Status, thread: &Entity<Thread>, cx: &mut App) {
+    let (status, transcript) = (thread_status(status), transcript_of(f));
     let why = f.broken.clone();
     // Copies that came for a view of it closed since.
     let fetched: Vec<(String, PathBuf)> = f
@@ -1026,6 +1066,7 @@ impl Shell {
             conns,
             events,
             following: Vec::new(),
+            rested: Vec::new(),
             inboxes,
             inboxes_unsaved: false,
             inboxes_saving: None,
@@ -1344,6 +1385,7 @@ impl Shell {
             save_inboxes(link, cx);
         }
         link.following.retain(|f| f.server != *id);
+        link.rested.retain(|f| f.server != *id);
         // What it was asked is not coming: the others' requests stay.
         link.adding.remove(id);
         if link.added.as_ref().is_some_and(|(s, _)| s == id) {
@@ -1554,17 +1596,24 @@ impl Shell {
         let (agent, title, status) = (s.agent, s.title.to_string(), s.status);
         let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
         thread.update(cx, |t, _| t.set_remote());
-        let known = self
-            .find_env(env_path)
-            .and_then(|e| e.remote.as_ref())
-            .and_then(|r| {
-                let link = self.servers.as_ref()?;
-                link.commands
-                    .get(&(r.server.clone(), r.place.clone(), agent))
-                    .cloned()
-            });
+        let remote = self.find_env(env_path).and_then(|e| e.remote.as_ref());
+        let link = self.servers.as_ref();
+        let known = remote.zip(link).and_then(|(r, link)| {
+            link.commands
+                .get(&(r.server.clone(), r.place.clone(), agent))
+                .cloned()
+        });
         if let Some(commands) = known {
             thread.update(cx, |t, cx| t.set_remote_commands(commands, cx));
+        }
+        // Looked at before: what it held then shows until it is read again,
+        // rather than an empty thread.
+        let kept = remote
+            .zip(link)
+            .and_then(|(r, link)| rested_of(&link.rested, &r.server, id));
+        if let Some(f) = kept {
+            // With its status now, as the server last listed it.
+            show_following(f, status, &thread, cx);
         }
         self.attach(env_path, id, thread, window, cx);
     }
@@ -1612,10 +1661,17 @@ impl Shell {
         let Some(link) = &mut self.servers else {
             return;
         };
-        let Some(conn) = link.conns.get(&remote.server) else {
+        if !link.conns.contains_key(&remote.server) {
             return;
-        };
-        let fresh = Following {
+        }
+        let kept = wake(&mut link.rested, &remote.server, id);
+        let fresh = kept.map(|f| Following {
+            env_path: env_path.to_path_buf(),
+            title: title.clone(),
+            status,
+            ..f
+        });
+        let fresh = fresh.unwrap_or_else(|| Following {
             server: remote.server.clone(),
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
@@ -1633,8 +1689,9 @@ impl Shell {
             by: Vec::new(),
             queue: RemoteQueue::default(),
             images: HashMap::new(),
-        };
-        let followed = follow_in(&mut link.following, who, fresh, conn.watches_several);
+        });
+        let several = link.conns[&remote.server].watches_several;
+        let followed = follow_in(&mut link.following, who, fresh, several);
         close_follows(link, followed.close);
         // Not connected: it is asked for when the server is back.
         if followed.ask
@@ -3404,7 +3461,7 @@ impl Shell {
                 if f.refill.is_none()
                     && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
                 {
-                    show_following(f, &thread, cx);
+                    show_following(f, f.status, &thread, cx);
                 }
                 if f.refill.is_none() && !conn.no_images {
                     for (link, at) in images_to_ask(&f.entries, &f.images) {
@@ -3423,7 +3480,7 @@ impl Shell {
                 };
                 f.subagents = subagents;
                 if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
-                    show_following(f, &thread, cx);
+                    show_following(f, f.status, &thread, cx);
                 }
             }
             "image" => {
@@ -4094,6 +4151,52 @@ mod tests {
             queue: RemoteQueue::default(),
             images: HashMap::new(),
         }
+    }
+
+    fn with_entries(server: &str, session: &str) -> Following {
+        let mut f = following(server, session, vec![Watcher::Desktop]);
+        f.entries = vec![said("hi")];
+        f
+    }
+
+    #[test]
+    fn the_last_sessions_let_go_of_are_kept() {
+        let mut rested = Vec::new();
+        for id in ["a", "b", "c", "d", "e"] {
+            rest(&mut rested, with_entries("s1", id));
+        }
+        let ids: Vec<&str> = rested.iter().map(|f| f.session.as_str()).collect();
+        assert_eq!(ids, ["b", "c", "d", "e"]);
+        assert!(rested.iter().all(|f| f.by.is_empty()));
+        // Let go of again: one copy, now the newest.
+        rest(&mut rested, with_entries("s1", "b"));
+        let ids: Vec<&str> = rested.iter().map(|f| f.session.as_str()).collect();
+        assert_eq!(ids, ["c", "d", "e", "b"]);
+    }
+
+    #[test]
+    fn empty_or_broken_sessions_are_not_kept() {
+        let mut rested = vec![with_entries("s1", "a")];
+        // Nothing to show: an older copy of it goes too.
+        rest(&mut rested, following("s1", "a", Vec::new()));
+        assert!(rested.is_empty());
+        let mut broken = with_entries("s1", "b");
+        broken.broken = Some("unreadable".into());
+        rest(&mut rested, broken);
+        assert!(rested.is_empty());
+    }
+
+    #[test]
+    fn a_kept_session_wakes_to_be_read_again_to_the_side() {
+        let mut rested = vec![with_entries("s1", "a"), with_entries("s2", "a")];
+        assert!(wake(&mut rested, "s3", "a").is_none());
+        let f = wake(&mut rested, "s2", "a").unwrap();
+        // What it held shows until the server sent it whole again.
+        assert_eq!(f.entries.len(), 1);
+        assert!(f.asking && f.asked == 0);
+        assert!(f.refill.as_ref().is_some_and(Vec::is_empty));
+        assert_eq!(rested.len(), 1);
+        assert_eq!(rested[0].server, "s1");
     }
 
     #[test]

@@ -15,7 +15,7 @@ use gpui::{
     DispatchPhase, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
     Focusable, HitboxBehavior, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
     Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString,
+    Pixels, Point, Render, RenderImage, ScrollDelta, ScrollEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, UTF16Selection, Window, canvas,
     div, point, prelude::FluentBuilder as _, px, size,
 };
@@ -903,7 +903,7 @@ impl BrowserView {
         host.send_mouse_move_event(Some(&e), 0);
     }
 
-    fn scroll(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn scroll(&mut self, ev: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             cx.notify();
         }
@@ -1623,7 +1623,7 @@ impl Render for BrowserView {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
-            .on_scroll_wheel(cx.listener(Self::scroll))
+            .on_scroll(cx.listener(Self::scroll))
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
             .child(

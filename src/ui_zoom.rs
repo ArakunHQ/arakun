@@ -100,16 +100,20 @@ fn scale_input(input: PlatformInput, k: f32) -> PlatformInput {
             e.position = p(e.position);
             I::MouseExited(e)
         }
-        I::ScrollWheel(mut e) => {
+        I::Scroll(mut e) => {
             e.position = p(e.position);
             if let ScrollDelta::Pixels(d) = &mut e.delta {
                 *d = p(*d);
             }
-            I::ScrollWheel(e)
+            I::Scroll(e)
         }
         I::Pinch(mut e) => {
             e.position = p(e.position);
             I::Pinch(e)
+        }
+        I::BackGesture(mut e) => {
+            e.start_position = p(e.start_position);
+            I::BackGesture(e)
         }
         I::LongPress(mut e) => {
             e.position = p(e.position);
@@ -190,8 +194,14 @@ impl Platform for ZoomPlatform {
     fn unhide_other_apps(&self) {
         self.0.unhide_other_apps()
     }
+    fn platform_info(&self) -> gpui::PlatformInfo {
+        self.0.platform_info()
+    }
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
         self.0.displays()
+    }
+    fn on_displays_changed(&self, callback: Box<dyn FnMut()>) {
+        self.0.on_displays_changed(callback)
     }
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         self.0.primary_display()
@@ -562,6 +572,9 @@ impl PlatformWindow for ZoomWindow {
     }
     fn on_moved(&self, callback: Box<dyn FnMut()>) {
         self.inner.on_moved(callback)
+    }
+    fn on_display_changed(&self, callback: Box<dyn FnMut()>) {
+        self.inner.on_display_changed(callback)
     }
     fn on_should_close(&self, callback: Box<dyn FnMut() -> bool>) {
         self.inner.on_should_close(callback)

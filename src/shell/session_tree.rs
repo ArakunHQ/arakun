@@ -1322,7 +1322,7 @@ impl Shell {
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 this.menu = None;
                 let m = ev.modifiers();
-                if m.secondary() || m.shift {
+                if m.secondary(cx) || m.shift {
                     this.click_tree_pick(picks.clone(), m.shift, cx);
                     return;
                 }

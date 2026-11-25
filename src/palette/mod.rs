@@ -56,18 +56,58 @@ pub fn bind_keys(cx: &mut App) {
     let ctx = Some("Palette");
     cx.bind_keys([
         KeyBinding::new("space", MarkRow, ctx),
-        KeyBinding::new(&keystroke("ctrl-p"), TogglePin, ctx),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-p")),
+            TogglePin,
+            ctx,
+        ),
         KeyBinding::new("alt-up", PinUp, ctx),
         KeyBinding::new("alt-down", PinDown, ctx),
-        KeyBinding::new(&keystroke("ctrl-1"), Pinned1, ctx),
-        KeyBinding::new(&keystroke("ctrl-2"), Pinned2, ctx),
-        KeyBinding::new(&keystroke("ctrl-3"), Pinned3, ctx),
-        KeyBinding::new(&keystroke("ctrl-4"), Pinned4, ctx),
-        KeyBinding::new(&keystroke("ctrl-5"), Pinned5, ctx),
-        KeyBinding::new(&keystroke("ctrl-6"), Pinned6, ctx),
-        KeyBinding::new(&keystroke("ctrl-7"), Pinned7, ctx),
-        KeyBinding::new(&keystroke("ctrl-8"), Pinned8, ctx),
-        KeyBinding::new(&keystroke("ctrl-9"), Pinned9, ctx),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-1")),
+            Pinned1,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-2")),
+            Pinned2,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-3")),
+            Pinned3,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-4")),
+            Pinned4,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-5")),
+            Pinned5,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-6")),
+            Pinned6,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-7")),
+            Pinned7,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-8")),
+            Pinned8,
+            ctx,
+        ),
+        KeyBinding::new(
+            crate::platform::static_keys(&keystroke("ctrl-9")),
+            Pinned9,
+            ctx,
+        ),
     ]);
 }
 

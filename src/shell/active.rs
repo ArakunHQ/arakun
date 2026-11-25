@@ -249,7 +249,7 @@ impl Shell {
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 // Picks its worktree for the bar's actions, as in the list below.
                 let m = ev.modifiers();
-                if m.secondary() || m.shift {
+                if m.secondary(cx) || m.shift {
                     this.toggle_pick(&path, cx);
                 } else {
                     this.drop_pick();

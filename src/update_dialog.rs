@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     fn key(s: &str) -> gpui::Keystroke {
-        gpui::Keystroke::parse(s).unwrap()
+        gpui::Keystroke::parse(crate::platform::static_keys(s)).unwrap()
     }
 
     #[test]

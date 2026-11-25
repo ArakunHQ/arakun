@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
-    ScrollDelta, ScrollWheelEvent, TouchPhase, point, px,
+    ScrollDelta, ScrollEvent, TouchPhase, point, px,
 };
 use serde::{Deserialize, Serialize};
 
@@ -874,7 +874,7 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
         Some("key") if !rest.is_empty() => rest
             .iter()
             .map(|k| {
-                Keystroke::parse(k)
+                Keystroke::parse(crate::platform::static_keys(k))
                     .map(|_| Synth::Key(k.clone()))
                     .map_err(|_| format!("unknown key {k}"))
             })
@@ -1007,7 +1007,7 @@ pub fn play(
             }
             Synth::Scroll { x, y, dy, dx, ctrl } => {
                 window.dispatch_event(
-                    PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    PlatformInput::Scroll(ScrollEvent {
                         position: at(x, y),
                         delta: ScrollDelta::Pixels(point(px(-dx), px(-dy))),
                         modifiers: Modifiers {
@@ -1015,12 +1015,13 @@ pub fn play(
                             ..mods
                         },
                         touch_phase: TouchPhase::Moved,
+                        source: gpui::ScrollSource::Pointer,
                     }),
                     cx,
                 );
             }
             Synth::Key(k) => {
-                if let Ok(k) = Keystroke::parse(&k) {
+                if let Ok(k) = Keystroke::parse(crate::platform::static_keys(&k)) {
                     window.dispatch_keystroke(k.clone(), cx);
                     // Release it too: a focused control runs its click on
                     // the release of Enter or Space.

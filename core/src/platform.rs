@@ -752,6 +752,20 @@ pub fn write_primary(cx: &mut gpui::App, item: gpui::ClipboardItem) {
     let _ = (cx, item);
 }
 
+/// A shortcut as a `&'static str`, which gpui's `KeyBinding::new` takes. Each
+/// distinct text is leaked once and reused, so binding the same keys again
+/// costs nothing new.
+pub fn static_keys(keys: &str) -> &'static str {
+    static KEYS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut known = KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = known.iter().find(|k| **k == keys) {
+        return k;
+    }
+    let k: &'static str = Box::leak(keys.to_owned().into_boxed_str());
+    known.push(k);
+    k
+}
+
 /// Shortcuts are written the Windows and Linux way ("ctrl-k"). macOS takes Cmd
 /// where those take Ctrl, but leaves Ctrl on the keys whose Cmd chord the system
 /// owns (Cmd+Tab switches apps, Cmd+` windows), and goes back and forward with

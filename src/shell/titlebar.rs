@@ -695,6 +695,9 @@ impl Shell {
             TabKind::PostHog => icon("chart-breakout-square", 14.)
                 .text_color(theme::content())
                 .into_any_element(),
+            TabKind::Linear => icon("check-list", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
             TabKind::Doop => icon("paint-board", 14.)
                 .text_color(theme::content())
                 .into_any_element(),

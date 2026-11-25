@@ -852,6 +852,15 @@ fn summarize(text: &str) -> String {
     }
 }
 
+/// What Claude's adapter appends to its system prompt: the window's commands
+/// when there is a window, and always how to draw a picture in the chat.
+fn claude_system_hint(cwd: &Path) -> String {
+    match launch::agent_hint(Some(cwd)) {
+        Some(hint) => format!("{hint}\n\n{}", super::chart::DRAW_NOTE),
+        None => super::chart::DRAW_NOTE.to_string(),
+    }
+}
+
 fn str_of(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
@@ -1944,8 +1953,8 @@ impl Thread {
         let have_history = self.suppress_replay;
         // Droid gets the arakun hint on its command line, OpenCode and Codex in
         // their environment (`launch::resolve`); Claude's adapter takes it here.
-        let meta = match (self.kind, launch::agent_hint(Some(&self.cwd))) {
-            (AgentKind::Claude, Some(hint)) => json!({"systemPrompt": {"append": hint}}),
+        let meta = match self.kind {
+            AgentKind::Claude => json!({"systemPrompt": {"append": claude_system_hint(&self.cwd)}}),
             _ => json!({}),
         };
         self._setup = Some(cx.spawn(async move |this, cx| {
@@ -2486,7 +2495,12 @@ impl Thread {
                 .filter(|e| matches!(e, Entry::User { .. }))
                 .count()
                 <= 1;
-        let hint = if first { super::chart::AGENT_HINT } else { "" };
+        // Claude has it in its system prompt, so its prompts go out as typed.
+        let hint = if first && self.kind != AgentKind::Claude {
+            super::chart::hint(super::chart::DRAW_NOTE)
+        } else {
+            String::new()
+        };
         if let Some(message_id) = message_id {
             return self.native_send(&conn, format!("{text}{hint}"), message_id, images, cx);
         }
@@ -4718,6 +4732,13 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn claude_learns_to_draw_from_its_system_prompt() {
+        let hint = claude_system_hint(Path::new("/p"));
+        assert!(hint.ends_with(crate::agent::chart::DRAW_NOTE));
+        assert!(!hint.contains("<arakun-hint>"));
+    }
 
     #[test]
     fn notes_go_with_the_next_prompt_only_and_stay_out_of_the_chat() {

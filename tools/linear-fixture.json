@@ -1,0 +1,129 @@
+{
+  "sessions": [
+    {
+      "id": "org-acme#user-ada",
+      "user_id": "user-ada",
+      "name": "Ada Lovelace",
+      "email": "ada@acme.test",
+      "workspace_id": "org-acme",
+      "workspace": "Acme",
+      "url_key": "acme",
+      "credential": { "kind": "api_key", "key": "lin_api_fixture" },
+      "added_at": 1764000000
+    }
+  ],
+  "replies": [
+    {
+      "query": "viewer { id name email organization",
+      "body": {
+        "data": {
+          "viewer": {
+            "id": "user-ada",
+            "name": "Ada Lovelace",
+            "email": "ada@acme.test",
+            "organization": { "id": "org-acme", "name": "Acme", "urlKey": "acme" }
+          }
+        }
+      }
+    },
+    {
+      "query": "assignedIssues(",
+      "body": {
+        "data": {
+          "viewer": {
+            "assignedIssues": {
+              "nodes": [
+                {
+                  "id": "iss-1", "identifier": "ENG-142", "title": "Retry failed webhook deliveries",
+                  "url": "https://linear.app/acme/issue/ENG-142/retry-failed-webhook-deliveries",
+                  "priority": 2, "branchName": "ada/eng-142-retry-failed-webhook-deliveries",
+                  "updatedAt": "2026-11-24T16:20:00.000Z",
+                  "state": { "name": "In Progress", "type": "started" },
+                  "team": { "id": "team-eng", "key": "ENG", "name": "Engineering" },
+                  "project": { "id": "proj-hooks", "name": "Webhooks v2" }
+                },
+                {
+                  "id": "iss-2", "identifier": "ENG-137", "title": "Show the sync time in the status bar",
+                  "url": "https://linear.app/acme/issue/ENG-137/show-the-sync-time-in-the-status-bar",
+                  "priority": 3, "branchName": "ada/eng-137-show-the-sync-time-in-the-status-bar",
+                  "updatedAt": "2026-11-23T09:05:00.000Z",
+                  "state": { "name": "In Review", "type": "started" },
+                  "team": { "id": "team-eng", "key": "ENG", "name": "Engineering" },
+                  "project": null
+                },
+                {
+                  "id": "iss-3", "identifier": "ENG-151", "title": "Rate limit the export endpoint",
+                  "url": "https://linear.app/acme/issue/ENG-151/rate-limit-the-export-endpoint",
+                  "priority": 1, "branchName": "ada/eng-151-rate-limit-the-export-endpoint",
+                  "updatedAt": "2026-11-22T14:40:00.000Z",
+                  "state": { "name": "Todo", "type": "unstarted" },
+                  "team": { "id": "team-eng", "key": "ENG", "name": "Engineering" },
+                  "project": { "id": "proj-hooks", "name": "Webhooks v2" }
+                },
+                {
+                  "id": "iss-4", "identifier": "DES-38", "title": "Empty state for the reports page",
+                  "url": "https://linear.app/acme/issue/DES-38/empty-state-for-the-reports-page",
+                  "priority": 3, "branchName": "ada/des-38-empty-state-for-the-reports-page",
+                  "updatedAt": "2026-11-21T11:00:00.000Z",
+                  "state": { "name": "Todo", "type": "unstarted" },
+                  "team": { "id": "team-des", "key": "DES", "name": "Design" },
+                  "project": { "id": "proj-reports", "name": "Reports" }
+                },
+                {
+                  "id": "iss-5", "identifier": "DES-31", "title": "Dark mode colors for charts",
+                  "url": "https://linear.app/acme/issue/DES-31/dark-mode-colors-for-charts",
+                  "priority": 4, "branchName": "ada/des-31-dark-mode-colors-for-charts",
+                  "updatedAt": "2026-11-18T08:30:00.000Z",
+                  "state": { "name": "Backlog", "type": "backlog" },
+                  "team": { "id": "team-des", "key": "DES", "name": "Design" },
+                  "project": { "id": "proj-reports", "name": "Reports" }
+                },
+                {
+                  "id": "iss-6", "identifier": "ENG-120", "title": "Drop the old CSV importer",
+                  "url": "https://linear.app/acme/issue/ENG-120/drop-the-old-csv-importer",
+                  "priority": 0, "branchName": "ada/eng-120-drop-the-old-csv-importer",
+                  "updatedAt": "2026-11-10T17:45:00.000Z",
+                  "state": { "name": "Backlog", "type": "backlog" },
+                  "team": { "id": "team-eng", "key": "ENG", "name": "Engineering" },
+                  "project": null
+                }
+              ],
+              "pageInfo": { "hasNextPage": false, "endCursor": null }
+            }
+          }
+        }
+      }
+    },
+    {
+      "query": "issue(id:",
+      "body": {
+        "data": {
+          "issue": {
+            "id": "iss-1", "identifier": "ENG-142", "title": "Retry failed webhook deliveries",
+            "url": "https://linear.app/acme/issue/ENG-142/retry-failed-webhook-deliveries",
+            "priority": 2, "branchName": "ada/eng-142-retry-failed-webhook-deliveries",
+            "updatedAt": "2026-11-24T16:20:00.000Z",
+            "state": { "name": "In Progress", "type": "started" },
+            "team": { "id": "team-eng", "key": "ENG", "name": "Engineering" },
+            "project": { "id": "proj-hooks", "name": "Webhooks v2" },
+            "description": "A delivery that gets a 5xx is dropped today.\n\n- Retry with backoff: 1 min, 5 min, 30 min.\n- Give up after the third try and mark the delivery failed.\n- Show the attempts on the delivery's page.",
+            "comments": {
+              "nodes": [
+                {
+                  "body": "Should a 429 count as a try? Some customers limit us on purpose.",
+                  "createdAt": "2026-11-22T10:12:00.000Z",
+                  "user": { "name": "Grace Hopper" }
+                },
+                {
+                  "body": "No: wait out the Retry-After and don't count it.",
+                  "createdAt": "2026-11-22T11:03:00.000Z",
+                  "user": { "name": "Ada Lovelace" }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

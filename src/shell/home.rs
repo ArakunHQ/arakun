@@ -212,6 +212,7 @@ impl Shell {
                 self.servers_view.clone().into_any_element()
             }
             Alone::Teams => self.teams_view.clone().into_any_element(),
+            Alone::Linear => self.linear_view.clone().into_any_element(),
             Alone::Usage => {
                 self.usage_shown.set(true);
                 self.usage_view.clone().into_any_element()
@@ -277,6 +278,7 @@ impl Shell {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Alone {
     GitHub,
+    Linear,
     Servers,
     Teams,
     Usage,

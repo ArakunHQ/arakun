@@ -90,6 +90,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         View::Extensions => "nav-extensions",
         View::Cloudflare => "nav-cloudflare",
         View::PostHog => "nav-posthog",
+        View::Linear => "nav-linear",
         View::Doop => "nav-doop",
         #[cfg(feature = "coderlabs")]
         View::Site => "nav-site",
@@ -274,6 +275,7 @@ impl Shell {
             View::Extensions => self.open_extensions_tab(window, cx),
             View::Cloudflare => self.open_cloudflare_tab(window, cx),
             View::PostHog => self.open_posthog_tab(window, cx),
+            View::Linear => self.open_linear_tab(window, cx),
             View::Doop => self.open_doop_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             View::Site => self.open_site_tab(window, cx),

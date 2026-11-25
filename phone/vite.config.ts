@@ -25,6 +25,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["src/test/setup.ts"],
+    // Vitest empties CSS by default; the token lint reads it as ?raw text.
+    css: { include: [/\.css\?raw$/] },
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });

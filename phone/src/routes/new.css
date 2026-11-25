@@ -1,0 +1,14 @@
+/* New session: project, agent and the first message. Fields at 16px (see the composer). */
+.newform { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px var(--gr) calc(var(--bot) + 16px) var(--gl); }
+.newform .chips { padding: 0; margin: 0; }
+.nlabel { font: 500 var(--text-xs) var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-faint); margin-top: 8px; }
+.nfield {
+  width: 100%; background: var(--color-raised); color: var(--color-text); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); padding: 10px 12px; font: 16px/1.35 var(--font-sans); outline: none;
+}
+.nfield:focus { border-color: var(--color-border-strong); }
+select.nfield { height: 44px; -webkit-appearance: none; appearance: none; }
+textarea.nfield { resize: none; min-height: 140px; }
+.newform .btn { margin-top: 12px; }
+/* A column that scrolls: its parts keep their size instead of squeezing to fit. */
+.newform > * { flex: none; }

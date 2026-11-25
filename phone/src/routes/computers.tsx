@@ -52,7 +52,7 @@ export function Computers() {
   if (me.isError) {
     body = (
       <div className="empty">
-        <div className="big">🦝</div>
+        <img className="mascot" src="mascot.svg" alt="" />
         <div>{RELAY.unreachable()}</div>
         <button className="btn outline" onClick={() => location.reload()}>
           Try again
@@ -89,7 +89,7 @@ export function Computers() {
       </section>
     ) : (
       <div className="empty">
-        <div className="big">🦝</div>
+        <img className="mascot" src="mascot.svg" alt="" />
         <div>No computers yet. Sign in on a computer running Arakun.</div>
       </div>
     );

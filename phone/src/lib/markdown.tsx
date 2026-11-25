@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Icon } from "./icons";
+import "./markdown.css";
 
 // A small markdown: paragraphs, headings, lists, fenced and inline code, bold,
 // italics, links, quotes, tables and pictures. Enough for what agents write.

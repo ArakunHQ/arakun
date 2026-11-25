@@ -1,5 +1,6 @@
 import { clock } from "../lib/format";
 import { useLink } from "../lib/link";
+import "./StatusBar.css";
 
 /** Empty while connected: it only keeps the header clear of the notch. Says what is wrong otherwise. */
 export function StatusBar() {

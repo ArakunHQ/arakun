@@ -5,6 +5,8 @@ import { TabBar } from "../components/TabBar";
 import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { connecting, connectingHint, projects } from "../lib/sessions";
+import "./inbox.css";
+import "./sessions.css";
 
 export function Sessions() {
   const inbox = useLink((s) => s.inbox);
@@ -29,7 +31,7 @@ export function Sessions() {
   if (!inbox.length) {
     list = (
       <div className="empty">
-        <div className="big">🦝</div>
+        <img className="mascot" src="mascot.svg" alt="" />
         <div>{connected ? "No sessions yet" : connecting({ pcOffline, host })}</div>
         <div className="hint">{connected ? "Start one on the computer and it shows up here." : connectingHint()}</div>
       </div>

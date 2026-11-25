@@ -6,6 +6,7 @@ import { type PointerEvent, type MouseEvent, useCallback, useEffect, useRef, use
 import { Icon } from "../../lib/icons";
 import type { Entry } from "../../lib/model";
 import { toast } from "../../lib/toast";
+import "./PermissionCard.css";
 
 export interface PermissionOption {
   id: string;
@@ -139,7 +140,7 @@ export function PermissionCard({ permission: p, onAnswer, place, tool }: Permiss
     <div className={`perm${folded ? " folded" : ""}`}>
       <button type="button" className="phead" aria-expanded={!folded} onClick={() => setFolded(!folded)}>
         <span className="label">
-          <Icon name="alert" />
+          <span className="dot needs" />
           Asks permission
         </span>
         {kind ? <span className="kind">{kind}</span> : null}

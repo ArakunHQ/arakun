@@ -2,6 +2,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { RELAY } from "../lib/globals";
 import { nextFatalWait, retryStart } from "../lib/start";
+import "./pair.css";
 
 // The account host failed before saying which way in this is. Never the
 // pairing screen, which has nothing to pair with here. The page asks again by
@@ -27,7 +28,7 @@ export function Fatal() {
   return (
     <div className="screen">
       <div className="pair">
-        <div className="big">🦝</div>
+        <img className="mascot" src="mascot.svg" alt="" />
         <h1>Cannot connect</h1>
         <p>{RELAY.unreachable()}</p>
         {/* Starting over checks everything again; nothing is trusted on the way. */}

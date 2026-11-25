@@ -19,6 +19,7 @@ import { memo, type ReactNode, type Ref, useEffect, useImperativeHandle, useLayo
 import { Icon } from "../../lib/icons";
 import type { Entry, Session } from "../../lib/model";
 import { type Edits, EntryBody, entryClass, estimate, turnEdits } from "./Entry";
+import "./transcript.css";
 
 /** Entries are asked for when the loaded ones come this close to the viewport. */
 export const LOAD_AHEAD = 1500;

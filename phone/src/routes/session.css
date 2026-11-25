@@ -1,0 +1,17 @@
+/* The session screen: its header, and the line that opens what it changed. */
+.chg {
+  display: flex; align-items: center; gap: 8px; margin: -4px var(--gr) 8px var(--gl); padding: 6px 10px; min-height: 44px;
+  border-radius: var(--radius-lg); background: var(--color-raised); border: 1px solid var(--color-border-subtle);
+  font-size: var(--text-lg); color: var(--color-text-muted); text-align: left;
+}
+.chg[hidden] { display: none; }
+.chg:active { background: var(--color-fill-hover); }
+.chg svg { width: 15px; height: 15px; color: var(--color-text-subtle); flex: none; }
+.chg span:nth-child(2) { flex: 1; }
+.chg .stats, .frow .stats, .dmeta .stats { font: var(--text-sm) var(--font-mono); flex: none; }
+/* In a session the header carries who and where; the status is the pill over the composer. */
+.screen[data-session] > .hdr { padding: 4px var(--gr) 10px var(--gl); border-bottom: 1px solid var(--color-border-subtle); }
+.screen[data-session] > .hdr .badge { display: none; }
+.screen[data-session] > .hdr .av { width: 36px; height: 36px; }
+.screen[data-session] > .hdr .av svg { width: 18px; height: 18px; }
+.screen[data-session] > .hdr .sub { margin-top: 2px; }

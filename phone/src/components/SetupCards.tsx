@@ -5,6 +5,7 @@ import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { notifyState, subscribePush } from "../lib/push";
 import { toast } from "../lib/toast";
+import "./SetupCards.css";
 
 export const HIDE_INSTALL = "arakun.hideInstall";
 export const HIDE_NOTIFY = "arakun.hideNotify";
@@ -71,7 +72,7 @@ function Card({ id, icon, title, text, action, onGo, onSkip }: { id: string; ico
         <div className="s">{text}</div>
       </span>
       {action ? (
-        <button className="btn small" onClick={onGo}>
+        <button className="btn outline small" onClick={onGo}>
           {action}
         </button>
       ) : null}

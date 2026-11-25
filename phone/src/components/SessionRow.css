@@ -1,0 +1,30 @@
+/* A session in a list: its agent's tile, the title, what it asks or where it runs. */
+.srow {
+  width: 100%; text-align: left; display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px 2px; border-bottom: 1px solid var(--color-border-subtle);
+}
+.srow:active { background: var(--color-fill-hover); }
+.av {
+  width: 40px; height: 40px; border-radius: var(--radius-lg); flex: none; display: grid; place-items: center;
+  background: var(--color-raised); box-shadow: inset 0 0 0 1px var(--color-border-subtle); color: var(--color-text-muted); font-weight: 600;
+}
+.av svg { width: 20px; height: 20px; }
+.av.claude { color: var(--color-agent-claude); }
+.srow .body { flex: 1; min-width: 0; }
+.srow .t { font-size: var(--text-m-body); font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .s { font: var(--text-md) var(--font-mono); color: var(--color-text-faint); margin-top: 4px; display: flex; gap: 8px; overflow: hidden; white-space: nowrap; }
+.srow .ask-line { margin-top: 2px; font-size: var(--text-m-sub); color: var(--color-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .ask-line.permission { font: var(--text-md) var(--font-mono); color: var(--color-text-muted); }
+.srow .ask-line.error { color: var(--color-error); }
+.srow .right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; padding-top: 2px; }
+.srow .time { font-size: var(--text-md); color: var(--color-text-faint); font-variant-numeric: tabular-nums; }
+.srow .stats { font: var(--text-sm) var(--font-mono); }
+/* The status in Sessions: a dot and a word. */
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); font-weight: 500; color: var(--color-text-subtle); }
+.badge .dot { width: 6px; height: 6px; }
+.badge.working .dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--color-link); animation: pulse 1.2s ease-in-out infinite; }
+.badge.needs_input { color: var(--color-text); }
+.badge.needs_input .dot { background: var(--color-accent-ink); }
+.badge.error { color: var(--color-error); }
+.badge.error .dot { background: var(--color-error); }
+.badge.idle .dot { background: var(--color-success); }

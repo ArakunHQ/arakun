@@ -10,6 +10,7 @@ import { useLink } from "../lib/link";
 import { connecting, connectingHint, needsYou } from "../lib/sessions";
 import { mode } from "../lib/start";
 import type { InboxSession } from "../lib/model";
+import "./inbox.css";
 
 // How far back Finished reaches in the inbox, in seconds.
 const RECENT = 24 * 3600;
@@ -18,8 +19,8 @@ function Group({ kind, name, items }: { kind: string; name: string; items: Inbox
   return (
     <div className={`group ${kind}`}>
       <h2>
-        {kind === "needs" ? <Icon name="alert" size={16} /> : null}
-        {kind === "working" ? <span className="dot" style={{ background: "var(--success)" }} /> : null}
+        {kind === "needs" ? <span className="dot needs" /> : null}
+        {kind === "working" ? <span className="dot working" /> : null}
         {name}
       </h2>
       {items.map((s) => (
@@ -29,12 +30,12 @@ function Group({ kind, name, items }: { kind: string; name: string; items: Inbox
   );
 }
 
-function Tile({ label, n, color }: { label: string; n: number; color?: string }) {
+function Tile({ label, n, dot }: { label: string; n: number; dot?: "needs" | "working" }) {
   return (
     <div className="tile">
       <div className="l">{label}</div>
       <div className="v">
-        {n && color ? <span className="dot" style={{ background: color }} /> : null}
+        {n && dot ? <span className={`dot ${dot}`} /> : null}
         {n}
       </div>
     </div>
@@ -64,20 +65,20 @@ export function Inbox() {
     <div className="screen" data-screen="inbox">
       <StatusBar />
       <div className="ihead">
-        <img className="mark" src="apple-touch-icon.png" alt="" />
-        <span className="host">{host || "Arakun"}</span>
-        <span className={`pill ${connected ? "on" : "off"}`}>
-          <span className="dot" />
-          {connected ? "online" : "away"}
+        <span className="hostchip">
+          <span className={`dot ${connected ? "ok" : "bad"}`} />
+          <span className="host">{host || "Arakun"}</span>
+          <span className="state">{connected ? "online" : "away"}</span>
         </span>
+        <h1>Inbox</h1>
       </div>
       <div className="inbox">
         <NoticeBanners notices={notices} />
         <SetupCards />
         {inbox.length ? (
           <div className="tiles">
-            <Tile label="Needs you" n={needs.length} color="var(--accent)" />
-            <Tile label="Working" n={working.length} color="var(--success)" />
+            <Tile label="Needs you" n={needs.length} dot="needs" />
+            <Tile label="Working" n={working.length} dot="working" />
             <Tile label="Done today" n={recent.length} />
           </div>
         ) : null}
@@ -91,7 +92,7 @@ export function Inbox() {
         ) : null}
         {inbox.length ? null : (
           <div className="empty">
-            <div className="big">🦝</div>
+            <img className="mascot" src="mascot.svg" alt="" />
             <div>{connected ? "No sessions yet" : connecting({ pcOffline, host })}</div>
             <div className="hint">{connected ? "Tap + to start one, or start it on the computer." : connectingHint()}</div>
           </div>

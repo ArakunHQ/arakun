@@ -1,0 +1,30 @@
+/* Usage: a card per agent, a bar per window. */
+.usage { flex: 1; overflow-y: auto; padding: 0 var(--gr) 20px var(--gl); display: flex; flex-direction: column; gap: 16px; }
+.ucard {
+  display: flex; flex-direction: column; gap: 14px; padding: 16px;
+  background: var(--color-raised); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg);
+}
+.uhead { display: flex; align-items: center; gap: 10px; }
+.uhead .grow { flex: 1; min-width: 0; }
+.uhead .logo { width: 18px; height: 18px; flex: none; }
+.uhead .logo.factory {
+  background: var(--color-text); -webkit-mask: url(/factory.svg) center / contain no-repeat; mask: url(/factory.svg) center / contain no-repeat;
+}
+.uname { font-size: var(--text-m-sub); font-weight: 600; }
+.uplan { font-size: var(--text-sm); color: var(--color-text-subtle); margin-top: 1px; }
+.limit { display: flex; flex-direction: column; gap: 6px; }
+.lhead { display: flex; align-items: baseline; gap: 8px; }
+.llabel { flex: 1; min-width: 0; font-size: var(--text-md); color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lval { font-size: var(--text-sm); color: var(--color-text-subtle); font-variant-numeric: tabular-nums; flex: none; }
+.track { height: 6px; border-radius: 999px; background: var(--color-fill-selected); overflow: hidden; }
+/* A bar is the text color; only near or at the limit does it take a status color. */
+.fill { height: 100%; border-radius: 999px; min-width: 0; transition: width 0.3s; background: var(--color-text-muted); }
+.fill.high { background: var(--color-attention); }
+.fill.full { background: var(--color-error); }
+.ubal { display: flex; gap: 8px; font-size: var(--text-md); color: var(--color-text-muted); }
+.ubal .grow { flex: 1; color: var(--color-text-subtle); }
+.uidle { font-size: var(--text-sm); color: var(--color-text-faint); }
+.unote { font-size: var(--text-sm); line-height: 16px; color: var(--color-text-faint); }
+.unote.warn { color: var(--color-attention); }
+.unote.danger { color: var(--color-error); }
+.ufoot { font-size: var(--text-sm); line-height: 17px; color: var(--color-text-faint); }

@@ -2,6 +2,7 @@
 // in the old app.js. Anything can call `toast`; the root shows it.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import "./toast.css";
 
 const SHOW_MS = 2200;
 

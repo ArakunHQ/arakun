@@ -6,6 +6,7 @@ import { useEffect, useReducer } from "react";
 import { Icon } from "../../lib/icons";
 import type { Session } from "../../lib/model";
 import { useArmed } from "./PermissionCard";
+import "./StopRow.css";
 
 export const STOP_WINDOW = 3000;
 

@@ -12,16 +12,15 @@ import { useLink } from "../lib/link";
 import type { Place } from "../lib/model";
 import { AGENTS, agentName, branchOf, currentSetting, formAt, lastPlace, placeFor, projectList, type StartForm, useStartForm } from "../lib/places";
 import { refit } from "../lib/viewport";
+import "./PlusMenu.css";
 
 // How long a press must last to open the menu instead of the tiles.
 const HOLD_MS = 420;
 
-/** A project's tile mark: the raccoon for Arakun's own, else its initial on a tint of its own. */
+/** A project's tile mark: the raccoon for Arakun's own, else its initial. */
 function ProjectMark({ name }: { name: string }) {
-  if (/^(app|arakun)$/i.test(name)) return <img src="apple-touch-icon.png" alt="" />;
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return <span style={{ background: `hsl(${h} 40% 22%)`, color: `hsl(${h} 80% 78%)` }}>{name[0]?.toUpperCase()}</span>;
+  if (/^(app|arakun)$/i.test(name)) return <img src="icon-small.svg" alt="" />;
+  return <span>{name[0]?.toUpperCase()}</span>;
 }
 
 type Layer = null | { kind: "menu" } | { kind: "pick" } | { kind: "quick"; form: StartForm; n: number };

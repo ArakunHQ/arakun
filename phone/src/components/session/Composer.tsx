@@ -12,6 +12,7 @@ import { toast } from "../../lib/toast";
 import { CutsRow, usedCut } from "./Shortcuts";
 import { Shots } from "./Shots";
 import { StopRow } from "./StopRow";
+import "./Composer.css";
 
 const MAX_BOX = 140;
 

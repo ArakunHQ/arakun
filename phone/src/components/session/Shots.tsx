@@ -1,6 +1,7 @@
 // Photos waiting in the composer: a thumbnail each, a tap takes it out.
 
 import type { Shot } from "../../lib/shots";
+import "./Shots.css";
 
 export function Shots({ shots, onRemove }: { shots: Shot[]; onRemove: (index: number) => void }) {
   if (!shots.length) return null;

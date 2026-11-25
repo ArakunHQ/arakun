@@ -8,6 +8,7 @@
 import { useState } from "react";
 import { Icon } from "../../lib/icons";
 import { useArmed } from "./PermissionCard";
+import "./QuestionCard.css";
 
 export interface Question {
   tool_call_id: string;
@@ -55,7 +56,10 @@ export function QuestionCard({ question: q, onAnswer, onSkip }: QuestionCardProp
   return (
     <div className={`ask${folded ? " folded" : ""}`}>
       <button type="button" className="ahead" aria-expanded={!folded} onClick={() => setFolded(!folded)}>
-        <span className="label">Question</span>
+        <span className="label">
+          <span className="dot needs" />
+          Question
+        </span>
         <span className="peek">{qq.question}</span>
         {total > 1 ? (
           <span className="n">

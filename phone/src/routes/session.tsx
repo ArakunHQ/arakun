@@ -27,6 +27,7 @@ import { mode, openSession } from "../lib/start";
 import { toast } from "../lib/toast";
 import { refit } from "../lib/viewport";
 import { OfflineCard } from "./offline";
+import "./session.css";
 
 // The session this screen shows, while it is mounted. Leaving closes the
 // session on the computer, but only once it is sure the screen is not back

@@ -8,6 +8,7 @@ import { BLANK, CUT_SHORT, type Cut, cutName, cutSends, loadCuts, storeCuts } fr
 import { Icon } from "../../lib/icons";
 import { toast } from "../../lib/toast";
 import { SheetHeader } from "./Views";
+import "./Shortcuts.css";
 
 /** The row of shortcuts over the composer. `writing`: the box has the focus. */
 export function CutsRow({ writing, onUse, onMore }: { writing: boolean; onUse: (c: Cut) => void; onMore: () => void }) {

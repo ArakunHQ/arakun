@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 import { dropMachine } from "../lib/account";
 import { pair } from "../lib/pair";
 import { pairMessage, setPairMessage, startLocal } from "../lib/start";
+import "./pair.css";
 
 // The computer's own server: a code from Arakun's Phone panel, traded for a token.
 export function Pair() {
@@ -29,7 +30,7 @@ export function Pair() {
   return (
     <div className="screen">
       <div className="pair">
-        <div className="big">🦝</div>
+        <img className="mascot" src="mascot.svg" alt="" />
         <h1>Pair this phone</h1>
         <p>
           In Arakun, open <b>Phone</b> and press <b>Pair a phone</b>. Scan the code it shows, or type it here.

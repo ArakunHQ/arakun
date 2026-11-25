@@ -6,6 +6,7 @@ import { LinkContext } from "../lib/link";
 import type { InboxSession } from "../lib/model";
 import { asksKind, asksLine } from "../lib/sessions";
 import { openSession } from "../lib/start";
+import "./SessionRow.css";
 
 /** Who runs a session, as a tile: Claude's mark, the cloud for Workers AI, else the agent's first letter. */
 export function AgentAvatar({ agent }: { agent?: string }) {
@@ -18,7 +19,7 @@ export function AgentAvatar({ agent }: { agent?: string }) {
     );
   if (a.includes("workers"))
     return (
-      <span className="av" style={{ color: "#f38020" }}>
+      <span className="av">
         <Icon name="cloud" size={20} />
       </span>
     );

@@ -5,6 +5,7 @@ import { ago } from "../lib/format";
 import { Icon } from "../lib/icons";
 import { LinkContext, useLink } from "../lib/link";
 import { connecting } from "../lib/sessions";
+import "./usage.css";
 
 interface Row {
   label: string;
@@ -127,7 +128,7 @@ export function Usage() {
           </>
         ) : (
           <div className="empty">
-            <div className="big">🦝</div>
+            <img className="mascot" src="mascot.svg" alt="" />
             <div>{connected ? "Reading usage…" : connecting({ pcOffline, host })}</div>
           </div>
         )}

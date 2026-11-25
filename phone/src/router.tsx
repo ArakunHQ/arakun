@@ -21,6 +21,7 @@ import { activeLink, subscribeActiveLink } from "./lib/api";
 import type { LinkEvent } from "./lib/link";
 import { mode, setPairMessage, tappedNotice, whereTo } from "./lib/start";
 import { Toaster, toast } from "./lib/toast";
+import { useViewportFit } from "./lib/viewport";
 import { Resubscribe } from "./components/Resubscribe";
 import { Computers } from "./routes/computers";
 import { Fatal } from "./routes/fatal";
@@ -126,6 +127,8 @@ function Root() {
   const router = useRouter() as Router<any, any>;
   const qc = useQueryClient();
   const path = useRouterState({ select: (s) => s.location.pathname });
+  // The page takes the height the keyboard leaves, on every screen.
+  useViewportFit();
 
   useEffect(() => {
     const go: Go = (to) => void router.navigate({ to });

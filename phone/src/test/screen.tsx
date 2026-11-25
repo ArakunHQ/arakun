@@ -3,44 +3,81 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { type Link, LinkContext } from "../lib/link";
-import { emptyLink, type LinkState } from "../lib/model";
+import { closeSession, emptyLink, type LinkEvent, type LinkState, openSession } from "../lib/model";
 
-export function fakeLink(over: Partial<LinkState> = {}): Link & { sent: unknown[] } {
-  const state = { ...emptyLink(), connected: true, ...over };
+export type FakeLink = Link & {
+  sent: unknown[];
+  /** Changes the state as a message from the computer would. */
+  set(over: Partial<LinkState>): void;
+  emit(e: LinkEvent): void;
+};
+
+export function fakeLink(over: Partial<LinkState> = {}): FakeLink {
+  let state: LinkState = { ...emptyLink(), connected: true, ...over };
   const sent: unknown[] = [];
+  const listeners = new Set<() => void>();
+  const eventListeners = new Set<(e: LinkEvent) => void>();
+  const set = (next: LinkState) => {
+    state = next;
+    for (const fn of listeners) fn();
+  };
   return {
     sent,
-    subscribe: () => () => {},
-    subscribeEvents: () => () => {},
+    subscribe: (fn: () => void) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    subscribeEvents: (fn: (e: LinkEvent) => void) => {
+      eventListeners.add(fn);
+      return () => eventListeners.delete(fn);
+    },
     getState: () => state,
-    send: vi.fn((m) => void sent.push(m)),
+    // As the real link: `open` and `close` change the session in the state too.
+    send: vi.fn((m: { type: string; session?: unknown }) => {
+      sent.push(m);
+      if (m.type === "open" && typeof m.session === "string") set(openSession(state, m.session));
+      else if (m.type === "close") set(closeSession(state));
+    }),
     fetch: vi.fn(),
     reconnectNow() {},
     retryNow() {},
     watchNotice: vi.fn(),
     close() {},
-  } as unknown as Link & { sent: unknown[] };
+    set(o: Partial<LinkState>) {
+      act(() => set({ ...state, ...o }));
+    },
+    emit(e: LinkEvent) {
+      act(() => {
+        for (const fn of eventListeners) fn(e);
+      });
+    },
+  } as unknown as FakeLink;
 }
 
 const PATHS = ["/inbox", "/sessions", "/usage", "/settings", "/new", "/s/$session"];
 
+// Whether `path` is an address of route `p`, such as /s/a of /s/$session.
+const matches = (p: string, path: string) => new RegExp(`^${p.replace(/\$\w+/g, "[^/]+")}$`).test(path);
+
 /** `screen` shown at `path`; the other screens are empty. */
-export async function renderScreen(screen: ReactNode, path: string, link: Link) {
+export async function renderScreen(screen: ReactNode, path: string, link: Link, wrap: (n: ReactNode) => ReactNode = (n) => n) {
   const root = createRootRoute();
-  const routes = PATHS.map((p) => createRoute({ getParentRoute: () => root, path: p, component: () => (p === path ? <>{screen}</> : <div>{p}</div>) }));
+  const routes = PATHS.map((p) => createRoute({ getParentRoute: () => root, path: p, component: () => (matches(p, path) ? <>{screen}</> : <div>{p}</div>) }));
   const router = createRouter({ routeTree: root.addChildren(routes), history: createMemoryHistory({ initialEntries: [path] }) });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await router.load();
   const out = render(
-    <QueryClientProvider client={qc}>
-      <LinkContext.Provider value={link}>
-        <RouterProvider router={router} />
-      </LinkContext.Provider>
-    </QueryClientProvider>,
+    wrap(
+      <QueryClientProvider client={qc}>
+        <LinkContext.Provider value={link}>
+          <RouterProvider router={router} />
+        </LinkContext.Provider>
+      </QueryClientProvider>,
+    ),
   );
   return { ...out, router };
 }

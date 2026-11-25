@@ -2352,9 +2352,13 @@ impl Shell {
         while let Some(i) = self.strip.session_tab(id) {
             self.discard_tab(i, window, cx);
         }
+        let pid = self.phone_id(&path, id).to_string();
         let removed = self
             .find_env_mut(&path)
             .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
+        if removed.is_some() {
+            self.forget_phone_sessions(&[pid]);
+        }
         self.forget_sessions(removed.into_iter().collect(), cx);
         self.save(cx);
         cx.notify();

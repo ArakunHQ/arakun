@@ -34,6 +34,7 @@ beforeEach(() => {
       calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       if (url === "/api/notices" && method === "GET") return json(rows);
       if (url === "/api/notices" && method === "POST") return json({ id: "n9" }, 201);
+      if (url === "/api/notices/n2" && method === "DELETE") return json({ error: "no such notice" }, 404);
       if (url === "/api/notices/n1" && method === "DELETE") {
         rows = rows.filter((n) => n.id !== "n1");
         return new Response(null, { status: 204 });
@@ -55,7 +56,7 @@ describe("Notices", () => {
     const all = within(await screen.findByRole("listitem", { name: "Maintenance on Friday" }));
     expect(all.getByText("Everyone")).toBeTruthy();
     expect(all.getByText(/read by 7/)).toBeTruthy();
-    expect(all.queryByText("ended")).toBeNull();
+    expect(all.getByText(/ends/)).toBeTruthy();
     const one = within(screen.getByRole("listitem", { name: "Your plan changed" }));
     expect(one.getByRole("link", { name: "octocat" }).getAttribute("href")).toBe("/users/1002");
     const link = one.getByRole("link", { name: "https://example.com/plan" });
@@ -63,7 +64,7 @@ describe("Notices", () => {
     // A link that is not https is not a link; an ended notice stays listed.
     const old = within(screen.getByRole("listitem", { name: "Old news" }));
     expect(old.getByRole("link", { name: "GitHub ID 1003" }).getAttribute("href")).toBe("/users/1003");
-    expect(old.getByText("ended")).toBeTruthy();
+    expect(old.getByText(/ended/)).toBeTruthy();
     expect(old.queryByText(/javascript/)).toBeNull();
   });
 
@@ -105,5 +106,17 @@ describe("Notices", () => {
     await userEvent.click(dialog.getByRole("button", { name: "Take back" }));
     await waitFor(() => expect(calls).toContainEqual({ method: "DELETE", url: "/api/notices/n1", body: undefined }));
     await waitFor(() => expect(screen.queryByRole("listitem", { name: "Maintenance on Friday" })).toBeNull());
+  });
+
+  it("shows a failed take-back in its own row only", async () => {
+    renderRoute("/notices");
+    const row = within(await screen.findByRole("listitem", { name: "Your plan changed" }));
+    await userEvent.click(row.getByRole("button", { name: "Take back" }));
+    await userEvent.click(within(row.getByRole("dialog")).getByRole("button", { name: "Take back" }));
+    expect((await row.findByRole("alert")).textContent).toBe("no such notice");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    const other = within(screen.getByRole("listitem", { name: "Maintenance on Friday" }));
+    expect(other.queryByRole("alert")).toBeNull();
+    expect((other.getAllByRole("button", { name: "Take back" })[0] as HTMLButtonElement).disabled).toBe(false);
   });
 });

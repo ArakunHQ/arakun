@@ -543,6 +543,7 @@ textarea.input {
 }
 
 /* On a narrow screen the meta text wraps to its own line: left-aligned, like the rest of the row. */
+/* A media query cannot read a custom property, so the width is written here. */
 @media (max-width: 40em) {
   .row-meta {
     flex-basis: 100%;

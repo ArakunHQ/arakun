@@ -12,7 +12,6 @@ export const Route = createFileRoute("/notices")({
 
 function Notices() {
   const notices = useQuery(noticesQuery);
-  const take = useDeleteNotice();
   return (
     <>
       <h1>Notices</h1>
@@ -27,14 +26,9 @@ function Notices() {
       ) : (
         <ul className="rows">
           {notices.data.map((n) => (
-            <Notice key={n.id} notice={n} pending={take.isPending} onTakeBack={() => take.mutate(n.id)} />
+            <Notice key={n.id} notice={n} />
           ))}
         </ul>
-      )}
-      {take.error && (
-        <p className="message" data-tone="error" role="alert">
-          {take.error.message}
-        </p>
       )}
       <section className="section">
         <h2>Send a notice</h2>
@@ -44,7 +38,9 @@ function Notices() {
   );
 }
 
-function Notice({ notice: n, pending, onTakeBack }: { notice: NoticeRow; pending: boolean; onTakeBack: () => void }) {
+function Notice({ notice: n }: { notice: NoticeRow }) {
+  // Per row, so a failure shows next to the notice it is about and only this row waits.
+  const take = useDeleteNotice();
   const ended = n.expires_at !== null && n.expires_at <= Date.now() / 1000;
   return (
     <li className="row" aria-label={n.text}>
@@ -56,7 +52,6 @@ function Notice({ notice: n, pending, onTakeBack }: { notice: NoticeRow; pending
           {n.login || `GitHub ID ${n.github_id}`}
         </Link>
       )}
-      {ended && <span className="chip">ended</span>}
       {n.url !== null && n.url.startsWith("https://") && (
         <a href={n.url} rel="noreferrer">
           {n.url}
@@ -76,11 +71,16 @@ function Notice({ notice: n, pending, onTakeBack }: { notice: NoticeRow; pending
         body={<p>Nobody will see it again.</p>}
         confirmLabel="Take back"
         danger
-        disabled={pending}
-        onConfirm={onTakeBack}
+        disabled={take.isPending}
+        onConfirm={() => take.mutate(n.id)}
       >
         Take back
       </Confirm>
+      {take.error && (
+        <p className="message" data-tone="error" role="alert">
+          {take.error.message}
+        </p>
+      )}
     </li>
   );
 }

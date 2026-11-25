@@ -40,7 +40,11 @@ cloud/
                         DELETE /admin/users/<github_id>/sessions,
                         PUT|DELETE /admin/users/<github_id>/block,
                         PUT /admin/users/<github_id>/plan, GET /admin/machines,
-                        POST /admin/notices, DELETE /admin/notices/<id>
+                        POST /admin/notices, DELETE /admin/notices/<id>,
+                        GET /admin/cloud/requests,
+                        PUT /admin/cloud/requests/<github_id>/grant|decline
+  src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
+                        operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets
@@ -290,6 +294,13 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler secret put GITHUB_CLIENT_SECRET --env production
    ```
 
+   Optionally, a Discord webhook URL that hears of each new request for cloud
+   access (see Cloud access). Without it, nothing is posted:
+
+   ```sh
+   npx wrangler secret put CLOUD_REQUESTS_WEBHOOK --env production
+   ```
+
 4. Deploy:
 
    ```sh
@@ -515,6 +526,33 @@ printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
   curl -fsS -X DELETE -H @- "https://<host>/admin/users/<id>/sessions"
 ```
 
+## Cloud access
+
+Cloud environments run on CPU we pay for, so they need the `cloud` flag, and an
+account asks for it rather than getting it at sign-in. The app calls
+`POST /cloud/access`; the request keeps what GitHub's public profile said about the
+account then (when it was made, public repositories, followers, following) for the
+review. One request per GitHub account. A declined account may ask again after
+30 days (`DECLINE_COOLDOWN_DAYS` in `src/cloud_access.ts`). Revoking the `cloud`
+flag of a granted account lets it ask again; to keep someone out, block the account.
+
+With `CLOUD_REQUESTS_WEBHOOK` set, each new request is posted to that Discord
+webhook: the login, the GitHub ID, the account's age, public repositories and
+followers. Never the reason the person wrote, an email or a token.
+
+```sh
+read -rs ADMIN_SECRET
+auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
+# the requests: pending first, oldest first, then the decided ones. ?status=pending for only those
+auth | curl -fsS -H @- "https://<host>/admin/cloud/requests"
+# grant one: the request and the `cloud` flag. "by" is optional, at most 100 characters
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/cloud/requests/<github_id>/grant"
+# decline a pending one
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
+  "https://<host>/admin/cloud/requests/<github_id>/decline"
+```
+
 To see who has which flag:
 
 ```sh
@@ -537,6 +575,11 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |
 | `DELETE /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Takes it away: `200 {github_id, flags}`. |
 | `DELETE /admin/users/<github_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {github_id, closed}`, with how many ended. |
+| `GET /cloud/access` with the session | `200 {status, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `granted` or `declined`; a time is `null` where it does not apply, and `retry_at` is set only for `declined`: when the account may ask again. `401` without a session. |
+| `POST /cloud/access` with the session, `{"reason"?: "..."}` | Asks for cloud access: `201` with the same shape, `pending`. `400` for a reason over 500 characters, `401` without a session, `403 {error: "blocked"}` for a blocked account, `409 {error, status, requested_at, decided_at, retry_at}` when the account has asked already (`already pending`), has access (`already granted`) or was declined less than 30 days ago (`declined recently`), `429` after 5 a minute. |
+| `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
+| `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
+| `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
 | `GET /healthz` | `200 {"ok": true}` |
 
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or

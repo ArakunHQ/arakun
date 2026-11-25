@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { createExecutionContext, env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker from "../../src/index";
 import { parsePcFrame, parsePhoneFrame } from "../../src/relay/frames";
@@ -70,7 +70,7 @@ describe("an old host under a label", () => {
   });
 
   it("names the account host in that answer when one is set", async () => {
-    const res = await worker.fetch(new Request(`https://${LABEL}.arakun.dev/_relay`), { ...env, ACCOUNT_HOST: "Account.Example.com" });
+    const res = await worker.fetch(new Request(`https://${LABEL}.arakun.dev/_relay`), { ...env, ACCOUNT_HOST: "Account.Example.com" }, createExecutionContext());
     expect(res.status).toBe(410);
     expect(await res.json()).toEqual({ update: true, account_host: "account.example.com" });
   });

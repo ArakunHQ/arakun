@@ -137,7 +137,7 @@ describe("without ADMIN_SECRET", () => {
     const unset = { ...env, ADMIN_SECRET: undefined };
     for (const authorization of ["Bearer test-secret", "Bearer ", "Bearer undefined"]) {
       const req = new Request("https://teams.test/admin/users/1001/flags/teams", { method: "PUT", headers: { Authorization: authorization } });
-      expect((await admin(req, unset, "/admin/users/1001/flags/teams")).status, authorization).toBe(401);
+      expect((await admin(req, unset, new URL(req.url))).status, authorization).toBe(401);
     }
   });
 });

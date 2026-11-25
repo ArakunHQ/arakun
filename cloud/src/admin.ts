@@ -10,12 +10,17 @@
 //   GET    /admin/machines                        → every registered machine
 //   POST   /admin/notices                         → a notice for one account or all, { github_id?, text, url?, expires_at? }
 //   DELETE /admin/notices/<id>                    → takes it back
+//   GET    /admin/cloud/requests                  → requests for cloud access, pending first
+//   PUT    /admin/cloud/requests/<github_id>/grant   → grants one and the `cloud` flag, { by? }
+//   PUT    /admin/cloud/requests/<github_id>/decline → declines a pending one, { by? }
 //
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
 // Block, plan and notice delete answer 204; a new notice answers { id }. Each of them, and the sessions route, makes the
-// account's machine objects recheck their sockets at once.
+// account's machine objects recheck their sockets at once. The cloud request
+// routes answer with the request (cloud_access.ts).
 
+import { decideRequest, listRequests } from "./cloud_access";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
 import { GITHUB_ID, bearer, error, flagList, flagsQuery, isObject, jsonBody, now, sha256, type Env } from "./util";
@@ -26,7 +31,8 @@ const PLAN = /^[a-z][a-z0-9_]{0,31}$/;
 const MAX_REASON = 500;
 const MAX_BODY = 4096;
 
-export async function admin(request: Request, env: Env, path: string): Promise<Response> {
+export async function admin(request: Request, env: Env, url: URL): Promise<Response> {
+  const path = url.pathname;
   if (!(await authorized(request, env))) return error(401, "unauthorized");
   const flag = /^\/admin\/users\/([^/]+)\/flags\/([^/]+)$/.exec(path);
   if (flag && (request.method === "PUT" || request.method === "DELETE")) return setFlag(request.method, env, flag[1]!, flag[2]!);
@@ -41,6 +47,9 @@ export async function admin(request: Request, env: Env, path: string): Promise<R
   if (path === "/admin/notices" && request.method === "POST") return createNotice(request, env);
   const notice = /^\/admin\/notices\/([^/]+)$/.exec(path);
   if (notice && request.method === "DELETE") return deleteNotice(env, notice[1]!);
+  if (path === "/admin/cloud/requests" && request.method === "GET") return listRequests(env, url);
+  const decide = /^\/admin\/cloud\/requests\/([^/]+)\/(grant|decline)$/.exec(path);
+  if (decide && request.method === "PUT") return decideRequest(request, env, decide[1]!, decide[2] as "grant" | "decline");
   return error(404, "not found");
 }
 

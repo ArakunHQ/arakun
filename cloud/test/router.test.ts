@@ -1,4 +1,4 @@
-import { env, SELF } from "cloudflare:test";
+import { createExecutionContext, env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 
@@ -86,7 +86,7 @@ describe("the one Worker", () => {
 });
 
 describe("the account host", () => {
-  const withHost = (url: string) => worker.fetch(new Request(url), { ...env, ACCOUNT_HOST: "app.arakun.dev" });
+  const withHost = (url: string) => worker.fetch(new Request(url), { ...env, ACCOUNT_HOST: "app.arakun.dev" }, createExecutionContext());
 
   it("is any host that is not a label while ACCOUNT_HOST is unset", async () => {
     for (const host of ["app.arakun.dev", "other.arakun.dev", "arakun-cloud.someone.workers.dev"]) {

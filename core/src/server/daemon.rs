@@ -862,6 +862,11 @@ fn there(path: &Path) -> std::io::Result<bool> {
     path.try_exists()
 }
 
+/// The session list's status; see [`Status::listed`].
+fn listed_status(t: &Thread) -> Status {
+    status_of(t).listed(t.in_background())
+}
+
 /// What a session is doing. A prompt still waiting for the agent to connect
 /// already counts as work: nobody is looking at a window here to see that it
 /// is on its way, and an agent that reads as idle is let go.
@@ -1600,7 +1605,7 @@ impl Daemon {
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission if installing => {}
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
-                let status = status_of(thread.read(cx));
+                let status = listed_status(thread.read(cx));
                 if let Some(s) = self.store.session_mut(id)
                     && s.status != status
                 {
@@ -1626,6 +1631,15 @@ impl Daemon {
             ThreadEvent::SubagentsChanged { .. } => {
                 self.follow_subagents(id, cx);
                 self.subagents_changed(id, cx);
+                // The thread stays idle while subagents come and go, so no
+                // other event says the session works again or is done now.
+                let status = listed_status(thread.read(cx));
+                if let Some(s) = self.store.session_mut(id)
+                    && s.status != status
+                {
+                    s.status = status;
+                    s.updated = unix_now();
+                }
                 // The background work is done: keep what it did, and let the agent go.
                 if !thread.read(cx).in_background() {
                     self.save_transcript(id, cx);
@@ -1634,7 +1648,7 @@ impl Daemon {
             }
             ThreadEvent::Finished { stop_reason } => {
                 let t = thread.read(cx);
-                let (status, (added, removed), meta) = (status_of(t), t.diff_stats(), t.meta());
+                let (status, (added, removed), meta) = (listed_status(t), t.diff_stats(), t.meta());
                 if let Some(s) = self.store.session_mut(id) {
                     s.status = status;
                     (s.added, s.removed) = (added, removed);
@@ -2456,6 +2470,7 @@ impl Daemon {
             ThreadEvent::StatusChanged
                 | ThreadEvent::NeedsPermission
                 | ThreadEvent::TitleChanged
+                | ThreadEvent::SubagentsChanged { .. }
                 | ThreadEvent::Finished { .. }
         ) && self.transport.client_count() > 0
         {

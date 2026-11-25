@@ -81,6 +81,11 @@ fn agent_version(title: &str) -> Option<&str> {
     .then_some(v)
 }
 
+/// The session list's status; see [`Status::listed`].
+fn listed_status(t: &Thread) -> Status {
+    status_of(t).listed(t.in_background())
+}
+
 pub fn status_of(t: &Thread) -> Status {
     match t.status() {
         ThreadStatus::NeedsInput => Status::NeedsInput,
@@ -430,7 +435,7 @@ impl Shell {
             if session.auto_allow {
                 thread.update(cx, |t, _| t.set_auto_allow(true));
             }
-            session.status = status_of(thread.read(cx));
+            session.status = listed_status(thread.read(cx));
             session.live = Some(LiveSession {
                 thread,
                 view,
@@ -525,6 +530,22 @@ impl Shell {
                 if spawned.is_some() {
                     self.subagent_spawned(id, cx);
                 }
+                // The thread stays idle while subagents come and go, so no
+                // other event says the session works again or is done now.
+                let status = listed_status(thread.read(cx));
+                let away = !self
+                    .sessions_on_screen()
+                    .iter()
+                    .any(|(p, sid)| p.as_path() == env_path && sid.as_ref() == id.as_ref());
+                if let Some(s) = self.session_mut(env_path, id)
+                    && s.status != status
+                {
+                    // Done while the user looked elsewhere: it waits on them until opened.
+                    s.unread |= away && s.status == Status::Working && status == Status::Idle;
+                    s.status = status;
+                    s.updated = model::unix_now();
+                    self.feed_island(window, cx);
+                }
                 // The background work is done: keep what it did, and let the agent go if hidden.
                 if !thread.read(cx).in_background() {
                     self.save_transcript(env_path, id, cx);
@@ -563,7 +584,7 @@ impl Shell {
                 cx.notify();
             }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => {
-                let status = status_of(thread.read(cx));
+                let status = listed_status(thread.read(cx));
                 if status == Status::Error {
                     report_failure(thread, false, cx);
                 }
@@ -588,7 +609,7 @@ impl Shell {
                     &[("agent", t.kind().id()), ("stop_reason", stop_reason)],
                     seconds.as_slice(),
                 );
-                let (status, (added, removed), meta) = (status_of(t), t.diff_stats(), t.meta());
+                let (status, (added, removed), meta) = (listed_status(t), t.diff_stats(), t.meta());
                 let transcript = t.transcript(cx);
                 let mut turns: Vec<crate::memory::Turn> = Vec::new();
                 let mut since = None;

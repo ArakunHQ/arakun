@@ -260,6 +260,8 @@ export class Relay extends DurableObject<Env> {
   /// its plan allows (a label it has already does not count again). One
   /// statement, so two claims at once cannot both get the last place, and a
   /// sign-out or block cannot slip in between the check and the write.
+  /// A cloud session counts as signed out at any label but its own. The
+  /// Worker refuses it first; this holds should a door ever forget.
   private async register(
     tag: Tag & { role: "pc" },
     pub: string,
@@ -274,7 +276,8 @@ export class Relay extends DurableObject<Env> {
          WHERE (EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND github_id = ?2)
                 OR (SELECT COUNT(*) FROM machines WHERE github_id = ?2) < ?7)
            AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.github_id = s.github_id
-                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL)
+                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL
+                         AND (s.machine_label IS NULL OR s.machine_label = ?1))
          ON CONFLICT (label) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at
          WHERE machines.github_id = excluded.github_id`,
       )
@@ -285,9 +288,9 @@ export class Relay extends DurableObject<Env> {
       db
         .prepare(
           `SELECT u.blocked_at IS NOT NULL AS blocked FROM sessions s JOIN users u ON u.github_id = s.github_id
-           WHERE s.token_hash = ? AND s.github_id = ? AND s.expires_at > ?`,
+           WHERE s.token_hash = ?1 AND s.github_id = ?2 AND s.expires_at > ?3 AND (s.machine_label IS NULL OR s.machine_label = ?4)`,
         )
-        .bind(tag.session, tag.account, now),
+        .bind(tag.session, tag.account, now, tag.label),
       db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(tag.label),
     ]);
     const row = session!.results[0] as { blocked: number } | undefined;
@@ -340,7 +343,8 @@ export class Relay extends DurableObject<Env> {
   /// one read of its session, its account's block and the machine's account.
   /// D1 lets other events in while it answers. A recheck among them was asked
   /// for by a sign-out or a block that this read may have missed, and it did
-  /// not see this socket, so the read is made again.
+  /// not see this socket, so the read is made again. A cloud session is never
+  /// a device's, whatever the Worker let through.
   private async standing(admitted: Admitted): Promise<string | null> {
     for (;;) {
       const before = this.rechecks;
@@ -348,7 +352,7 @@ export class Relay extends DurableObject<Env> {
         `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
                 (SELECT github_id FROM machines WHERE label = ?2) AS owner
          FROM sessions s JOIN users u ON u.github_id = s.github_id
-         WHERE s.token_hash = ?1 AND s.expires_at > ?3`,
+         WHERE s.token_hash = ?1 AND s.expires_at > ?3 AND s.machine_label IS NULL`,
       )
         .bind(admitted.session, admitted.label, seconds(Date.now()))
         .first<SessionRow & { owner: number | null }>();

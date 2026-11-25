@@ -2310,7 +2310,7 @@ impl SettingsDialog {
                 dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
                 dim(
                     layout.applies(Opt::Sort),
-                    row("Sort sessions", "In the sidebar tree; Latest puts the last used on top", sort),
+                    row("Sort sessions", "In the sidebar tree; Recent puts the last one that moved on top", sort),
                 ),
                 dim(
                     layout.applies(Opt::Quiet),

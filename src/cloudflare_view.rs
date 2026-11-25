@@ -208,6 +208,9 @@ pub struct CloudflareView {
     focus: FocusHandle,
     scroll: ScrollHandle,
     _subs: [Subscription; 2],
+    /// Whether the tab is on screen in a window in front; the MCP check only
+    /// runs then.
+    shown: bool,
     _poll: Task<()>,
     /// A reload waiting for Cloudflare's analytics rate limit to reset.
     _retry: Option<Task<()>>,
@@ -240,9 +243,14 @@ impl CloudflareView {
             loop {
                 cx.background_executor().timer(POLL).await;
                 tick += 1;
-                let Ok(agent) = this.read_with(cx, |this, _| this.agent) else {
+                let Ok((agent, shown)) = this.read_with(cx, |this, _| (this.agent, this.shown))
+                else {
                     break;
                 };
+                // It parses `~/.claude.json`, often several MB.
+                if !shown {
+                    continue;
+                }
                 let configured = cx
                     .background_spawn(crate::guard::task(async move {
                         cloudflare::mcp_server(agent).is_some()
@@ -306,6 +314,7 @@ impl CloudflareView {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _subs: subs,
+            shown: false,
             _poll: poll,
             _retry: None,
             _warm: warm,
@@ -314,6 +323,15 @@ impl CloudflareView {
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus, cx);
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The shell says whether this tab is on screen in a window in front.
+    pub fn set_shown(&mut self, shown: bool) {
+        self.shown = shown;
     }
 
     pub fn set_roots(&mut self, roots: Vec<PathBuf>) {

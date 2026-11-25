@@ -94,6 +94,16 @@ impl Sort {
             Sort::Environment => "As listed",
         }
     }
+
+    /// Whether the sessions with an open tab go above the rest, a rule
+    /// between them. An order that lists the sessions as they are kept
+    /// leaves every one in its place.
+    pub fn open_tabs_first(self) -> bool {
+        match self {
+            Sort::Recent | Sort::Name => true,
+            Sort::Environment => false,
+        }
+    }
 }
 
 /// How a title too long for its row shows in the sidebar. Tabs always cut.
@@ -370,5 +380,12 @@ mod tests {
         let labels: Vec<_> = Sort::ALL.into_iter().map(Sort::label).collect();
         assert_eq!(labels, ["Recent", "Name", "By environment"]);
         assert!(Sort::ALL.into_iter().all(|s| !s.hint().is_empty()));
+    }
+
+    #[test]
+    fn only_the_orders_that_move_sessions_put_open_tabs_first() {
+        assert!(Sort::Recent.open_tabs_first());
+        assert!(Sort::Name.open_tabs_first());
+        assert!(!Sort::Environment.open_tabs_first());
     }
 }

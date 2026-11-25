@@ -112,14 +112,29 @@ impl RowState {
         }
     }
 
+    /// Something the user has to see to: it stays lit and keeps its word
+    /// whatever else the row would do.
+    fn wants(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Failed | Self::CiFailed)
+    }
+
+    /// Whether a row in this state is drawn at full strength even when its
+    /// session has no tab open: the state wins over the dimming.
+    fn stays_lit(self) -> bool {
+        self.wants() || self == Self::Working
+    }
+
     /// What the end of a row says: the state when it wants the user (or
-    /// always, when states show as words), else the pull request.
-    fn end(self, style: StateMark, pr: Option<u64>) -> Option<String> {
-        let wants = matches!(self, Self::NeedsYou | Self::Failed | Self::CiFailed);
-        if (wants || style == StateMark::Word)
+    /// always, when states show as words); else, under the pointer, how
+    /// long ago the session moved (`age`); else the pull request.
+    fn end(self, style: StateMark, pr: Option<u64>, age: Option<&str>) -> Option<String> {
+        if (self.wants() || style == StateMark::Word)
             && let Some(word) = self.word()
         {
             return Some(word.into());
+        }
+        if let Some(age) = age {
+            return Some(age.into());
         }
         pr.map(|n| format!("#{n}"))
     }
@@ -185,16 +200,59 @@ struct Row {
     /// Not working, not archived yet and not on a server: the same rule as
     /// the context menu's Archive.
     can_archive: bool,
+    /// It has a tab open. Without one the row is drawn dimmed.
+    tab: bool,
+    /// It sits above the rule, with the sessions that have a tab open
+    /// (`sort_rows` sets it).
+    top: bool,
 }
 
+/// Where each session sat when the pointer came over the tree: its place in
+/// its list, and whether above the rule.
+pub(super) type HeldRows = std::collections::HashMap<SharedString, (usize, bool)>;
+
 /// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
-/// that tie keep the environments' order.
-fn sort_rows(rows: &mut [Row], sort: Sort) {
+/// that tie keep the environments' order. An order that moves sessions puts
+/// the ones with an open tab on top, each side in that order. With the
+/// pointer over the tree (`held`), every row stays where it was instead: a
+/// row never leaves from under the pointer. A session that came since goes
+/// first.
+fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     match sort {
         Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
         Sort::Name => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
         Sort::Environment => {}
     }
+    let split = sort.open_tabs_first();
+    if split {
+        rows.sort_by_key(|r| !r.tab);
+    }
+    for r in rows.iter_mut() {
+        r.top = split && r.tab;
+    }
+    if let Some(held) = held {
+        for r in rows.iter_mut() {
+            if let Some((_, top)) = held.get(&r.id) {
+                r.top = *top;
+            }
+        }
+        rows.sort_by_key(|r| held.get(&r.id).map_or(0, |(place, _)| place + 1));
+    }
+}
+
+/// The rule between the sessions with an open tab and the rest.
+fn tree_rule(grouped: bool) -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(1.))
+        .my(crate::ui::sp(4.))
+        .mr(crate::ui::sp(8.))
+        .ml(if grouped {
+            px(14.) + crate::ui::sp(8.)
+        } else {
+            crate::ui::sp(8.)
+        })
+        .bg(theme::border_subtle())
 }
 
 impl Shell {
@@ -228,6 +286,8 @@ impl Shell {
                     pr,
                     updated: s.updated,
                     can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
+                    tab: self.strip.session_tab(&s.id).is_some(),
+                    top: false,
                 });
             }
         }
@@ -240,6 +300,7 @@ impl Shell {
     /// narrows to the titles it matches and opens every project.
     fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
         let layout = crate::tab_layout::current();
+        let held = self.tree_held.as_ref();
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             if let Some(q) = query {
@@ -249,7 +310,7 @@ impl Shell {
         };
         if !layout.group {
             let mut rows: Vec<Row> = (0..self.projects.len()).flat_map(rows_of).collect();
-            sort_rows(&mut rows, layout.sort);
+            sort_rows(&mut rows, layout.sort, held);
             return vec![TreeProject {
                 pi: None,
                 rows,
@@ -263,7 +324,7 @@ impl Shell {
             if query.is_some() && rows.is_empty() {
                 continue;
             }
-            sort_rows(&mut rows, layout.sort);
+            sort_rows(&mut rows, layout.sort, held);
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
             let user = self.tree_open.get(&project.path).copied();
@@ -288,6 +349,20 @@ impl Shell {
             });
         }
         out
+    }
+
+    /// Where every session sits now, to hold it there while the pointer is
+    /// over the tree.
+    fn tree_places(&self, cx: &App) -> HeldRows {
+        self.tree_listing(None, cx)
+            .into_iter()
+            .flat_map(|p| {
+                p.rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(place, r)| (r.id, (place, r.top)))
+            })
+            .collect()
     }
 
     /// The sessions the tree shows, top to bottom: what Shift+click picks
@@ -646,6 +721,12 @@ impl Shell {
             .on_drop(cx.listener(|this, d: &super::drag::DraggedTab, _, cx| {
                 this.lifted_tab = None;
                 this.unpin_tab(d.id, cx)
+            }))
+            // The rows hold their places while the pointer is over the
+            // tree, and take the order's again once it leaves.
+            .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                this.tree_held = over.then(|| this.tree_places(cx));
+                cx.notify();
             }));
         if heading {
             list = list.child(self.render_tree_heading(cx));
@@ -668,7 +749,12 @@ impl Shell {
                 ));
             }
             if open {
+                let mut above = false;
                 for row in rows {
+                    if above && !row.top {
+                        list = list.child(tree_rule(layout.group));
+                    }
+                    above = row.top;
                     let selected = open_id.as_ref() == Some(&row.id);
                     list = list.child(self.render_tree_row(row, selected, &layout, cx));
                 }
@@ -760,6 +846,9 @@ impl Shell {
                 .when(open, |d| d.bg(theme::fill_selected()))
                 .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
                     cx.stop_propagation();
+                    // The pointer is on the tree's own heading: let go of
+                    // the rows, or the order picked would wait for it to leave.
+                    this.tree_held = None;
                     this.open_composer_menu(MenuTarget::TreeSort, ev.position(), cx)
                 })),
             )
@@ -891,8 +980,10 @@ impl Shell {
             agent,
             state,
             pr,
-            updated: _,
+            updated,
             can_archive,
+            tab,
+            top: _,
         } = row;
         let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
@@ -902,14 +993,21 @@ impl Shell {
         let shell = cx.entity();
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the end of the row gives up.
-        let archive_shown = can_archive && self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
+        let under_pointer = self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
+        let archive_shown = can_archive && under_pointer;
         let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
         } else {
             title
         };
-        let end = state.end(layout.state, pr);
+        // The age shows only under the pointer, so the title has the row's
+        // whole width the rest of the time.
+        let age = under_pointer.then(|| model::age(updated));
+        let end = state.end(layout.state, pr, age.as_deref());
+        // A session with no tab open is a click away, not in use: its row
+        // steps back, unless something runs in it or it wants the user.
+        let dimmed = !tab && !selected && !state.stays_lit();
         let two_lines = layout.titles == LongTitles::TwoLines;
         let label = match state.word() {
             Some(word) => format!("{title}, {word}"),
@@ -937,6 +1035,8 @@ impl Shell {
             .text_size(px(ui::TEXT_MD))
             .text_color(if selected || state == RowState::NeedsYou {
                 theme::content()
+            } else if dimmed {
+                theme::text_subtle()
             } else {
                 theme::text_muted()
             })
@@ -944,7 +1044,13 @@ impl Shell {
             .when(!selected, |d| {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
-            .children(state.mark(layout.state))
+            .children(state.mark(layout.state).map(|mark| {
+                div()
+                    .flex()
+                    .flex_none()
+                    .when(dimmed, |d| d.opacity(0.5))
+                    .child(mark)
+            }))
             // Without project headings, each row says its project.
             .when(!layout.group, |d| {
                 d.child(
@@ -968,15 +1074,16 @@ impl Shell {
                             d.truncate()
                         }
                     })
-                    // Room for the archive button, so it never covers the title.
-                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
                     .child(title),
             )
-            .children(end.filter(|_| !archive_shown).map(|text| {
+            .children(end.map(|text| {
                 div()
                     .flex_none()
                     .text_size(px(ui::TEXT_XS))
                     .text_color(state.word_color())
+                    // Room for the archive button, so it never covers the
+                    // end of the row.
+                    .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
                     .child(text)
             }))
             // Small and faint: the tab in the bar already says it.
@@ -989,7 +1096,7 @@ impl Shell {
                         .child(icon("pin", 11.).text_color(theme::text_faint())),
                 )
             })
-            // On hover, what the row ends with gives way to an archive button.
+            // On hover, an archive button comes after what the row ends with.
             .when(archive_shown, |d| {
                 d.child(
                     div().absolute().right(crate::ui::sp(4.)).child(
@@ -1074,29 +1181,72 @@ mod tests {
     fn the_end_of_a_row_names_what_wants_you_else_the_pull_request() {
         use RowState::*;
         assert_eq!(
-            NeedsYou.end(StateMark::Icon, Some(5)).as_deref(),
+            NeedsYou.end(StateMark::Icon, Some(5), None).as_deref(),
             Some("Needs you")
         );
         assert_eq!(
-            CiFailed.end(StateMark::Icon, None).as_deref(),
+            CiFailed.end(StateMark::Icon, None, None).as_deref(),
             Some("CI failed")
         );
         assert_eq!(
-            Working.end(StateMark::Icon, Some(677)).as_deref(),
+            Working.end(StateMark::Icon, Some(677), None).as_deref(),
             Some("#677")
         );
         assert_eq!(
-            Passed.end(StateMark::Dot, Some(682)).as_deref(),
+            Passed.end(StateMark::Dot, Some(682), None).as_deref(),
             Some("#682")
         );
-        assert_eq!(Idle.end(StateMark::Icon, None), None);
+        assert_eq!(Idle.end(StateMark::Icon, None, None), None);
         // As words, every state but idle says itself.
         assert_eq!(
-            Working.end(StateMark::Word, Some(677)).as_deref(),
+            Working.end(StateMark::Word, Some(677), None).as_deref(),
             Some("Working")
         );
-        assert_eq!(Idle.end(StateMark::Word, Some(9)).as_deref(), Some("#9"));
+        assert_eq!(
+            Idle.end(StateMark::Word, Some(9), None).as_deref(),
+            Some("#9")
+        );
         assert!(Working.mark(StateMark::Word).is_none());
+    }
+
+    #[test]
+    fn under_the_pointer_a_row_says_its_age_unless_it_wants_you() {
+        use RowState::*;
+        // The age takes the pull request's place, or the empty end.
+        assert_eq!(
+            Working
+                .end(StateMark::Icon, Some(677), Some("1h"))
+                .as_deref(),
+            Some("1h")
+        );
+        assert_eq!(
+            Idle.end(StateMark::Dot, None, Some("3d")).as_deref(),
+            Some("3d")
+        );
+        // What wants the user keeps saying so.
+        assert_eq!(
+            NeedsYou
+                .end(StateMark::Icon, Some(5), Some("1h"))
+                .as_deref(),
+            Some("Needs you")
+        );
+        assert_eq!(
+            Failed.end(StateMark::Icon, None, Some("1h")).as_deref(),
+            Some("Failed")
+        );
+        assert_eq!(
+            CiFailed.end(StateMark::Dot, None, Some("2m")).as_deref(),
+            Some("CI failed")
+        );
+        // As words the state is the row's only mark, so it stays too.
+        assert_eq!(
+            Working.end(StateMark::Word, None, Some("1h")).as_deref(),
+            Some("Working")
+        );
+        assert_eq!(
+            Idle.end(StateMark::Word, None, Some("1h")).as_deref(),
+            Some("1h")
+        );
     }
 
     #[test]
@@ -1116,9 +1266,8 @@ mod tests {
         assert_eq!(pick_range(&ids, None, &id("b")), vec![id("b")]);
     }
 
-    #[test]
-    fn sessions_sort_latest_first_by_title_or_as_listed() {
-        let row = |id: &str, title: &str, updated: u64| Row {
+    fn row(id: &str, title: &str, updated: u64, tab: bool) -> Row {
+        Row {
             pi: 0,
             ei: 0,
             si: 0,
@@ -1129,24 +1278,117 @@ mod tests {
             pr: None,
             updated,
             can_archive: true,
-        };
+            tab,
+            top: false,
+        }
+    }
+
+    /// The ids in order, and which of them sit above the rule.
+    fn placed(rows: &[Row]) -> (Vec<String>, Vec<bool>) {
+        (
+            rows.iter().map(|r| r.id.to_string()).collect(),
+            rows.iter().map(|r| r.top).collect(),
+        )
+    }
+
+    #[test]
+    fn sessions_sort_latest_first_by_title_or_as_listed() {
+        // Every session has a tab open, so none is set apart.
         let rows = || {
             vec![
-                row("a", "zebra", 10),
-                row("b", "mango", 30),
-                row("c", "Apple", 20),
-                row("d", "kiwi", 30),
+                row("a", "zebra", 10, true),
+                row("b", "mango", 30, true),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 30, true),
             ]
         };
         let ids = |sort| {
             let mut r = rows();
-            sort_rows(&mut r, sort);
-            r.into_iter().map(|r| r.id.to_string()).collect::<Vec<_>>()
+            sort_rows(&mut r, sort, None);
+            placed(&r).0
         };
         // A tie keeps the listed order.
         assert_eq!(ids(Sort::Recent), ["b", "d", "c", "a"]);
         assert_eq!(ids(Sort::Name), ["c", "d", "b", "a"]);
         assert_eq!(ids(Sort::Environment), ["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn sessions_with_an_open_tab_go_above_the_rest_in_the_same_order() {
+        let rows = || {
+            vec![
+                row("a", "zebra", 10, true),
+                row("b", "mango", 30, false),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 30, false),
+            ]
+        };
+        let sorted = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort, None);
+            placed(&r)
+        };
+        let split = vec![true, true, false, false];
+        let (ids, top) = sorted(Sort::Recent);
+        assert_eq!(ids, ["c", "a", "b", "d"]);
+        assert_eq!(top, split);
+        let (ids, top) = sorted(Sort::Name);
+        assert_eq!(ids, ["c", "a", "d", "b"]);
+        assert_eq!(top, split);
+        // As listed, every session keeps its place and nothing is set apart.
+        let (ids, top) = sorted(Sort::Environment);
+        assert_eq!(ids, ["a", "b", "c", "d"]);
+        assert_eq!(top, vec![false; 4]);
+    }
+
+    #[test]
+    fn rows_hold_their_places_while_the_pointer_is_over_the_tree() {
+        let mut rows = vec![
+            row("a", "zebra", 10, true),
+            row("b", "mango", 30, false),
+            row("c", "Apple", 20, true),
+            row("d", "kiwi", 30, false),
+        ];
+        sort_rows(&mut rows, Sort::Recent, None);
+        let held: HeldRows = rows
+            .iter()
+            .enumerate()
+            .map(|(place, r)| (r.id.clone(), (place, r.top)))
+            .collect();
+        // Under the pointer: "a" loses its tab, "d" is opened and moves,
+        // and a new session starts.
+        let now = || {
+            vec![
+                row("a", "zebra", 10, false),
+                row("b", "mango", 30, false),
+                row("c", "Apple", 20, true),
+                row("d", "kiwi", 99, true),
+                row("e", "new", 50, true),
+            ]
+        };
+        let mut rows = now();
+        sort_rows(&mut rows, Sort::Recent, Some(&held));
+        let (ids, top) = placed(&rows);
+        // The new one comes first; the others stay put, rule and all.
+        assert_eq!(ids, ["e", "c", "a", "b", "d"]);
+        assert_eq!(top, [true, true, true, false, false]);
+        // Once the pointer leaves, the order is the chosen one again.
+        let mut rows = now();
+        sort_rows(&mut rows, Sort::Recent, None);
+        let (ids, top) = placed(&rows);
+        assert_eq!(ids, ["d", "e", "c", "b", "a"]);
+        assert_eq!(top, [true, true, true, false, false]);
+    }
+
+    #[test]
+    fn a_state_that_wants_you_or_runs_stays_lit_without_a_tab() {
+        use RowState::*;
+        for s in [NeedsYou, Failed, CiFailed, Working] {
+            assert!(s.stays_lit(), "{s:?}");
+        }
+        for s in [Idle, Passed] {
+            assert!(!s.stays_lit(), "{s:?}");
+        }
     }
 
     #[test]

@@ -5,9 +5,7 @@
 //! `api.linear.app` and nowhere else.
 
 mod fixture;
-#[allow(dead_code)] // Used by the tab (task 5).
 pub mod issues;
-#[allow(dead_code)] // Used by the tab (task 5).
 pub mod prompt;
 
 use std::path::{Path, PathBuf};

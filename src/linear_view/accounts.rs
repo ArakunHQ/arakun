@@ -23,10 +23,19 @@ impl LinearView {
                     // The key is saved; it must not stay in the field.
                     this.key_input.update(cx, |i, cx| i.set_text("", cx));
                     this.sessions = linear::sessions();
-                    this.current = Some(s.id.clone());
+                    if this.current_id().as_deref() != Some(s.id.as_str()) {
+                        this.current = Some(s.id.clone());
+                        this.clear();
+                    }
+                    // A new key for the same workspace reads its list again.
+                    this.read_at = None;
                     this.page = Page::Main;
                 }
+                let signed_in = got.is_ok();
                 this.signing_in.settle(got);
+                if signed_in {
+                    this.read(false, cx);
+                }
             },
         );
     }
@@ -38,6 +47,7 @@ impl LinearView {
             return;
         }
         self.reload(cx);
+        self.read(false, cx);
     }
 
     pub(super) fn render_accounts(&self, cx: &mut Context<Self>) -> AnyElement {

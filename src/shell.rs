@@ -960,7 +960,7 @@ impl Shell {
         let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
             this.on_posthog_event(ev, window, cx)
         });
-        let linear_view = cx.new(LinearView::new);
+        let linear_view = cx.new(|cx| LinearView::new(window, cx));
         let linear_sub = cx.subscribe_in(&linear_view, window, |this, _, ev, window, cx| {
             this.on_linear_event(ev, window, cx)
         });

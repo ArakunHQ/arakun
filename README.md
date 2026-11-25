@@ -582,6 +582,24 @@ after a week).
   `experiment:write`. To try the tab without a key (Linux and macOS), start a test
   Arakun with
   `ARAKUN_POSTHOG_FIXTURE="$PWD/tools/posthog-fixture.json" arakun dev start`.
+- **Linear.** The open [Linear](https://linear.app) issues assigned to you, grouped
+  by state (in progress, todo, backlog) with their identifier, title, team and
+  priority, and a search box over them. Sign in with a personal API key (Linear ›
+  Settings › Security & access › Personal API keys; read access is enough). Add one
+  sign-in per workspace; the header switches between them. The keys are kept in
+  `~/.local/share/arakun/linear/sessions.json`
+  (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows) and never leave the
+  computer: they go to Linear's API and nowhere else. The tab reads the list again
+  when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
+  long as Linear asks when it hits Linear's request limit. A click on an issue (or
+  `↑`/`↓` and `Enter`; `/` goes to the search box) opens it with its description and
+  comments. **Work on it with agent** starts an agent session in the open project
+  with the issue's identifier, title, description, comments and link. It leaves git
+  and Linear to you: the agent is asked not to commit, push, open a pull request or
+  touch the issue. **Open in Linear** opens the issue in a browser tab (in your
+  browser when no project is open). To try the tab without a key (Linux and
+  macOS), start a test Arakun with
+  `ARAKUN_LINEAR_FIXTURE="$PWD/tools/linear-fixture.json" arakun dev start`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
@@ -672,7 +690,7 @@ after a week).
   installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
   get what you install by the mirror (see [Server](#server)). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
-  Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Computers and Automations. The
+  Memory, Usage, Cloudflare, PostHog, Linear, Doop, Isometric, Phone, Computers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
@@ -919,7 +937,7 @@ For streams, demos and screen sharing. `Ctrl+Shift+H`, the palette or Settings �
 turns it on; a "Redacted" pill in the title bar shows it is on, and a click on it turns it
 off. While it is on, Arakun hides:
 
-- account emails and names: the Cloudflare, PostHog and Doop accounts, the claude.ai accounts
+- account emails and names: the Cloudflare, PostHog and Doop accounts, the Linear sign-ins, the claude.ai accounts
   behind CLIProxyAPI, your git name and email in the sidebar, Cloudflare's audit log;
 - the phone's pairing QR code and code, its addresses and the names of paired phones
   ("Copy link" still copies the real link);

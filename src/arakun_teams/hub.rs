@@ -20,7 +20,7 @@ use gpui::{AppContext as _, Context, Entity, Task};
 use super::Teams;
 use super::api::{
     ApiError, Call, DeviceRow, Endorsement, InviteRow, InviteeState, Me, MemberRow, PendingRow,
-    Remind, Role, SenderRow, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
+    Remind, Role, SenderRow, StaleEnvelope, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
 use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
@@ -111,6 +111,9 @@ pub struct TeamState {
     /// seal one to it.
     pub keyless: bool,
     pub problem: Option<String>,
+    /// For admins: members' devices holding a key whose sender is no longer
+    /// an owner's or admin's device, which they refuse (see [`next_backfill`]).
+    stale: HashSet<StaleEnvelope>,
     devices_read: Instant,
 }
 
@@ -1455,18 +1458,7 @@ impl Hub {
             })
             .collect();
         let keyless = self.kept.keys(team_id).is_empty();
-        let problem = (read.bad_envelopes > 0).then(|| {
-            format!(
-                "{} team key{} for this device did not check out and {} ignored.",
-                read.bad_envelopes,
-                if read.bad_envelopes == 1 { "" } else { "s" },
-                if read.bad_envelopes == 1 {
-                    "was"
-                } else {
-                    "were"
-                },
-            )
-        });
+        let problem = key_problem(read.bad_envelopes, read.from_non_admins);
         let rotation = read.detail.rotation_pending;
         let epoch = read.detail.epoch;
         if self.peer_review.as_ref().is_some_and(|g| {
@@ -1494,6 +1486,7 @@ impl Hub {
                 approved_by: read.approved_by,
                 keyless,
                 problem,
+                stale: read.stale,
                 devices_read: Instant::now(),
             },
         );
@@ -1780,6 +1773,8 @@ impl Hub {
 
     /// Devices members added after they joined have no keys until an admin
     /// seals the epochs granted to that membership, once per device and epoch.
+    /// Nor does a device whose key came from someone no longer an owner or
+    /// admin, which the server lists as stale: see [`next_backfill`].
     fn seal_for_new_devices(&mut self, team_id: &str, cx: &mut Context<Self>) {
         let Some(t) = self.team.get(team_id) else {
             return;
@@ -2215,6 +2210,99 @@ impl Hub {
                     hub.error = Some("The last owner can't leave the team.".into())
                 }
                 Err(e) => hub.error = Some(format!("Could not remove: {e}")),
+            },
+        );
+    }
+
+    /// Whether this user may give `member` the role `to` in this team as the
+    /// row was drawn: only an owner changes roles, and the team keeps one.
+    /// The server checks the same, and again as it writes.
+    fn may_set_role(&self, team_id: &str, scope: Roster, member: &MemberRow, to: Role) -> bool {
+        let Some(t) = self.team.get(team_id) else {
+            return false;
+        };
+        self.roster(team_id) == Some(scope)
+            && t.detail.members.contains(member)
+            && may_give(t.role, &t.detail.members, member, to)
+    }
+
+    /// Makes `member` an owner, an admin or a member. On this user's own row
+    /// a lower role steps down, while another owner remains.
+    pub(super) fn set_role(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        member: &MemberRow,
+        to: Role,
+        cx: &mut Context<Self>,
+    ) {
+        let busy = format!("role:{team_id}");
+        if !self.may_set_role(team_id, scope, member, to) || !self.busy.insert(busy.clone()) {
+            return;
+        }
+        let github_id = member.github_id;
+        let team_id = team_id.to_string();
+        self.run(
+            cx,
+            move |net| net.call().set_role(&team_id, github_id, to),
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => {}
+                    Err(ApiError::Status(409, _)) => {
+                        hub.error =
+                            Some("A team needs an owner. Make someone else an owner first.".into())
+                    }
+                    Err(e) => hub.error = Some(format!("Could not change the role: {e}")),
+                }
+                // The role is in the team list too, so read both again.
+                hub.refresh(cx);
+            },
+        );
+    }
+
+    /// Hands the team over to `member`: they become an owner, then this user
+    /// an admin. In that order, so a failure in between leaves two owners.
+    pub(super) fn hand_over(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        member: &MemberRow,
+        cx: &mut Context<Self>,
+    ) {
+        let me = self.github_id();
+        let busy = format!("role:{team_id}");
+        if member.github_id == me
+            || !self.may_set_role(team_id, scope, member, Role::Owner)
+            || !self.busy.insert(busy.clone())
+        {
+            return;
+        }
+        let github_id = member.github_id;
+        let login = member.login.clone();
+        let team_id = team_id.to_string();
+        self.run(
+            cx,
+            move |net| {
+                net.call().set_role(&team_id, github_id, Role::Owner)?;
+                match net.call().set_role(&team_id, me, Role::Admin) {
+                    Ok(()) => Ok(None),
+                    Err(ApiError::Unauthorized) => Err(ApiError::Unauthorized),
+                    Err(e) => Ok(Some(e)),
+                }
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(None) => {}
+                    Ok(Some(e)) => {
+                        hub.error = Some(format!(
+                            "@{login} is an owner now, and so are you still: {e}"
+                        ))
+                    }
+                    Err(e) => hub.error = Some(format!("Could not hand the team over: {e}")),
+                }
+                hub.refresh(cx);
             },
         );
     }
@@ -3713,6 +3801,37 @@ fn no_key_reason(detail: &TeamDetail) -> &'static str {
     }
 }
 
+/// Whether someone with role `mine` may give `member` of `members` the role
+/// `to`: an owner may change anyone's, their own too, as long as the team
+/// keeps an owner. The Worker's rule for `PUT .../members/<id>`.
+pub(super) fn may_give(mine: Role, members: &[MemberRow], member: &MemberRow, to: Role) -> bool {
+    let owners = members.iter().filter(|m| m.role == Role::Owner).count();
+    mine == Role::Owner && member.role != to && (member.role != Role::Owner || owners > 1)
+}
+
+/// What a team read says about the keys this device refused: `bad` did not
+/// check out, `from_non_admins` came from someone no longer an owner or admin.
+fn key_problem(bad: usize, from_non_admins: usize) -> Option<String> {
+    let mut said = Vec::new();
+    if bad > 0 {
+        said.push(format!(
+            "{} team key{} for this device did not check out and {} ignored.",
+            bad,
+            if bad == 1 { "" } else { "s" },
+            if bad == 1 { "was" } else { "were" },
+        ));
+    }
+    if from_non_admins > 0 {
+        said.push(format!(
+            "{} team key{} for this device came from someone who is no longer an owner or admin. An admin's Arakun sends {} again the next time it opens the team.",
+            from_non_admins,
+            if from_non_admins == 1 { "" } else { "s" },
+            if from_non_admins == 1 { "it" } else { "them" },
+        ));
+    }
+    (!said.is_empty()).then(|| said.join(" "))
+}
+
 /// Whether the Worker takes this frame. Over either limit it would refuse it.
 fn fits(frame: &str, wire: &WireMessage) -> bool {
     frame.len() <= MAX_FRAME && crypto::unb64(&wire.ct).is_some_and(|ct| ct.len() <= MAX_MESSAGE_CT)
@@ -4061,19 +4180,37 @@ fn doubted(kept: &Kept, t: &TeamState) -> Vec<String> {
     who
 }
 
+/// The keys this admin's device owes members' devices, at most one upload's
+/// worth, each in the epochs granted to that membership:
+/// - to a device the member added after joining, once per device and epoch:
+///   the approval covered the devices they had;
+/// - to any device, one older than the membership included, whose key for an
+///   epoch the server lists as stale: its sender is no longer a device of an
+///   owner or admin (demoted, or gone), so the device refuses it. A record
+///   that this device delivered that key does not count: the server keeps the
+///   first admin's copy, which may be the one gone stale.
 fn next_backfill(kept: &Kept, t: &TeamState, mine: &str) -> Vec<KeyDelivery> {
     let team = &t.detail.team_id;
     let keys = kept.keys(team);
     let doubted = doubted(kept, t);
+    let stale: HashSet<(&str, u64)> = t
+        .stale
+        .iter()
+        .map(|s| (s.device_id.as_str(), s.epoch))
+        .collect();
     let mut batch = Vec::new();
     for (m, d) in recipients(t) {
-        if d.device_id == mine || d.created_at < m.joined_at || doubted.contains(&m.login) {
+        if d.device_id == mine || doubted.contains(&m.login) {
             continue;
         }
+        let added_later = d.created_at >= m.joined_at;
         for &(epoch, key) in &keys {
+            let owed = stale.contains(&(d.device_id.as_str(), epoch))
+                || (added_later
+                    && kept.needs_delivery(team, m.github_id, m.joined_at, &d.device_id, epoch));
             if epoch <= t.detail.epoch
                 && m.first_key_epoch.is_some_and(|first| epoch >= first)
-                && kept.needs_delivery(team, m.github_id, m.joined_at, &d.device_id, epoch)
+                && owed
             {
                 batch.push(KeyDelivery::new(m, d, epoch, key));
                 if batch.len() == MAX_ENVELOPES {
@@ -4170,10 +4307,13 @@ struct TeamRead {
     /// Keys from envelopes this device did not hold yet, checked.
     keys: Vec<(u64, TeamKey)>,
     bad_envelopes: usize,
+    /// Keys whose sender is no longer an owner's or admin's device.
+    from_non_admins: usize,
     pending: Vec<PendingRow>,
     invites: Option<Vec<TeamInvite>>,
     epoch_made: HashMap<u64, u64>,
     approved_by: Option<String>,
+    stale: HashSet<StaleEnvelope>,
 }
 
 /// Where a team read gets its members' devices.
@@ -4269,6 +4409,7 @@ fn read_team(
         .collect();
     let mut keys = Vec::new();
     let mut bad = 0;
+    let mut from_non_admins = 0;
     let dated = call.dated_envelopes(team_id)?;
     let mut epoch_made = HashMap::new();
     for d in &dated {
@@ -4291,9 +4432,14 @@ fn read_team(
         if held.contains(&e.epoch) {
             continue;
         }
-        let opened = admins
-            .get(e.from.as_str())
-            .and_then(|d| crypto::unb64(&d.sig_pub))
+        // Refused, not trusted on the server's word that it was an admin's
+        // when it was made. The server lists it as stale to the admins, and
+        // one of their devices seals this epoch again.
+        let Some(sender) = admins.get(e.from.as_str()) else {
+            from_non_admins += 1;
+            continue;
+        };
+        let opened = crypto::unb64(&sender.sig_pub)
             .ok_or(crypto::CryptoError::BadSignature)
             .and_then(|sig_pub| crypto::open_envelope(&e, team_id, &net.local.device, &sig_pub));
         match opened {
@@ -4301,11 +4447,18 @@ fn read_team(
             Err(_) => bad += 1,
         }
     }
-    let (pending, invites) = if admin {
-        // An older server has no list of open invites.
-        (call.pending(team_id)?, call.team_invites(team_id).ok())
+    let (pending, invites, stale) = if admin {
+        // An older server has no list of open invites, nor of stale
+        // envelopes; without the second, keys only go to new devices.
+        (
+            call.pending(team_id)?,
+            call.team_invites(team_id).ok(),
+            call.stale_envelopes(team_id)
+                .map(HashSet::from_iter)
+                .unwrap_or_default(),
+        )
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, HashSet::new())
     };
     Ok(TeamRead {
         detail,
@@ -4315,10 +4468,12 @@ fn read_team(
         looked_up,
         keys,
         bad_envelopes: bad,
+        from_non_admins,
         pending,
         invites,
         epoch_made,
         approved_by,
+        stale,
     })
 }
 
@@ -5163,6 +5318,7 @@ mod tests {
             approved_by: None,
             keyless: false,
             problem: None,
+            stale: HashSet::new(),
             devices_read: Instant::now(),
         }
     }
@@ -5382,6 +5538,140 @@ mod tests {
         let accepted = upload_batch(&net, "T", batch, |_| Ok(false)).unwrap();
         record_batch(&mut restarted, "T", &accepted);
         assert!(next_backfill(&restarted, &t, root.id()).is_empty());
+    }
+
+    fn stale(device: &DeviceRow, epoch: u64) -> StaleEnvelope {
+        StaleEnvelope {
+            device_id: device.device_id.clone(),
+            epoch,
+        }
+    }
+
+    #[test]
+    fn keys_from_a_demoted_admin_go_again_to_every_device_that_holds_them() {
+        let net = offline_net();
+        let root = Device::generate();
+        // Both devices were there when the member joined (at 10), so the
+        // approval covered them and nothing was owed to them before.
+        let old = row(&root, 5, None);
+        let other = row(&Device::generate(), 9, Some(&root));
+        let mut t = delivery_team(vec![old.clone(), other.clone()], 3);
+        t.detail.members[0].first_key_epoch = Some(2);
+        // This admin's device approved them itself, so its own record says
+        // they hold every key; the server kept the other admin's copies.
+        let mut kept = Kept::default();
+        let held = [(1, [1; 32]), (2, [2; 32]), (3, [3; 32])];
+        let approved = seal_all(&net, "T", &held[1..], &[old.clone(), other.clone()]).unwrap();
+        kept.admitted("T", 21, 3, &approved);
+        kept.observe_grants(&t.detail);
+        for (e, key) in held {
+            kept.put_key("T", e, &key);
+        }
+        assert!(next_backfill(&kept, &t, "").is_empty());
+
+        // The admin who sealed them was demoted: the server lists their
+        // envelopes, the epoch before this membership's grant included.
+        t.stale = [
+            stale(&old, 1),
+            stale(&old, 2),
+            stale(&old, 3),
+            stale(&other, 3),
+        ]
+        .into();
+        let mut owed: Vec<_> = next_backfill(&kept, &t, "")
+            .iter()
+            .map(|s| (s.device.device_id.clone(), s.epoch))
+            .collect();
+        owed.sort();
+        let mut want = vec![
+            (old.device_id.clone(), 2),
+            (old.device_id.clone(), 3),
+            (other.device_id.clone(), 3),
+        ];
+        want.sort();
+        assert_eq!(owed, want);
+        // Not to this device itself, and never a key it does not hold.
+        assert!(
+            next_backfill(&kept, &t, &old.device_id)
+                .iter()
+                .all(|s| s.device.device_id == other.device_id)
+        );
+        let mut without = Kept::default();
+        without.put_key("T", 2, &[2; 32]);
+        without.observe_grants(&t.detail);
+        let only = next_backfill(&without, &t, "");
+        assert_eq!(only.len(), 1);
+        assert_eq!(
+            (only[0].epoch, &only[0].device.device_id),
+            (2, &old.device_id)
+        );
+
+        // The same once the member is an admin: their devices get keys too.
+        t.detail.members[0].role = Role::Admin;
+        assert_eq!(next_backfill(&kept, &t, "").len(), 3);
+        // A member whose device did not match gets no key, stale or not.
+        kept.set_verified(&other.device_id, false);
+        assert!(next_backfill(&kept, &t, "").is_empty());
+        kept.set_verified(&other.device_id, true);
+
+        // Sealed again and replaced on the server: nothing more is owed.
+        let sent = upload_batch(&net, "T", next_backfill(&kept, &t, ""), |envs| {
+            assert_eq!(envs.len(), 3);
+            Ok(false)
+        })
+        .unwrap();
+        record_batch(&mut kept, "T", &sent);
+        t.stale.clear();
+        assert!(next_backfill(&kept, &t, "").is_empty());
+    }
+
+    #[test]
+    fn only_an_owner_changes_roles_and_a_team_keeps_one() {
+        let member = |github_id, role| MemberRow {
+            github_id,
+            login: format!("u{github_id}"),
+            role,
+            joined_at: 0,
+            first_key_epoch: Some(1),
+        };
+        let (owner, admin, plain) = (
+            member(1, Role::Owner),
+            member(2, Role::Admin),
+            member(3, Role::Member),
+        );
+        let team = vec![owner.clone(), admin.clone(), plain.clone()];
+        for to in [Role::Owner, Role::Admin] {
+            assert!(may_give(Role::Owner, &team, &plain, to));
+        }
+        assert!(may_give(Role::Owner, &team, &admin, Role::Member));
+        assert!(may_give(Role::Owner, &team, &admin, Role::Owner));
+        // Nothing to change, and nobody but an owner changes anything.
+        assert!(!may_give(Role::Owner, &team, &plain, Role::Member));
+        for mine in [Role::Admin, Role::Member] {
+            for to in [Role::Owner, Role::Admin, Role::Member] {
+                assert!(!may_give(mine, &team, &plain, to));
+            }
+        }
+        // The only owner cannot step down; one of two can, either one.
+        assert!(!may_give(Role::Owner, &team, &owner, Role::Admin));
+        let two = vec![owner.clone(), member(2, Role::Owner), plain.clone()];
+        assert!(may_give(Role::Owner, &two, &owner, Role::Admin));
+        assert!(may_give(Role::Owner, &two, &two[1], Role::Member));
+    }
+
+    #[test]
+    fn a_key_from_someone_no_longer_an_admin_says_it_comes_again() {
+        assert_eq!(key_problem(0, 0), None);
+        assert_eq!(
+            key_problem(1, 0).as_deref(),
+            Some("1 team key for this device did not check out and was ignored.")
+        );
+        let both = key_problem(2, 3).unwrap();
+        assert!(both.starts_with(
+            "2 team keys for this device did not check out and were ignored. 3 team keys"
+        ));
+        assert!(both.ends_with("sends them again the next time it opens the team."));
+        assert!(key_problem(0, 1).unwrap().contains("sends it again"));
     }
 
     /// Two members against a real Teams Worker, through the same calls and

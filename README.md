@@ -739,6 +739,9 @@ after a week).
   Click the team's name for your other teams, **Start a team** and **Your devices**;
   "N invites" at the top opens invites to other teams; click the people at the top
   right for the team's page, which invites people by GitHub login and removes members.
+  An owner's **Change role** on a person makes them an owner, an admin or a member;
+  **Hand over** makes them an owner and you an admin. A team always keeps an owner, so
+  its only owner can't leave or step down until someone else is one.
   **Withdraw** takes back an invite nobody answered yet. An invite you got shows with
   **Accept** and **Decline**; after you accept, the waiting page has **Remind**, which
   tells the team's admins once an hour at most. "N waiting" at the top opens the people

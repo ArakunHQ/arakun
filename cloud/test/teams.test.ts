@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";
 import { deviceSigned, sigKey, verify } from "../src/wire";
-import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
+import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join, type TeamSetup, type User } from "./clients";
 import { ADMIN, call, github, nowSeconds, onGitHub } from "./helpers";
 
 /// The same bytes in base64url with the last character's lowest bit flipped.
@@ -198,6 +198,8 @@ describe("the gate", () => {
       ["GET", `${base}/pending`],
       ["POST", `${base}/channels`],
       ["DELETE", `${base}/members/${m.user.id}`],
+      ["PUT", `${base}/members/${m.user.id}`],
+      ["GET", `${base}/envelopes/stale`],
       ["GET", `${base}/channels/${t.channelId}/messages`],
       ["GET", `${base}/channels/${t.channelId}/ws`],
     ] as const) {
@@ -218,6 +220,8 @@ describe("the gate", () => {
       ["POST", `${base}/pending/${outsider.id}/approve`],
       ["POST", `${base}/pending/${outsider.id}/reject`],
       ["DELETE", `${base}/members/${t.owner.user.id}`],
+      ["PUT", `${base}/members/${m.user.id}`],
+      ["GET", `${base}/envelopes/stale`],
     ] as const) {
       const res = await api(m.user, method, path, { device: m.device, body: method === "GET" ? undefined : {} });
       expect(res.status, `${method} ${path}`).toBe(403);
@@ -1033,8 +1037,7 @@ describe("members", () => {
   it("keep an owner when two owners leave at once", async () => {
     const t = await team();
     const other = await join(t);
-    // No route makes a second owner yet.
-    await env.DB.prepare("UPDATE members SET role = 'owner' WHERE github_id = ?").bind(other.user.id).run();
+    await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/members/${other.user.id}`, { body: { role: "owner" } }), 200);
     const leave = (u: typeof other.user) => api(u, "DELETE", `/teams/${t.teamId}/members/${u.id}`);
     // The other owner leaves after this one read the team, before its batch.
     const batch = env.DB.batch.bind(env.DB);
@@ -1055,6 +1058,175 @@ describe("members", () => {
     expect(got.epoch).toBe(2);
     // The owner's envelopes are still there.
     expect(await expectJson<unknown[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/envelopes`, { device: t.owner.device }), 200)).toHaveLength(1);
+  });
+});
+
+describe("roles", () => {
+  const setRole = (t: TeamSetup, by: User, target: number | string, role: unknown) =>
+    api(by, "PUT", `/teams/${t.teamId}/members/${target}`, { body: { role } });
+  const roles = async (t: TeamSetup) => {
+    const got = await expectJson<{ members: { github_id: number; role: string }[] }>(api(t.owner.user, "GET", `/teams/${t.teamId}`), 200);
+    return Object.fromEntries(got.members.map((m) => [m.github_id, m.role]));
+  };
+
+  it("let an owner make a member an admin, who can then approve, and back", async () => {
+    const t = await team();
+    const m = await join(t);
+    const pending = `/teams/${t.teamId}/pending`;
+    await expectJson(api(m.user, "GET", pending), 403);
+    expect(await expectJson(setRole(t, t.owner.user, m.user.id, "admin"), 200)).toEqual({ github_id: m.user.id, role: "admin" });
+    expect((await roles(t))[m.user.id]).toBe("admin");
+    await expectJson(api(m.user, "GET", pending), 200);
+    // Again is the same answer, so a retry is safe.
+    await expectJson(setRole(t, t.owner.user, m.user.id, "admin"), 200);
+    // An admin may approve: the new member's key comes from the admin's device.
+    const c = await join({ ...t, owner: m });
+    expect((await roles(t))[c.user.id]).toBe("member");
+
+    expect(await expectJson(setRole(t, t.owner.user, m.user.id, "member"), 200)).toEqual({ github_id: m.user.id, role: "member" });
+    await expectJson(api(m.user, "GET", pending), 403);
+    // A demoted admin's device can no longer store envelopes.
+    const e = await envelope(t.teamId, 1, t.keys.get(1)!, c.device, m.device);
+    await expectJson(api(m.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: m.device, body: { envelopes: [e] } }), 403);
+  });
+
+  it("let an owner add a second owner, after which either may leave", async () => {
+    const t = await team();
+    const m = await join(t);
+    await expectJson(setRole(t, t.owner.user, m.user.id, "owner"), 200);
+    expect(await roles(t)).toEqual({ [t.owner.user.id]: "owner", [m.user.id]: "owner" });
+    // The new owner changes roles too, the first owner's included.
+    await expectJson(setRole(t, m.user, t.owner.user.id, "admin"), 200);
+    await expectJson(setRole(t, m.user, t.owner.user.id, "owner"), 200);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${t.owner.user.id}`), 200);
+    const got = await expectJson<{ members: { github_id: number; role: string }[] }>(api(m.user, "GET", `/teams/${t.teamId}`), 200);
+    expect(got.members.map((x) => [x.github_id, x.role])).toEqual([[m.user.id, "owner"]]);
+  });
+
+  it("let an owner hand the team over: the other becomes owner, then the caller steps down", async () => {
+    const t = await team();
+    const m = await join(t);
+    await expectJson(setRole(t, t.owner.user, m.user.id, "owner"), 200);
+    expect(await expectJson(setRole(t, t.owner.user, t.owner.user.id, "admin"), 200)).toEqual({ github_id: t.owner.user.id, role: "admin" });
+    expect(await roles(t)).toEqual({ [t.owner.user.id]: "admin", [m.user.id]: "owner" });
+    // The former owner is an admin now: no more role changes.
+    expect((await expectJson(setRole(t, t.owner.user, m.user.id, "member"), 403)).error).toMatch(/only an owner/);
+    expect((await expectJson(setRole(t, t.owner.user, t.owner.user.id, "owner"), 403)).error).toMatch(/only an owner/);
+    // The new owner can't leave while they are the only one.
+    await expectJson(api(m.user, "DELETE", `/teams/${t.teamId}/members/${m.user.id}`), 409);
+  });
+
+  it("are changed only by an owner", async () => {
+    const t = await team();
+    const admin = await join(t);
+    const m = await join(t);
+    await expectJson(setRole(t, t.owner.user, admin.user.id, "admin"), 200);
+    for (const [by, target, role] of [
+      [admin.user, m.user.id, "admin"],
+      [admin.user, admin.user.id, "owner"],
+      [admin.user, t.owner.user.id, "member"],
+      [m.user, m.user.id, "owner"],
+      [m.user, admin.user.id, "member"],
+    ] as const) {
+      const res = await expectJson(setRole(t, by, target, role), 403);
+      expect(res.error, `${by.login} → ${target} ${role}`).toMatch(/only an owner/);
+    }
+    // Someone outside the team does not learn that it exists.
+    const outsider = await user(1003, "outsider");
+    await expectJson(setRole(t, outsider, m.user.id, "owner"), 404);
+    expect(await roles(t)).toEqual({ [t.owner.user.id]: "owner", [admin.user.id]: "admin", [m.user.id]: "member" });
+  });
+
+  it("change nothing when the owner lost the role while the change ran", async () => {
+    const t = await team();
+    const other = await join(t);
+    const m = await join(t);
+    await expectJson(setRole(t, t.owner.user, other.user.id, "owner"), 200);
+    // The other owner demotes this one after it read the team, before its batch.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === 3) {
+        raced = true;
+        await expectJson(setRole(t, other.user, t.owner.user.id, "member"), 200);
+      }
+      return batch(statements);
+    });
+    await expectJson(setRole(t, t.owner.user, m.user.id, "admin"), 403);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    expect((await roles(t))[m.user.id]).toBe("member");
+  });
+
+  it("never leave a team without an owner", async () => {
+    const t = await team();
+    const m = await join(t);
+    for (const role of ["admin", "member"]) {
+      expect((await expectJson(setRole(t, t.owner.user, t.owner.user.id, role), 409)).error).toMatch(/needs an owner/);
+    }
+    // Two owners who step down at once: the second one finds itself the last.
+    await expectJson(setRole(t, t.owner.user, m.user.id, "owner"), 200);
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === 3) {
+        raced = true;
+        await expectJson(setRole(t, m.user, m.user.id, "admin"), 200);
+      }
+      return batch(statements);
+    });
+    expect((await expectJson(setRole(t, t.owner.user, t.owner.user.id, "admin"), 409)).error).toMatch(/needs an owner/);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    expect(await roles(t)).toEqual({ [t.owner.user.id]: "owner", [m.user.id]: "admin" });
+  });
+
+  it("answer 404 for someone who is not a member, and 400 for a role that does not exist", async () => {
+    const t = await team();
+    const m = await join(t);
+    const outsider = await user(1003, "outsider");
+    await expectJson(setRole(t, t.owner.user, outsider.id, "admin"), 404);
+    await expectJson(setRole(t, t.owner.user, "abc", "admin"), 404);
+    await expectJson(setRole(t, t.owner.user, 4242, "admin"), 404);
+    for (const role of ["Owner", "pending", "", null, 1]) {
+      await expectJson(setRole(t, t.owner.user, m.user.id, role), 400);
+    }
+    await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/members/${m.user.id}`, { body: "admin" }), 400);
+    // A member who left is no longer one.
+    await expectJson(api(m.user, "DELETE", `/teams/${t.teamId}/members/${m.user.id}`), 200);
+    await expectJson(setRole(t, t.owner.user, m.user.id, "admin"), 404);
+  });
+
+  it("leave a demoted admin's envelopes listed until another admin seals them again", async () => {
+    const t = await team();
+    const a = await join(t);
+    await expectJson(setRole(t, t.owner.user, a.user.id, "admin"), 200);
+    // Approved by the admin: the new member's only key comes from the admin's device.
+    const c = await join({ ...t, owner: a });
+    const stale = () => expectJson<{ device_id: string; epoch: number }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/envelopes/stale`), 200);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const theirs = () => expectJson<{ epoch: number; from: string }[]>(api(c.user, "GET", path, { device: c.device }), 200);
+    expect(await stale()).toEqual([]);
+    // While the admin is one, another admin's copy does not replace theirs.
+    const rewrap = () => envelope(t.teamId, 1, t.keys.get(1)!, c.device, t.owner.device);
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await rewrap()] } }), 200)).toMatchObject({ stored: 0 });
+    expect((await theirs()).map((e) => e.from)).toEqual([a.device.id]);
+
+    await expectJson(setRole(t, t.owner.user, a.user.id, "member"), 200);
+    // Recipients refuse a key from a device that is no longer an admin's.
+    expect(await stale()).toEqual([{ device_id: c.device.id, epoch: 1 }]);
+    // Only admins see the list.
+    await expectJson(api(a.user, "GET", `/teams/${t.teamId}/envelopes/stale`), 403);
+    expect(await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [await rewrap()] } }), 200)).toMatchObject({ stored: 1 });
+    expect((await theirs()).map((e) => e.from)).toEqual([t.owner.device.id]);
+    expect(await stale()).toEqual([]);
+
+    // A sender who leaves the team leaves their envelopes behind too.
+    const d = await join(t);
+    await expectJson(setRole(t, t.owner.user, d.user.id, "admin"), 200);
+    const e = await join({ ...t, owner: d });
+    await expectJson(api(d.user, "DELETE", `/teams/${t.teamId}/members/${d.user.id}`), 200);
+    expect(await stale()).toEqual([{ device_id: e.device.id, epoch: 1 }]);
   });
 });
 

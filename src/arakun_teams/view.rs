@@ -319,6 +319,9 @@ pub struct TeamsView {
     /// "Remove" or "Leave" was pressed once on this member, with the team as
     /// it was then: a change since drops the removal.
     confirm_remove: Option<(String, hub::Roster, MemberRow)>,
+    /// "Change role" was pressed on this member, the same way: the row shows
+    /// the roles an owner may give them until one is picked or Keep.
+    confirm_role: Option<(String, hub::Roster, MemberRow)>,
     /// "They don't" was pressed for this device in the compare panel.
     mismatch: Option<String>,
     /// The device being compared on Your devices, which has no side panel.
@@ -484,6 +487,7 @@ impl TeamsView {
             flash: None,
             _flash: None,
             confirm_remove: None,
+            confirm_role: None,
             mismatch: None,
             comparing: None,
             copied: false,
@@ -564,6 +568,7 @@ impl TeamsView {
         self.pane = Pane::None;
         self.reply_to = None;
         self.confirm_remove = None;
+        self.confirm_role = None;
         self.comparing = None;
         self.flash = None;
         self._flash = None;
@@ -2016,6 +2021,28 @@ impl TeamsView {
         let device_count: usize = devices.values().map(Vec::len).sum();
         let owners = members.iter().filter(|m| m.role == Role::Owner).count();
         let tid = team_id.to_string();
+        // What an owner may make of each member. Without a roster the
+        // buttons stay, disabled, as Remove does.
+        let choices: HashMap<u64, Vec<RoleChoice>> = members
+            .iter()
+            .map(|m| {
+                let mut can: Vec<RoleChoice> = [Role::Owner, Role::Admin, Role::Member]
+                    .into_iter()
+                    .filter(|r| hub::may_give(role, &members, m, *r))
+                    .map(RoleChoice::To)
+                    .collect();
+                if m.github_id != me && can.contains(&RoleChoice::To(Role::Owner)) {
+                    can.push(RoleChoice::HandOver);
+                }
+                (m.github_id, can)
+            })
+            .collect();
+        let changing_roles = hub.busy.contains(&format!("role:{team_id}"));
+        let role_open = self
+            .confirm_role
+            .as_ref()
+            .filter(|(team, was, _)| *team == tid && scope.is_none_or(|now| now == *was))
+            .map(|(_, _, member)| member.clone());
 
         let subtitle = if members.len() == 1 && device_count <= 1 {
             "Your team is ready. It has one person and one device.".to_string()
@@ -2025,6 +2052,7 @@ impl TeamsView {
                 plural(members.len(), "person", "people"),
                 plural(device_count, "device", "devices"),
                 match role {
+                    Role::Owner if owners > 1 => "an owner",
                     Role::Owner => "its owner",
                     Role::Admin => "an admin",
                     Role::Member => "a member",
@@ -2053,6 +2081,32 @@ impl TeamsView {
             let last_owner = m.role == Role::Owner && owners < 2;
             let can_remove = !last_owner
                 && (self_row || (admin && m.role != Role::Owner) || role == Role::Owner);
+            let can_become = choices.get(&m.github_id).cloned().unwrap_or_default();
+            let role_here = role_open.as_ref() == Some(m);
+            let choice_buttons: Vec<_> = can_become
+                .iter()
+                .enumerate()
+                .map(|(k, choice)| {
+                    let (label, kind) = choice.label(self_row);
+                    let target = confirmation.clone();
+                    let choice = *choice;
+                    ui::button(
+                        ("teams-role-to", i * 4 + k),
+                        label,
+                        kind,
+                        target.is_some() && !changing_roles,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some((team, scope, member)) = &target {
+                            this.confirm_role = None;
+                            this.hub.update(cx, |h, cx| match choice {
+                                RoleChoice::To(r) => h.set_role(team, *scope, member, r, cx),
+                                RoleChoice::HandOver => h.hand_over(team, *scope, member, cx),
+                            });
+                        }
+                    }))
+                })
+                .collect();
             rows = rows.child(
                 Self::person_row(
                     faces.avatar(&m.login, AVATAR),
@@ -2061,7 +2115,37 @@ impl TeamsView {
                     false,
                 )
                 .when(self_row, |d| d.child(ui::badge("You", Tone::Neutral)))
-                .when(can_remove && !confirming, |d| {
+                .when(!can_become.is_empty() && !confirming && !role_here, |d| {
+                    d.child(
+                        ui::button(
+                            ("teams-role", i),
+                            "Change role",
+                            ButtonKind::Ghost,
+                            confirmation.is_some() && !changing_roles,
+                        )
+                        .on_click({
+                            let confirmation = confirmation.clone();
+                            cx.listener(move |this, _, _, cx| {
+                                if confirmation.is_some() {
+                                    this.confirm_role = confirmation.clone();
+                                    this.confirm_remove = None;
+                                    cx.notify();
+                                }
+                            })
+                        }),
+                    )
+                })
+                .when(role_here, |d| {
+                    d.child(
+                        ui::button(("teams-role-keep", i), "Keep", ButtonKind::Ghost, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_role = None;
+                                cx.notify();
+                            })),
+                    )
+                    .children(choice_buttons)
+                })
+                .when(can_remove && !confirming && !role_here, |d| {
                     d.child(
                         ui::button(
                             ("teams-remove", i),
@@ -2074,6 +2158,7 @@ impl TeamsView {
                             cx.listener(move |this, _, _, cx| {
                                 if confirmation.is_some() {
                                     this.confirm_remove = confirmation.clone();
+                                    this.confirm_role = None;
                                     cx.notify();
                                 }
                             })
@@ -2127,6 +2212,22 @@ impl TeamsView {
         let mut page = Self::page()
             .child(ui::page_title(name, Some(subtitle.into_any_element())))
             .child(Self::card().child(rows));
+        if let Some(open) = &role_open {
+            let handing_over = choices
+                .get(&open.github_id)
+                .is_some_and(|c| c.contains(&RoleChoice::HandOver));
+            page = page.child(Self::footnote(roles_explained(
+                handing_over.then(|| shown_login(&open.login, my_login.as_deref())),
+            )));
+        }
+        // Where Leave would be on this user's row.
+        if role == Role::Owner && owners < 2 {
+            page = page.child(Self::footnote(if members.len() > 1 {
+                "You are the only owner, so you can't leave. Make someone else an owner first, or hand the team over."
+            } else {
+                "You are the only owner, so you can't leave. Invite someone and make them an owner first."
+            }));
+        }
         if admin && pending > 0 {
             let t4 = tid.clone();
             page = page.child(
@@ -4713,6 +4814,40 @@ fn shown_login(login: &str, me: Option<&str>) -> String {
         crate::redact::value(login)
     } else {
         login.to_string()
+    }
+}
+
+/// What an owner can pick for a member under "Change role".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoleChoice {
+    To(Role),
+    /// They become an owner, then this user an admin.
+    HandOver,
+}
+
+impl RoleChoice {
+    /// The button for it on `self_row` (this user's own) or someone else's.
+    /// Whatever takes this user's own owner role away is marked as danger:
+    /// only another owner can give it back.
+    fn label(self, self_row: bool) -> (&'static str, ButtonKind) {
+        match (self, self_row) {
+            (RoleChoice::HandOver, _) => ("Hand over", ButtonKind::Danger),
+            (RoleChoice::To(Role::Owner), _) => ("Make owner", ButtonKind::Outline),
+            (RoleChoice::To(Role::Admin), false) => ("Make admin", ButtonKind::Outline),
+            (RoleChoice::To(Role::Member), false) => ("Make member", ButtonKind::Outline),
+            (RoleChoice::To(Role::Admin), true) => ("Become admin", ButtonKind::Danger),
+            (RoleChoice::To(Role::Member), true) => ("Become member", ButtonKind::Danger),
+        }
+    }
+}
+
+/// The line under the people while a member's roles are open; `to` is who
+/// "Hand over" would make the owner, when it is offered.
+fn roles_explained(to: Option<String>) -> String {
+    let roles = "Owners change roles and can remove anyone. Admins invite, approve devices, add channels and remove members.";
+    match to {
+        Some(login) => format!("{roles} Hand over makes {login} an owner and you an admin."),
+        None => roles.to_string(),
     }
 }
 

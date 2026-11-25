@@ -184,7 +184,7 @@ pub struct Endorsement {
     pub sig: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Owner,
@@ -245,6 +245,15 @@ pub struct TeamDetail {
     pub rotation_pending: bool,
     pub members: Vec<MemberRow>,
     pub channels: Vec<ChannelRow>,
+}
+
+/// One entry of `GET /teams/<id>/envelopes/stale`: a member's device whose
+/// key for `epoch` came from a device that is no longer an owner's or
+/// admin's, so it refuses that key until an admin seals it again.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+pub struct StaleEnvelope {
+    pub device_id: String,
+    pub epoch: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -600,6 +609,20 @@ impl Call<'_> {
     /// This device's envelopes, oldest epoch first.
     pub fn dated_envelopes(&self, team_id: &str) -> Result<Vec<DatedEnvelope>, ApiError> {
         self.get(&format!("/teams/{team_id}/envelopes"))
+    }
+
+    /// For admins: where an envelope sits that its recipient refuses, newest
+    /// epoch first. An older server has no such list: it answers 404.
+    pub fn stale_envelopes(&self, team_id: &str) -> Result<Vec<StaleEnvelope>, ApiError> {
+        self.get(&format!("/teams/{team_id}/envelopes/stale"))
+    }
+
+    /// `PUT /teams/<id>/members/<github_id>`: only an owner may.
+    pub fn set_role(&self, team_id: &str, github_id: u64, role: Role) -> Result<(), ApiError> {
+        let path = format!("/teams/{team_id}/members/{github_id}");
+        let body = serde_json::json!({ "role": role });
+        let (status, body) = self.send("PUT", &path, Some(body), SMALL_LIMIT)?;
+        nothing(status, &body)
     }
 
     pub fn remove_member(&self, team_id: &str, github_id: u64) -> Result<(), ApiError> {

@@ -35,8 +35,8 @@ mod bot_view;
 mod decisions_view;
 
 pub enum TeamsViewEvent {
-    /// Settings → Account, to sign in again.
-    OpenSettings,
+    /// The Profile dialog, to sign in again.
+    OpenProfile,
 }
 
 /// What the sheet shows.
@@ -4560,15 +4560,15 @@ impl Render for TeamsView {
             Self::centered(ui::empty_state(
                 "ungroup-items",
                 "Team is not on here",
-                "Sign in with GitHub in Settings, with an account that has Teams.",
+                "Sign in with GitHub in your profile, with an account that has Teams.",
                 Some(
                     ui::button(
-                        "teams-open-settings",
-                        "Open Settings",
+                        "teams-open-profile",
+                        "Open Profile",
                         ButtonKind::Outline,
                         true,
                     )
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TeamsViewEvent::OpenSettings)))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TeamsViewEvent::OpenProfile)))
                     .into_any_element(),
                 ),
             ))

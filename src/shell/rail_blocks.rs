@@ -1005,10 +1005,12 @@ impl Shell {
                         )
                         .child(icon("unfold-more", 12.).text_color(theme::text_subtle()))
                     })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        crate::settings_view::start_on_account();
-                        this.open_settings(window, cx)
-                    }))
+                    .on_click({
+                        let label = item.label.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_profile(label.clone(), window, cx)
+                        })
+                    })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -1078,7 +1080,12 @@ impl Shell {
                                 }),
                         )
                     })
-                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
+                    .on_click({
+                        let label = item.label.clone();
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_profile(label.clone(), window, cx)
+                        })
+                    })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {

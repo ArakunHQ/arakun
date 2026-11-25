@@ -71,6 +71,9 @@ pub struct MemoryView {
     confirm: Option<(Scope, u64)>,
     error: Option<SharedString>,
     scroll: ScrollHandle,
+    /// Whether the tab is on screen in a window in front; the files are only
+    /// checked then.
+    shown: bool,
     _query: Subscription,
     _poll: Task<()>,
 }
@@ -86,12 +89,8 @@ impl MemoryView {
             _ => {}
         });
         let poll = crate::poll::poll_every(cx, POLL, POLL, |this, cx| {
-            let mut changed = false;
-            for (_, s) in &mut this.sources {
-                changed |= s.reload();
-            }
-            if changed {
-                cx.notify();
+            if this.shown {
+                this.reload(cx);
             }
         });
         Self {
@@ -102,6 +101,7 @@ impl MemoryView {
             confirm: None,
             error: None,
             scroll: ScrollHandle::new(),
+            shown: false,
             _query: sub,
             _poll: poll,
         }
@@ -145,6 +145,30 @@ impl MemoryView {
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.query.focus_handle(cx), cx);
+    }
+
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The shell says whether this tab is on screen in a window in front.
+    /// Coming back, it catches up with what changed meanwhile.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        let back = shown && !self.shown;
+        self.shown = shown;
+        if back {
+            self.reload(cx);
+        }
+    }
+
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for (_, s) in &mut self.sources {
+            changed |= s.reload();
+        }
+        if changed {
+            cx.notify();
+        }
     }
 
     fn forget(&mut self, scope: Scope, id: u64, cx: &mut Context<Self>) {

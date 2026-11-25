@@ -766,6 +766,7 @@ impl Shell {
             this.github
                 .update(cx, |g, cx| g.set_window_active(active, cx));
             this.sync_teams_shown(window, cx);
+            this.sync_polled_shown(window, cx);
         });
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
@@ -2446,6 +2447,33 @@ impl Shell {
             self.alone == Some(home::Alone::Teams)
         };
         window.is_window_active() && on_screen
+    }
+
+    /// Whether a tab `is` picks is on screen, in either pane of a split, in a
+    /// window in front.
+    fn tab_shown(&self, window: &Window, is: impl Fn(&TabKind) -> bool) -> bool {
+        let at = |i: usize| self.strip.tabs.get(i).is_some_and(|t| is(&t.kind));
+        window.is_window_active()
+            && self.has_projects()
+            && (at(self.strip.active_tab) || self.split_other().is_some_and(at))
+    }
+
+    fn cloudflare_shown(&self, window: &Window) -> bool {
+        self.tab_shown(window, |k| matches!(k, TabKind::Cloudflare))
+    }
+
+    fn memory_shown(&self, window: &Window) -> bool {
+        self.tab_shown(window, |k| matches!(k, TabKind::Memory))
+    }
+
+    /// Tells the tabs that poll files whether they are on screen: they only
+    /// poll then.
+    fn sync_polled_shown(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let cloudflare = self.cloudflare_shown(window);
+        let memory = self.memory_shown(window);
+        self.cloudflare_view
+            .update(cx, |v, _| v.set_shown(cloudflare));
+        self.memory_view.update(cx, |v, cx| v.set_shown(memory, cx));
     }
 
     /// Tells the Teams tab whether it is on screen: only then does a message
@@ -4305,6 +4333,13 @@ impl Render for Shell {
         // Many paths change the tab in front; this follows all of them.
         if self.teams_view.read(cx).is_shown() != self.teams_shown(window) {
             cx.defer_in(window, |this, window, cx| this.sync_teams_shown(window, cx));
+        }
+        if self.cloudflare_view.read(cx).is_shown() != self.cloudflare_shown(window)
+            || self.memory_view.read(cx).is_shown() != self.memory_shown(window)
+        {
+            cx.defer_in(window, |this, window, cx| {
+                this.sync_polled_shown(window, cx)
+            });
         }
         // With pinned tabs, a session tab that shows nowhere closes, and a
         // lone session pins itself; whatever changed the tabs, this follows.

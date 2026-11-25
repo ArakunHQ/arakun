@@ -96,6 +96,21 @@ pub struct Record {
     pub status: Status,
 }
 
+/// An environment whose deletion started. It is saved before git touches
+/// anything, so a server stopped part way finishes the deletion when it
+/// starts again instead of leaving the folder, its branch or its place.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Deletion {
+    /// The worktree's folder, as the place names it.
+    pub place: PathBuf,
+    /// The repository's shared git files: once the folder is gone, only they
+    /// still say where the branch is.
+    pub repo: PathBuf,
+    /// The branch that goes with it, when the user chose to delete it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Store {
     #[serde(default)]
@@ -103,6 +118,9 @@ pub struct Store {
     /// Newest first.
     #[serde(default)]
     pub sessions: Vec<Record>,
+    /// Deletions started and not finished yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleting: Vec<Deletion>,
     #[serde(skip)]
     dir: PathBuf,
 }
@@ -214,6 +232,19 @@ impl Store {
             [] => Err(format!("no session {id}")),
             _ => Err(format!("more than one session starts with {id}")),
         }
+    }
+
+    /// Notes that the deletion of `d.place` started. Saved by the caller.
+    pub fn begin_deletion(&mut self, d: Deletion) {
+        self.deleting.retain(|o| o.place != d.place);
+        self.deleting.push(d);
+    }
+
+    /// The deletion of `place` is over, done or not; `false` when none was noted.
+    pub fn end_deletion(&mut self, place: &Path) -> bool {
+        let before = self.deleting.len();
+        self.deleting.retain(|d| d.place != place);
+        self.deleting.len() != before
     }
 
     /// Forgets a session and its transcript.
@@ -437,6 +468,31 @@ mod tests {
             back.transcript_path("s1-0"),
             dir.join("sessions").join("s1-0.json")
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_deletion_started_is_read_back_until_it_ends() {
+        let dir = temp("deleting");
+        let mut store = Store::load(&dir).unwrap();
+        let fix = Deletion {
+            place: "/w/fix".into(),
+            repo: "/w/app/.git".into(),
+            branch: Some("fix".into()),
+        };
+        store.begin_deletion(fix.clone());
+        // Started again: noted once.
+        store.begin_deletion(fix.clone());
+        store.save().unwrap();
+        let mut back = Store::load(&dir).unwrap();
+        assert_eq!(back.deleting, [fix]);
+        assert!(back.end_deletion(Path::new("/w/fix")));
+        assert!(!back.end_deletion(Path::new("/w/fix")));
+        back.save().unwrap();
+        // Nothing in progress leaves nothing in the file.
+        let text = std::fs::read_to_string(dir.join("state.json")).unwrap();
+        assert!(!text.contains("deleting"), "{text}");
+        assert!(Store::load(&dir).unwrap().deleting.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

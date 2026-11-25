@@ -25,7 +25,7 @@ use super::files;
 use super::local::{self, Reply, Request};
 use super::login::{self, SignIn};
 use super::pty::{self, Pty};
-use super::store::{self, Place, Record, Store};
+use super::store::{self, Deletion, Place, Record, Store};
 use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
@@ -546,6 +546,7 @@ pub fn run(opts: Options) -> i32 {
                 cx,
             );
             daemon.check_relay_devices(cx);
+            daemon.finish_deletions(cx);
             daemon
         });
         cx.set_global(Keep(daemon));
@@ -3356,40 +3357,41 @@ impl Daemon {
                     let checked = cx
                         .background_executor()
                         .spawn(async move {
-                            removable(&p)?;
+                            let repo = removable(&p)?;
                             let branch = delete_branch.then(|| store::branch(&p)).flatten();
                             branch_agreed(branch.as_deref(), confirmed.as_deref())?;
-                            Ok::<_, String>(branch)
+                            Ok::<_, String>(Deletion {
+                                place: p,
+                                repo,
+                                branch,
+                            })
                         })
                         .await;
                     let done = match checked {
-                        Ok(branch) => {
-                            // A shell there would hold the folder open. Only
-                            // now: a refused deletion keeps its terminals.
-                            let hung_up = this.update(cx, |this, _| {
+                        Ok(deletion) => {
+                            // Written down before git starts: a server stopped
+                            // part way finishes it at its next start. A shell
+                            // there would hold the folder open. Only now: a
+                            // refused deletion keeps its terminals.
+                            let begun = this.update(cx, |this, _| {
+                                this.begin_deletion(deletion.clone())?;
                                 this.hang_up_terms_in(&path);
+                                Ok::<_, String>(())
                             });
-                            if hung_up.is_err() {
-                                return;
+                            match begun {
+                                Ok(Ok(())) => {
+                                    cx.background_executor()
+                                        .spawn(async move { finish_deletion(&deletion) })
+                                        .await
+                                }
+                                Ok(Err(e)) => Err(e),
+                                Err(_) => return,
                             }
-                            let p = path.clone();
-                            cx.background_executor()
-                                .spawn(async move { remove_worktree(&p, branch.as_deref()) })
-                                .await
                         }
                         Err(e) => Err(e),
                     };
                     let _ = this.update(cx, |this, cx| {
-                        this.deleting.remove(&path);
-                        // The folder is gone even when its branch stayed.
-                        let (deleted, error) = match done {
-                            Ok(branch_kept) => {
-                                let saved = this.forget_place(&path, cx);
-                                this.sync_inbox(cx);
-                                (true, deleted_warning(branch_kept, saved.err()))
-                            }
-                            Err(e) => (false, Some(e)),
-                        };
+                        let (deleted, error) = this.deletion_done(&path, done, cx);
                         this.transport
                             .send(client, env_deleted(&place, deleted, error.as_deref()));
                     });
@@ -3559,6 +3561,75 @@ impl Daemon {
             self.send_watchers(id, settled_state(&state));
         }
         self.retire(id, cx);
+    }
+
+    /// Notes, and saves, that the worktree in `d` is being deleted. Unsaved,
+    /// it is not started: a stop part way would leave it half done.
+    fn begin_deletion(&mut self, d: Deletion) -> Result<(), String> {
+        let place = d.place.clone();
+        self.store.begin_deletion(d);
+        self.store.save().map_err(|e| {
+            self.store.end_deletion(&place);
+            format!("could not save the server's state, so nothing was deleted: {e}")
+        })
+    }
+
+    /// The deletion of `place` is over: the place goes when its folder did,
+    /// with the note of the deletion in the same save. Says whether it was
+    /// deleted, and the error or the warning there is to tell.
+    fn deletion_done(
+        &mut self,
+        place: &Path,
+        done: Result<Option<String>, String>,
+        cx: &mut Context<Self>,
+    ) -> (bool, Option<String>) {
+        self.deleting.remove(place);
+        let noted = self.store.end_deletion(place);
+        match done {
+            // The folder is gone even when its branch stayed.
+            Ok(branch_kept) => {
+                let saved = self.forget_place(place, cx);
+                self.sync_inbox(cx);
+                (true, deleted_warning(branch_kept, saved.err()))
+            }
+            Err(e) => {
+                if noted {
+                    self.save_store();
+                }
+                (false, Some(e))
+            }
+        }
+    }
+
+    /// Finishes the deletions a stopped server left part way, as the user
+    /// asked for them. One that cannot finish is given up, and its place stays.
+    fn finish_deletions(&mut self, cx: &mut Context<Self>) {
+        for d in self.store.deleting.clone() {
+            // Until it is gone, or stays: no session starts there meanwhile.
+            self.deleting.insert(d.place.clone());
+            cx.spawn(async move |this, cx| {
+                let place = d.place.clone();
+                let done = cx
+                    .background_executor()
+                    .spawn(async move { finish_deletion(&d) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    let (deleted, said) = this.deletion_done(&place, done, cx);
+                    let place = place.display();
+                    match (deleted, said) {
+                        (true, None) => eprintln!("arakun server: finished deleting {place}"),
+                        (true, Some(w)) => {
+                            eprintln!("arakun server: finished deleting {place}. {w}")
+                        }
+                        (false, e) => eprintln!(
+                            "arakun server: could not finish deleting {place}, so it stays: {}",
+                            e.unwrap_or_default()
+                        ),
+                    }
+                });
+            })
+            .detach();
+        }
     }
 
     /// Why the worktree at `place` cannot be deleted, if it cannot.
@@ -4919,15 +4990,17 @@ const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// Removes the worktree at `place` and what is in it, then `branch` if given,
 /// as the app deletes an environment. Ok once the folder is gone; it carries
 /// a warning of what stayed, when something did.
-fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
-    // Git runs in the repository's own files, which hold every worktree's
-    // and are wherever they are kept (`--separate-git-dir`, bare).
-    let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
+///
+/// Git runs in `root`, the repository's shared git files, which hold every
+/// worktree's and are wherever they are kept (`--separate-git-dir`, bare).
+fn remove_worktree_in(
+    root: &Path,
+    place: &Path,
+    branch: Option<&str>,
+) -> Result<Option<String>, String> {
     // Its hooks and a big folder get the time adding one gets.
     let removed = run_bounded(
-        git(&root)
-            .args(["worktree", "remove", "--force"])
-            .arg(place),
+        git(root).args(["worktree", "remove", "--force"]).arg(place),
         WORKTREE_LIMIT,
         None,
     );
@@ -4943,16 +5016,52 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
     // worktree whose folder is away for now, on a mount that is not there.
     // A hook that never ends would keep the answer from the device.
     if let Some(b) = branch {
-        let deleted = run_bounded(
-            git(&root).args(["branch", "-D", "--", b]),
-            WORKTREE_LIMIT,
-            None,
-        );
-        if let Err(e) = deleted {
-            stayed.push(format!("The branch stayed: {e}"));
-        }
+        stayed.extend(delete_branch(root, b));
     }
     Ok((!stayed.is_empty()).then(|| stayed.join(" ")))
+}
+
+/// Deletes `branch` in the repository at `root`; what went wrong, if it stayed.
+fn delete_branch(root: &Path, branch: &str) -> Option<String> {
+    run_bounded(
+        git(root).args(["branch", "-D", "--", branch]),
+        WORKTREE_LIMIT,
+        None,
+    )
+    .err()
+    .map(|e| format!("The branch stayed: {e}"))
+}
+
+/// Does the deletion `d` describes, or what is left of it after a stop:
+/// the folder and its branch, or the branch alone once the folder went.
+/// Safe to run again: what is gone already is not asked for twice.
+fn finish_deletion(d: &Deletion) -> Result<Option<String>, String> {
+    if d.place.exists() {
+        // Checked again: the folder may be something else since.
+        if removable(&d.place)? != d.repo {
+            return Err("that folder is in another repository now".into());
+        }
+        // A branch switched to since may hold commits nobody chose to lose.
+        let branch = d
+            .branch
+            .as_deref()
+            .filter(|b| store::branch(&d.place).as_deref() == Some(*b));
+        return remove_worktree_in(&d.repo, &d.place, branch);
+    }
+    // The folder went before the stop: only the branch may be left.
+    let Some(b) = d.branch.as_deref() else {
+        return Ok(None);
+    };
+    let there = run_bounded(
+        // A full ref name never starts with a dash: no option is read from it.
+        git(&d.repo)
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{b}")),
+        WORKTREE_LIMIT,
+        None,
+    )
+    .is_ok();
+    Ok(there.then(|| delete_branch(&d.repo, b)).flatten())
 }
 
 /// Whether `checked_out`, the branch a deletion would take, is the one the
@@ -4969,11 +5078,12 @@ fn branch_agreed(checked_out: Option<&str>, confirmed: Option<&str>) -> Result<(
 }
 
 /// Whether the folder at `place` is a worktree a device may delete: never a
-/// repository's main folder, which holds the history of every worktree.
-fn removable(place: &Path) -> Result<(), String> {
+/// repository's main folder, which holds the history of every worktree. Ok
+/// with the repository's shared git files.
+fn removable(place: &Path) -> Result<PathBuf, String> {
     match git_dirs(place) {
         // Only a worktree has git files of its own beside the shared ones.
-        Some((own, common)) if own != common => Ok(()),
+        Some((own, common)) if own != common => Ok(common),
         Some(_) => Err("a repository's main folder is not deleted".into()),
         None => Err("that folder is not a git worktree".into()),
     }
@@ -5981,7 +6091,7 @@ mod tests {
         let made = worktree_in(&tmp.join("workspaces"), &app, "fix").unwrap();
         // The main folder holds the history: it stays.
         assert!(removable(&app).is_err());
-        assert_eq!(removable(&made), Ok(()));
+        assert!(removable(&made).is_ok());
         assert_eq!(remove_worktree(&made, Some("fix")), Ok(None));
         assert!(!made.exists());
         assert!(app.exists());
@@ -6077,7 +6187,7 @@ mod tests {
         // Only worktrees go, never the folder every one of them shares.
         assert!(removable(&main).unwrap_err().contains("main folder"));
         assert!(removable(&dir).unwrap_err().contains("not a git worktree"));
-        assert_eq!(removable(&keep), Ok(()));
+        assert!(removable(&keep).is_ok());
 
         // What is in a worktree goes with it, uncommitted or not.
         std::fs::write(keep.join("notes.txt"), "draft").unwrap();
@@ -6088,6 +6198,62 @@ mod tests {
         assert!(has("refs/heads/keep") && !has("refs/heads/drop"));
         // Gone already: nothing to remove.
         assert!(remove_worktree(&keep, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deletes the worktree at `place` as a device asks for it.
+    fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
+        let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
+        remove_worktree_in(&root, place, branch)
+    }
+
+    #[test]
+    fn a_deletion_cut_short_is_finished_where_it_stopped() {
+        let dir = scratch("rm-finish");
+        let main = dir.join("app");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_at(&main, &[]);
+        for b in ["before", "after", "moved"] {
+            git_in(
+                &main,
+                &["worktree", "add", "-q", "-b", b, &format!("../{b}")],
+            );
+        }
+        let has = |b: &str| run_git(git(&main).args(["rev-parse", "--verify", "-q", b])).is_ok();
+        let noted = |b: &str| {
+            let place = dir.join(b);
+            Deletion {
+                repo: removable(&place).unwrap(),
+                place,
+                branch: Some(b.into()),
+            }
+        };
+        let (before, after, moved) = (noted("before"), noted("after"), noted("moved"));
+
+        // Stopped before git ran: all of it is done now.
+        assert_eq!(finish_deletion(&before), Ok(None));
+        assert!(!before.place.exists() && !has("refs/heads/before"));
+        // Run again, there is nothing left to do.
+        assert_eq!(finish_deletion(&before), Ok(None));
+
+        // Stopped after the folder went: the branch goes too.
+        git_in(&main, &["worktree", "remove", "--force", "../after"]);
+        assert!(has("refs/heads/after"));
+        assert_eq!(finish_deletion(&after), Ok(None));
+        assert!(!has("refs/heads/after"));
+
+        // A branch switched to since stays, though the folder goes.
+        git_in(&moved.place, &["switch", "-q", "-c", "other"]);
+        assert_eq!(finish_deletion(&moved), Ok(None));
+        assert!(!moved.place.exists());
+        assert!(has("refs/heads/moved") && has("refs/heads/other"));
+
+        // A folder that is in another repository now is left alone.
+        let elsewhere = dir.join("before");
+        std::fs::create_dir(&elsewhere).unwrap();
+        repo_at(&elsewhere, &[]);
+        assert!(finish_deletion(&before).is_err());
+        assert!(elsewhere.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

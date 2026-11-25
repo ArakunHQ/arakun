@@ -207,24 +207,39 @@ struct Row {
     can_archive: bool,
     /// It has a tab open. Without one the row is drawn dimmed.
     tab: bool,
-    /// It sits above the rule, with the sessions that have a tab open
+    /// Its tab is pinned to the title bar: the row goes first in its
+    /// project and shows a pin.
+    pinned: bool,
+    /// The part of the tree it sits in, a rule between one and the next
     /// (`sort_rows` sets it).
-    top: bool,
+    band: Band,
     /// Its place in the order the user dragged its project's sessions into;
     /// `None` for a session that came since.
     manual: Option<usize>,
 }
 
+/// The parts of a project's sessions in the tree, top to bottom, with a rule
+/// between one part and the next.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Band {
+    /// Pinned to the title bar, in every order.
+    Pinned,
+    /// With a tab open, in the orders that set them apart.
+    Open,
+    #[default]
+    Rest,
+}
+
 /// Where each session sat when the pointer came over the tree: its place in
-/// its list, and whether above the rule.
-pub(super) type HeldRows = std::collections::HashMap<SharedString, (usize, bool)>;
+/// its list, and the part of the tree it was in.
+pub(super) type HeldRows = std::collections::HashMap<SharedString, (usize, Band)>;
 
 /// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
-/// that tie keep the environments' order. An order that moves sessions puts
-/// the ones with an open tab on top, each side in that order. With the
-/// pointer over the tree (`held`), every row stays where it was instead: a
-/// row never leaves from under the pointer. A session that came since goes
-/// first.
+/// that tie keep the environments' order. Pinned sessions go first in every
+/// order; an order that moves sessions puts the ones with an open tab next,
+/// each part in that order. With the pointer over the tree (`held`), every
+/// row stays where it was instead: a row never leaves from under the
+/// pointer. A session that came since goes first.
 fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     match sort {
         Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
@@ -234,16 +249,20 @@ fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
         Sort::Manual => rows.sort_by_key(|r| (r.pi, r.manual.map_or(0, |m| m + 1))),
     }
     let split = sort.open_tabs_first();
-    if split {
-        rows.sort_by_key(|r| !r.tab);
-    }
     for r in rows.iter_mut() {
-        r.top = split && r.tab;
+        r.band = if r.pinned {
+            Band::Pinned
+        } else if split && r.tab {
+            Band::Open
+        } else {
+            Band::Rest
+        };
     }
+    rows.sort_by_key(|r| r.band);
     if let Some(held) = held {
         for r in rows.iter_mut() {
-            if let Some((_, top)) = held.get(&r.id) {
-                r.top = *top;
+            if let Some((_, band)) = held.get(&r.id) {
+                r.band = *band;
             }
         }
         rows.sort_by_key(|r| held.get(&r.id).map_or(0, |(place, _)| place + 1));
@@ -310,7 +329,8 @@ impl Shell {
                     updated: s.updated,
                     can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
                     tab: self.strip.session_tab(&s.id).is_some(),
-                    top: false,
+                    pinned: self.is_pinned(&s.id),
+                    band: Band::Rest,
                     manual: project.session_order.iter().position(|id| *id == s.id),
                 });
             }
@@ -384,7 +404,7 @@ impl Shell {
                 p.rows
                     .into_iter()
                     .enumerate()
-                    .map(|(place, r)| (r.id, (place, r.top)))
+                    .map(|(place, r)| (r.id, (place, r.band)))
             })
             .collect()
     }
@@ -821,12 +841,12 @@ impl Shell {
                 ));
             }
             if open {
-                let mut above = false;
+                let mut band = None;
                 for row in rows {
-                    if above && !row.top {
+                    if band.is_some_and(|b| b != row.band) {
                         list = list.child(tree_rule(layout.group));
                     }
-                    above = row.top;
+                    band = Some(row.band);
                     let selected = open_id.as_ref() == Some(&row.id);
                     list = list.child(self.render_tree_row(row, selected, &layout, cx));
                 }
@@ -1055,14 +1075,14 @@ impl Shell {
             updated,
             can_archive,
             tab,
-            top: _,
+            pinned,
+            band: _,
             manual: _,
         } = row;
-        let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
         let picked = self.tree_pick.contains(&id);
         let dragged =
-            super::drag::DraggedSession::new(env_path.clone(), id.clone(), title.clone(), agent);
+            super::drag::DraggedSession::row(env_path.clone(), id.clone(), title.clone(), agent);
         let shell = cx.entity();
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the end of the row gives up.
@@ -1153,26 +1173,33 @@ impl Shell {
                     .when(dimmed, |d| d.opacity(DIMMED))
                     .child(title),
             )
-            .children(end.map(|text| {
+            .child(
                 div()
+                    .flex()
                     .flex_none()
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(state.word_color())
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
                     // Room for the archive button, so it never covers the
                     // end of the row.
                     .when(archive_shown, |d| d.mr(px(ui::ICON_BUTTON)))
-                    .child(text)
-            }))
-            // Small and faint: the tab in the bar already says it.
-            .when(pinned && !archive_shown, |d| {
-                d.child(
-                    div()
-                        .id(SharedString::from(format!("tree-pinned-{id}")))
-                        .flex_none()
-                        .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
-                        .child(icon("pin", 11.).text_color(theme::text_faint())),
-                )
-            })
+                    .children(end.map(|text| {
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(state.word_color())
+                            .child(text)
+                    }))
+                    // Small and faint, and there under the pointer too: it
+                    // says why the row is first.
+                    .when(pinned, |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tree-pinned-{id}")))
+                                .flex()
+                                .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
+                                .child(icon("pin", 11.).text_color(theme::text_faint())),
+                        )
+                    }),
+            )
             // On hover, an archive button comes after what the row ends with.
             .when(archive_shown, |d| {
                 d.child(
@@ -1363,16 +1390,17 @@ mod tests {
             updated,
             can_archive: true,
             tab,
-            top: false,
+            pinned: false,
+            band: Band::Rest,
             manual: None,
         }
     }
 
-    /// The ids in order, and which of them sit above the rule.
-    fn placed(rows: &[Row]) -> (Vec<String>, Vec<bool>) {
+    /// The ids in order, and the part of the tree each sits in.
+    fn placed(rows: &[Row]) -> (Vec<String>, Vec<Band>) {
         (
             rows.iter().map(|r| r.id.to_string()).collect(),
-            rows.iter().map(|r| r.top).collect(),
+            rows.iter().map(|r| r.band).collect(),
         )
     }
 
@@ -1413,7 +1441,7 @@ mod tests {
             sort_rows(&mut r, sort, None);
             placed(&r)
         };
-        let split = vec![true, true, false, false];
+        let split = vec![Band::Open, Band::Open, Band::Rest, Band::Rest];
         let (ids, top) = sorted(Sort::Recent);
         assert_eq!(ids, ["c", "a", "b", "d"]);
         assert_eq!(top, split);
@@ -1423,7 +1451,7 @@ mod tests {
         // Manual keeps every session where it is, and nothing is set apart.
         let (ids, top) = sorted(Sort::Manual);
         assert_eq!(ids, ["a", "b", "c", "d"]);
-        assert_eq!(top, vec![false; 4]);
+        assert_eq!(top, vec![Band::Rest; 4]);
     }
 
     #[test]
@@ -1438,7 +1466,7 @@ mod tests {
         let held: HeldRows = rows
             .iter()
             .enumerate()
-            .map(|(place, r)| (r.id.clone(), (place, r.top)))
+            .map(|(place, r)| (r.id.clone(), (place, r.band)))
             .collect();
         // Under the pointer: "a" loses its tab, "d" is opened and moves,
         // and a new session starts.
@@ -1456,13 +1484,19 @@ mod tests {
         let (ids, top) = placed(&rows);
         // The new one comes first; the others stay put, rule and all.
         assert_eq!(ids, ["e", "c", "a", "b", "d"]);
-        assert_eq!(top, [true, true, true, false, false]);
+        assert_eq!(
+            top,
+            [Band::Open, Band::Open, Band::Open, Band::Rest, Band::Rest]
+        );
         // Once the pointer leaves, the order is the chosen one again.
         let mut rows = now();
         sort_rows(&mut rows, Sort::Recent, None);
         let (ids, top) = placed(&rows);
         assert_eq!(ids, ["d", "e", "c", "b", "a"]);
-        assert_eq!(top, [true, true, true, false, false]);
+        assert_eq!(
+            top,
+            [Band::Open, Band::Open, Band::Open, Band::Rest, Band::Rest]
+        );
     }
 
     #[test]
@@ -1482,7 +1516,7 @@ mod tests {
         let (ids, top) = placed(&rows);
         assert_eq!(ids, ["new", "b", "c", "a"]);
         // No rule: open tabs stay where the user put them.
-        assert_eq!(top, vec![false; 4]);
+        assert_eq!(top, vec![Band::Rest; 4]);
         // Without project headings, project by project, each in its order.
         let mut rows = vec![
             placed_at("q", 1, Some(0), true),
@@ -1492,6 +1526,45 @@ mod tests {
         ];
         sort_rows(&mut rows, Sort::Manual, None);
         assert_eq!(placed(&rows).0, ["b", "a", "q", "p"]);
+    }
+
+    #[test]
+    fn pinned_sessions_go_first_in_every_order() {
+        let pinned = |id: &str, updated: u64| Row {
+            pinned: true,
+            ..row(id, id, updated, true)
+        };
+        let rows = || {
+            vec![
+                row("a", "a", 40, true),
+                pinned("p", 10),
+                row("b", "b", 30, false),
+                pinned("q", 20),
+            ]
+        };
+        let sorted = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort, None);
+            placed(&r)
+        };
+        use Band::*;
+        // Recent: the pinned ones, then the open tab, then the rest.
+        assert_eq!(
+            sorted(Sort::Recent),
+            (
+                vec!["q".into(), "p".into(), "a".into(), "b".into()],
+                vec![Pinned, Pinned, Open, Rest]
+            )
+        );
+        assert_eq!(sorted(Sort::Name).0, ["p", "q", "a", "b"]);
+        // Manual keeps its order under the pinned ones, with one rule.
+        assert_eq!(
+            sorted(Sort::Manual),
+            (
+                vec!["p".into(), "q".into(), "a".into(), "b".into()],
+                vec![Pinned, Pinned, Rest, Rest]
+            )
+        );
     }
 
     #[test]

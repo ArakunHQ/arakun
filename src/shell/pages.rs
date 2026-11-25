@@ -167,7 +167,7 @@ impl Shell {
         if !matches!(action, Action::Open(_)) && crate::browser::is_debug_endpoint(&url) {
             return Err(Reply::err(DEBUG_PORT_REFUSED));
         }
-        if action.drives() && !is_local(&url) && !drive_any_page() {
+        if action.drives() && !is_local(&url) && !crate::page_drive::any_page() {
             let sub = req.args.get(1).map_or("", String::as_str);
             return Err(Reply::err(format!(
                 "`arakun page {sub}` only works on pages served from this machine (localhost, file://); this tab shows {url}"
@@ -779,36 +779,13 @@ fn clip_to(mut text: String, max: usize) -> String {
     text
 }
 
-/// Pages served from this machine: `file://`, `about:`, `data:`, and http(s) on
-/// localhost or a loopback address.
-/// Whether agents may click, type and run scripts on any page, not only local
-/// ones. Off by default: those tabs carry the user's signed-in sessions.
-/// Turned on in Settings → General; stored as a marker file.
-pub(crate) fn drive_any_page() -> bool {
-    drive_any_page_path().is_file()
-}
-
-pub(crate) fn set_drive_any_page(on: bool) {
-    let path = drive_any_page_path();
-    if on {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(&path, "agents may drive external pages\n");
-    } else {
-        let _ = std::fs::remove_file(&path);
-    }
-}
-
-fn drive_any_page_path() -> std::path::PathBuf {
-    crate::platform::app_dir().join("drive-any-page")
-}
-
 /// A page on the browser's debugging port can drive every tab and read local files, so
 /// agents may neither open it nor read or drive it, whatever the settings say.
 const DEBUG_PORT_REFUSED: &str =
     "agents may not use the browser's debugging port (ARAKUN_CDP_PORT)";
 
+/// Pages served from this machine: `file://`, `about:`, `data:`, and http(s) on
+/// localhost or a loopback address.
 fn is_local(url: &str) -> bool {
     if url.is_empty()
         || ["file:", "about:", "data:"]

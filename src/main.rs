@@ -59,6 +59,7 @@ mod memory_view;
 mod model;
 mod notices;
 mod onboarding;
+mod page_drive;
 mod palette;
 mod palettes;
 mod phone_view;

@@ -12,7 +12,7 @@ use gpui::{
     point, px,
 };
 
-use super::{Shell, agent_icon};
+use super::Shell;
 use crate::agent::AgentKind;
 use crate::agent::Entry;
 use crate::state;
@@ -124,7 +124,7 @@ impl Render for DraggedSession {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(6.))
-                    .child(agent_icon(self.agent, 14.))
+                    .child(self.agent.icon(14.))
                     .child(
                         div()
                             .text_size(px(crate::ui::TEXT_XS))

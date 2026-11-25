@@ -636,8 +636,8 @@ impl Shell {
     /// The icon of a tab's kind.
     pub(super) fn tab_icon(&self, tab: &Tab, cx: &App) -> AnyElement {
         match &tab.kind {
-            TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
-            TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
+            TabKind::Session { agent, .. } => agent.icon(14.).into_any_element(),
+            TabKind::NewSession => self.tab_env(tab).agent.icon(14.).into_any_element(),
             TabKind::Browser { url } => {
                 let page = tab.browser.as_ref().map(|b| b.view.read(cx));
                 // A tab whose page is not running, or has no icon yet, shows the icon its

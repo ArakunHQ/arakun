@@ -362,6 +362,21 @@ impl PermissionOption {
     }
 }
 
+impl PermissionRequest {
+    /// A request for tests in other modules, which cannot set `rpc_id`.
+    #[cfg(test)]
+    pub(crate) fn for_test(title: &str, plan: Option<SpecPlan>) -> Self {
+        Self {
+            rpc_id: Value::Null,
+            tool_call_id: String::new(),
+            title: title.to_string(),
+            options: Vec::new(),
+            plan,
+            session: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PermissionRequest {
     rpc_id: Value,

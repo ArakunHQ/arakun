@@ -2043,7 +2043,7 @@ impl Shell {
             Notice::Input => "input",
             Notice::Error => "error",
         };
-        let payload = push::notice(kind, id, title, body);
+        let payload = push::notice(kind, id, title, body, "", None);
         let (vapid, access) = (link.vapid.clone(), link.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx

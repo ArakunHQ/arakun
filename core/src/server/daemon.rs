@@ -3904,7 +3904,7 @@ impl Daemon {
             Notice::Input => "input",
             Notice::Error => "error",
         };
-        let payload = push::notice(kind, id, &title, &body);
+        let payload = push::notice(kind, id, &title, &body, "", None);
         let (vapid, access) = (self.vapid.clone(), self.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx

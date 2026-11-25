@@ -15,6 +15,7 @@
 
 pub mod e2e;
 pub mod identity;
+pub mod notify;
 pub mod push;
 mod quiet;
 pub mod relay;

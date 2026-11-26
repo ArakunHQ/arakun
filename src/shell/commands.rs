@@ -82,6 +82,12 @@ impl Shell {
 
     fn run_command(&mut self, req: Request, window: &mut Window, cx: &mut Context<Self>) -> Reply {
         let arg = req.args.first().cloned().unwrap_or_default();
+        // A handle is not the value it stands for; typed, it would fail or leak.
+        if req.cmd == "run"
+            && let Err(e) = crate::agent::secret::refuse_handle(&arg)
+        {
+            return Reply::err(e);
+        }
         if req.cmd == "add" {
             return self.add_or_show(Path::new(&arg), window, cx);
         }
@@ -315,6 +321,10 @@ impl Shell {
             return;
         };
         let command = req.args.first().cloned().unwrap_or_default();
+        if let Err(e) = crate::agent::secret::refuse_handle(&command) {
+            let _ = done.send(Reply::err(e));
+            return;
+        }
         // Otherwise an old server on the port would pass for the new one.
         if let Some(port) = wait.port
             && port_open(port)
@@ -761,9 +771,12 @@ fn secret_command(req: &Request, done: oneshot::Sender<Reply>, cx: &mut gpui::As
     };
     let asked = serde_json::from_str(args)
         .map_err(|e| format!("bad arguments: {e}"))
-        .and_then(|args| secret::ask(token, &args));
+        .and_then(|args| secret::call(token, &args));
     match asked {
-        Ok(outcome) => cx
+        Ok(secret::Answer::Now(v)) => {
+            let _ = done.send(Reply::ok(v.to_string()));
+        }
+        Ok(secret::Answer::Later(outcome)) => cx
             .spawn(async move |_| {
                 let outcome = outcome
                     .await

@@ -4833,9 +4833,12 @@ fn secret_request(
     };
     let asked = serde_json::from_str(args)
         .map_err(|e| format!("bad arguments: {e}"))
-        .and_then(|args| secret::ask(token, &args));
+        .and_then(|args| secret::call(token, &args));
     match asked {
-        Ok(outcome) => cx
+        Ok(secret::Answer::Now(v)) => {
+            let _ = done.send(Reply::ok(v.to_string()));
+        }
+        Ok(secret::Answer::Later(outcome)) => cx
             .spawn(async move |_| {
                 let outcome = outcome
                     .await

@@ -654,7 +654,8 @@ impl ThreadView {
 
 impl ThreadView {
     /// `request_secret`: masked inputs the agent never sees, with Save and
-    /// Decline. What is typed goes to `secret::keep`; the agent gets a handle.
+    /// Decline. What is typed goes to `secret::keep`, and the agent gets a
+    /// handle, or to `secret::file` after the card said so, and it gets a path.
     pub(super) fn secret_card(&self, req: &SecretRequest, cx: &Context<Self>) -> AnyElement {
         // A server reached over plain http: only Decline, nothing to type.
         let private = self.thread.read(cx).secret_private();
@@ -745,6 +746,15 @@ impl ThreadView {
                         .child(icon("link-square02", 12.).text_color(theme::link()))
                         .child(url.clone())
                         .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+            })
+            .when(req.deliver == crate::agent::secret::Deliver::File, |d| {
+                d.child(
+                    div()
+                        .pl(crate::ui::sp(22.))
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .text_color(amber())
+                        .child(crate::agent::secret::FILE_NOTICE),
                 )
             })
             .when(!private, |d| {

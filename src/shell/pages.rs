@@ -65,9 +65,16 @@ fn parse_action(args: &[String], cwd: &Path) -> Result<Option<Action>, String> {
         ("text", []) => Action::Text,
         ("reload", []) => Action::Reload,
         ("open", [url]) => Action::Open(control::browse_target(cwd, url)),
-        ("eval", [_, ..]) => Action::Eval(rest.join(" ")),
+        // A handle is not the value it stands for; typed, it would fail or leak.
+        ("eval", [_, ..]) => {
+            crate::agent::secret::refuse_handle(&rest.join(" "))?;
+            Action::Eval(rest.join(" "))
+        }
         ("click", [_, ..]) => Action::Click(rest.join(" ")),
-        ("type", [field, text @ ..]) => Action::Type(field.clone(), text.join(" ")),
+        ("type", [field, text @ ..]) => {
+            crate::agent::secret::refuse_handle(&text.join(" "))?;
+            Action::Type(field.clone(), text.join(" "))
+        }
         ("press", [key]) => Action::Press(key.clone()),
         _ => return Err(format!("usage:\n{}", control::PAGE_USAGE)),
     };
@@ -1194,6 +1201,9 @@ mod tests {
             parse(&["type", "#q"]),
             Ok(Some(Action::Type("#q".into(), String::new())))
         );
+        // A handle is not typed into a page, nor run as script there.
+        assert!(parse(&["type", "#pw", "secret-ref:ab12"]).is_err());
+        assert!(parse(&["eval", "x.value='secret-ref:ab12'"]).is_err());
         assert_eq!(
             parse(&["open", "localhost:3000"]),
             Ok(Some(Action::Open("localhost:3000".into())))

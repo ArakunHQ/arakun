@@ -1,6 +1,6 @@
 //! The chat's side of `request_secret` (`super::secret`): the requests its
 //! agent waits on, and how each ends. Values pass through here only on their
-//! way to [`secret::keep`]; no entry, event or saved file holds one. A
+//! way to [`secret::keep`] or [`secret::file`]; no entry, event or saved file holds one. A
 //! server's session shows the request its server sends, and the answer goes
 //! back there ([`RemoteAction::Secret`]), only over a private connection.
 
@@ -11,7 +11,7 @@ use futures::StreamExt as _;
 use futures::channel::oneshot;
 use gpui::{Context, Task};
 
-use super::super::secret::{self, McpCommand, Outcome, Route, SecretRequest, Typed, Why};
+use super::super::secret::{self, Deliver, McpCommand, Outcome, Route, SecretRequest, Typed, Why};
 use super::{AgentKind, RemoteAction, Thread, ThreadEvent, ThreadStatus};
 
 /// A request on show, and the agent's tool call waiting on it.
@@ -71,8 +71,14 @@ impl Secrets {
             .map(|f| f.name.clone())
             .zip(values)
             .collect();
-        let handles = secret::keep(cwd, named)?;
-        self.end(id, Outcome::Saved(handles));
+        let outcome = match request.deliver {
+            Deliver::Handle => {
+                let session = self.route.as_ref().map_or("", Route::token);
+                Outcome::Saved(secret::keep(cwd, session, id, named)?)
+            }
+            Deliver::File => Outcome::Filed(secret::file(named)?),
+        };
+        self.end(id, outcome);
         Ok(())
     }
 
@@ -122,7 +128,7 @@ impl Thread {
         if self.remote || !secret::offered_to(self.kind) {
             return None;
         }
-        let (route, mut rx) = Route::open()?;
+        let (route, mut rx) = Route::open(&self.cwd)?;
         let token = route.token().to_string();
         self.secrets.route = Some(route);
         self.secrets._pump = Some(cx.spawn(async move |this, cx| {
@@ -323,7 +329,7 @@ mod tests {
     use super::*;
 
     fn ask(args: &serde_json::Value) -> (Route, oneshot::Receiver<Outcome>, secret::Asked) {
-        let (route, mut rx) = Route::open().unwrap();
+        let (route, mut rx) = Route::open(Path::new("/p")).unwrap();
         let answer = secret::ask(route.token(), args).unwrap();
         let asked = rx.try_recv().unwrap();
         (route, answer, asked)
@@ -370,7 +376,10 @@ mod tests {
         let call = json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": {"name": secret::TOOL, "arguments": args}})
         .to_string();
-        let reply = secret::mcp_reply(&call, |_| Ok(outcome.to_json())).unwrap();
+        let reply = secret::mcp_reply(&call, |tool, args| {
+            secret::run_tool(|_| Ok(outcome.to_json()), tool, args)
+        })
+        .unwrap();
         let result = &reply["result"];
         let content: Vec<_> = result["content"]
             .as_array()
@@ -412,12 +421,12 @@ mod tests {
         };
         assert_eq!(handles[0].0, "user");
         let password = &handles[1].1;
-        assert_eq!(secret::take(password, Path::new("/elsewhere")), None);
+        assert!(secret::take(password, Path::new("/elsewhere")).is_err());
         assert_eq!(
-            secret::take(password, Path::new("/p")).as_deref(),
-            Some(PASSWORD)
+            secret::take(password, Path::new("/p")).unwrap().expose(),
+            PASSWORD
         );
-        assert_eq!(secret::take(password, Path::new("/p")), None);
+        assert!(secret::take(password, Path::new("/p")).is_err());
     }
 
     #[test]
@@ -460,8 +469,10 @@ mod tests {
             panic!("not saved");
         };
         assert_eq!(
-            secret::take(&handles[0].1, Path::new("/p")).as_deref(),
-            Some(VALUE)
+            secret::take(&handles[0].1, Path::new("/p"))
+                .unwrap()
+                .expose(),
+            VALUE
         );
 
         // Declining sends nothing, so a plain path may carry it.
@@ -493,5 +504,35 @@ mod tests {
                 Some(Outcome::Cancelled(Why::NewMessage))
             );
         }
+    }
+
+    #[test]
+    fn a_file_request_gives_a_private_file_and_no_handle() {
+        const VALUE: &str = "sudo-password-not-in-the-session";
+        let mut secrets = Secrets::default();
+        let (_route, mut answer, asked) =
+            ask(&json!({"label": "sudo", "reason": "To install.", "deliver": "file"}));
+        let id = asked.request.id;
+        assert_eq!(asked.request.deliver, Deliver::File);
+        secrets.push(asked, None);
+        secrets
+            .save(id, vec![VALUE.into()], Path::new("/p"))
+            .unwrap();
+        let outcome = answer.try_recv().unwrap().unwrap();
+        let Outcome::Filed(files) = &outcome else {
+            panic!("not filed: {outcome:?}");
+        };
+        let path = Path::new(&files[0].1);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), VALUE);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(path), 0o600);
+            assert_eq!(mode(path.parent().unwrap()), 0o700);
+        }
+        assert!(!outcome.text().contains(VALUE));
+        assert!(outcome.text().contains(&files[0].1));
+        std::fs::remove_file(path).unwrap();
     }
 }

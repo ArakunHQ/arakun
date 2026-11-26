@@ -2245,14 +2245,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let script = "sh -c \"trap 'sleep 0.5; touch cleaned; exit 1' TERM; \
-                      sleep 30 & wait\" & wait";
-        let err = output_within(
-            Command::new("sh").args(["-c", script]).current_dir(&dir),
-            None,
-            Duration::from_millis(300),
-        )
-        .unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+                      touch armed; sleep 30 & wait\" & wait";
+        // Stopped only once the trap is set: a fixed delay lost the race on busy
+        // macOS runners, where the inner shell had not started yet and died untrapped.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let err = std::thread::scope(|s| {
+            s.spawn(|| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while !dir.join("armed").exists() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            output_until(
+                Command::new("sh").args(["-c", script]).current_dir(&dir),
+                None,
+                Duration::from_secs(20),
+                &stop,
+            )
+            .unwrap_err()
+        });
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(dir.join("armed").exists(), "the trap was never set");
         assert!(dir.join("cleaned").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }

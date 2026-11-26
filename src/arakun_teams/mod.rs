@@ -458,7 +458,7 @@ impl Teams {
                 this.phase = Phase::Idle;
                 match result {
                     Ok((signed, saved)) => {
-                        this.session = Some(signed.session);
+                        this.session = Some(signed.session.expose().to_string());
                         this.me = Some(signed.me);
                         this.asked = Some(Instant::now());
                         this.error = saved.err().map(|e| {
@@ -706,7 +706,7 @@ async fn device_flow(
         let device = code.device_code.clone();
         let id = client_id.clone();
         let answer = match cx
-            .background_spawn(async move { cloud::poll_once(&id, &device, interval) })
+            .background_spawn(async move { cloud::poll_once(&id, device.expose(), interval) })
             .await
         {
             Ok(answer) => {
@@ -734,11 +734,16 @@ async fn device_flow(
     })
     .map_err(|e| Ended::Failed(e.to_string()))?;
     cx.background_spawn(async move {
-        let signed = api::sign_in(&base, &token).map_err(|e| Ended::Failed(format!("Teams: {e}")));
+        let signed =
+            api::sign_in(&base, token.expose()).map_err(|e| Ended::Failed(format!("Teams: {e}")));
         drop(token);
         let signed = signed?;
-        let saved = keyring::store(&session_account(), "arakun: Teams session", &signed.session)
-            .map_err(String::from);
+        let saved = keyring::store(
+            &session_account(),
+            "arakun: Teams session",
+            signed.session.expose(),
+        )
+        .map_err(String::from);
         Ok((signed, saved))
     })
     .await

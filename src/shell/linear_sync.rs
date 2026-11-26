@@ -958,7 +958,9 @@ pub(super) mod tests {
             workspace: workspace.into(),
             url_key: String::new(),
             // The key is in the keyring; the file keeps none.
-            credential: linear::Credential::ApiKey { key: String::new() },
+            credential: linear::Credential::ApiKey {
+                key: Default::default(),
+            },
             added_at: 0,
         };
         let picked: Vec<(String, String)> =

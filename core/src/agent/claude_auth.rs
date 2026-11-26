@@ -46,6 +46,7 @@ impl Access {
 #[derive(Clone, Debug, Default)]
 struct UserSettings {
     env: BTreeMap<String, String>,
+    // Not a secret: the command that prints the key, not the key.
     api_key_helper: Option<String>,
 }
 

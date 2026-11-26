@@ -429,7 +429,7 @@ impl Link {
         };
         match super::token(&*self.vault, saved) {
             Ok(Some(token)) => {
-                saved.token = token.clone();
+                saved.token = token.as_str().into();
                 Ok(token)
             }
             Ok(None) => Err(Ended::Refused(NO_TOKEN.into())),
@@ -518,7 +518,7 @@ impl Link {
     fn paired(&mut self, saved: Saved) {
         let mut kept = saved.clone();
         match super::keep_token(&*self.vault, &saved) {
-            Ok(()) => kept.token.clear(),
+            Ok(()) => kept.token = Default::default(),
             Err(e) => eprintln!("arakun: could not keep a server's token in the keyring: {e}"),
         }
         self.who = Who::Saved(saved);
@@ -1053,7 +1053,7 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
             origin: invite.origin.clone(),
             way: Way::Direct,
             device: text("id"),
-            token: text("token"),
+            token: text("token").into(),
             removed: false,
         }),
         403 => Err(Ended::Refused(
@@ -1766,7 +1766,7 @@ mod tests {
                 label: identity.label(),
             },
             device: String::new(),
-            token: String::new(),
+            token: Default::default(),
             removed: false,
         };
         let account = Account {

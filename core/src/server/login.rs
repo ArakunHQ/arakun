@@ -13,31 +13,21 @@ use serde::{Deserialize, Serialize};
 use super::local::{self, Request};
 use super::printable;
 use crate::cloud;
+use crate::secret::Secret;
 
 /// The file the sign-in is kept in, in the server's folder.
 pub const FILE: &str = "account.json";
 
-/// The account the server is signed in to. No `Debug` that shows the session:
-/// it opens the account, so it must never end up in a log.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The account the server is signed in to. The session opens the account,
+/// so it is a [`Secret`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignIn {
     /// The service the session is from. Another one does not know it.
     pub base: String,
-    pub session: String,
+    pub session: Secret,
     pub session_id: String,
     pub github_id: u64,
     pub login: String,
-}
-
-impl std::fmt::Debug for SignIn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SignIn")
-            .field("base", &self.base)
-            .field("session_id", &self.session_id)
-            .field("github_id", &self.github_id)
-            .field("login", &self.login)
-            .finish_non_exhaustive()
-    }
 }
 
 pub fn path(dir: &Path) -> PathBuf {
@@ -92,7 +82,7 @@ pub fn login(force: bool) -> i32 {
     // A file that cannot be read is written again.
     let old = load(&dir).unwrap_or(None);
     match plan(old.as_ref(), &base, force) {
-        Plan::Check(old) => match checked(cloud::me(&old.base, &old.session)) {
+        Plan::Check(old) => match checked(cloud::me(&old.base, old.session.expose())) {
             Checked::Good => {
                 println!(
                     "Signed in as {}. `{} login --force` signs in again.",
@@ -132,12 +122,12 @@ pub fn login(force: bool) -> i32 {
     };
     if let Err(e) = save(&dir, &new) {
         // The session works but nothing keeps it: end it rather than leave it.
-        let _ = cloud::logout(&new.base, &new.session);
+        let _ = cloud::logout(&new.base, new.session.expose());
         return super::fail(&format!("{}: {e}", path(&dir).display()));
     }
     // The session this one replaces goes only to the service that issued it.
     if let Some(old) = old.filter(|o| o.session != new.session) {
-        let _ = cloud::logout(&old.base, &old.session);
+        let _ = cloud::logout(&old.base, old.session.expose());
     }
     tell_server();
     println!("Signed in as {}.", new.login);
@@ -223,7 +213,7 @@ fn device_flow(base: &str) -> Result<SignIn, String> {
     };
     // The service takes a name of at most 100 characters.
     let name: String = crate::phone::host_name().chars().take(100).collect();
-    let signed = cloud::sign_in(base, &token, &name, "server").map_err(failed)?;
+    let signed = cloud::sign_in(base, token.expose(), &name, "server").map_err(failed)?;
     Ok(SignIn {
         base: base.to_string(),
         session: signed.session,
@@ -252,7 +242,9 @@ pub fn logout() -> i32 {
         Ok(kept) => kept,
         Err(_) => None,
     };
-    let ended = kept.as_ref().map(|s| cloud::logout(&s.base, &s.session));
+    let ended = kept
+        .as_ref()
+        .map(|s| cloud::logout(&s.base, s.session.expose()));
     if let Err(e) = forget(&dir) {
         return super::fail(&format!("{}: {e}", path(&dir).display()));
     }
@@ -318,7 +310,7 @@ pub fn machines() -> i32 {
         Ok(kept) => kept,
         Err(code) => return code,
     };
-    match cloud::machines(&kept.base, &kept.session) {
+    match cloud::machines(&kept.base, kept.session.expose()) {
         Ok(list) => {
             println!(
                 "{}",
@@ -375,7 +367,7 @@ pub fn forget_machine(label: &str) -> i32 {
         Ok(kept) => kept,
         Err(code) => return code,
     };
-    match cloud::remove_machine(&kept.base, &kept.session, label) {
+    match cloud::remove_machine(&kept.base, kept.session.expose(), label) {
         Ok(true) => {
             println!("{}", forgot_text(label, own_label().as_deref()));
             0

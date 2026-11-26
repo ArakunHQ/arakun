@@ -131,6 +131,7 @@ pub struct SessionMeta {
     /// started on it, never the token: a different one under the same name
     /// may be another account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Not a secret: a fingerprint of the token.
     pub seat_key: Option<String>,
 }
 

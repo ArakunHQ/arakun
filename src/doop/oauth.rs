@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest as _;
 
+use crate::secret::Secret;
+
 use super::{Credential, Error, Session, encode, host_label, mcp_url, run};
 
 /// How long the browser has to come back.
@@ -25,33 +27,29 @@ const WAIT: Duration = Duration::from_secs(5 * 60);
 /// What the tab asks for: who the user is, and a token that can be renewed.
 const SCOPES: [&str; 4] = ["openid", "profile", "email", "offline_access"];
 
-/// What a browser sign-in leaves behind. Debug never shows the secrets.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// What a browser sign-in leaves behind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tokens {
     pub client_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<String>,
+    pub client_secret: Option<Secret>,
+    // Not a secret: the URL tokens are traded at.
     pub token_endpoint: String,
     /// Empty in the sessions file: the keyring keeps it, with the refresh
     /// token and the client secret.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub access: String,
+    #[serde(default, skip_serializing_if = "Secret::is_empty")]
+    pub access: Secret,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh: Option<String>,
+    pub refresh: Option<Secret>,
     /// Unix seconds; the token is traded for a new one a minute before.
     pub expires_at: u64,
-}
-
-impl std::fmt::Debug for Tokens {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Tokens(…)")
-    }
 }
 
 /// The endpoints of an instance's authorization server.
 #[derive(Clone, Debug, PartialEq)]
 struct Meta {
     authorize: String,
+    // Not a secret: the token endpoint's URL.
     token: String,
     register: Option<String>,
     userinfo: Option<String>,
@@ -422,17 +420,14 @@ fn tokens_from(
 ) -> Option<Tokens> {
     Some(Tokens {
         client_id: client_id.to_string(),
-        client_secret: client_secret.map(str::to_string),
+        client_secret: client_secret.map(Secret::from),
         token_endpoint: token_endpoint.to_string(),
-        access: v["access_token"]
-            .as_str()
-            .filter(|t| !t.is_empty())?
-            .to_string(),
+        access: v["access_token"].as_str().filter(|t| !t.is_empty())?.into(),
         // A server that doesn't rotate the refresh token leaves the old one valid.
         refresh: v["refresh_token"]
             .as_str()
             .or(old_refresh)
-            .map(str::to_string),
+            .map(Secret::from),
         expires_at: now + v["expires_in"].as_u64().unwrap_or(3600),
     })
 }
@@ -440,21 +435,21 @@ fn tokens_from(
 /// Trades the refresh token for a new access token.
 pub(super) fn refresh(t: &Tokens) -> Result<Tokens, Error> {
     let again = || Error::SignedOut("The Doop sign-in ran out. Sign in again.".to_string());
-    let refresh = t.refresh.as_deref().ok_or_else(again)?;
+    let refresh = t.refresh.as_ref().map(Secret::expose).ok_or_else(again)?;
     let mut fields = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh),
         ("client_id", t.client_id.as_str()),
     ];
     if let Some(secret) = &t.client_secret {
-        fields.push(("client_secret", secret));
+        fields.push(("client_secret", secret.expose()));
     }
     let (status, v) = post_form(&t.token_endpoint, &fields)?;
     match status {
         200..=299 => tokens_from(
             &v,
             &t.client_id,
-            t.client_secret.as_deref(),
+            t.client_secret.as_ref().map(Secret::expose),
             &t.token_endpoint,
             Some(refresh),
             crate::model::unix_now(),
@@ -552,7 +547,7 @@ pub fn sign_in(
                 said(&v, status)
             ))
         })?;
-    let (sub, email, name) = who(&meta, &tokens.access);
+    let (sub, email, name) = who(&meta, tokens.access.expose());
     let mark = [sub.as_str(), email.as_str(), client_id]
         .into_iter()
         .find(|s| !s.is_empty())
@@ -782,12 +777,19 @@ mod tests {
         let v = json!({"access_token": "a2", "expires_in": 600});
         let t = tokens_from(&v, "abc", None, "https://d/token", Some("r1"), 1000).unwrap();
         assert_eq!(
-            (t.access.as_str(), t.refresh.as_deref(), t.expires_at),
+            (
+                t.access.expose(),
+                t.refresh.as_ref().map(Secret::expose),
+                t.expires_at
+            ),
             ("a2", Some("r1"), 1600)
         );
         let v = json!({"access_token": "a3", "refresh_token": "r2"});
         let t = tokens_from(&v, "abc", Some("s"), "https://d/token", Some("r1"), 1000).unwrap();
-        assert_eq!((t.refresh.as_deref(), t.expires_at), (Some("r2"), 4600));
+        assert_eq!(
+            (t.refresh.as_ref().map(Secret::expose), t.expires_at),
+            (Some("r2"), 4600)
+        );
         assert_eq!(
             tokens_from(
                 &json!({"error": "invalid_grant"}),
@@ -799,6 +801,7 @@ mod tests {
             ),
             None
         );
-        assert_eq!(format!("{t:?}"), "Tokens(…)");
+        let shown = format!("{t:?}");
+        assert!(!shown.contains("a3") && !shown.contains("r2"), "{shown}");
     }
 }

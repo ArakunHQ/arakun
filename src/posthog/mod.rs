@@ -40,6 +40,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::secret::Secret;
+
 /// Where an account lives: PostHog Cloud US or EU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Region {
@@ -71,31 +73,23 @@ impl Region {
     }
 }
 
-/// What a session signs its calls with. Debug never shows the secret.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// What a session signs its calls with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
     /// A personal API key (`phx_…`) pasted in the tab. The key is in the
     /// keyring; `key` holds it only as a file from before had it, until it
     /// is moved there, and between checking a new key and saving it.
     ApiKey {
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        key: String,
+        #[serde(default, skip_serializing_if = "Secret::is_empty")]
+        key: Secret,
     },
-}
-
-impl std::fmt::Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Credential::ApiKey { .. } => f.write_str("ApiKey(…)"),
-        }
-    }
 }
 
 impl Credential {
     fn bearer(&self) -> &str {
         match self {
-            Credential::ApiKey { key } => key,
+            Credential::ApiKey { key } => key.expose(),
         }
     }
 
@@ -172,7 +166,9 @@ fn move_to_keyring(id: &str, key: &str) {
         eprintln!("arakun: could not move the PostHog key to the keyring: {e}");
         return;
     }
-    s.credential = Credential::ApiKey { key: String::new() };
+    s.credential = Credential::ApiKey {
+        key: Secret::default(),
+    };
     if let Err(e) = store.write_to(&file) {
         eprintln!("arakun: {e}");
     }
@@ -287,7 +283,9 @@ pub fn save_session(mut s: Session) -> Result<(), String> {
     if !key.is_empty() {
         crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, &key)
             .map_err(|e| format!("The keyring could not keep the PostHog key: {e}"))?;
-        s.credential = Credential::ApiKey { key: String::new() };
+        s.credential = Credential::ApiKey {
+            key: Secret::default(),
+        };
         keys().insert(s.id.clone(), key.clone());
     }
     invalidate_directory()?;
@@ -731,9 +729,7 @@ pub fn sign_in_with_key(key: &str, region: Option<Region>) -> Result<Session, Ap
     if key.starts_with("phc_") {
         return Err(ApiError::Failed("That's a project key (phc_), which only sends events. Paste a personal API key (phx_).".into()));
     }
-    let credential = Credential::ApiKey {
-        key: key.to_string(),
-    };
+    let credential = Credential::ApiKey { key: key.into() };
     let tries: Vec<Region> = match region {
         Some(r) => vec![r],
         None => Region::ALL.to_vec(),
@@ -761,6 +757,7 @@ pub struct Project {
     pub name: String,
     /// The project's public key (`phc_…`), as found in its apps' code.
     #[serde(default)]
+    // Not a secret: the project's public key, in its apps' code.
     pub api_token: String,
 }
 
@@ -1034,6 +1031,7 @@ pub struct Issue {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub id: u64,
+    // Not a secret: the flag's name.
     pub key: String,
     pub name: String,
     pub active: bool,
@@ -1454,7 +1452,9 @@ mod tests {
             host: "https://us.posthog.com".into(),
             email: "alice@example.com".into(),
             name: String::new(),
-            credential: Credential::ApiKey { key: String::new() },
+            credential: Credential::ApiKey {
+                key: Secret::default(),
+            },
             added_at: 1,
         };
         let json = serde_json::to_string(&s).unwrap();

@@ -270,6 +270,7 @@ pub enum Preview {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     /// Stable across opens, for frecency and pins: `session:<id>`.
+    // Not a secret: the row's id.
     pub key: String,
     pub kind: Kind,
     pub title: SharedString,

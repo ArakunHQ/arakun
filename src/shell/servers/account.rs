@@ -207,7 +207,7 @@ pub(super) fn joining(
                 label: m.label.clone(),
             },
             device: String::new(),
-            token: String::new(),
+            token: Default::default(),
             removed: false,
         })
         .collect()
@@ -526,7 +526,7 @@ mod tests {
                 label: LABEL.into(),
             },
             device: String::new(),
-            token: String::new(),
+            token: Default::default(),
             removed: false,
         }
     }

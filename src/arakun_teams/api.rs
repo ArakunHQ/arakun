@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::secret::Secret;
+
 use super::crypto::{Envelope, Sealed, WireMessage};
 
 pub use crate::cloud::{DEFAULT_URL, URL_ENV, base_url};
@@ -35,7 +37,7 @@ impl Me {
 /// What `POST /auth/github` answers, as Teams keeps it.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SignedIn {
-    pub session: String,
+    pub session: Secret,
     #[serde(flatten)]
     pub me: Me,
 }
@@ -878,7 +880,7 @@ mod tests {
             r#"{"session": "abc", "expires_at": 1800000000, "github_id": 2, "login": "b", "flags": ["teams"]}"#,
         )
         .unwrap();
-        assert_eq!(s.session, "abc");
+        assert_eq!(s.session.expose(), "abc");
         assert_eq!(s.me.login, "b");
         assert!(s.me.has(TEAMS_FLAG));
     }

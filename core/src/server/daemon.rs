@@ -653,7 +653,7 @@ fn sign_in_for<'a>(
 fn relay_account(signed_in: Option<&SignIn>) -> relay::Account {
     relay::Account {
         github_id: signed_in.map_or(0, |s| s.github_id),
-        session: signed_in.map(|s| s.session.clone()),
+        session: signed_in.map(|s| s.session.expose().to_string()),
     }
 }
 
@@ -1362,7 +1362,7 @@ impl Daemon {
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
-                .spawn(async move { crate::cloud::sessions(&base, &session) })
+                .spawn(async move { crate::cloud::sessions(&base, session.expose()) })
                 .await;
             let _ = this.update(cx, |this, _| {
                 this.relay_pruning = false;

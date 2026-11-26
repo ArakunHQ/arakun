@@ -3038,7 +3038,7 @@ impl Shell {
             Event::TokenKept => {
                 match link.saved.iter_mut().find(|s| s.id == id) {
                     Some(s) if !s.token.is_empty() => {
-                        s.token.clear();
+                        s.token = Default::default();
                         servers::save(&link.saved);
                     }
                     Some(_) => {}

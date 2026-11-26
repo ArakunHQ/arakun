@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 use sha2::Digest as _;
 
 use crate::agent::AgentKind;
+use crate::secret::Secret;
 
 /// The regular hosted Doop. Any other origin is a self-hosted instance.
 pub const DEFAULT_HOST: &str = "https://doop.design";
@@ -184,15 +185,15 @@ fn file_safe(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // Sign-ins.
 
-/// What a session signs its calls with. Debug never shows the secrets.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// What a session signs its calls with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
     /// An agent key pasted in the tab. The key is in the keyring; `key`
     /// holds it only as a file from before had it, until it is moved there.
     AgentKey {
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        key: String,
+        #[serde(default, skip_serializing_if = "Secret::is_empty")]
+        key: Secret,
     },
     /// Tokens from a sign-in in the browser. The file keeps those that are
     /// not secret; the keyring keeps them all.
@@ -200,20 +201,11 @@ pub enum Credential {
     OAuth { tokens: oauth::Tokens },
 }
 
-impl std::fmt::Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Credential::AgentKey { .. } => f.write_str("AgentKey(…)"),
-            Credential::OAuth { .. } => f.write_str("OAuth(…)"),
-        }
-    }
-}
-
 impl Credential {
     fn bearer(&self) -> &str {
         match self {
-            Credential::AgentKey { key } => key,
-            Credential::OAuth { tokens } => &tokens.access,
+            Credential::AgentKey { key } => key.expose(),
+            Credential::OAuth { tokens } => tokens.access.expose(),
         }
     }
 
@@ -234,10 +226,12 @@ impl Credential {
     /// the client secret.
     fn without_secrets(&self) -> Credential {
         match self {
-            Credential::AgentKey { .. } => Credential::AgentKey { key: String::new() },
+            Credential::AgentKey { .. } => Credential::AgentKey {
+                key: Secret::default(),
+            },
             Credential::OAuth { tokens } => Credential::OAuth {
                 tokens: oauth::Tokens {
-                    access: String::new(),
+                    access: Secret::default(),
                     refresh: None,
                     client_secret: None,
                     ..tokens.clone()
@@ -503,9 +497,7 @@ pub fn sign_in_with_key(host: &str, key: &str) -> Result<Session, Error> {
         host: host.to_string(),
         email: String::new(),
         name: String::new(),
-        credential: Credential::AgentKey {
-            key: key.to_string(),
-        },
+        credential: Credential::AgentKey { key: key.into() },
         added_at: crate::model::unix_now(),
     };
     let (status, text) = post(host, key, &request("tools/list", json!({})))?;
@@ -714,10 +706,10 @@ fn plan(saved: Option<&Credential>, refused: Option<&str>, now: u64) -> Plan {
     };
     let early = if tokens.refresh.is_some() { 60 } else { 0 };
     let spent = tokens.expires_at <= now + early;
-    if spent || refused == Some(tokens.access.as_str()) {
+    if spent || refused == Some(tokens.access.expose()) {
         Plan::Renew(tokens.clone())
     } else {
-        Plan::Use(tokens.access.clone())
+        Plan::Use(tokens.access.expose().to_string())
     }
 }
 
@@ -1935,7 +1927,7 @@ mod tests {
                 client_secret: None,
                 token_endpoint: "https://doop.design/token".into(),
                 access: "a1".into(),
-                refresh: refresh.map(str::to_string),
+                refresh: refresh.map(Secret::from),
                 expires_at,
             },
         };

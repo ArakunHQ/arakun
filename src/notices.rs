@@ -30,6 +30,7 @@ pub struct Notice {
     pub subtitle: String,
     /// What "Ver" opens (see `Open` in the shell); empty for nothing.
     #[serde(default)]
+    // Not a secret: what the notice opens.
     pub key: String,
     /// The request a `Confirm` answers, so it is kept once.
     #[serde(default)]

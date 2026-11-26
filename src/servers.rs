@@ -25,6 +25,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::secret::Secret;
+
 /// A server this app is paired with.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Saved {
@@ -43,8 +45,8 @@ pub struct Saved {
     /// It is kept in the keyring (`servers::token`): here it is only while a file
     /// from before holds it, until it is moved, or when the keyring refused
     /// it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub token: String,
+    #[serde(default, skip_serializing_if = "Secret::is_empty")]
+    pub token: Secret,
     /// The server's user removed this app from its devices: it is not dialed
     /// again until it is forgotten here and connected anew, or the server
     /// would take the app back.
@@ -95,7 +97,7 @@ pub fn adopt(saved: &mut [Saved], labels: &[String], base: &str) -> bool {
         };
         s.origin = base.to_string();
         s.device.clear();
-        s.token.clear();
+        s.token = Secret::default();
         changed = true;
     }
     changed
@@ -276,14 +278,14 @@ impl Vault for Keyring {
 /// without it.
 pub fn keep_token(vault: &dyn Vault, saved: &Saved) -> Result<(), String> {
     let label = format!("arakun: token for the server {}", saved.name);
-    vault.set(&token_account(&saved.id), &label, &saved.token)
+    vault.set(&token_account(&saved.id), &label, saved.token.expose())
 }
 
 /// The token `saved` comes in with: the one it holds (a file from before,
 /// or one just paired), else the keyring's. None when there is neither.
 pub fn token(vault: &dyn Vault, saved: &Saved) -> Result<Option<String>, String> {
     if !saved.token.is_empty() {
-        return Ok(Some(saved.token.clone()));
+        return Ok(Some(saved.token.expose().to_string()));
     }
     vault
         .get(&token_account(&saved.id))
@@ -417,7 +419,7 @@ mod tests {
         let vault = Fake::default();
         let mut s = direct();
         keep_token(&vault, &s).unwrap();
-        s.token.clear();
+        s.token = Secret::default();
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("token"), "{json}");
         assert_eq!(token(&vault, &s).unwrap().as_deref(), Some("k2"));
@@ -493,7 +495,7 @@ mod tests {
                     label: "abcdefghij234567".into(),
                 },
                 device: String::new(),
-                token: String::new(),
+                token: Secret::default(),
                 removed: false,
             },
             Saved {

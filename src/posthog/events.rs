@@ -65,6 +65,7 @@ impl Range {
 /// `key = value` on an event property.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PropFilter {
+    // Not a secret: the property's name.
     pub key: String,
     pub value: String,
 }

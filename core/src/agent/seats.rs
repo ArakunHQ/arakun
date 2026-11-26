@@ -33,6 +33,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::claude_auth;
 use super::plan::{self, PlanUsage, Seats};
+use crate::secret::Secret;
 
 /// The machine's own claude.ai sign-in: no token in the environment.
 pub const OWN: &str = "own";
@@ -318,6 +319,7 @@ static LIVE: Mutex<Vec<(u64, String)>> = Mutex::new(Vec::new());
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// A live session on a seat; dropping it ends the count.
+#[derive(Debug)]
 pub struct Lease {
     id: u64,
     seat: String,
@@ -503,12 +505,14 @@ fn refused(seats: &Seats, id: &str) -> bool {
 }
 
 /// The seat a session runs on, and what that means for its environment.
+#[derive(Debug)]
 pub struct Assignment {
     pub seat: String,
     /// The seat's token; `None` for the sign-in, which runs with none.
-    token: Option<String>,
+    token: Option<Secret>,
     /// The token's [`fingerprint`], saved with the session; `None` for the
     /// sign-in, whose token Claude Code renews on its own.
+    // Not a secret: a fingerprint of the token.
     pub key: Option<String>,
     /// Something to tell the session: its seat is gone, or every seat is full.
     pub notice: Option<String>,
@@ -518,23 +522,10 @@ pub struct Assignment {
     pub lease: Option<Lease>,
 }
 
-// By hand, so a log of it never shows the token.
-impl std::fmt::Debug for Assignment {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Assignment")
-            .field("seat", &self.seat)
-            .field("token", &self.token.as_ref().map(|_| "[token]"))
-            .field("key", &self.key)
-            .field("notice", &self.notice)
-            .field("lease", &self.lease.as_ref().map(|l| l.id))
-            .finish()
-    }
-}
-
 impl Assignment {
     /// A named seat's token, which is checked before the session starts.
     fn named_token(&self) -> Option<&str> {
-        (self.seat != BORROWED).then_some(self.token.as_deref())?
+        (self.seat != BORROWED).then_some(self.token.as_ref().map(Secret::expose))?
     }
 
     fn add_notice(&mut self, text: String) {
@@ -548,7 +539,7 @@ impl Assignment {
     /// the sign-in (one in Arakun's own environment would win over it).
     pub fn env(&self) -> (Vec<(String, OsString)>, Vec<String>) {
         match &self.token {
-            Some(t) => (vec![(TOKEN_VAR.into(), t.into())], Vec::new()),
+            Some(t) => (vec![(TOKEN_VAR.into(), t.expose().into())], Vec::new()),
             None => (Vec::new(), vec![TOKEN_VAR.into()]),
         }
     }
@@ -806,7 +797,7 @@ fn decide(
         return Some(Assignment {
             seat: seat.to_string(),
             key: now_key,
-            token: t,
+            token: t.map(Secret::from),
             notice,
             lease: None,
         });
@@ -844,7 +835,7 @@ fn decide(
     Some(Assignment {
         seat: picked.id,
         key: t.as_deref().map(fingerprint),
-        token: t,
+        token: t.map(Secret::from),
         notice,
         lease: None,
     })
@@ -1537,7 +1528,7 @@ mod tests {
     fn on(seat: &str, token: Option<&str>) -> Assignment {
         Assignment {
             seat: seat.into(),
-            token: token.map(String::from),
+            token: token.map(Secret::from),
             key: token.map(fingerprint),
             notice: None,
             lease: None,

@@ -31,8 +31,9 @@ const MARKETPLACE_TIMEOUT: Duration = Duration::from_secs(180);
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-/// What this computer has, for a server to add what it lacks.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+/// What this computer has, for a server to add what it lacks. Its `Debug`
+/// names the MCP servers and sign-ins but never shows what they hold.
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     /// User-scope plugin ids, `name@marketplace`.
     #[serde(default)]
@@ -57,7 +58,7 @@ pub struct Snapshot {
 }
 
 /// What one repository has for you alone (Claude Code's `local` scope).
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RepoMirror {
     /// [`crate::clone_source::repo_key`] of its `origin`.
     pub repo: String,
@@ -68,6 +69,36 @@ pub struct RepoMirror {
     pub servers: BTreeMap<String, Value>,
     #[serde(default)]
     pub skills: Vec<SkillEntry>,
+}
+
+/// The names in a map whose values hold keys, for a `Debug` print: a
+/// [`crate::secret::Secret`] takes a string, not a JSON tree.
+fn names<'a>(m: impl IntoIterator<Item = (&'a String, &'a Value)>) -> Vec<&'a str> {
+    m.into_iter().map(|(k, _)| k.as_str()).collect()
+}
+
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("plugins", &self.plugins)
+            .field("marketplaces", &self.marketplaces)
+            .field("servers", &names(&self.servers))
+            .field("skills", &self.skills)
+            .field("oauth", &names(&self.oauth))
+            .field("repos", &self.repos)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for RepoMirror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RepoMirror")
+            .field("repo", &self.repo)
+            .field("plugins", &self.plugins)
+            .field("servers", &names(&self.servers))
+            .field("skills", &self.skills)
+            .finish()
+    }
 }
 
 impl RepoMirror {
@@ -1071,5 +1102,29 @@ mod tests {
         assert_eq!(msg["type"], "mirror");
         assert!(!s.is_empty());
         assert!(Snapshot::default().is_empty());
+    }
+
+    #[test]
+    fn debug_names_the_servers_and_sign_ins_but_never_shows_them() {
+        let server = json!({ "env": { "API_KEY": "s3cret-key" } });
+        let s = Snapshot {
+            servers: BTreeMap::from([("github".to_string(), server.clone())]),
+            oauth: Map::from_iter([(
+                "github|abc".to_string(),
+                json!({ "accessToken": "s3cret-tok" }),
+            )]),
+            repos: vec![RepoMirror {
+                repo: "acme/app".into(),
+                servers: BTreeMap::from([("db".to_string(), server)]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let shown = format!("{s:?}");
+        assert!(
+            shown.contains("github") && shown.contains("\"db\""),
+            "{shown}"
+        );
+        assert!(!shown.contains("s3cret"), "{shown}");
     }
 }

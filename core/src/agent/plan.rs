@@ -115,6 +115,7 @@ pub struct NamedSeat {
     /// The `seats::fingerprint` of the token the last good read used, so a
     /// read of an older token under the same name never counts for a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Not a secret: a fingerprint of the token.
     pub key: Option<String>,
 }
 

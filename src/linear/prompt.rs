@@ -147,7 +147,13 @@ pub fn branch(d: &Detail) -> String {
     if !name.is_empty() && !MAIN_LINES.iter().any(|m| name.eq_ignore_ascii_case(m)) {
         return name;
     }
-    match git_safe(&d.issue.identifier.to_lowercase()) {
+    own_branch(&d.issue.identifier)
+}
+
+/// The branch named after the issue alone, for when Linear's name for it
+/// cannot be used. Made safe for git like any other.
+pub fn own_branch(identifier: &str) -> String {
+    match git_safe(&identifier.to_lowercase()) {
         id if id.is_empty() => "linear/issue".to_string(),
         id => git_safe(&format!("linear/{id}")),
     }
@@ -475,6 +481,19 @@ mod tests {
         assert_eq!(branch_of("main"), "linear/eng-412");
         assert_eq!(branch_of("MASTER"), "linear/eng-412");
         assert_eq!(branch_of("feature/main"), "feature/main");
+    }
+
+    #[test]
+    fn the_issues_own_branch_is_one_git_accepts() {
+        assert_eq!(own_branch("ENG-412"), "linear/eng-412");
+        let long = "E".repeat(300);
+        for id in [
+            "--force", "../x", "a..b", "x.lock", "", "\n", "é ü", "HEAD", &long,
+        ] {
+            let b = own_branch(id);
+            assert!(git_accepts(&b), "{id:?} gave {b:?}");
+            assert!(b.starts_with("linear/"), "{id:?} gave {b:?}");
+        }
     }
 
     #[test]

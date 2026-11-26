@@ -462,8 +462,11 @@ impl Shell {
             .filter(|s| !listed.contains(s))
             .collect();
         let removed = self.linear_runs.forget_sessions(&gone);
+        let before = self.linear_runs.clone();
+        // A run with no session yet goes back to waiting, and starts below.
         let lost = self.linear_runs.interrupted(&|s| live.contains(s));
-        if !removed.is_empty() || !lost.is_empty() {
+        self.linear_runs.clear_stopped();
+        if !removed.is_empty() || self.linear_runs != before {
             self.linear_save();
         }
         let line = removed_line(&computer());
@@ -528,7 +531,14 @@ impl Shell {
 
     fn linear_tick(&mut self, cx: &mut Context<Self>) -> bool {
         let now = unix_now();
-        for agent_session in self.linear_runs.quiet(now) {
+        // With no account the line could not be sent: it would only pile up,
+        // one per tick, and all arrive together later.
+        let quiet = if self.linear_gate(cx).is_some() {
+            self.linear_runs.quiet(now)
+        } else {
+            Vec::new()
+        };
+        for agent_session in quiet {
             let line = STILL_WORKING.to_string();
             self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
         }

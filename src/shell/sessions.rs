@@ -1417,6 +1417,11 @@ impl Shell {
 
         let id = new_session_id();
         self.rename_phone_session(&old_pid, &id);
+        // A run from Linear follows its session: left on the old id it would
+        // hold its slot for good and never hear how the work ends.
+        if self.linear_runs.repoint(&old_id, &id) {
+            self.linear_save();
+        }
         let mut session = Session::new(id.clone(), old.title.clone(), agent);
         (session.added, session.removed) = (old.added, old.removed);
         session.ci_run = old.ci_run;

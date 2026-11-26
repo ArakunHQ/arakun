@@ -1240,6 +1240,7 @@ impl Shell {
                     self.linear_flush(cx);
                     // The relay label may be what the gate waited for.
                     self.linear_replay_kept(window, cx);
+                    self.linear_start_waiting(window, cx);
                 }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),

@@ -271,8 +271,10 @@ impl Shell {
             self.linear_sync.account = now.clone();
             if now.is_some() {
                 self.sync_linear(window, cx);
-                // The reports that waited for an account go now.
+                // What waited for an account goes now: the reports not sent
+                // and the runs not started.
                 self.linear_flush(cx);
+                self.linear_start_waiting(window, cx);
             }
         }
         self.linear_replay_kept(window, cx);

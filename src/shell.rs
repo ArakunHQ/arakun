@@ -482,6 +482,8 @@ pub struct Shell {
     linear_held_stops: Vec<crate::phone::linear::Delivery>,
     /// Deliveries that came before the Arakun account was loaded.
     linear_kept: Vec<crate::phone::linear::Delivery>,
+    /// New issues being read from Linear now.
+    linear_reads: usize,
     /// The timer that tells Linear a quiet session still works is on.
     linear_watching: bool,
     github: Entity<GitHub>,
@@ -951,6 +953,7 @@ impl Shell {
             linear_in_flight: Default::default(),
             linear_held_stops: Vec::new(),
             linear_kept: Vec::new(),
+            linear_reads: 0,
             linear_watching: false,
             github,
             pilot,

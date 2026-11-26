@@ -19,6 +19,10 @@ pub const REPORT_KEPT_SECS: u64 = 24 * 3600;
 /// A running session silent this long tells Linear it is still working.
 pub const QUIET_SECS: u64 = 25 * 60;
 
+/// Reports kept for Linear at most. A server that takes none for a day must
+/// not grow the file without end; the oldest go first.
+pub const OUTBOX_KEPT: usize = 500;
+
 /// Finished runs kept, so a follow-up can still find its run.
 const DONE_KEPT: usize = 200;
 /// The most characters of a reply sent to Linear.
@@ -206,7 +210,14 @@ impl Runs {
 
     /// Stores `run` as `Running` when a slot is free and nobody waits, else
     /// as `Waiting`.
-    pub fn add(&mut self, mut run: Run) -> Added {
+    pub fn add(&mut self, run: Run) -> Added {
+        self.add_at(run, crate::model::unix_now())
+    }
+
+    /// [`Runs::add`] at a given time. The run counts as heard from at `now`,
+    /// so "still working" cannot come before its first report.
+    pub fn add_at(&mut self, mut run: Run, now: u64) -> Added {
+        run.reported_at = now;
         if self
             .runs
             .iter()
@@ -233,6 +244,12 @@ impl Runs {
     }
 
     pub fn next_waiting(&mut self) -> Option<&mut Run> {
+        self.next_waiting_at(crate::model::unix_now())
+    }
+
+    /// [`Runs::next_waiting`] at a given time. Its wait may have been long:
+    /// the quiet clock starts again, so "started" comes before "still working".
+    pub fn next_waiting_at(&mut self, now: u64) -> Option<&mut Run> {
         if self.busy() >= MAX_RUNNING {
             return None;
         }
@@ -241,6 +258,7 @@ impl Runs {
             .iter_mut()
             .find(|r| r.state == RunState::Waiting)?;
         run.state = RunState::Running;
+        run.reported_at = now;
         Some(run)
     }
 
@@ -278,13 +296,40 @@ impl Runs {
         let mut lost = Vec::new();
         for r in &mut self.runs {
             let ran = matches!(r.state, RunState::Running | RunState::Asked);
-            // No session yet means Arakun closed while making it.
-            if ran && !r.session.as_deref().is_some_and(live) {
+            let Some(session) = r.session.as_deref() else {
+                // Arakun closed while making it: nothing ran yet, so it
+                // waits again and starts from the top.
+                if ran {
+                    r.state = RunState::Waiting;
+                }
+                continue;
+            };
+            if ran && !live(session) {
                 r.state = RunState::Interrupted;
                 lost.push(r.agent_session.clone());
             }
         }
         lost
+    }
+
+    /// No turn survives a restart, so no stop is winding one down. A flag
+    /// saved mid-cancel would silence the run's next turn. True when one was set.
+    pub fn clear_stopped(&mut self) -> bool {
+        let mut any = false;
+        for r in &mut self.runs {
+            any |= std::mem::take(&mut r.stopped);
+        }
+        any
+    }
+
+    /// The session `old` was handed to another agent and is now `new`: its
+    /// run follows it. True when a run pointed at `old`.
+    pub fn repoint(&mut self, old: &str, new: &str) -> bool {
+        let Some(run) = self.by_session(old) else {
+            return false;
+        };
+        run.session = Some(new.to_string());
+        true
     }
 
     /// The agent sessions of running runs Linear has not heard from in a while.
@@ -336,8 +381,11 @@ impl Runs {
         !self.outbox.is_empty()
     }
 
+    /// Adds a report, dropping the oldest beyond `OUTBOX_KEPT`.
     pub fn queue(&mut self, r: Report) {
         self.outbox.push(r);
+        let extra = self.outbox.len().saturating_sub(OUTBOX_KEPT);
+        self.outbox.drain(..extra);
     }
 
     /// The reports to send, oldest first. They stay until `sent` or `dropped`.
@@ -542,6 +590,9 @@ mod tests {
         for id in ["a", "b", "c", "d", "e"] {
             r.add(run(id));
         }
+        for id in ["a", "b", "c"] {
+            r.by_agent_session(id).unwrap().session = Some(format!("s-{id}"));
+        }
         assert_eq!(r.interrupted(&|_| false), ["a", "b", "c"]);
         assert_eq!(r.add(run("f")), Added::Wait { ahead: 2 });
         assert_eq!(r.next_waiting().unwrap().agent_session, "d");
@@ -576,10 +627,86 @@ mod tests {
     }
 
     #[test]
-    fn a_run_still_being_made_counts_as_lost() {
+    fn a_run_still_being_made_at_a_restart_waits_again() {
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d"] {
+            r.add(run(id));
+        }
+        r.by_agent_session("b").unwrap().session = Some("s-b".into());
+        // "a" and "c" had no session yet: nothing to continue, and nothing
+        // for the issue to hear. They start again, ahead of "d".
+        assert_eq!(r.interrupted(&|_| false), ["b"]);
+        assert_eq!(state(&mut r, "a"), RunState::Waiting);
+        assert_eq!(state(&mut r, "b"), RunState::Interrupted);
+        assert_eq!(state(&mut r, "c"), RunState::Waiting);
+        let order: Vec<String> =
+            std::iter::from_fn(|| r.next_waiting().map(|run| run.agent_session.clone())).collect();
+        assert_eq!(order, ["a", "c", "d"]);
+    }
+
+    #[test]
+    fn a_restart_clears_every_stop_in_progress() {
+        let mut r = Runs::default();
+        for id in ["a", "b"] {
+            r.add(run(id));
+        }
+        assert!(!r.clear_stopped(), "nothing to clear");
+        r.by_agent_session("a").unwrap().stopped = true;
+        r.by_agent_session("a").unwrap().state = RunState::Done;
+        assert!(r.clear_stopped());
+        assert!(!r.by_agent_session("a").unwrap().stopped);
+        assert_eq!(state(&mut r, "a"), RunState::Done, "only the flag goes");
+        assert!(!r.clear_stopped());
+    }
+
+    #[test]
+    fn a_run_follows_its_session_to_another_agent() {
         let mut r = Runs::default();
         r.add(run("a"));
-        assert_eq!(r.interrupted(&|_| true), ["a"]);
+        r.add(run("b"));
+        r.by_agent_session("a").unwrap().session = Some("s1".into());
+        assert!(r.repoint("s1", "s2"));
+        assert!(r.by_session("s1").is_none());
+        let moved = r.by_session("s2").unwrap();
+        assert_eq!(
+            (moved.agent_session.as_str(), moved.state),
+            ("a", RunState::Running),
+            "the same run, in the same state"
+        );
+        assert!(!r.repoint("s1", "s3"), "no run points at it any more");
+        assert!(!r.repoint("other", "s4"));
+        assert_eq!(r.by_agent_session("b").unwrap().session, None);
+    }
+
+    #[test]
+    fn a_new_run_is_not_quiet_before_its_first_report() {
+        let mut r = Runs::default();
+        let now = 50_000;
+        assert_eq!(r.add_at(run("a"), now), Added::Start);
+        assert_eq!(r.by_agent_session("a").unwrap().reported_at, now);
+        assert!(r.quiet(now).is_empty());
+        assert!(r.quiet(now + QUIET_SECS - 1).is_empty());
+        assert_eq!(r.quiet(now + QUIET_SECS), ["a"]);
+        // One that waited a long time starts its clock again when it starts.
+        for id in ["b", "c", "d"] {
+            r.add_at(run(id), now);
+        }
+        r.by_agent_session("a").unwrap().state = RunState::Done;
+        let later = now + 10 * QUIET_SECS;
+        assert_eq!(r.next_waiting_at(later).unwrap().agent_session, "d");
+        assert!(!r.quiet(later).contains(&"d".to_string()));
+    }
+
+    #[test]
+    fn the_outbox_keeps_the_newest_reports_up_to_a_limit() {
+        let mut r = Runs::default();
+        for i in 0..OUTBOX_KEPT + 3 {
+            r.queue(report("a", &format!("r{i}"), 5));
+        }
+        let due = r.due(5);
+        assert_eq!(due.len(), OUTBOX_KEPT);
+        assert_eq!(due[0].body, "r3", "the oldest went");
+        assert_eq!(due[OUTBOX_KEPT - 1].body, format!("r{}", OUTBOX_KEPT + 2));
     }
 
     #[test]

@@ -15,6 +15,24 @@ pub(super) type Waiter =
     Box<dyn FnOnce(&mut Shell, Result<PathBuf, String>, &mut Window, &mut Context<Shell>)>;
 
 const NOT_HERE: &str = "the project is not on this computer";
+const BAD_NAME: &str = "the branch name is not one git accepts";
+
+/// Whether making the environment failed over the branch's name: git does
+/// not take it, or a branch the project has is in its way (`a` for `a/b`).
+/// Another name can then work where this one cannot.
+pub(super) fn name_refused(error: &str) -> bool {
+    error == BAD_NAME || error.contains("cannot lock ref")
+}
+
+/// The line of git's error that says why. `git worktree add` first prints
+/// what it is about to do, so the first line alone can say nothing.
+fn why(error: &str) -> &str {
+    let lines = || error.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines()
+        .find(|l| l.starts_with("fatal: ") || l.starts_with("error: "))
+        .or_else(|| lines().next())
+        .unwrap_or_default()
+}
 
 /// Creations still running, by project root and branch, with who waits on each.
 pub(super) struct InFlight<T> {
@@ -167,13 +185,9 @@ fn worktree_on(
     branch: &str,
     start: Option<&str>,
 ) -> Result<(PathBuf, bool), String> {
-    let said = |e: anyhow::Error| {
-        let e = e.to_string();
-        let line = e.lines().next().unwrap_or("").trim();
-        format!("git said \"{line}\"")
-    };
+    let said = |e: anyhow::Error| format!("git said \"{}\"", why(&e.to_string()));
     if !git::branch_arg_ok(repo, branch) {
-        return Err("the branch name is not one git accepts".into());
+        return Err(BAD_NAME.into());
     }
     // Listed here or not, the worktree git has on the branch now is used as it is.
     if let Some(tree) = git::worktrees(repo)
@@ -210,6 +224,27 @@ fn worktree_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_git_refuses_is_told_from_other_failures() {
+        // What `git worktree add -b a/b` prints when a branch `a` exists.
+        let taken = "Preparing worktree (new branch 'a/b')\n\
+                     fatal: cannot lock ref 'refs/heads/a/b': 'refs/heads/a' exists; \
+                     cannot create 'refs/heads/a/b'";
+        assert_eq!(
+            why(taken),
+            "fatal: cannot lock ref 'refs/heads/a/b': 'refs/heads/a' exists; \
+             cannot create 'refs/heads/a/b'"
+        );
+        assert!(name_refused(&format!("git said \"{}\"", why(taken))));
+        assert!(name_refused(BAD_NAME));
+        assert!(!name_refused(NOT_HERE));
+        assert!(!name_refused("git said \"'/w/x' already exists\""));
+        assert!(!name_refused("the project has no commits yet"));
+        // Without a line that names the failure, the first one is shown.
+        assert_eq!(why("'/w/x' already exists\nmore"), "'/w/x' already exists");
+        assert_eq!(why(""), "");
+    }
 
     #[test]
     fn a_second_call_for_the_same_branch_waits_on_the_first() {

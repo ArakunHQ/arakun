@@ -34,6 +34,11 @@ pub(super) const HIT_AN_ERROR: &str = "Arakun hit an error.";
 /// Deliveries kept while the Arakun account is not loaded yet.
 pub const KEPT: usize = 50;
 
+/// New issues read from Linear at once. A computer back after days can get
+/// many deliveries together; the rest are not accepted, so the relay sends
+/// them again.
+pub const MAX_READS: usize = 8;
+
 /// Keeps `d` for when the account is loaded: once per delivery id, and the
 /// oldest go beyond [`KEPT`].
 pub fn keep(kept: &mut Vec<Delivery>, d: Delivery) {
@@ -67,6 +72,29 @@ pub fn kept_after(account_loaded: bool, flagged: bool, label: bool) -> Kept {
         // No relay label: nothing new comes in, and nothing can be accepted.
         Kept::Hold
     }
+}
+
+/// Whether one more new issue may be read now.
+pub fn may_read(reads: usize) -> bool {
+    reads < MAX_READS
+}
+
+/// The second look at the guard, once the environment is made: it must
+/// still say yes, and for the project the environment was made in. A
+/// mapping moved to another project meanwhile no longer covers this one.
+pub fn guard_again(now: Result<PathBuf, Refusal>, made_in: &Path) -> Result<(), Refusal> {
+    match now {
+        Ok(project) if project == made_in => Ok(()),
+        Ok(_) => Err(Refusal::Unmapped),
+        Err(r) => Err(r),
+    }
+}
+
+/// The branch to try next when the environment could not be made on
+/// `branch`: the issue's own, once, when git refused the name (a branch `a`
+/// is in the way of `a/b`).
+pub fn next_branch(error: &str, branch: &str, own: &str, may_retry: bool) -> Option<String> {
+    (may_retry && own != branch && super::linear_env::name_refused(error)).then(|| own.to_string())
 }
 
 /// What a delivery's first look decides, before the issue is read.
@@ -209,7 +237,7 @@ pub fn work_branch(branch: &str, identifier: &str, bases: &[String]) -> String {
 
 /// The branch for an issue when Linear's own name for it cannot be used.
 pub fn own_branch(identifier: &str) -> String {
-    format!("linear/{}", identifier.to_lowercase())
+    prompt::own_branch(identifier)
 }
 
 /// This computer's name, as the relay knows it.
@@ -255,6 +283,11 @@ impl Shell {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),
             (First::Read, Some(sign_in)) if d.kind == DeliveryKind::Created => {
+                // Not accepted: the relay sends it again when fewer are read.
+                if !may_read(self.linear_reads) {
+                    return;
+                }
+                self.linear_reads += 1;
                 // Recorded as handled only with its outcome, so a crash
                 // while the issue is read leaves it for the relay to send again.
                 let flight = d.agent_session.clone();
@@ -314,6 +347,11 @@ impl Shell {
     /// Starts the runs that wait, while there are free slots. Each one's
     /// issue is read again and the guard asked again: either may have changed.
     pub(super) fn linear_start_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Without an account nothing could be reported or refused: they
+        // wait until it is back (`linear_account_changed`).
+        if self.linear_gate(cx).is_none() {
+            return;
+        }
         while let Some(run) = self.linear_runs.next_waiting() {
             let start = Start {
                 agent_session: run.agent_session.clone(),
@@ -384,6 +422,7 @@ impl Shell {
     ) {
         if let Some(id) = &start.delivery {
             self.linear_in_flight.remove(id);
+            self.linear_reads = self.linear_reads.saturating_sub(1);
             // Signed out of Arakun meanwhile: not handled. It is kept, or
             // the relay sends it again, for when there is an account to
             // accept it with.
@@ -540,7 +579,15 @@ impl Shell {
         self.env_on_branch(&root, &name, window, cx, move |this, made, window, cx| {
             let path = match made {
                 Ok(path) => path,
-                Err(e) => return this.linear_fail(&start, no_env_line(&e), window, cx),
+                Err(e) => {
+                    let own = own_branch(&detail.issue.identifier);
+                    return match next_branch(&e, &branch, &own, may_retry) {
+                        Some(own) => {
+                            this.linear_env(start, detail, project, own, false, window, cx)
+                        }
+                        None => this.linear_fail(&start, no_env_line(&e), window, cx),
+                    };
+                }
             };
             if !this.linear_is_checkout(&project, &path) {
                 return this.linear_begin(start, detail, project, path, branch, window, cx);
@@ -586,7 +633,8 @@ impl Shell {
         }
         // Making the environment takes a while; the switch or the mapping
         // may have changed since the guard said yes.
-        if let Err(r) = self.linear_guard(&start.organization, &detail) {
+        let again = self.linear_guard(&start.organization, &detail);
+        if let Err(r) = guard_again(again, &project) {
             self.linear_fail(&start, refusal_line(&r, &computer()), window, cx);
             self.sync_linear(window, cx);
             return;
@@ -846,6 +894,48 @@ mod tests {
         assert_eq!(kept_after(true, false, true), Kept::Drop);
         assert_eq!(kept_after(true, false, false), Kept::Drop);
         assert_eq!(kept_after(true, true, false), Kept::Hold);
+    }
+
+    #[test]
+    fn only_so_many_new_issues_are_read_at_once() {
+        assert!(may_read(0));
+        assert!(may_read(MAX_READS - 1));
+        assert!(!may_read(MAX_READS));
+        assert!(!may_read(MAX_READS + 1));
+    }
+
+    #[test]
+    fn the_second_guard_wants_the_same_project() {
+        let made_in = Path::new("/p/a");
+        assert_eq!(guard_again(Ok(PathBuf::from("/p/a")), made_in), Ok(()));
+        // The mapping moved to another project while the environment was made.
+        assert_eq!(
+            guard_again(Ok(PathBuf::from("/p/b")), made_in),
+            Err(Refusal::Unmapped)
+        );
+        for r in [Refusal::Off, Refusal::Unmapped, Refusal::ProjectGone] {
+            assert_eq!(guard_again(Err(r), made_in), Err(r));
+        }
+    }
+
+    #[test]
+    fn a_refused_branch_name_falls_back_once_to_the_issues_own() {
+        let refused = "git said \"fatal: cannot lock ref 'refs/heads/a/b': 'refs/heads/a' \
+                       exists; cannot create 'refs/heads/a/b'\"";
+        let own = own_branch("ENG-412");
+        assert_eq!(own, "linear/eng-412");
+        assert_eq!(
+            next_branch(refused, "a/b", &own, true).as_deref(),
+            Some("linear/eng-412")
+        );
+        // Once: the second try's failure is reported.
+        assert_eq!(next_branch(refused, &own, &own, true), None);
+        assert_eq!(next_branch(refused, "a/b", &own, false), None);
+        // Any other failure would fail on the other name too.
+        assert_eq!(
+            next_branch("the project has no commits yet", "a/b", &own, true),
+            None
+        );
     }
 
     #[test]

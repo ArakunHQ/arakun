@@ -22,21 +22,31 @@ binding = "CLOUD"
 service = "arakun-cloud-dev"
 
 # The GitHub OAuth App for operator sign-in is not the desktop app's. Its
-# secret, ADMIN_SECRET, SESSION_SECRET and ADMIN_GITHUB_IDS are Worker secrets.
+# secret, ADMIN_SECRET, SESSION_SECRET, ADMIN_GITHUB_IDS and ADMIN_TOTP_SECRETS
+# (each operator's authenticator key) are Worker secrets.
 [vars]
 CLOUD_ORIGIN = "http://localhost:8787"
 GITHUB_CLIENT_ID = "PLACEHOLDER"
 
 # Sign-in calls GitHub, so each client IP gets a few a minute. Rate limits with
 # the same namespace_id in one account share their counters, so every id is
-# used once: cloud/wrangler.toml has 1001 to 1008, 1011 and 1012, this Worker
-# 1009 and production 1010.
+# used once: cloud/wrangler.toml has 1001 to 1008 and 1011 to 1018, this Worker
+# 1009 and 1019, production 1010 and 1020.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1009"
 
   [ratelimits.simple]
   limit = 10
+  period = 60
+
+# The authenticator code, per operator: five tries a minute.
+[[ratelimits]]
+name = "CODE_LIMIT"
+namespace_id = "1019"
+
+  [ratelimits.simple]
+  limit = 5
   period = 60
 
 # The hosted Worker (`npm run deploy`). An environment inherits no bindings, so
@@ -74,4 +84,12 @@ namespace_id = "1010"
 
   [env.production.ratelimits.simple]
   limit = 10
+  period = 60
+
+[[env.production.ratelimits]]
+name = "CODE_LIMIT"
+namespace_id = "1020"
+
+  [env.production.ratelimits.simple]
+  limit = 5
   period = 60

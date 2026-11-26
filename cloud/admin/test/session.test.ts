@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
-import { allowed, clearedCookie, readSession, SESSION_COOKIE, sessionCookie, signSession } from "../worker/session";
+import {
+  allowed,
+  CODE_STEP_COOKIE,
+  clearedCodeStepCookie,
+  clearedCookie,
+  codeStepCookie,
+  readCodeStep,
+  readSession,
+  SESSION_COOKIE,
+  sessionCookie,
+  signCodeStep,
+  signSession,
+} from "../worker/session";
 
 const T = 1_800_000_000;
 const op = { githubId: 1001, login: "octo" };
@@ -18,9 +30,9 @@ function flip(text: string): string {
 
 /// A cookie value with a valid signature over any first part, as a bug in a
 /// signer would make one.
-async function signed(payload: string, secret = env.SESSION_SECRET!): Promise<string> {
+async function signed(payload: string, secret = env.SESSION_SECRET!, purpose: string | null = "session"): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(purpose === null ? payload : `${purpose}.${payload}`)));
   return `${payload}.${b64url(mac)}`;
 }
 
@@ -85,6 +97,29 @@ describe("session", () => {
     await expect(signSession({ githubId: 2 ** 60, login: "octo" }, secret, T)).rejects.toThrow();
     await expect(signSession({ githubId: 1001, login: "bad\nlogin" }, secret, T)).rejects.toThrow();
     await expect(signSession({ githubId: 1001, login: "" }, secret, T)).rejects.toThrow();
+  });
+
+  it("never reads a code step's value as a session, or the other way round", async () => {
+    const step = await signCodeStep(op, env.SESSION_SECRET!, T);
+    const session = await signSession(op, env.SESSION_SECRET!, T);
+    const both = (value: string) =>
+      new Request("https://admin.test/", { headers: { Cookie: `${SESSION_COOKIE}=${value}; ${CODE_STEP_COOKIE}=${value}` } });
+    expect(await readCodeStep(both(step), env, T)).toEqual(op);
+    expect(await readSession(both(step), env, T)).toBeNull();
+    expect(await readSession(both(session), env, T)).toEqual(op);
+    expect(await readCodeStep(both(session), env, T)).toBeNull();
+    // A MAC over the bare payload, as sessions were signed before the code step.
+    const bare = await signed(claims({ github_id: 1001, login: "octo", exp: T + 100 }), env.SESSION_SECRET!, null);
+    expect(await readSession(withCookie(bare), env, T)).toBeNull();
+  });
+
+  it("ends the code step after five minutes", async () => {
+    const step = await signCodeStep(op, env.SESSION_SECRET!, T);
+    const request = new Request("https://admin.test/", { headers: { Cookie: `${CODE_STEP_COOKIE}=${step}` } });
+    expect(await readCodeStep(request, env, T + 299)).toEqual(op);
+    expect(await readCodeStep(request, env, T + 300)).toBeNull();
+    expect(codeStepCookie("v")).toBe(`${CODE_STEP_COOKIE}=v; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=300`);
+    expect(clearedCodeStepCookie()).toContain("Max-Age=0");
   });
 
   it("refuses at and after exp", async () => {

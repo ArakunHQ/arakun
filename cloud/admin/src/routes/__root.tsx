@@ -12,6 +12,7 @@ import {
 import { ApiError } from "../api";
 import { meQuery, useLogout } from "../queries";
 import type { Me } from "../types";
+import { isOutcome } from "../signIn";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -34,7 +35,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
     // The Worker sends GitHub's sign-in back to / with the outcome: the
     // sign-in screen says what went wrong.
     const signIn = (location.search as { sign_in?: unknown }).sign_in;
-    if (signIn === "denied" || signIn === "failed") throw redirect({ to: "/sign-in", search: { sign_in: signIn } });
+    if (isOutcome(signIn)) throw redirect({ to: "/sign-in", search: { sign_in: signIn } });
     try {
       const me: Me | null = await context.queryClient.ensureQueryData(meQuery);
       return { me };

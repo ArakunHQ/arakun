@@ -620,6 +620,23 @@ in with GitHub, using its own OAuth App, not the desktop app's. The browser neve
 Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
 session is a signed cookie, `__Host-arakun_admin`, that lasts 12 hours.
 
+Sign-in has two steps, so a taken-over GitHub account is not enough to get in:
+
+1. GitHub's web flow says who the operator is. The Worker then sets
+   `__Host-arakun_admin_code` (`SameSite=Strict`, five minutes), which is not a session,
+   and sends the browser to `/sign-in?step=code`.
+2. The operator types the six-digit code from an authenticator app (TOTP, RFC 6238:
+   SHA-1, 30-second steps; the codes of the step before and after count too). The page
+   posts it to `POST /auth/code`, which needs the panel's own `Origin`. A right code
+   trades the code step's cookie for the session. Each operator gets five codes a
+   minute, wherever they come from.
+
+Each operator's key is in the secret `ADMIN_TOTP_SECRETS`, as
+`<github_id>:<base32 key>` entries, comma-separated. An operator on `ADMIN_GITHUB_IDS`
+with no key there cannot sign in; the page says to ask a maintainer for one. The Worker
+keeps no state, so it cannot tell a code that was already used within its 90 seconds;
+taking one also needs the code step's cookie, which only the operator's browser has.
+
 Every change made in the panel is recorded in `admin_log` with the operator's name, and
 the panel shows it under Activity.
 
@@ -648,13 +665,14 @@ npm run dev
 ADMIN_SECRET=dev-secret
 SESSION_SECRET=<any long random string>
 ADMIN_GITHUB_IDS=<github_id>
+ADMIN_TOTP_SECRETS=<github_id>:<base32 key>   # node scripts/totp-secret.mjs makes one
 GITHUB_CLIENT_ID=<your OAuth App's client ID>
 GITHUB_CLIENT_SECRET=<your OAuth App's secret>
 ```
 
 For a real sign-in, create a personal OAuth App on GitHub (Settings, Developer
 settings) whose callback is `http://localhost:5173/auth/github/callback`; use the port
-vite prints. Without an OAuth App, print a session cookie for the local
+vite prints. Without an OAuth App or an authenticator app, print a session cookie for the local
 `SESSION_SECRET` and send it from your browser's developer tools or with curl:
 
 ```sh
@@ -671,11 +689,12 @@ and does not happen in a build.
 
 For arakun.dev, the GitHub OAuth App "Arakun Admin" exists and its client ID is already
 in `cloud/admin/wrangler.toml`. Do not create another app: its secret would not match
-that ID, and sign-in would fail with no hint why. What is left is the four secrets, set
+that ID, and sign-in would fail with no hint why. What is left is the five secrets, set
 once in `cloud/admin`. `ADMIN_SECRET` is the value the cloud Worker has;
 `GITHUB_CLIENT_SECRET` is the secret of the "Arakun Admin" app; `SESSION_SECRET` is 32
 random bytes (`openssl rand -base64 32`); `ADMIN_GITHUB_IDS` is the operators' numeric
-GitHub IDs, comma-separated (find one at `https://api.github.com/users/<login>`).
+GitHub IDs, comma-separated (find one at `https://api.github.com/users/<login>`);
+`ADMIN_TOTP_SECRETS` is each operator's authenticator key (see Operators below).
 Each command asks for the value, so it is never on the command line:
 
 ```sh
@@ -684,6 +703,7 @@ npx wrangler secret put GITHUB_CLIENT_SECRET --env production
 npx wrangler secret put ADMIN_SECRET --env production
 npx wrangler secret put ADMIN_GITHUB_IDS --env production
 npx wrangler secret put SESSION_SECRET --env production
+npx wrangler secret put ADMIN_TOTP_SECRETS --env production
 ```
 
 If no deploy came first, the Worker does not exist yet, and wrangler asks whether to
@@ -707,7 +727,7 @@ arakun.dev.
    `https://<your admin host>/auth/github/callback`.
 2. In `cloud/admin/wrangler.toml`, put the app's client ID under
    `[env.production.vars]`, and set the host under `routes`.
-3. Set the four secrets as above, with the new app's secret, then merge the change.
+3. Set the five secrets as above, with the new app's secret, then merge the change.
 
 While `GITHUB_CLIENT_ID` is `PLACEHOLDER`, the deploy workflow prints a notice and skips
 the admin Worker, so a release still ships the cloud Worker.
@@ -725,6 +745,27 @@ npx wrangler secret put ADMIN_GITHUB_IDS --env production   # e.g. <github_id>,<
 The ID is checked on every request, so removing one ends that operator's access at
 once, even with a valid cookie. Unset or empty, nobody gets in. Changing
 `SESSION_SECRET` signs everyone out.
+
+Every operator also needs an authenticator key in `ADMIN_TOTP_SECRETS`. Make one with
+the operator present, and give it to nobody else:
+
+```sh
+cd cloud/admin
+node scripts/totp-secret.mjs <github_id> <login>
+```
+
+It prints the entry for the secret and an `otpauth://` link. The operator adds the link
+to their authenticator app (as a QR code, or by typing the key), then you put the whole
+list again, every operator's entry, comma-separated:
+
+```sh
+npx wrangler secret put ADMIN_TOTP_SECRETS --env production   # <github_id>:<key>,<github_id>:<key>
+```
+
+The key is read at sign-in only, so a new list does not sign anyone out. To replace a
+lost phone, make a new key for that operator and put the list with it; the old key
+stops working at once. Removing the operator from `ADMIN_GITHUB_IDS` is what ends a
+session.
 
 If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators stay signed in but
 the panel's calls fail with "unauthorized" errors (a missing one answers "the admin

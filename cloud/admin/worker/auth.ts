@@ -3,12 +3,17 @@
 // user access token. The token is used for one thing, to learn who the
 // account is, and is revoked in every outcome. Nothing but GitHub ever sees it.
 //
+// GitHub is the first step only. An operator then gives a code from an
+// authenticator app (worker/totp.ts), so a taken-over GitHub account is not
+// enough to get in.
+//
 // The `state` ties the callback to the browser that started it. Without it, a
 // foreign page could send an operator's browser to the callback with the
 // attacker's code and sign the operator in as the attacker.
 
-import { allowed, clearedCookie, sessionCookie, signSession } from "./session";
-import { b64url, cookie } from "./util";
+import { allowed, clearedCodeStepCookie, clearedCookie, codeStepCookie, readCodeStep, sessionCookie, signCodeStep, signSession } from "./session";
+import { checkCode, totpKey } from "./totp";
+import { b64url, cookie, error } from "./util";
 
 /// `__Host-`, as the session cookie: a sibling host cannot plant a state of
 /// its own. The prefix needs `Path=/`.
@@ -27,6 +32,12 @@ const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 /// nothing GitHub or the request said goes back.
 const FAILED = "/?sign_in=failed";
 const DENIED = "/?sign_in=denied";
+/// An operator with no authenticator key in ADMIN_TOTP_SECRETS.
+const NO_KEY = "/?sign_in=no_key";
+/// GitHub said yes; the sign-in screen asks for the code.
+const CODE_STEP = "/sign-in?step=code";
+/// The code's digits, and room for spaces an app shows in the middle.
+const MAX_CODE_BODY = 256;
 
 /// What wrangler.toml holds until a person creates the OAuth App and sets the
 /// real ID. GitHub would be asked with a client that does not exist.
@@ -86,10 +97,44 @@ async function callback(request: Request, env: Env): Promise<Response> {
   // A token that still works is not a sign-in either.
   if (!user || !revoked) return redirect(FAILED);
   if (!allowed(env.ADMIN_GITHUB_IDS, user.id)) return redirect(DENIED);
+  if (!totpKey(env.ADMIN_TOTP_SECRETS, user.id)) return redirect(NO_KEY);
 
-  const value = await signSession({ githubId: user.id, login: user.login }, env.SESSION_SECRET, Math.floor(Date.now() / 1000));
-  const res = redirect("/");
-  res.headers.append("Set-Cookie", sessionCookie(value));
+  const value = await signCodeStep({ githubId: user.id, login: user.login }, env.SESSION_SECRET, Math.floor(Date.now() / 1000));
+  const res = redirect(CODE_STEP);
+  res.headers.append("Set-Cookie", codeStepCookie(value));
+  return res;
+}
+
+/// POST /auth/code with JSON { code }: the second step. A right code trades
+/// the code step's cookie for a session. Only the panel's own page may ask.
+export async function authCode(request: Request, env: Env): Promise<Response> {
+  if (request.headers.get("Origin") !== new URL(request.url).origin) return error(403, "the request comes from another origin");
+  const now = Math.floor(Date.now() / 1000);
+  const op = await readCodeStep(request, env, now);
+  // Expired, or a browser that never went through GitHub.
+  if (!op || !env.SESSION_SECRET) return error(401, "sign-in expired");
+  const key = totpKey(env.ADMIN_TOTP_SECRETS, op.githubId);
+  if (!key) return error(401, "sign-in expired");
+  // Counted per operator, not per IP: a million codes are few enough to try
+  // from many addresses.
+  const { success } = await env.CODE_LIMIT.limit({ key: String(op.githubId) });
+  if (!success) return error(429, "too many codes; wait a minute");
+
+  const text = await request.text().catch(() => "");
+  if (text.length > MAX_CODE_BODY) return error(400, "no code");
+  let code: unknown;
+  try {
+    code = (JSON.parse(text) as Record<string, unknown> | null)?.["code"];
+  } catch {
+    return error(400, "no code");
+  }
+  if (typeof code !== "string") return error(400, "no code");
+  if (!(await checkCode(key, code.replace(/\s/g, ""), now))) return error(401, "wrong code");
+
+  const session = await signSession(op, env.SESSION_SECRET, now);
+  const res = new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  res.headers.append("Set-Cookie", sessionCookie(session));
+  res.headers.append("Set-Cookie", clearedCodeStepCookie());
   return res;
 }
 
@@ -97,7 +142,10 @@ async function callback(request: Request, env: Env): Promise<Response> {
 /// cannot sign an operator out.
 export function logout(request: Request): Response {
   if (request.headers.get("Origin") !== new URL(request.url).origin) return Response.json({ error: "wrong origin" }, { status: 403 });
-  return new Response(null, { status: 204, headers: { "Set-Cookie": clearedCookie() } });
+  const res = new Response(null, { status: 204 });
+  res.headers.append("Set-Cookie", clearedCookie());
+  res.headers.append("Set-Cookie", clearedCodeStepCookie());
+  return res;
 }
 
 function redirect(location: string): Response {

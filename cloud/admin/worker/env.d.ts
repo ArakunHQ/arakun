@@ -11,7 +11,10 @@ declare namespace Cloudflare {
     ADMIN_SECRET?: string;
     ADMIN_GITHUB_IDS?: string;
     SESSION_SECRET?: string;
+    // `<github_id>:<base32 key>` entries, comma-separated (worker/totp.ts).
+    ADMIN_TOTP_SECRETS?: string;
     SIGN_IN_LIMIT: RateLimit;
+    CODE_LIMIT: RateLimit;
   }
 }
 

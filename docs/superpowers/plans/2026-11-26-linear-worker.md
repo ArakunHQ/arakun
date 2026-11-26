@@ -25,6 +25,7 @@ This is plan 2 of 3. Plan 3 (the app side, ARAKUN-124) is stacked on this one.
 - Tests run with `(cd cloud && npm test -- <file>)`; types with `(cd cloud && npm run check)`. Outbound calls are faked in `cloud/test/helpers.ts`; an unknown URL must still throw.
 - Comments say why. Docs use plain, short sentences. Commits follow Conventional Commits, scope `cloud`.
 - Do not change code behind the `team` or `coderlabs` features, and do not change `cloud/PROTOCOL.md` (it is the teams protocol).
+- Repeats are dropped by the agent session's id (a delegation) or the activity's id (a follow-up), not by `webhookId`, which names the webhook and is the same on every event. The `webhook_id` column in the task text below became `event_key` (`created:<agent session id>` or `activity:<activity id>`).
 
 ## Wire shapes (shared by all tasks)
 

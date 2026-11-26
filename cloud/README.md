@@ -826,7 +826,7 @@ Four D1 tables (`migrations/0013_linear.sql`):
 | `linear_workspaces` | One row per Linear workspace that installed the app: the workspace id and name, the app's user id, its access and refresh tokens, when the access token ends, who installed it. |
 | `linear_links` | Which GitHub account a Linear user is, per workspace. The row goes with its account. |
 | `linear_routes` | Which computer takes the issues of a Linear team or project. The row goes with the machine. |
-| `linear_deliveries` | One row per webhook that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), the computer's label, and the times it was announced, accepted and expired. The unique webhook id makes Linear's retry a no-op. |
+| `linear_deliveries` | One row per webhook event that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), the computer's label, and the times it was announced, accepted and expired. A unique event key makes Linear's retry a no-op (see "A retry" below). |
 
 Both tokens of a workspace are sealed with AES-GCM under `LINEAR_TOKEN_KEY`, with the
 workspace id as additional data, so a token copied to another workspace's row does not
@@ -837,7 +837,8 @@ link, is used for one call and dropped.
 
 ### Routes
 
-Every path is under `/linear`. Without all four secrets, every `/linear` path answers
+Every path is under `/linear`. Without all four secrets, or with a `LINEAR_TOKEN_KEY`
+that is not 32 bytes of base64url, every `/linear` path answers
 `404 { "error": "not found" }`. Except the webhook and the callback, a route needs a
 session of an account that is not blocked and has the `linear` flag: `401 { "error":
 "not signed in" }` without a session, `403 { "error": "Linear is not available for this
@@ -847,9 +848,9 @@ JSON `{ "error": "..." }`.
 | Request | Who | Answer |
 | --- | --- | --- |
 | `GET /linear/install` | a signed-in account with the flag, in a browser | `302` to Linear's consent page (scopes `read,write,app:assignable,app:mentionable`, `actor=app`). Sets the cookie `__Host-arakun_linear_state` for ten minutes, holding a random state and the account's ID. |
-| `GET /linear/callback?code&state` | Linear's redirect of the same browser | Checks the state against the cookie and the account, then trades the code for the app's tokens and saves the workspace (a second install replaces the first): `200` with a plain-text page, "Arakun is installed in <workspace>. You can close this page." `400 bad state` for a missing or wrong state, or one made by another account; `400 linear refused the install` for an `error` parameter, no code or a code over 512 characters; `502 linear refused the install` when Linear refuses the exchange or does not answer. The session and flag are checked here, so `401` or `403` as above. The cookie is cleared on every answer. |
+| `GET /linear/callback?code&state` | Linear's redirect of the same browser | Checks the state against the cookie and the account, then trades the code for the app's tokens and saves the workspace (a second install replaces the first): `200` with a plain-text page, "Arakun is installed in <workspace>. You can close this page." `400 bad state` for a missing or wrong state, or one made by another account; `400 linear refused the install` for an `error` parameter, no code or a code over 512 characters; `400 that was not an app install` when the token is not the app's own (a member who authorized without `actor=app`), and nothing is saved; `502 linear refused the install` when Linear refuses the exchange, does not answer, or names the app user or the workspace with an id that is not a UUID. The session and flag are checked here, so `401` or `403` as above. The cookie is cleared on every answer. |
 | `GET /linear/link` | the account | `200 { links: [{ organization_id, linear_user_id, installed }] }`, oldest first. `installed` says whether that workspace has installed Arakun. |
-| `POST /linear/link` with `{ "token": "<the user's Linear API key or OAuth token>" }` | the account | Asks Linear who the token is, and links that Linear user in that workspace to the account: `200 { organization_id, linear_user_id, installed }`. If another account held the link, it moves here, and that account's routes in the workspace go. `400 bad token` for a token that is missing, empty or over 512 bytes, `400 linear refused that token`, `429 too many requests` (see Limits), `503` when the limit could not be checked. |
+| `POST /linear/link` with `{ "token": "<the user's Linear API key or OAuth token>" }` | the account | Asks Linear who the token is, and links that Linear user in that workspace to the account: `200 { organization_id, linear_user_id, installed }`. If another account held the link, it moves here, and that account's routes in the workspace go. `400 bad token` for a token that is missing, empty or over 512 bytes, `400 linear refused that token` when Linear refuses it, when it is an app's token rather than a person's, or when Linear names the user or the workspace with an id that is not a UUID, `429 too many requests` (see Limits), `503` when the limit could not be checked. |
 | `DELETE /linear/link/<organization_id>` | the account | `204`, also when there was no link. Removes the account's link and its routes in that workspace. `404` for an id that is not a UUID. |
 | `PUT /linear/routes` with `{ "label", "organization_id", "teams": [<uuid>], "projects": [<uuid>] }` | the account | Replaces what that computer takes in that workspace: `204`. At most 200 ids in all, up to 32 KiB. `400 bad routes` for a bad body, `404 no such computer` for a label that is not one of the account's machines, `409 link linear first` when the account has no link in that workspace. Of two computers that take the same issue, the one with the project route wins over the team route, and then the one seen last. |
 | `POST /linear/deliveries/<id>/accept` | the account | The computer took the delivery: `204`, also on a second call. The relay forgets it. `404 no such delivery` for an id that is unknown or another account's. |
@@ -865,8 +866,20 @@ missing signature, and `400 bad webhook` for a body that is not JSON or lacks th
 The body's `webhookTimestamp` must be within 60 seconds of the Worker's clock, or the
 answer is `401 bad signature`, so a captured webhook cannot be replayed later. Any
 event but an `AgentSessionEvent` with the action `created` or `prompted` gets an empty
-`200`. A failure after that answers `500 internal error` with nothing of Linear's
-text in it, and Linear sends the webhook again.
+`200`.
+
+A failure after that is logged as one line, with the route and a status or an error
+name only. Linear sends a webhook again after 1 minute, 1 hour and 6 hours when it
+fails, and may turn off a webhook that keeps failing, so the answer says whether a retry
+can help:
+
+- `500 internal error`, with nothing of Linear's text in it, when it can: a call to
+  Linear timed out or Linear answered 5xx or 429, or D1 failed. The retry finishes the
+  same delivery.
+- An empty `200` when it cannot: the workspace has not installed the app, Linear
+  refuses the app's token even after a refresh or refuses the refresh (the app was
+  removed), Linear answers 403 or 404, or the stored token does not open under
+  `LINEAR_TOKEN_KEY`. These last until someone installs the app again.
 
 **`created`**: an issue was delegated to Arakun, or Arakun was mentioned on one. The
 Worker finds the Linear user who created the session, the account that user is linked
@@ -881,10 +894,16 @@ who delegated it, and only theirs, go to that computer as a `prompt` delivery, o
 `stop` if Linear's signal says so. Anyone else's words get the "Only the person" answer
 below.
 
-**A retry**: a delivery is keyed by the webhook's id. A retry finds the row and
-finishes the same delivery under the same id: it is not saved twice, and it is not
-handed to the relay again if the computer took it or it expired meanwhile. Once a
-delivery is announced, a retry is an empty `200`.
+**A retry**: a delivery is keyed by the event: the agent session's id for a
+delegation, the activity's id for a follow-up. Both are in the signed body. The body's
+`webhookId` is the id of the webhook itself, the same on every event, so it is not
+used. A retry finds the row and finishes the same delivery under the same id: it is not
+saved twice, and it is not handed to the relay again if the computer took it or it
+expired meanwhile. Once a delivery is announced, a retry is an empty `200`. A second
+`created` for an agent session that already has a delivery, such as a re-delegation
+that reuses the session, is treated as the same event: it finishes the first delivery
+or does nothing. A row found under the key that belongs to another session, workspace
+or kind is never finished; that is logged, and the answer is an empty `200`.
 
 The Worker's own activities, character for character. `<computer>` is the machine's
 name, or `this computer` if its row is gone (`This computer` in the expiry one).
@@ -947,7 +966,8 @@ burst or daily limits.
 
 ### Limits
 
-`LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1015) counts, per account, the calls
+`LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1015 at the top level and 1016 in
+`[env.production]`) counts, per account, the calls
 that ask Linear: `POST /linear/link` and `POST /linear/sessions/<id>/activity`. It is
 about 30 a minute, and a call over it answers `429 too many requests`. If the limit
 cannot be checked, the answer is `503`. Every call from the Worker to Linear times out
@@ -964,6 +984,13 @@ after 3 seconds.
   queued for its own computer. The `created` path refuses such an account.
 - If Linear's API is slow twice in one webhook, the answer can take longer than Linear's
   5 seconds. Linear then retries, and the retry finishes the same delivery.
+- It is not yet known whether Linear's retry carries a fresh `webhookTimestamp`. If it
+  does not, the 60 second check refuses the retry (`401`), and a delegation whose first
+  try failed for a passing reason is lost: the person delegates again.
+- A workspace whose app sees no Linear traffic for 30 days can lose its refresh token.
+  Its webhooks then answer `200` with nothing done, and someone must install the app
+  again. `installed` in `GET /linear/link` only says that a workspace row exists: it
+  does not notice a lost refresh token, nor an app removed in Linear.
 - A computer can still report progress for sessions it was given before its account
   unlinked Linear.
 
@@ -991,7 +1018,8 @@ after 3 seconds.
    npx wrangler secret put LINEAR_TOKEN_KEY --env production
    ```
 
-   Without all four, `/linear` answers 404.
+   Without all four, or with a key that is not 32 bytes of base64url, `/linear`
+   answers 404.
 4. The rate limit `LINEAR_LIMIT` is a binding in `wrangler.toml` (top level and
    `[env.production]`), so there is nothing to set. Apply the migration, then deploy:
 

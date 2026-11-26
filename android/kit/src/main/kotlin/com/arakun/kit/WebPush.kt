@@ -176,13 +176,35 @@ object WebPush {
         }
     }
 
+    /**
+     * The environment, and how long the turn took: `app`, `app · 4m 12s` from a minute
+     * up, `app · 42s` under it. Empty without an environment.
+     */
+    fun subtitle(env: String, secs: Long?): String {
+        if (env.isEmpty()) return ""
+        if (secs == null || secs < 0) return env
+        return if (secs >= 60) "$env \u00b7 ${secs / 60}m ${secs % 60}s" else "$env \u00b7 ${secs}s"
+    }
+
     /** What the computer says in a notice: `kind` is `done`, `input` or `error`. */
-    data class Notice(val kind: String, val session: String, val title: String, val body: String) {
+    data class Notice(
+        val kind: String,
+        val session: String,
+        val title: String,
+        val body: String,
+        /** The environment the session runs in; empty from an older computer. */
+        val env: String = "",
+        /** How long the turn took, sent with `done` only. */
+        val secs: Long? = null,
+    ) {
+        val subtitle: String get() = subtitle(env, secs)
+
         companion object {
             fun of(plain: ByteArray): Notice? {
                 val j = parseJson(plain)?.takeIf { it.isObject } ?: return null
                 val session = j["session"].string?.takeIf { it.isNotEmpty() } ?: return null
-                return Notice(j["kind"].str, session, j["title"].str, j["body"].str)
+                val secs = j["secs"].int?.takeIf { it >= 0 }?.toLong()
+                return Notice(j["kind"].str, session, j["title"].str, j["body"].str, j["env"].str, secs)
             }
         }
     }

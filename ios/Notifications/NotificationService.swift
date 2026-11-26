@@ -20,6 +20,7 @@ final class NotificationService: UNNotificationServiceExtension {
         else { return contentHandler(content) }
         if !notice.title.isEmpty { content.title = notice.title }
         if !notice.body.isEmpty { content.body = notice.body }
+        content.subtitle = notice.subtitle
         content.threadIdentifier = notice.session
         // Only what a tap needs stays; the sealed notice goes.
         content.userInfo = ["session": notice.session, "kind": notice.kind]

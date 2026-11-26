@@ -51,6 +51,27 @@ class WebPushTest {
     }
 
     @Test
+    fun aNoticeWithTheEnvironmentAndTurnLengthHasASubtitle() {
+        val n = WebPush.Notice.of("""{"kind":"done","session":"s1","title":"t","body":"b","env":"app","secs":252}""".encodeToByteArray())!!
+        assertEquals("app", n.env)
+        assertEquals(252L, n.secs)
+        assertEquals("app \u00b7 4m 12s", n.subtitle)
+        assertEquals("app \u00b7 42s", WebPush.subtitle("app", 42))
+        assertEquals("app \u00b7 1m 0s", WebPush.subtitle("app", 60))
+        assertEquals("app", WebPush.subtitle("app", null))
+        assertEquals("", WebPush.subtitle("", 90))
+    }
+
+    @Test
+    fun aNoticeWithoutThemHasNoSubtitleAndAnOldOneStillReads() {
+        val old = WebPush.Notice.of("""{"kind":"done","session":"s1","title":"t","body":"b"}""".encodeToByteArray())!!
+        assertEquals(WebPush.Notice("done", "s1", "t", "b"), old)
+        assertEquals("", old.env)
+        assertNull(old.secs)
+        assertEquals("", old.subtitle)
+    }
+
+    @Test
     fun aNoticeSealedForThePhoneOpensOnItAndReads() {
         val keys = WebPush.Keys.generate()
         val json = """{"kind":"input","session":"s1","title":"Needs you","body":"Allow Bash?"}"""

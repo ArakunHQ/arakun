@@ -32,14 +32,30 @@ const TEXT_CHARS: usize = 600;
 /// A notice about `session`, as the phone page and the apps read it, short
 /// enough for every push service. A long error is cut, and cut again if
 /// escaping still makes it too big.
-pub fn notice(kind: &str, session: &str, title: &str, text: &str) -> String {
+///
+/// `env` names where the session runs and `secs` how long its turn took; each is
+/// left out when empty or `None`.
+pub fn notice(
+    kind: &str,
+    session: &str,
+    title: &str,
+    text: &str,
+    env: &str,
+    secs: Option<u64>,
+) -> String {
     let title = shorten(title, TITLE_CHARS);
     let mut chars = TEXT_CHARS;
     loop {
-        let out = serde_json::json!({
+        let mut notice = serde_json::json!({
             "kind": kind, "session": session, "title": title, "body": shorten(text, chars),
-        })
-        .to_string();
+        });
+        if !env.is_empty() {
+            notice["env"] = env.into();
+        }
+        if let Some(secs) = secs {
+            notice["secs"] = secs.into();
+        }
+        let out = notice.to_string();
         if out.len() <= MAX_NOTICE || chars == 0 {
             return out;
         }
@@ -523,9 +539,15 @@ mod tests {
     /// session checks, to tell a delivery problem from a trigger problem:
     #[test]
     fn a_notice_keeps_short_text_whole() {
-        let n: serde_json::Value =
-            serde_json::from_str(&notice("done", "s1", "Fix sign-in", "Finished its turn."))
-                .unwrap();
+        let n: serde_json::Value = serde_json::from_str(&notice(
+            "done",
+            "s1",
+            "Fix sign-in",
+            "Finished its turn.",
+            "",
+            None,
+        ))
+        .unwrap();
         assert_eq!(
             n,
             serde_json::json!({ "kind": "done", "session": "s1", "title": "Fix sign-in", "body": "Finished its turn." })
@@ -533,10 +555,22 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_carries_env_and_secs_only_when_given() {
+        let n: serde_json::Value =
+            serde_json::from_str(&notice("done", "s1", "t", "b", "app", Some(65))).unwrap();
+        assert_eq!(n["env"], "app");
+        assert_eq!(n["secs"], 65);
+        let n: serde_json::Value =
+            serde_json::from_str(&notice("done", "s1", "t", "b", "", None)).unwrap();
+        assert!(n.get("env").is_none());
+        assert!(n.get("secs").is_none());
+    }
+
+    #[test]
     fn a_long_notice_is_cut_to_fit_the_apps_push_service() {
         let title = "t".repeat(500);
         let error = "Ω".repeat(5000);
-        let out = notice("error", "s1", &title, &error);
+        let out = notice("error", "s1", &title, &error, "", None);
         assert!(out.len() <= MAX_NOTICE);
         let n: serde_json::Value = serde_json::from_str(&out).unwrap();
         let title = n["title"].as_str().unwrap();
@@ -554,7 +588,7 @@ mod tests {
     #[test]
     fn text_that_escapes_long_is_cut_again() {
         // Each control character is six bytes in JSON.
-        let out = notice("error", "s1", "x", &"\u{1}".repeat(600));
+        let out = notice("error", "s1", "x", &"\u{1}".repeat(600), "", None);
         assert!(out.len() <= MAX_NOTICE, "{} bytes", out.len());
         let n: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert!(n["body"].as_str().unwrap().chars().count() < TEXT_CHARS);

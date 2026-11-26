@@ -104,19 +104,36 @@ public struct PushNotice: Equatable, Sendable {
     public let session: String
     public let title: String
     public let body: String
+    /// The environment the session runs in; empty from an older computer.
+    public let env: String
+    /// How long the turn took, sent with `done` only.
+    public let secs: Int?
 
-    public init(kind: String, session: String, title: String, body: String) {
+    public init(kind: String, session: String, title: String, body: String, env: String = "", secs: Int? = nil) {
         self.kind = kind
         self.session = session
         self.title = title
         self.body = body
+        self.env = env
+        self.secs = secs
     }
+
+    /// The environment, and how long the turn took: `app`, `app · 4m 12s` from a
+    /// minute up, `app · 42s` under it. Empty without an environment.
+    public static func subtitle(env: String, secs: Int?) -> String {
+        if env.isEmpty { return "" }
+        guard let secs, secs >= 0 else { return env }
+        return secs >= 60 ? "\(env) \u{b7} \(secs / 60)m \(secs % 60)s" : "\(env) \u{b7} \(secs)s"
+    }
+
+    public var subtitle: String { Self.subtitle(env: env, secs: secs) }
 
     public init?(json data: Data) {
         guard let j = JSON.parse(data), case .object = j, let session = j["session"].string, !session.isEmpty else {
             return nil
         }
-        self.init(kind: j["kind"].str, session: session, title: j["title"].str, body: j["body"].str)
+        self.init(kind: j["kind"].str, session: session, title: j["title"].str, body: j["body"].str,
+                  env: j["env"].str, secs: j["secs"].int.flatMap { $0 >= 0 ? $0 : nil })
     }
 }
 

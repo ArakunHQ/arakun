@@ -17,6 +17,7 @@ use crate::agent::{
     ThreadStatus, ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
+use crate::phone::notify::{self, Kind};
 use crate::state;
 
 /// Sends an agent's error to crash reports with where it failed. The folder
@@ -176,8 +177,18 @@ impl Shell {
             .collect()
     }
 
-    /// What the user has on screen is read: it no longer waits on them.
+    /// The person sees the sessions on screen: their phone notices that
+    /// wait for the person to leave are moot.
+    pub(super) fn phone_seen_on_screen(&mut self) {
+        for (env, id) in self.sessions_on_screen() {
+            self.phone_seen(&env, &id);
+        }
+    }
+
+    /// What the user has on screen is read: it no longer waits on them, and
+    /// its phone notices that wait for the user to leave are moot.
     pub(super) fn mark_on_screen_read(&mut self, cx: &mut Context<Self>) {
+        self.phone_seen_on_screen();
         let mut changed = false;
         for (env, id) in self.sessions_on_screen() {
             if let Some(s) = self.session_mut(&env, &id)
@@ -2147,31 +2158,18 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let t = thread.read(cx);
-        let (kind, body): (Notice, String) = match ev {
+        let (kind, body): (Kind, String) = match ev {
             ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
                 "cancelled" => return,
-                "error" => (Notice::Error, error_text(t)),
-                _ => (Notice::Finished, "Finished its turn.".into()),
+                "error" => (Kind::Error, error_text(t)),
+                _ => (Kind::Done, "Finished its turn.".into()),
             },
-            ThreadEvent::NeedsPermission => {
-                let body = if let Some(p) = t.pending_permission() {
-                    if p.plan.is_some() {
-                        "Has a plan ready for your approval.".to_string()
-                    } else {
-                        format!("Needs permission: {}", p.title)
-                    }
-                } else if t.pending_question().is_some() {
-                    "Has a question for you.".into()
-                } else {
-                    "Needs your input.".into()
-                };
-                (Notice::Input, body)
-            }
+            ThreadEvent::NeedsPermission => (Kind::Input, desktop_input_text(t)),
             ThreadEvent::StatusChanged if t.needs_install().is_some() => {
-                (Notice::Input, error_text(t))
+                (Kind::Input, error_text(t))
             }
             ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
-                (Notice::Error, error_text(t))
+                (Kind::Error, error_text(t))
             }
             ThreadEvent::StatusChanged => {
                 // Back at work: the next turn end or question notifies again.
@@ -2192,13 +2190,32 @@ impl Shell {
             .and_then(|e| e.session_index(id).map(|i| e.sessions[i].title.clone()))
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| t.title());
-        // Phones hear when the user is away from this window; the desktop, when
-        // the session is not the one on screen.
+        // Phones hear when the user is away from the computer (the away rule
+        // in `Notifier`); the desktop, when the session is not the one on screen.
+        let pid = self.phone_id(env_path, id);
+        let env = self.find_env(env_path).map(|e| e.name.to_string());
+        let secs = (kind == Kind::Done)
+            .then(|| notify::turn_secs(t.entries()))
+            .flatten();
+        let phone_body = phone_text(
+            kind,
+            matches!(ev, ThreadEvent::NeedsPermission),
+            &body,
+            t.entries(),
+            t.pending_permission(),
+            t.pending_question(),
+        );
+        self.notify_phones(
+            &pid,
+            kind,
+            &title,
+            &phone_body,
+            &env.unwrap_or_default(),
+            secs,
+            window,
+            cx,
+        );
         let at_computer = window.is_window_active();
-        if !at_computer {
-            let pid = self.phone_id(env_path, id);
-            self.notify_phones(&pid, kind, &title, &body, cx);
-        }
         let visible = at_computer
             && self.has_projects()
             && self.env().path == env_path
@@ -2209,7 +2226,7 @@ impl Shell {
         // The island says more (model, last reply); the desktop only stands in for it.
         let alert = self.session_alert(id, thread, kind, &title, cx);
         if !self.show_alert(alert, cx) {
-            send_notification(id, &title, &body, kind == Notice::Error, cx);
+            send_notification(id, &title, &body, kind == Kind::Error, cx);
         }
     }
 
@@ -2460,19 +2477,43 @@ impl Shell {
     }
 }
 
-/// What a session did that deserves a word: on the desktop, and on the phones.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Notice {
-    Finished,
-    Input,
-    Error,
-}
-
 thread_local! {
     /// The last desktop notice per session, so one event is announced once.
-    static NOTIFIED: RefCell<HashMap<String, Notice>> = RefCell::new(HashMap::new());
+    static NOTIFIED: RefCell<HashMap<String, Kind>> = RefCell::new(HashMap::new());
     /// The AskUser question last read aloud per session, by tool call id.
     static SPOKEN: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+/// What a phone is told: the agent's words, the command or the question. An error
+/// or an install notice keeps the desktop's `short` text.
+fn phone_text(
+    kind: Kind,
+    needs_input: bool,
+    short: &str,
+    entries: &[crate::agent::Entry],
+    permission: Option<&crate::agent::PermissionRequest>,
+    question: Option<&crate::agent::AskUserRequest>,
+) -> String {
+    match kind {
+        Kind::Done => notify::finished_body(entries),
+        Kind::Input if needs_input => notify::input_body(entries, permission, question),
+        _ => short.to_string(),
+    }
+}
+
+/// The short line the desktop shows for a session that waits for the user.
+fn desktop_input_text(t: &Thread) -> String {
+    if let Some(p) = t.pending_permission() {
+        if p.plan.is_some() {
+            "Has a plan ready for your approval.".to_string()
+        } else {
+            format!("Needs permission: {}", p.title)
+        }
+    } else if t.pending_question().is_some() {
+        "Has a question for you.".into()
+    } else {
+        "Needs your input.".into()
+    }
 }
 
 fn error_text(t: &Thread) -> String {
@@ -2768,6 +2809,40 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_phone_hears_the_agents_words_not_the_desktops_short_line() {
+        use super::{Kind, phone_text};
+        use crate::agent::Entry;
+        let entries = [Entry::Agent {
+            text: "Done: 3 files".into(),
+        }];
+        assert_eq!(
+            phone_text(
+                Kind::Done,
+                false,
+                "Finished its turn.",
+                &entries,
+                None,
+                None
+            ),
+            "Done: 3 files"
+        );
+        // Waiting with nothing pending reads the same as the desktop's fallback.
+        assert_eq!(
+            phone_text(Kind::Input, true, "x", &entries, None, None),
+            "Needs your input."
+        );
+        // An error or an install notice keeps its text.
+        assert_eq!(
+            phone_text(Kind::Error, false, "Boom", &entries, None, None),
+            "Boom"
+        );
+        assert_eq!(
+            phone_text(Kind::Input, false, "Install it", &entries, None, None),
+            "Install it"
+        );
+    }
+
     #[test]
     fn a_server_gets_only_the_model_and_reasoning_picked() {
         use super::{Setting, model, server_picks};

@@ -1032,6 +1032,7 @@ impl Shell {
         this.restore_servers(window, cx);
         this.start_updates(window, cx);
         this.report_unreadable(cx);
+        this.watch_secret_store(cx);
         this
     }
 
@@ -1251,6 +1252,29 @@ impl Shell {
             };
             self.notify(crate::island::AlertKind::Warning, &title, &body, None, cx);
         }
+    }
+
+    /// Says once, ever, that secrets went to a private file because there is
+    /// no keyring. They are kept on background threads, so this looks every
+    /// few seconds, and stops once it has said it.
+    fn watch_secret_store(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if this.upgrade().is_none() {
+                    break;
+                }
+                let Some(body) = crate::secret_store::take_notice() else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    let title = "Keys are kept in a private file";
+                    this.notify(crate::island::AlertKind::Warning, title, body, None, cx);
+                });
+                break;
+            }
+        })
+        .detach();
     }
 
     /// Notes where the window is, for the next save.

@@ -52,6 +52,7 @@ impl Composer {
                             .push(Paste::new(text.replace("\r\n", "\n"))),
                         None => self.here_mut().text.insert(&text.replace("\r\n", "\n")),
                     }
+                    self.notice_pasted_secret(text);
                 }
                 ClipboardEntry::Image(image) => {
                     match save_image(&image.bytes, image.format.extension()) {

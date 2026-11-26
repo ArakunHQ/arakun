@@ -611,6 +611,27 @@ after a week).
   browser when no project is open). To try the tab without a key (Linux and
   macOS), start a test Arakun with
   `ARAKUN_LINEAR_FIXTURE="$PWD/tools/linear-fixture.json" arakun dev start`.
+  An Arakun account with the `linear` flag also sees **Start from Linear** in the
+  header, a page that lets Linear start sessions on this computer. **Nothing starts
+  yet:** in this version the computer only tells Arakun's server which Linear teams and
+  projects it takes; acting on an issue assigned to Arakun is not built. The switch
+  **Let Linear start sessions on this computer** is off until you turn it on. It
+  needs an Arakun sign-in, "Reach this computer from anywhere" on in the Phone tab,
+  and Arakun installed in the Linear workspace by a Linear admin (the page links to
+  the install). **Add a mapping** sends a Linear team or project of the workspace
+  to a project on this computer; projects on a server can't be mapped. Turning the
+  switch on sends the Linear key to Arakun's server once, to prove which Linear user
+  you are, and the server does not store it; after that only the relay label of
+  this computer and the ids of the mapped teams and projects go. Turning it off
+  removes this computer's routes on the server and leaves the link, so your other
+  computers keep working. Until you turn it on nothing about Linear is sent, except
+  that an account with the flag asks the server whether Arakun is installed in the
+  workspace. The switch and the mappings (ids, names and project paths, no keys) are
+  kept in `~/.local/share/arakun/linear/delegation.json`
+  (`%LOCALAPPDATA%\arakun\linear\delegation.json` on Windows). The server is sent
+  again when you change the page, when this computer reconnects to the relay, when
+  you sign in to Arakun and when a mapped project is added or removed; there is no
+  timer. The server's side is in `cloud/README.md`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one

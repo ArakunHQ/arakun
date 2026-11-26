@@ -20,6 +20,7 @@ pub mod guard;
 pub mod headless;
 pub mod highlight;
 pub mod host;
+pub mod housekeep;
 pub mod input;
 pub mod island;
 pub mod mascot;

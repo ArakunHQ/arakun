@@ -1009,7 +1009,7 @@ fn keep_image(msg: &Value, dir: &Path) -> Option<PathBuf> {
 
 /// Where the copies of servers' images are kept. They are fetched again
 /// after a restart, so a temporary folder is enough.
-fn images_dir() -> PathBuf {
+pub(super) fn images_dir() -> PathBuf {
     std::env::temp_dir().join("arakun-server-images")
 }
 

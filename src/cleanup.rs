@@ -1,4 +1,4 @@
-//! Removing old environments by themselves: once an environment's pull request
+//! Removing what is no longer needed. Old environments by themselves: once an environment's pull request
 //! is merged or closed and nobody used it for a while, its worktree goes. The
 //! branch stays. Off until the user picks a number of days in Settings >
 //! Branches or during the setup; the shell (`shell::cleanup`) watches and
@@ -294,6 +294,66 @@ pub fn remove_clean_worktree(repo: &Path, dir: &Path) -> anyhow::Result<()> {
     crate::git::remove_clean_worktree(repo, dir)
 }
 
+// ---------------------------------------------------------------------------
+// Files left behind
+
+/// How long a copy of a server's image stays in the temp folder. It is
+/// fetched again when shown after a restart, so the age only spares a copy
+/// another Arakun on this machine shows right now.
+const SERVER_IMAGE_AGE: Duration = Duration::from_secs(7 * 86_400);
+
+/// Removes files earlier runs left behind: voice clips a quit cut off, old
+/// copies of servers' images in `images`, and the temp files of writes that
+/// died. The server cleans its own folder (`server::store::Housekeeping`).
+/// Slow on a big folder: call it off the UI thread.
+pub fn sweep_leftovers(images: &Path) {
+    use crate::housekeep::{DAY, remove_old, remove_write_leftovers};
+    let mut removed = remove_old(&std::env::temp_dir(), DAY, is_voice_clip);
+    // The folder is in the shared temp folder: another user could put a link
+    // there that points at the user's own files.
+    if std::fs::symlink_metadata(images).is_ok_and(|m| m.is_dir()) {
+        removed += remove_old(images, SERVER_IMAGE_AGE, is_server_image);
+    }
+    let data = crate::state::data_dir();
+    for dir in [
+        crate::platform::app_dir(),
+        data.clone(),
+        data.join("sessions"),
+        data.join("linked"),
+        crate::platform::app_dir().join("cache"),
+    ] {
+        removed += remove_write_leftovers(&dir);
+    }
+    if removed > 0 {
+        eprintln!("arakun: removed {removed} files earlier runs left behind");
+    }
+}
+
+/// `voice::temp_path`: `arakun-voice-<pid>-<n>.<ext>`.
+fn is_voice_clip(name: &str) -> bool {
+    name.strip_prefix("arakun-voice-")
+        .and_then(|rest| rest.split_once('.'))
+        .is_some_and(|(stamp, ext)| {
+            matches!(ext, "wav" | "pcm")
+                && stamp
+                    .split_once('-')
+                    .is_some_and(|(pid, n)| is_number(pid) && is_number(n))
+        })
+}
+
+/// `servers::keep_image`: 32 hex digits and an image extension.
+fn is_server_image(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(hash, ext)| {
+        hash.len() == 32
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            && matches!(ext, "png" | "jpg" | "gif" | "webp")
+    })
+}
+
+fn is_number(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +537,25 @@ mod tests {
         remove_clean_worktree(&repo, &env).unwrap();
         assert!(!env.exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_voice_clips_are_taken_from_the_temp_folder() {
+        assert!(is_voice_clip("arakun-voice-123-0.wav"));
+        assert!(is_voice_clip("arakun-voice-1-42.pcm"));
+        assert!(!is_voice_clip("arakun-voice-123-0.mp3"));
+        assert!(!is_voice_clip("arakun-voice-x-0.wav"));
+        assert!(!is_voice_clip("arakun-voice-123.wav"));
+        assert!(!is_voice_clip("arakun-cleanup-123"));
+    }
+
+    #[test]
+    fn only_server_image_copies_are_taken() {
+        assert!(is_server_image("0123456789abcdef0123456789abcdef.png"));
+        assert!(!is_server_image("0123456789abcdef0123456789abcdef.txt"));
+        assert!(!is_server_image("notes.png"));
+        assert!(!is_server_image(
+            ".0123456789abcdef0123456789abcdef.png.1-0.tmp"
+        ));
     }
 }

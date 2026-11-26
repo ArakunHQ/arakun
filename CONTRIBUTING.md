@@ -328,7 +328,11 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   ./target/debug/arakun dev stop
   ```
 
-  `arakun dev` with no arguments lists every subcommand.
+  `arakun dev` with no arguments lists every subcommand. `dev start --seed DIR` starts
+  it from `DIR/state.json` and `DIR/data` instead of an empty state, so it opens with
+  sessions already there. `tools/product-shots-seed.py` makes such a folder: a demo
+  project with history, uncommitted edits and a finished Claude Code session that made
+  them. `tools/product-shots.sh` uses it for the README screenshots.
 - **Check the drawn layout.** `tools/layout-audit.sh` opens the main screens in a test
   Arakun (as above, so Linux with `Xvfb`) with `GPUI_LAYOUT_AUDIT` set, and
   `tools/layout_audit.py` checks the boxes GPUI drew: corners that don't nest, uneven

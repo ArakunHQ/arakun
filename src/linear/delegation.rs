@@ -2,7 +2,6 @@
 //!
 //! `app_dir/linear/delegation.json` holds ids, names and paths, never a token.
 //! The switch is off until the person turns it on.
-// Running a delivery (Task 5) uses `target_for`, so it is still marked dead_code.
 
 use std::path::{Path, PathBuf};
 

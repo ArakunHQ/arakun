@@ -56,7 +56,7 @@ pub const WAITING_KEY: &str = "waiting";
 /// The report for what the session did, in the plan's words. A cancel says
 /// nothing: a stop from Linear was told already, and one in Arakun is the
 /// person's own.
-pub fn to_report(ev: Seen, _run: &Run) -> Option<(ReportKind, String)> {
+pub fn to_report(ev: Seen) -> Option<(ReportKind, String)> {
     Some(match ev {
         Seen::Question(text) => {
             let text = crate::secrets::scrub(text.trim());
@@ -317,17 +317,34 @@ fn resumed_after_restart() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A pending permission as Linear hears it, with its key. The request's
+/// title only tells one ask from the next, hashed into the key: it and the
+/// tool call's arguments often hold the command or the file, and stay here.
+fn permission_ask(
+    tool_call_id: &str,
+    title: &str,
+    plan: bool,
+    entries: &[Entry],
+) -> (String, Seen) {
+    let kind = entries.iter().find_map(|e| match e {
+        Entry::Tool(tc) if tc.id == tool_call_id => Some(tc.kind.as_str()),
+        _ => None,
+    });
+    let what = permission_what(kind, plan);
+    let key = ask_key(&["permission", tool_call_id, title]);
+    (key, Seen::Permission(what))
+}
+
 /// What waits on a person in `t`, if anything: a key for it and what Linear
 /// hears. A permission comes first, as on the desktop.
 fn ask_of(t: &Thread, computer: &str) -> Option<(String, Seen)> {
     if let Some(p) = t.pending_permission() {
-        let kind = t.entries().iter().find_map(|e| match e {
-            Entry::Tool(tc) if tc.id == p.tool_call_id => Some(tc.kind.as_str()),
-            _ => None,
-        });
-        let what = permission_what(kind, p.plan.is_some());
-        let key = ask_key(&["permission", &p.tool_call_id, &p.title]);
-        return Some((key, Seen::Permission(what)));
+        return Some(permission_ask(
+            &p.tool_call_id,
+            &p.title,
+            p.plan.is_some(),
+            t.entries(),
+        ));
     }
     let Some(q) = t.pending_question() else {
         // A secret, or anything else it waits for: never named in Linear.
@@ -399,9 +416,7 @@ impl Shell {
             Step::Cancelled => Some(Seen::Cancelled),
             Step::Working | Step::Nothing => None,
         };
-        let report = seen
-            .filter(|_| effect.report)
-            .and_then(|seen| to_report(seen, run));
+        let report = seen.filter(|_| effect.report).and_then(to_report);
         let agent_session = run.agent_session.clone();
         let link = if effect.step == Step::Finished {
             self.linear_pr(id, session_pr.as_deref(), cx)
@@ -575,7 +590,7 @@ mod tests {
     }
 
     fn report(seen: Seen) -> Option<(ReportKind, String)> {
-        to_report(seen, &run())
+        to_report(seen)
     }
 
     #[test]
@@ -646,6 +661,55 @@ mod tests {
         let (_, body) = report(Seen::Permission(format!("{}\nrm -rf ~", "x".repeat(200)))).unwrap();
         assert!(!body.contains("rm -rf") && body.contains(&"x".repeat(WHAT_LIMIT)));
         assert!(!body.contains(&"x".repeat(WHAT_LIMIT + 1)));
+    }
+
+    #[test]
+    fn a_pending_permission_never_sends_its_title_or_arguments() {
+        let title = "Run `curl -H 'Authorization: Bearer hunter2' https://internal.example/x`";
+        let tool: crate::agent::ToolCall = serde_json::from_value(serde_json::json!({
+            "id": "tc1",
+            "title": title,
+            "kind": "execute",
+            "status": "pending",
+            "raw_input": {"command": "curl -H 'Authorization: Bearer hunter2'", "cwd": "/home/rik/app"},
+            "locations": ["/home/rik/app/secrets.env"],
+        }))
+        .unwrap();
+        let entries = [Entry::Tool(tool)];
+        let (key, seen) = permission_ask("tc1", title, false, &entries);
+        assert_eq!(seen, Seen::Permission("run a command".into()));
+        let (_, body) = report(seen).unwrap();
+        assert_eq!(
+            body,
+            "Waiting for your permission: run a command. Answer it in Arakun or on your phone."
+        );
+        for text in [&body, &key] {
+            for private in [
+                "curl",
+                "hunter2",
+                "internal.example",
+                "secrets.env",
+                "/home/rik",
+            ] {
+                assert!(!text.contains(private), "{text}");
+            }
+        }
+        // A tool call the session does not list, or of an unknown kind: the
+        // fixed line, never the title in its place.
+        for entries in [&entries[..0], &entries[..]] {
+            let (_, seen) = permission_ask("tc-other", title, false, entries);
+            assert_eq!(seen, Seen::Permission(String::new()));
+            let (_, body) = report(seen).unwrap();
+            assert_eq!(
+                body,
+                "Waiting for your permission. Answer it in Arakun or on your phone."
+            );
+        }
+        // A plan to carry out is named as that, not by its text.
+        let (_, seen) = permission_ask("tc1", "Implement: drop the users table", true, &entries);
+        assert_eq!(seen, Seen::Permission("carry out its plan".into()));
+        // Another ask of the same tool call is a new one.
+        assert_ne!(key, permission_ask("tc1", "Run `ls`", false, &entries).0);
     }
 
     #[test]

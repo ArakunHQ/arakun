@@ -320,6 +320,7 @@ impl Shell {
         self.settle_strip(cx);
         self.refresh_project(pi, cx);
         self.sync_ci_roots(cx);
+        self.push_linear_host(cx);
         self.sync_poll(window, cx);
         self.save(cx);
         cx.notify();

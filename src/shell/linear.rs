@@ -17,20 +17,7 @@ impl Shell {
         } else {
             self.show_alone(Some(super::home::Alone::Linear), cx);
         }
-        // Task 4 tells the view the real account; until then a test Arakun
-        // shows the page with its own projects.
-        if crate::linear::fixture::active() {
-            let projects = self
-                .projects
-                .iter()
-                .map(|p| (p.name.to_string(), p.path.clone()))
-                .collect();
-            let host = crate::linear_view::Host {
-                projects,
-                ..crate::linear_view::Host::for_fixture()
-            };
-            self.linear_view.update(cx, |v, cx| v.set_host(host, cx));
-        }
+        self.push_linear_host(cx);
         self.linear_view.update(cx, |v, cx| {
             v.refresh_if_stale(cx);
             v.focus(window, cx);
@@ -77,10 +64,12 @@ impl Shell {
                     cx,
                 );
             }
-            // Task 4 sends the change to Arakun and opens these.
-            LinearEvent::DelegationChanged
-            | LinearEvent::OpenPhoneTab
-            | LinearEvent::SignInToArakun => {}
+            LinearEvent::DelegationChanged => {
+                self.push_linear_host(cx);
+                self.sync_linear(window, cx);
+            }
+            LinearEvent::OpenPhoneTab => self.open_phone_tab(window, cx),
+            LinearEvent::SignInToArakun => self.open_account_sign_in(window, cx),
         }
     }
 }

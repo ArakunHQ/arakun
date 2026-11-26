@@ -752,7 +752,7 @@ impl Shell {
 
     /// A call to the account failed. A sign-in the service no longer knows
     /// is forgotten here, and the prompt to sign in shows.
-    fn account_call_failed(&mut self, e: cloud::Error, cx: &mut Context<Self>) {
+    pub(super) fn account_call_failed(&mut self, e: cloud::Error, cx: &mut Context<Self>) {
         if e == cloud::Error::SignedOut {
             self.teams.update(cx, |t, cx| t.session_ended(cx));
         } else {
@@ -896,6 +896,11 @@ impl Shell {
         }
     }
 
+    /// The relay is this computer's way in, so the account can reach it.
+    pub(super) fn relay_on(&self) -> bool {
+        self.phone.as_ref().is_some_and(|l| l.reach == Reach::Relay)
+    }
+
     /// Starts the server when the last run left it on.
     pub(super) fn restore_phone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = phone::Settings::load();
@@ -919,6 +924,7 @@ impl Shell {
         let Some(link) = self.phone.take() else {
             return;
         };
+        self.push_linear_host(cx);
         // A phone of the next link may come with the same id.
         self.servers_phone_left(None);
         if link.reach == Reach::Tailscale {
@@ -1054,6 +1060,7 @@ impl Shell {
             _listen: listen,
             _tick: tick,
         });
+        self.push_linear_host(cx);
         self.sync_phone_view(cx);
     }
 
@@ -1209,6 +1216,8 @@ impl Shell {
                 self.sync_phone_view(cx);
             }
             Incoming::Relay(status) => {
+                // A Linear sync that failed while the relay was away goes now.
+                let connected = status == relay::Status::Connected;
                 let mut ended = false;
                 if let Some(link) = &mut self.phone
                     && let Transport::Relay(client) = &link.server
@@ -1224,6 +1233,10 @@ impl Shell {
                     self.teams.update(cx, |t, cx| t.recheck(cx));
                 }
                 self.sync_phone_view(cx);
+                self.push_linear_host(cx);
+                if connected {
+                    self.sync_linear(window, cx);
+                }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),
         }

@@ -78,8 +78,6 @@ impl Host {
 }
 
 /// How sending the opt-in to Arakun went.
-// Task 4 sets the other states and removes the allow.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sync {
     #[default]
@@ -286,6 +284,11 @@ impl LinearView {
 
     /// Without the flag the page goes, even while it is open.
     pub fn set_host(&mut self, host: Host, cx: &mut Context<Self>) {
+        // The shell tells it on every change of the account, most of which
+        // change nothing here.
+        if host == self.host {
+            return;
+        }
         if !host.flagged && self.page == Page::Delegation {
             self.page = Page::Main;
             self.adding = None;
@@ -295,7 +298,6 @@ impl LinearView {
     }
 
     /// `workspace` is the Linear organization id; None forgets what was known.
-    #[allow(dead_code)] // Task 4 calls it.
     pub fn set_installed(
         &mut self,
         workspace: &str,
@@ -309,7 +311,6 @@ impl LinearView {
         cx.notify();
     }
 
-    #[allow(dead_code)] // Task 4 calls it.
     pub fn set_sync(&mut self, sync: Sync, cx: &mut Context<Self>) {
         self.sync = sync;
         cx.notify();

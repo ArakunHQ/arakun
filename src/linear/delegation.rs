@@ -2,7 +2,7 @@
 //!
 //! `app_dir/linear/delegation.json` holds ids, names and paths, never a token.
 //! The switch is off until the person turns it on.
-// Task 4 (routing) uses what is still marked dead_code, and removes the allows.
+// Running a delivery uses `project_for`, so it is still marked dead_code.
 
 use std::path::{Path, PathBuf};
 
@@ -82,7 +82,6 @@ impl Delegation {
 }
 
 /// The Linear targets this computer takes issues for, to tell the server.
-#[allow(dead_code)]
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct Routes {
     pub teams: Vec<String>,
@@ -90,7 +89,6 @@ pub struct Routes {
 }
 
 /// Empty when off. Otherwise the targets of `workspace` whose project is still open here.
-#[allow(dead_code)]
 pub fn routes(d: &Delegation, workspace: &str, local_projects: &[PathBuf]) -> Routes {
     let mut r = Routes::default();
     if !d.enabled {
@@ -114,7 +112,6 @@ pub fn routes(d: &Delegation, workspace: &str, local_projects: &[PathBuf]) -> Ro
 }
 
 /// The Arakun project of the mapping is no longer open here.
-#[allow(dead_code)]
 pub fn broken(m: &Mapping, local_projects: &[PathBuf]) -> bool {
     !local_projects.contains(&m.project)
 }

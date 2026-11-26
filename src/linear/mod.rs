@@ -2,7 +2,8 @@
 //!
 //! Sign-ins (`Session`) are personal API keys, kept in
 //! `app_dir/linear/sessions.json` (0600) and never printed. The key goes to
-//! `api.linear.app` and nowhere else.
+//! `api.linear.app`, and to Arakun's server only to link the account once
+//! the person lets Linear start sessions here (`shell::linear_sync`).
 
 pub mod delegation;
 pub(crate) mod fixture;

@@ -45,6 +45,7 @@ mod inbox;
 mod island;
 mod limits;
 mod linear;
+mod linear_sync;
 mod menus;
 mod naming;
 mod new_dialog;
@@ -522,6 +523,7 @@ pub struct Shell {
     _posthog_view: Subscription,
     linear_view: Entity<LinearView>,
     _linear_view: Subscription,
+    linear_sync: linear_sync::LinearSync,
     doop_view: Entity<DoopView>,
     _doop_view: Subscription,
     branches_view: Entity<BranchesView>,
@@ -819,6 +821,7 @@ impl Shell {
             cx.observe_in(&teams, window, |this, _, window, cx| {
                 this.teams_changed(cx);
                 this.account_changed(window, cx);
+                this.linear_account_changed(window, cx);
             }),
             cx.subscribe_in(
                 &teams_view,
@@ -1157,6 +1160,7 @@ impl Shell {
             _posthog_view: posthog_sub,
             linear_view,
             _linear_view: linear_sub,
+            linear_sync: Default::default(),
             doop_view,
             _doop_view: doop_sub,
             branches_view,
@@ -1277,6 +1281,7 @@ impl Shell {
             this.refresh_project(pi, cx);
         }
         this.sync_ci_roots(cx);
+        this.push_linear_host(cx);
         this.sync_poll(window, cx);
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
@@ -1909,6 +1914,7 @@ impl Shell {
         self.note_active_tab(cx);
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
+        self.push_linear_host(cx);
         self.save(cx);
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
@@ -1949,6 +1955,7 @@ impl Shell {
         // Its Computers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
+        self.push_linear_host(cx);
         self.save(cx);
         self.sync_poll(window, cx);
         cx.notify();
@@ -2779,6 +2786,7 @@ impl Shell {
         let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
         if self.projects.len() != before {
             self.sync_ci_roots(cx);
+            self.push_linear_host(cx);
             self.sync_poll(window, cx);
         }
         self.rail_pick.retain(|p| !paths.contains(p));

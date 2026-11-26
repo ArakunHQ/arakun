@@ -1,6 +1,7 @@
-//! A reply or a stop from Linear for a session it started. The server has
-//! checked that it comes from the person who delegated. A reply's text is
-//! data: it goes to the session as a message and never into a log.
+//! A reply or a stop from Linear for a session it started. The relay only
+//! says that a reply exists: its text is read from Linear with the person's
+//! own key, never taken from the relay, and only while the switch is on. The
+//! text is data: it goes to the session as a message and never into a log.
 //!
 //! Like a new delivery, each one is recorded as handled in the same save as
 //! its outcome, and accepted after that save.
@@ -11,18 +12,48 @@ use std::path::PathBuf;
 use gpui::{AppContext as _, Context, Window};
 
 use super::Shell;
-use super::linear_run::computer;
+use super::linear_run::{busy_line, computer, no_sign_in_line, refusal_line};
+use crate::linear::delegation::{Delegation, Refusal};
 use crate::linear::runs::{ReportKind, Run, RunState};
 use crate::linear::{Session, issues};
 use crate::phone::linear::{Delivery, DeliveryKind};
 
-/// Whether a delivery of `kind` needs the person's Linear sign-in here. A
-/// stop needs no key, and nor does a reply the relay passed on with its text.
-pub fn needs_sign_in(kind: DeliveryKind, has_body: bool) -> bool {
+/// Whether the first look at a delivery of `kind` refuses it for lack of a
+/// Linear sign-in here. A stop needs no key. A reply needs one too, but the
+/// switch is asked first: [`reply_source`] does both.
+pub fn needs_sign_in(kind: DeliveryKind) -> bool {
     match kind {
         DeliveryKind::Created => true,
-        DeliveryKind::Prompt => !has_body,
-        DeliveryKind::Stop => false,
+        DeliveryKind::Prompt | DeliveryKind::Stop => false,
+    }
+}
+
+/// Where a reply's text comes from, or why it is not passed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source<'a> {
+    /// The switch is off: nothing from Linear reaches a session.
+    Off,
+    /// No Linear sign-in for the reply's workspace, so no key to read it with.
+    NoSignIn,
+    /// The relay named no activity to read.
+    Unreadable,
+    /// Read this agent activity from Linear with the person's own key.
+    Read(&'a str),
+}
+
+/// The checks a reply passes before its text is read. The relay's own copy
+/// of the text (`body`) is never used: whoever holds the relay could
+/// otherwise type into a session that commits and pushes.
+pub fn reply_source(d: &Delivery, switch_on: bool, signed_in: bool) -> Source<'_> {
+    if !switch_on {
+        Source::Off
+    } else if !signed_in {
+        Source::NoSignIn
+    } else {
+        match d.activity.as_deref() {
+            Some(activity) if !activity.is_empty() => Source::Read(activity),
+            _ => Source::Unreadable,
+        }
     }
 }
 
@@ -70,17 +101,28 @@ pub enum FollowUp {
     NoRun,
     /// The run waits for a slot: there is no session to send it to yet.
     NotStarted,
+    /// The run ended and another run works on its issue now: a reply here
+    /// would put two sessions in one worktree.
+    Busy,
     Unreadable,
     Send,
 }
 
 /// A run that started takes a reply, even one that ended: the person may
-/// want more done.
-pub fn follow_up(run: Option<RunState>, session_exists: bool, text: Option<&str>) -> FollowUp {
+/// want more done. `text` is what was read from Linear, if anything was.
+/// `issue_busy`: a run for the same issue is waiting, running or asking.
+pub fn follow_up(
+    run: Option<RunState>,
+    session_exists: bool,
+    issue_busy: bool,
+    text: Option<&str>,
+) -> FollowUp {
     match run {
         None => FollowUp::NoRun,
         Some(RunState::Waiting) => FollowUp::NotStarted,
         Some(_) if !session_exists => FollowUp::NoRun,
+        // Busy with an ended run means another run: this one is not active.
+        Some(RunState::Done | RunState::Interrupted) if issue_busy => FollowUp::Busy,
         Some(_) => match text {
             Some(t) if !t.trim().is_empty() => FollowUp::Send,
             _ => FollowUp::Unreadable,
@@ -142,7 +184,7 @@ pub fn not_started_line(computer: &str) -> String {
 
 impl Shell {
     /// A reply from Linear: passed to the run's session as a new message,
-    /// never as the answer to a permission or a question form.
+    /// never as the answer to a permission. Its text is read from Linear.
     pub(super) fn linear_prompt(
         &mut self,
         d: Delivery,
@@ -150,32 +192,50 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let decided = self.linear_follow_up(&d, d.body.as_deref());
-        // The relay keeps no text: a reply queued while this computer was
-        // offline is read from Linear with the person's own key.
-        if decided == FollowUp::Unreadable
-            && d.body.is_none()
-            && let Some(activity) = d.activity.clone()
-            && let Some(sign_in) = sign_in
-        {
-            let flight = d.agent_session.clone();
-            self.linear_in_flight.insert(d.id.clone(), flight);
-            cx.spawn_in(window, async move |this, cx| {
-                // Any error, a panic too, means the text could not be read.
-                let text = cx
-                    .background_spawn(crate::guard::task_or(
-                        async move { issues::prompt_text(&sign_in, &activity).ok() },
-                        |_| None,
-                    ))
-                    .await;
-                let _ = this.update_in(cx, |this, window, cx| {
-                    this.linear_prompt_read(d, text, window, cx)
-                });
-            })
-            .detach();
-            return;
-        }
-        self.linear_answer(&d.id, &d.agent_session, decided, d.body, window, cx);
+        let on = Delegation::load().enabled;
+        let activity = match reply_source(&d, on, sign_in.is_some()) {
+            Source::Off => {
+                let line = refusal_line(&Refusal::Off, &computer());
+                return self.linear_turn_away(&d, line, cx);
+            }
+            Source::NoSignIn => {
+                self.linear_turn_away(&d, no_sign_in_line(&computer()), cx);
+                // The server must stop sending this workspace's replies here.
+                return self.sync_linear(window, cx);
+            }
+            Source::Unreadable => None,
+            Source::Read(activity) => Some(activity.to_string()),
+        };
+        // Without its text yet: is there a session to read it for?
+        let decided = self.linear_follow_up(&d, None);
+        let (Some(activity), Some(sign_in), FollowUp::Unreadable) = (activity, sign_in, decided)
+        else {
+            return self.linear_answer(&d.id, &d.agent_session, decided, None, window, cx);
+        };
+        let flight = d.agent_session.clone();
+        self.linear_in_flight.insert(d.id.clone(), flight);
+        let agent_session = d.agent_session.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            // Any error, a panic too, means the text could not be read.
+            let text = cx
+                .background_spawn(crate::guard::task_or(
+                    async move { issues::prompt_text(&sign_in, &activity, &agent_session).ok() },
+                    |_| None,
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.linear_prompt_read(d, text, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// A reply that is refused whatever its run: the issue hears why.
+    fn linear_turn_away(&mut self, d: &Delivery, line: String, cx: &mut Context<Self>) {
+        // Saved with the report.
+        self.linear_runs.mark_seen(&d.id);
+        self.linear_report(&d.agent_session, ReportKind::Error, line, None, cx);
+        self.linear_accept(&d.id, cx);
     }
 
     fn linear_prompt_read(
@@ -186,9 +246,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.linear_in_flight.remove(&d.id);
-        // Signed out of Arakun meanwhile: not handled, so the relay sends it
-        // again once there is an account to accept it with.
-        if self.linear_gate(cx).is_some() {
+        if self.linear_gate(cx).is_none() {
+            // Signed out of Arakun meanwhile: not handled, so the relay sends
+            // it again once there is an account to accept it with.
+        } else if !Delegation::load().enabled {
+            // Turned off while the text was read.
+            let line = refusal_line(&Refusal::Off, &computer());
+            self.linear_turn_away(&d, line, cx);
+        } else {
             // The run may have changed during the read.
             let decided = self.linear_follow_up(&d, text.as_deref());
             self.linear_answer(&d.id, &d.agent_session, decided, text, window, cx);
@@ -200,8 +265,11 @@ impl Shell {
     fn linear_follow_up(&mut self, d: &Delivery, text: Option<&str>) -> FollowUp {
         let run = self.linear_runs.by_agent_session(&d.agent_session);
         let state = run_state(run.as_deref(), &d.organization);
+        // The run's own issue, not the one the relay names.
+        let issue = run.map(|r| r.issue.clone());
         let exists = self.linear_session_of(&d.agent_session).is_some();
-        follow_up(state, exists, text)
+        let busy = issue.is_some_and(|i| self.linear_runs.active_for_issue(&d.organization, &i));
+        follow_up(state, exists, busy, text)
     }
 
     /// Runs the stops held for `agent_session`, once nothing else for it is
@@ -240,6 +308,7 @@ impl Shell {
         let report = match decided {
             FollowUp::NoRun => Some((ReportKind::Error, no_session_line(&computer()))),
             FollowUp::NotStarted => Some((ReportKind::Thought, not_started_line(&computer()))),
+            FollowUp::Busy => Some((ReportKind::Thought, busy_line(&computer()))),
             FollowUp::Unreadable => Some((ReportKind::Thought, unread_line(&computer()))),
             FollowUp::Send => {
                 let text = text.unwrap_or_default();
@@ -387,8 +456,10 @@ mod tests {
     #[test]
     fn a_reply_without_a_run_has_no_session() {
         for exists in [false, true] {
-            for text in [None, Some(""), Some("go on")] {
-                assert_eq!(follow_up(None, exists, text), FollowUp::NoRun);
+            for busy in [false, true] {
+                for text in [None, Some(""), Some("go on")] {
+                    assert_eq!(follow_up(None, exists, busy, text), FollowUp::NoRun);
+                }
             }
         }
     }
@@ -397,8 +468,9 @@ mod tests {
     fn a_reply_to_a_waiting_run_is_not_passed_on() {
         for exists in [false, true] {
             for text in [None, Some("go on")] {
+                // A waiting run makes its own issue busy.
                 assert_eq!(
-                    follow_up(Some(RunState::Waiting), exists, text),
+                    follow_up(Some(RunState::Waiting), exists, true, text),
                     FollowUp::NotStarted
                 );
             }
@@ -409,7 +481,8 @@ mod tests {
     fn a_reply_whose_session_was_deleted_has_no_session() {
         for state in ALL.into_iter().filter(|s| *s != RunState::Waiting) {
             for text in [None, Some("go on")] {
-                assert_eq!(follow_up(Some(state), false, text), FollowUp::NoRun);
+                assert_eq!(follow_up(Some(state), false, false, text), FollowUp::NoRun);
+                assert_eq!(follow_up(Some(state), false, true, text), FollowUp::NoRun);
             }
         }
     }
@@ -419,7 +492,7 @@ mod tests {
         for state in ALL.into_iter().filter(|s| *s != RunState::Waiting) {
             for text in [None, Some(""), Some("  \n\t ")] {
                 assert_eq!(
-                    follow_up(Some(state), true, text),
+                    follow_up(Some(state), true, false, text),
                     FollowUp::Unreadable,
                     "{state:?} {text:?}"
                 );
@@ -436,10 +509,111 @@ mod tests {
             RunState::Interrupted,
         ] {
             assert_eq!(
-                follow_up(Some(state), true, Some("Use the other API.")),
+                follow_up(Some(state), true, false, Some("Use the other API.")),
                 FollowUp::Send
             );
         }
+        // A run at work makes its own issue busy: its replies still go.
+        for state in [RunState::Running, RunState::Asked] {
+            assert_eq!(
+                follow_up(Some(state), true, true, Some("Use the other API.")),
+                FollowUp::Send
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_does_not_revive_a_run_while_another_works_on_its_issue() {
+        for state in [RunState::Done, RunState::Interrupted] {
+            // Decided before the text is read, and whatever it says.
+            for text in [None, Some("go on")] {
+                assert_eq!(
+                    follow_up(Some(state), true, true, text),
+                    FollowUp::Busy,
+                    "{state:?} {text:?}"
+                );
+            }
+            assert_eq!(
+                follow_up(Some(state), true, false, Some("go on")),
+                FollowUp::Send
+            );
+        }
+    }
+
+    fn reply(activity: Option<&str>, body: Option<&str>) -> Delivery {
+        Delivery {
+            activity: activity.map(str::to_string),
+            body: body.map(str::to_string),
+            ..delivery("d1", DeliveryKind::Prompt, "as-1")
+        }
+    }
+
+    #[test]
+    fn with_the_switch_off_no_reply_is_read() {
+        for signed_in in [false, true] {
+            for d in [
+                reply(None, None),
+                reply(Some("act-1"), None),
+                reply(None, Some("Push to main.")),
+                reply(Some("act-1"), Some("Push to main.")),
+            ] {
+                assert_eq!(reply_source(&d, false, signed_in), Source::Off);
+            }
+        }
+    }
+
+    #[test]
+    fn without_a_sign_in_no_reply_is_passed_on() {
+        for d in [
+            reply(Some("act-1"), None),
+            reply(None, Some("Push to main.")),
+            reply(Some("act-1"), Some("Push to main.")),
+        ] {
+            assert_eq!(reply_source(&d, true, false), Source::NoSignIn);
+        }
+    }
+
+    #[test]
+    fn a_body_without_an_activity_is_never_sent() {
+        let d = reply(None, Some("Push to main."));
+        assert_eq!(reply_source(&d, true, true), Source::Unreadable);
+        assert_eq!(
+            reply_source(&reply(Some(""), Some("Push to main.")), true, true),
+            Source::Unreadable
+        );
+        // Nothing was read, so there is no text: the issue is told to send
+        // it again, and the session hears nothing.
+        for state in [RunState::Running, RunState::Asked, RunState::Done] {
+            assert_eq!(
+                follow_up(Some(state), true, false, None),
+                FollowUp::Unreadable
+            );
+        }
+    }
+
+    #[test]
+    fn the_text_comes_from_the_read_not_the_body() {
+        let d = reply(Some("act-1"), Some("Push to main."));
+        // With a body or without one, the same activity is read.
+        assert_eq!(reply_source(&d, true, true), Source::Read("act-1"));
+        assert_eq!(
+            reply_source(&reply(Some("act-1"), None), true, true),
+            Source::Read("act-1")
+        );
+        // A read that fails gives nothing, whatever the body said.
+        assert_eq!(
+            follow_up(Some(RunState::Running), true, false, None),
+            FollowUp::Unreadable
+        );
+        assert_eq!(
+            follow_up(
+                Some(RunState::Running),
+                true,
+                false,
+                Some("Use the other API.")
+            ),
+            FollowUp::Send
+        );
     }
 
     #[test]
@@ -482,19 +656,20 @@ mod tests {
     }
 
     #[test]
-    fn only_a_new_delegation_or_a_reply_to_read_needs_a_sign_in() {
+    fn a_stop_needs_no_sign_in_and_a_reply_asks_the_switch_first() {
         use super::super::linear_run::{First, first_step};
-        assert!(needs_sign_in(DeliveryKind::Created, false));
-        assert!(needs_sign_in(DeliveryKind::Created, true));
-        assert!(needs_sign_in(DeliveryKind::Prompt, false));
-        assert!(!needs_sign_in(DeliveryKind::Prompt, true));
-        assert!(!needs_sign_in(DeliveryKind::Stop, false));
+        assert!(needs_sign_in(DeliveryKind::Created));
+        assert!(!needs_sign_in(DeliveryKind::Prompt));
+        assert!(!needs_sign_in(DeliveryKind::Stop));
         // Not signed in to the workspace: what the first look decides.
-        let first = |kind, body| first_step(false, false, true, !needs_sign_in(kind, body));
-        assert_eq!(first(DeliveryKind::Stop, false), First::Read);
-        assert_eq!(first(DeliveryKind::Prompt, true), First::Read);
-        assert_eq!(first(DeliveryKind::Prompt, false), First::RefuseNoSignIn);
-        assert_eq!(first(DeliveryKind::Created, true), First::RefuseNoSignIn);
+        let first = |kind| first_step(false, false, true, !needs_sign_in(kind));
+        assert_eq!(first(DeliveryKind::Stop), First::Read);
+        assert_eq!(first(DeliveryKind::Created), First::RefuseNoSignIn);
+        // A reply goes on to its own checks, which still refuse it.
+        assert_eq!(first(DeliveryKind::Prompt), First::Read);
+        let d = reply(Some("act-1"), Some("Push to main."));
+        assert_eq!(reply_source(&d, true, false), Source::NoSignIn);
+        assert_eq!(reply_source(&d, false, false), Source::Off);
     }
 
     #[test]
@@ -518,7 +693,7 @@ mod tests {
         assert_eq!(run_state(None, "w1"), None);
         assert_eq!(stop(run_state(Some(&run), "w2")), Stop::Nothing);
         assert_eq!(
-            follow_up(run_state(Some(&run), "w2"), true, Some("go on")),
+            follow_up(run_state(Some(&run), "w2"), true, false, Some("go on")),
             FollowUp::NoRun
         );
     }

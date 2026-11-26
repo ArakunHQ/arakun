@@ -206,9 +206,15 @@ pub fn detail(s: &Session, id: &str) -> Result<Detail, ApiError> {
 
 /// The text of a follow-up from its agent activity, when only the prompt
 /// content has a body. Linear's schema: `content` is a union, and the
-/// person's message is `AgentActivityPromptContent.body`.
-fn parse_prompt_text(data: &Value) -> Option<String> {
-    let content = &data["agentActivity"]["content"];
+/// person's message is `AgentActivityPromptContent.body`. The activity must
+/// belong to `agent_session`: an id from the relay must not make a session
+/// read a message written for another one.
+fn parse_prompt_text(data: &Value, agent_session: &str) -> Option<String> {
+    let activity = &data["agentActivity"];
+    if activity["agentSession"]["id"].as_str() != Some(agent_session) {
+        return None;
+    }
+    let content = &activity["content"];
     if content["__typename"] != "AgentActivityPromptContent" {
         return None;
     }
@@ -217,13 +223,18 @@ fn parse_prompt_text(data: &Value) -> Option<String> {
     (body.chars().count() <= crate::phone::linear::MAX_BODY).then(|| body.to_string())
 }
 
-/// A follow-up's text, read with the person's own key. The relay keeps no
-/// text, so a reply sent while this computer was offline is read here.
-pub fn prompt_text(s: &Session, activity_id: &str) -> Result<String, ApiError> {
-    let query = "query($id: String!) { agentActivity(id: $id) { content { __typename \
-                 ... on AgentActivityPromptContent { body } } } }";
+/// A follow-up's text, read with the person's own key. The relay only names
+/// the activity: its text always comes from Linear, for the agent session
+/// the run was started for.
+pub fn prompt_text(
+    s: &Session,
+    activity_id: &str,
+    agent_session: &str,
+) -> Result<String, ApiError> {
+    let query = "query($id: String!) { agentActivity(id: $id) { agentSession { id } \
+                 content { __typename ... on AgentActivityPromptContent { body } } } }";
     let data = graphql(s, query, json!({ "id": activity_id }))?;
-    parse_prompt_text(&data)
+    parse_prompt_text(&data, agent_session)
         .ok_or_else(|| ApiError::Failed("Linear didn't send that message.".into()))
 }
 
@@ -365,37 +376,44 @@ mod tests {
 
     #[test]
     fn a_prompt_activity_gives_its_text() {
-        let data = json!({"agentActivity": {"content": {
+        let data = json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
             "__typename": "AgentActivityPromptContent", "body": "Use the other API."}}});
         assert_eq!(
-            parse_prompt_text(&data).as_deref(),
+            parse_prompt_text(&data, "as-1").as_deref(),
             Some("Use the other API.")
         );
         let longest = "é".repeat(crate::phone::linear::MAX_BODY);
-        let data = json!({"agentActivity": {"content": {
+        let data = json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
             "__typename": "AgentActivityPromptContent", "body": longest}}});
-        assert_eq!(parse_prompt_text(&data), Some(longest));
+        assert_eq!(parse_prompt_text(&data, "as-1"), Some(longest));
     }
 
     #[test]
     fn any_other_activity_or_shape_gives_none() {
         for data in [
             // Another content type: the fragment asks no body of it.
-            json!({"agentActivity": {"content": {"__typename": "AgentActivityThoughtContent"}}}),
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {"__typename": "AgentActivityThoughtContent"}}}),
             // Even with a body, only a prompt is the person's message.
-            json!({"agentActivity": {"content": {
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
                 "__typename": "AgentActivityResponseContent", "body": "Done."}}}),
-            json!({"agentActivity": {"content": {
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
                 "__typename": "AgentActivityPromptContent", "body": null}}}),
-            json!({"agentActivity": {"content": {
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
                 "__typename": "AgentActivityPromptContent", "body": 7}}}),
-            json!({"agentActivity": {"content": {"body": "no type"}}}),
-            json!({"agentActivity": {"content": {
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {"body": "no type"}}}),
+            json!({"agentActivity": {"agentSession": {"id": "as-1"}, "content": {
                 "__typename": "AgentActivityPromptContent", "body": "é".repeat(16_001)}}}),
+            // The activity of another agent session, or of none Linear names.
+            json!({"agentActivity": {"agentSession": {"id": "as-2"}, "content": {
+                "__typename": "AgentActivityPromptContent", "body": "Use the other API."}}}),
+            json!({"agentActivity": {"agentSession": null, "content": {
+                "__typename": "AgentActivityPromptContent", "body": "Use the other API."}}}),
+            json!({"agentActivity": {"content": {
+                "__typename": "AgentActivityPromptContent", "body": "Use the other API."}}}),
             json!({"agentActivity": null}),
             json!({}),
         ] {
-            assert_eq!(parse_prompt_text(&data), None, "{data}");
+            assert_eq!(parse_prompt_text(&data, "as-1"), None, "{data}");
         }
     }
 }

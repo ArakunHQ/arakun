@@ -204,8 +204,8 @@ impl Shell {
             Vec::new()
         };
         let sign_in = crate::linear::session_for(&sessions, &d.organization).cloned();
-        // A stop, or a reply with its text, needs no Linear key.
-        let may_go = sign_in.is_some() || !needs_sign_in(d.kind, d.body.is_some());
+        // A stop needs no Linear key; a reply's checks are its own.
+        let may_go = sign_in.is_some() || !needs_sign_in(d.kind);
         match (first_step(in_flight, handled, gate, may_go), sign_in) {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),

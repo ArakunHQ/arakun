@@ -202,12 +202,15 @@ export async function postActivity(
   agentSessionId: string,
   type: "thought" | "elicitation" | "response" | "error",
   body: string,
+  ephemeral = false,
 ): Promise<void> {
+  // An ephemeral thought is replaced by the next activity in Linear.
+  const input = { agentSessionId, content: { type, body }, ...(ephemeral ? { ephemeral: true } : {}) };
   await asApp(
     env,
     organizationId,
     "mutation($input: AgentActivityCreateInput!) { agentActivityCreate(input: $input) { success } }",
-    { input: { agentSessionId, content: { type, body } } },
+    { input },
   );
 }
 

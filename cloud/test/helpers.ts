@@ -265,12 +265,14 @@ export const linearFake = {
   /// Makes a query answer a 200 with data of the wrong shape.
   malformed: null as "viewer" | "issue-null" | "no-team" | null,
   /// The agent activities created, in order.
-  activities(): { agentSessionId: string; type: string; body: string }[] {
+  /// `ephemeral` is there only when it was sent.
+  activities(): { agentSessionId: string; type: string; body: string; ephemeral?: boolean }[] {
     return this.accepted
       .filter((c) => c.query.includes("agentActivityCreate"))
       .map((c) => {
-        const input = (c.variables as { input: { agentSessionId: string; content: { type: string; body: string } } }).input;
-        return { agentSessionId: input.agentSessionId, type: input.content.type, body: input.content.body };
+        const input = (c.variables as { input: { agentSessionId: string; content: { type: string; body: string }; ephemeral?: boolean } }).input;
+        const sent = { agentSessionId: input.agentSessionId, type: input.content.type, body: input.content.body };
+        return input.ephemeral === undefined ? sent : { ...sent, ephemeral: input.ephemeral };
       });
   },
   /// The links added to agent sessions, in order.

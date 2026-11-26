@@ -516,8 +516,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Streaming text chunks only matter to connected phone viewers.
+        // Streaming text chunks only matter to connected phone viewers, and
+        // to the issue of a delegated session, which hears its steps.
         if matches!(ev, ThreadEvent::EntriesChanged { .. }) && self.phone.is_none() {
+            self.linear_thread_event(id, thread, ev, window, cx);
             return;
         }
         // A server's session: what the user did goes there; the rest (checks,

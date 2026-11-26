@@ -45,6 +45,7 @@ pub struct Saved {
     /// handshake, which every connection is checked against. Empty through
     /// the account, where the account names the key, and for a server paired
     /// before the direct socket was sealed, until it next connects.
+    // Not a secret: the label of a public key.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
     /// What the server lets this app in with. Empty through the account.
@@ -162,6 +163,7 @@ pub struct Invite {
     pub code: String,
     /// The label of the server's key (`k=`), which its handshake must be
     /// signed with. A link without one trusts the key that answers.
+    // Not a secret: the label of a public key.
     pub key: Option<String>,
 }
 

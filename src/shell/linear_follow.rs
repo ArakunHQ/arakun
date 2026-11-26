@@ -13,6 +13,7 @@ use gpui::{AppContext as _, Context, Window};
 
 use super::Shell;
 use super::linear_run::{busy_line, computer, no_sign_in_line, refusal_line};
+use crate::agent::Thread;
 use crate::linear::delegation::{Delegation, Refusal};
 use crate::linear::runs::{ReportKind, Run, RunState};
 use crate::linear::{Session, issues};
@@ -139,6 +140,55 @@ pub fn after_reply(state: RunState) -> Option<RunState> {
         RunState::Waiting | RunState::Running | RunState::Asked => None,
     }
 }
+
+/// What waits on a person in the session a reply is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pending {
+    Nothing,
+    /// A question the agent asked, with no secret field.
+    Question,
+    /// A permission prompt, alone or with anything else.
+    Permission,
+    /// A secret the agent asked for, as a card or as a question's field.
+    Secret,
+}
+
+/// What waits, from what the session holds. A permission comes first, as on
+/// the desktop: with one pending nothing else is touched. `question` says
+/// whether the pending question has a secret field.
+pub fn pending(permission: bool, secret_card: bool, question: Option<bool>) -> Pending {
+    if permission {
+        Pending::Permission
+    } else if secret_card || question == Some(true) {
+        Pending::Secret
+    } else if question.is_some() {
+        Pending::Question
+    } else {
+        Pending::Nothing
+    }
+}
+
+fn pending_in(t: &Thread) -> Pending {
+    let question = t
+        .pending_question()
+        .map(|q| q.questions.iter().any(|x| x.secret));
+    pending(
+        t.pending_permission().is_some(),
+        t.pending_secret().is_some(),
+        question,
+    )
+}
+
+/// Whether a reply from Linear first skips what the session waits for. Only
+/// a plain question: the person answered it in their own words, in Linear.
+/// A permission is never answered from Linear, and a secret never leaves
+/// Arakun, so both are left alone and the reply goes on as any message.
+pub fn skips_question(pending: Pending) -> bool {
+    pending == Pending::Question
+}
+
+/// The most questions one reply skips, should an agent have asked several.
+const SKIPS: usize = 8;
 
 /// What a stop from Linear leads to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,7 +402,17 @@ impl Shell {
         let Some(thread) = self.phone_thread(&env, &sid) else {
             return false;
         };
-        thread.update(cx, |t, cx| t.send(text, cx));
+        thread.update(cx, |t, cx| {
+            // A question that waits is answered by this reply: it is skipped,
+            // and the reply goes to the agent as the next message.
+            for _ in 0..SKIPS {
+                if !skips_question(pending_in(t)) {
+                    break;
+                }
+                t.skip_question(cx);
+            }
+            t.send(text, cx);
+        });
         if let Some(s) = self.session_mut(&env, &sid) {
             s.updated = crate::model::unix_now();
         }
@@ -618,6 +678,28 @@ mod tests {
             ),
             FollowUp::Send
         );
+    }
+
+    #[test]
+    fn a_reply_skips_a_question_and_nothing_else() {
+        assert!(skips_question(Pending::Question));
+        // A permission is answered in Arakun or on the phone, never from Linear.
+        assert!(!skips_question(Pending::Permission));
+        // A secret stays where it is; the reply goes on as any message.
+        assert!(!skips_question(Pending::Secret));
+        assert!(!skips_question(Pending::Nothing));
+        // What the session holds, with a permission first.
+        assert_eq!(pending(false, false, Some(false)), Pending::Question);
+        assert_eq!(pending(false, false, None), Pending::Nothing);
+        for secret in [false, true] {
+            for question in [None, Some(false), Some(true)] {
+                assert_eq!(pending(true, secret, question), Pending::Permission);
+            }
+        }
+        assert_eq!(pending(false, true, None), Pending::Secret);
+        assert_eq!(pending(false, true, Some(false)), Pending::Secret);
+        // A question that asks for a password is answered in Arakun only.
+        assert_eq!(pending(false, false, Some(true)), Pending::Secret);
     }
 
     #[test]

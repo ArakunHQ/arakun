@@ -1,8 +1,5 @@
 //! The sheet over the Linear tab: one issue in full, and what to do with it.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
 use gpui::relative;
 
 use super::list::group_icon;
@@ -24,25 +21,6 @@ fn body_style() -> MdStyle {
         heading: theme::text(),
         gap: 8.,
     }
-}
-
-fn render_markdown(id: impl Into<gpui::ElementId>, blocks: &[Block]) -> AnyElement {
-    // Other people write issue text, so an image link in it must not make us
-    // read a file on this computer. With an empty map of fetched copies the
-    // renderer only looks names up in it and never touches the disk.
-    let no_files: HashMap<String, PathBuf> = HashMap::new();
-    markdown::render(
-        id,
-        blocks,
-        body_style(),
-        &crate::agent::TextMap::default(),
-        None,
-        &[],
-        None,
-        Some(&no_files),
-        None,
-        None,
-    )
 }
 
 impl LinearView {
@@ -134,15 +112,14 @@ impl LinearView {
         let now = crate::model::unix_now();
         let description = match self.detail_md.first() {
             Some(blocks) if !d.description.trim().is_empty() => {
-                render_markdown("lin-sheet-description", blocks)
+                markdown::render_untrusted("lin-sheet-description", blocks, body_style())
             }
             _ => ui::text(Type::Body, theme::text_subtle(), "No description.").into_any_element(),
         };
         let comments = d.comments.iter().enumerate().map(|(i, c)| {
-            let body = self
-                .detail_md
-                .get(i + 1)
-                .map(|blocks| render_markdown(("lin-sheet-comment", i), blocks));
+            let body = self.detail_md.get(i + 1).map(|blocks| {
+                markdown::render_untrusted(("lin-sheet-comment", i), blocks, body_style())
+            });
             div()
                 .flex()
                 .flex_col()

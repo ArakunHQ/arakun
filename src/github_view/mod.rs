@@ -1703,23 +1703,14 @@ fn parsed(
     blocks
 }
 
+/// Issue and pull request text is written by other people, so it is laid out
+/// as untrusted: no files, images only over https, only web and mail links.
 fn render_markdown(
     id: impl Into<gpui::ElementId>,
     blocks: &[Block],
     st: MdStyle,
 ) -> gpui::AnyElement {
-    markdown::render(
-        id,
-        blocks,
-        st,
-        &crate::agent::TextMap::default(),
-        None,
-        &[],
-        None,
-        None,
-        None,
-        None,
-    )
+    markdown::render_untrusted(id, blocks, st)
 }
 
 /// GitHub bodies with the HTML the markdown renderer would show as text:

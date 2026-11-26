@@ -90,6 +90,22 @@ pub fn open_link(url: &str, window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Whether a link in text other people wrote may be followed: web pages and
+/// mail only, never a file or another app's scheme.
+fn untrusted_link(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    ["https://", "http://", "mailto:"]
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
+}
+
+/// [`open_link`] for text other people wrote: other links do nothing.
+fn open_untrusted_link(url: &str, window: &mut Window, cx: &mut App) {
+    if untrusted_link(url) {
+        open_link(url, window, cx);
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Style {
     bold: bool,
@@ -1113,6 +1129,9 @@ struct Ctx<'a> {
     base: Option<&'a Path>,
     /// Copies of images on the server the session runs on, by link.
     fetched: Option<&'a HashMap<String, PathBuf>>,
+    /// Other people wrote the text: no files, images only over https, and
+    /// only web and mail links.
+    untrusted: bool,
     selection: Option<Range<usize>>,
     /// Annotated ranges, highlighted until their note is sent or removed.
     marks: &'a [Range<usize>],
@@ -1136,15 +1155,23 @@ impl Ctx<'_> {
         let text = crate::redact::same_bytes(&text).map_or(text, SharedString::from);
         let start = self.next.get();
         self.next.set(start + text.len() + 1);
-        // Links to files open them in arakun, through the surface's file clicks.
-        let (local, links): (Vec<_>, Vec<_>) = links
-            .into_iter()
-            .partition(|(_, url)| local_link(url).is_some());
-        for (r, url) in local {
-            if let Some(path) = local_link(&url) {
-                self.map.file(start + r.start..start + r.end, path);
+        let links = if self.untrusted {
+            links
+                .into_iter()
+                .filter(|(_, url)| untrusted_link(url))
+                .collect()
+        } else {
+            // Links to files open them in arakun, through the surface's file clicks.
+            let (local, links): (Vec<_>, Vec<_>) = links
+                .into_iter()
+                .partition(|(_, url)| local_link(url).is_some());
+            for (r, url) in local {
+                if let Some(path) = local_link(&url) {
+                    self.map.file(start + r.start..start + r.end, path);
+                }
             }
-        }
+            links
+        };
         let styled = StyledText::new(text.clone()).with_runs(runs);
         let layout = styled.layout().clone();
         let inner = if links.is_empty() {
@@ -1163,7 +1190,7 @@ impl Ctx<'_> {
         let (pads, chips) = inline.map_or((Vec::new(), Vec::new()), |i| {
             (i.pads.clone(), i.chips.clone())
         });
-        if let Some(i) = inline {
+        if let Some(i) = inline.filter(|_| !self.untrusted) {
             for (r, path) in &i.files {
                 self.map.file(start + r.start..start + r.end, path.clone());
             }
@@ -1404,10 +1431,15 @@ impl Ctx<'_> {
             alt.trim().to_string()
         };
         let link = {
-            let (url, label) = (url.to_string(), label.clone());
-            move || image_link(&url, &label)
+            let (url, label, untrusted) = (url.to_string(), label.clone(), self.untrusted);
+            move || image_link(&url, &label, untrusted)
         };
-        let Some(source) = image_source(url, self.base, self.fetched) else {
+        let source = if self.untrusted {
+            untrusted_image_source(url)
+        } else {
+            image_source(url, self.base, self.fetched)
+        };
+        let Some(source) = source else {
             return link().into_any_element();
         };
         let file = match &source {
@@ -1731,20 +1763,52 @@ pub fn render(
     find: Option<Find>,
 ) -> AnyElement {
     map.clear();
-    let ctx = Ctx {
-        marks,
-        find: find.filter(|f| !f.query.is_empty()),
-        found: Cell::new(0),
-        map,
-        fade: fade
-            .filter(|f| !f.0.is_empty())
-            .and_then(|f| Some((f, last_inline(blocks)? as *const Inline))),
-        base,
-        fetched,
-        selection,
-        next: Cell::new(0),
-    };
-    let id: ElementId = id.into();
+    lay_out(
+        id.into(),
+        blocks,
+        st,
+        Ctx {
+            marks,
+            find: find.filter(|f| !f.query.is_empty()),
+            found: Cell::new(0),
+            map,
+            fade: fade
+                .filter(|f| !f.0.is_empty())
+                .and_then(|f| Some((f, last_inline(blocks)? as *const Inline))),
+            base,
+            fetched,
+            untrusted: false,
+            selection,
+            next: Cell::new(0),
+        },
+    )
+}
+
+/// Lays out text other people wrote, such as an issue and its comments on
+/// GitHub or Linear. Nothing in it reads a file on this computer, an image
+/// loads only over https (any other is a link to click), and only web and
+/// mail links open.
+pub fn render_untrusted(id: impl Into<ElementId>, blocks: &[Block], st: MdStyle) -> AnyElement {
+    lay_out(
+        id.into(),
+        blocks,
+        st,
+        Ctx {
+            marks: &[],
+            find: None,
+            found: Cell::new(0),
+            map: &TextMap::default(),
+            fade: None,
+            base: None,
+            fetched: None,
+            untrusted: true,
+            selection: None,
+            next: Cell::new(0),
+        },
+    )
+}
+
+fn lay_out(id: ElementId, blocks: &[Block], st: MdStyle, ctx: Ctx) -> AnyElement {
     div()
         .id(id)
         .flex()
@@ -1798,6 +1862,16 @@ fn image_source(
             .filter(|p| p.is_file())
             .map(ImageRef::File),
     }
+}
+
+/// Where an image in text other people wrote comes from: only https, so
+/// opening it reads no file here and reaches no plain-http host such as
+/// `localhost`. `None` shows it as a link to click.
+fn untrusted_image_source(url: &str) -> Option<ImageRef> {
+    let clean = url.trim().trim_start_matches('<').trim_end_matches('>');
+    clean
+        .starts_with("https://")
+        .then(|| ImageRef::Web(SharedString::from(clean.to_string())))
 }
 
 /// The file an image link names: absolute, `~/` in the home folder, or
@@ -1872,7 +1946,7 @@ impl RenderOnce for InlineImage {
     }
 }
 
-fn image_link(url: &str, label: &str) -> gpui::Div {
+fn image_link(url: &str, label: &str, untrusted: bool) -> gpui::Div {
     let url = url.to_string();
     div().child(
         div()
@@ -1891,7 +1965,9 @@ fn image_link(url: &str, label: &str) -> gpui::Div {
             .child(icon("image01", 14.).text_color(link_color()))
             .child(div().min_w_0().truncate().child(label.to_string()))
             .on_click(move |_, window, cx| {
-                if url.starts_with("http") {
+                if untrusted {
+                    open_untrusted_link(&url, window, cx);
+                } else if url.starts_with("http") {
                     open_link(&url, window, cx);
                 } else {
                     cx.reveal_path(Path::new(url.strip_prefix("file://").unwrap_or(&url)));
@@ -2304,6 +2380,59 @@ mod tests {
                 shape(&parse(&streamed[..cut])),
                 "at {cut}"
             );
+        }
+    }
+
+    #[test]
+    fn untrusted_text_reads_no_files() {
+        let dir = std::env::temp_dir();
+        let name = "arakun-md-untrusted-test.png";
+        std::fs::write(dir.join(name), b"x").unwrap();
+        let abs = dir.join(name).display().to_string();
+        for url in [
+            abs.clone(),
+            format!("file://{abs}"),
+            format!("<{abs}>"),
+            "~/.ssh/id_ed25519".to_string(),
+            r"\\host\share\a.png".to_string(),
+            "data:image/png;base64,AA".to_string(),
+        ] {
+            assert_eq!(untrusted_image_source(&url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn untrusted_images_load_only_over_https() {
+        assert_eq!(
+            untrusted_image_source("<https://x.io/a.png>"),
+            Some(ImageRef::Web("https://x.io/a.png".into()))
+        );
+        assert_eq!(untrusted_image_source("http://localhost:8080/a.png"), None);
+        assert_eq!(untrusted_image_source("http://x.io/a.png"), None);
+        assert_eq!(untrusted_image_source("ftp://x.io/a.png"), None);
+    }
+
+    #[test]
+    fn untrusted_links_are_only_web_and_mail() {
+        for url in [
+            "https://x.io",
+            "http://x.io/a",
+            "mailto:a@x.io",
+            "HTTPS://X.IO",
+        ] {
+            assert!(untrusted_link(url), "{url}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "/etc/passwd",
+            "src/main.rs",
+            "javascript:alert(1)",
+            "vscode://file/x",
+            "ms-settings:",
+            r"\\host\share",
+            "smb://host/share",
+        ] {
+            assert!(!untrusted_link(url), "{url}");
         }
     }
 

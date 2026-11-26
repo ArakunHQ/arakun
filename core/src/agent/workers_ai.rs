@@ -804,7 +804,7 @@ fn system_prompt(cwd: &Path) -> String {
          - Keep replies short and plain; the user sees your tool calls and their output.",
         cwd = cwd.display()
     );
-    if let Some(hint) = launch::agent_hint(Some(cwd)) {
+    if let Some(hint) = launch::agent_hint(super::AgentKind::WorkersAi, Some(cwd)) {
         s.push_str("\n\n");
         s.push_str(&hint);
     }

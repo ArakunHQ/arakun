@@ -238,7 +238,7 @@ fn codex_auth_label(auth: &serde_json::Value) -> Option<&'static str> {
 /// instructions of their own come first.
 fn codex_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
     const VAR: &str = "CODEX_CONFIG";
-    let hint = agent_hint(cwd)?;
+    let hint = agent_hint(AgentKind::Codex, cwd)?;
     let config = codex_config(std::env::var(VAR).ok().as_deref(), &hint)?;
     Some((VAR.to_string(), config.to_string().into()))
 }
@@ -256,6 +256,46 @@ fn codex_config(theirs: Option<&str>, hint: &str) -> Option<serde_json::Value> {
         _ => hint.to_string(),
     };
     config["developer_instructions"] = text.into();
+    Some(config)
+}
+
+/// Adds an MCP server to the config Codex gets in `CODEX_CONFIG`: the hint's
+/// value when there is one, else the user's own. A user value that is not a
+/// JSON object is left alone, and so is a server of theirs with this name.
+pub(super) fn codex_add_mcp(spec: &mut LaunchSpec, name: &str, server: serde_json::Value) {
+    const VAR: &str = "CODEX_CONFIG";
+    let at = spec.env.iter().position(|(k, _)| k == VAR);
+    let raw = match at {
+        Some(i) => spec.env[i].1.to_str().map(str::to_string),
+        None => std::env::var(VAR).ok(),
+    };
+    let Some(config) = codex_config_with_mcp(raw.as_deref(), name, server) else {
+        return;
+    };
+    let value = OsString::from(config.to_string());
+    match at {
+        Some(i) => spec.env[i].1 = value,
+        None => spec.env.push((VAR.to_string(), value)),
+    }
+}
+
+fn codex_config_with_mcp(
+    raw: Option<&str>,
+    name: &str,
+    server: serde_json::Value,
+) -> Option<serde_json::Value> {
+    let mut config = match raw {
+        Some(raw) => serde_json::from_str::<serde_json::Value>(raw)
+            .ok()
+            .filter(serde_json::Value::is_object)?,
+        None => serde_json::json!({}),
+    };
+    if !config["mcp_servers"].is_object() {
+        config["mcp_servers"] = serde_json::json!({});
+    }
+    if config["mcp_servers"].get(name).is_none() {
+        config["mcp_servers"][name] = server;
+    }
     Some(config)
 }
 
@@ -381,7 +421,8 @@ pub fn resolve_droid_native(cwd: Option<&Path>) -> Result<LaunchSpec> {
 /// and, for a session working in `cwd`, what its project's memory holds.
 /// `ARAKUN_AGENT_HINT=off` leaves their prompts alone; `ARAKUN_MEMORY=off` keeps
 /// memory out of them.
-pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
+/// `kind` is the agent told: the ones Arakun gives `request_secret` hear of it.
+pub fn agent_hint(kind: AgentKind, cwd: Option<&Path>) -> Option<String> {
     if std::env::var_os("ARAKUN_AGENT_HINT").is_some_and(|v| v == "off") {
         if std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "on") {
             return cwd.map(crate::host::get().memory_prompt);
@@ -392,11 +433,13 @@ pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
         .filter(|_| !std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off"))
         .map(|dir| format!("\n\n{}", (crate::host::get().memory_prompt)(dir)))
         .unwrap_or_default();
-    Some(format!("{}{memory}", base_hint()))
+    let secrets = super::secret::offered_to(kind);
+    Some(format!("{}{memory}", base_hint(secrets)))
 }
 
-fn base_hint() -> String {
-    format!("{HINT}{LAB_HINT}{HINT_END}")
+fn base_hint(secrets: bool) -> String {
+    let secrets = if secrets { super::secret::HINT } else { "" };
+    format!("{HINT}{LAB_HINT}{secrets}{HINT_END}")
 }
 
 // `arakun lab` exists only in the coderlabs build. Told to an agent in a public
@@ -418,7 +461,7 @@ const HINT: &str = "Running inside arakun. Optional `arakun` CLI commands (`arak
 const HINT_END: &str = "Use them when showing something helps the user; they are optional.";
 
 fn droid_hint_args(cwd: Option<&Path>) -> Vec<String> {
-    agent_hint(cwd)
+    agent_hint(AgentKind::Droid, cwd)
         .map(|hint| vec!["--append-system-prompt".to_string(), hint.to_string()])
         .unwrap_or_default()
 }
@@ -630,7 +673,7 @@ fn opencode_hint_env(cwd: Option<&Path>) -> Option<(String, OsString)> {
         Err(_) => serde_json::json!({}),
     };
     pin_opencode_models(&mut config);
-    let Some(hint) = agent_hint(cwd) else {
+    let Some(hint) = agent_hint(AgentKind::OpenCode, cwd) else {
         return Some((VAR.to_string(), config.to_string().into()));
     };
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1249,9 +1292,37 @@ mod tests {
 
     #[test]
     fn the_hint_names_lab_only_in_a_build_that_has_it() {
-        let hint = base_hint();
+        let hint = base_hint(false);
         assert_eq!(hint.contains("`arakun lab`"), cfg!(feature = "coderlabs"));
         assert!(hint.ends_with("they are optional."));
+    }
+
+    #[test]
+    fn the_hint_names_request_secret_only_for_agents_that_have_it() {
+        assert!(base_hint(true).contains("`request_secret`"));
+        assert!(!base_hint(false).contains("request_secret"));
+        assert!(base_hint(true).ends_with("they are optional."));
+    }
+
+    #[test]
+    fn codex_gets_the_server_beside_the_users_own() {
+        let server = serde_json::json!({"command": "arakun"});
+        let config = codex_config_with_mcp(None, "arakun", server.clone()).unwrap();
+        assert_eq!(config["mcp_servers"]["arakun"], server);
+        let theirs =
+            r#"{"developer_instructions": "be brief", "mcp_servers": {"docs": {"url": "x"}}}"#;
+        let config = codex_config_with_mcp(Some(theirs), "arakun", server.clone()).unwrap();
+        assert_eq!(config["developer_instructions"], "be brief");
+        assert_eq!(config["mcp_servers"]["docs"]["url"], "x");
+        assert_eq!(config["mcp_servers"]["arakun"], server);
+        // A server of theirs with the name stays theirs; a config that is not JSON stays theirs.
+        let named = r#"{"mcp_servers": {"arakun": {"command": "mine"}}}"#;
+        let config = codex_config_with_mcp(Some(named), "arakun", server.clone()).unwrap();
+        assert_eq!(config["mcp_servers"]["arakun"]["command"], "mine");
+        assert_eq!(
+            codex_config_with_mcp(Some("model = 1"), "arakun", server),
+            None
+        );
     }
 
     #[test]

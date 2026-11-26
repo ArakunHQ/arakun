@@ -20,6 +20,9 @@ pub struct Host {
     /// How long since the person last used the keyboard or mouse; `None` when the
     /// host can't tell (`arakun-server` has no display to ask).
     pub idle_for: fn() -> Option<Duration>,
+    /// How agents start Arakun's MCP server (`request_secret`): the program and
+    /// its arguments. `None` where there is none, and then agents are not told of it.
+    pub secret_mcp: fn() -> Option<(PathBuf, Vec<String>)>,
 }
 
 impl Default for Host {
@@ -31,6 +34,7 @@ impl Default for Host {
             shim_dir: || None,
             github_read_only: "GitHub is read-only here (ARAKUN_GITHUB=readonly): nothing was sent.",
             idle_for: || None,
+            secret_mcp: || None,
         }
     }
 }

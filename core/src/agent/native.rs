@@ -1598,7 +1598,9 @@ impl Thread {
         let cwd = self.cwd.display().to_string();
         let resume = self.session_id.clone();
         let have_history = self.suppress_replay;
-        let mut init = json!({"machineId": machine_id(), "cwd": cwd});
+        let servers = self.droid_mcp_servers();
+        let mut init =
+            json!({"machineId": machine_id(), "cwd": cwd, "mcpServers": servers.clone()});
         for (s, v) in &self.native.want {
             init[s.key()] = json!(v);
         }
@@ -1608,7 +1610,8 @@ impl Thread {
                     t.status_detail = Some("Loading the session…".into());
                     cx.notify();
                 });
-                match conn.request("droid.load_session", json!({"sessionId": id})).await {
+                let load = json!({"sessionId": id, "mcpServers": servers});
+                match conn.request("droid.load_session", load).await {
                     Ok(v) => {
                         let _ = this.update(cx, |t, cx| t.native_ready(id, &v, !have_history, cx));
                         return;
@@ -1957,6 +1960,7 @@ impl Thread {
         }
         self.set_status(ThreadStatus::Idle, cx);
         self._prompt = None;
+        self.cancel_secrets(super::super::secret::Why::TurnEnded, cx);
         cx.emit(ThreadEvent::Finished {
             stop_reason: stop.into(),
         });
@@ -2401,6 +2405,7 @@ impl Thread {
         }
         if self.permissions.is_empty()
             && self.native.questions.is_empty()
+            && self.pending_secret().is_none()
             && self.status == ThreadStatus::NeedsInput
         {
             // A subagent asking after the turn was handed back leaves it idle.

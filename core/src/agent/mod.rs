@@ -34,6 +34,7 @@ pub mod sandbox;
 pub mod saved;
 mod search;
 pub mod seats;
+pub mod secret;
 mod selection;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod session_ssh;

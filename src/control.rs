@@ -110,7 +110,8 @@ pub fn sandbox_allows(req: &Request) -> Result<(), String> {
     };
     let arg = |i: usize| req.args.get(i).map_or("", String::as_str);
     let ok = match req.cmd.as_str() {
-        "logs" | "notify" | "ls" | "rename" | "show" | "focus" => true,
+        // Asking the user for a secret shows a card; the value stays outside.
+        "logs" | "notify" | "ls" | "rename" | "show" | "focus" | "secret" => true,
         // Asking for the check is fine; setting it would run a command outside.
         "check" => arg(0).is_empty(),
         // A file:// page could show it what the sandbox hides.
@@ -648,6 +649,10 @@ fn cli(args: Vec<String>) -> Cli {
     if first == "--version" || first == "-V" {
         println!("arakun {}", env!("ARAKUN_VERSION"));
         return Cli::Exit(0);
+    }
+    // Agents start it; it talks MCP on stdio, not to a person.
+    if first == "mcp" {
+        return Cli::Exit(crate::secret_mcp::serve());
     }
     if first == "mem" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -1600,7 +1605,7 @@ pub fn send_to(socket: &Path, req: &Request) -> std::io::Result<Reply> {
 }
 
 /// `send_to`, giving up on the reply after `wait` (more than zero).
-fn send_within(socket: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
+pub(crate) fn send_within(socket: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(wait))?;
     stream.set_write_timeout(Some(wait))?;

@@ -134,6 +134,9 @@ pub struct TextInput {
     mono: bool,
     /// Draws every character as `*` and keeps the text off the clipboard.
     secret: bool,
+    /// A secret drawn as typed, for the user to check it. Still off the
+    /// clipboard, and masked while redacted mode is on.
+    revealed: bool,
     /// Draws every character as `*` while redacted mode is on, for what is
     /// private but fine to copy: a pairing link, an email.
     redacted: bool,
@@ -167,6 +170,7 @@ impl TextInput {
             placeholder: placeholder.into(),
             mono: false,
             secret: false,
+            revealed: false,
             redacted: false,
             caret: None,
             motion: Default::default(),
@@ -199,6 +203,14 @@ impl TextInput {
     pub fn secret(mut self) -> Self {
         self.secret = true;
         self
+    }
+
+    /// Shows a secret's text as typed, or masks it again.
+    pub fn set_revealed(&mut self, revealed: bool, cx: &mut Context<Self>) {
+        if self.revealed != revealed {
+            self.revealed = revealed;
+            cx.notify();
+        }
     }
 
     pub fn redacted(mut self) -> Self {
@@ -749,7 +761,9 @@ impl TextInput {
         let content = self.content.clone();
         let (display_text, text_color) = if content.is_empty() {
             (self.placeholder.clone(), theme::text_subtle())
-        } else if self.secret || (self.redacted && crate::redact::on()) {
+        } else if (self.secret && (!self.revealed || crate::redact::on()))
+            || (self.redacted && crate::redact::on())
+        {
             // Same byte length per char, so offsets into `content` still index the line.
             let masked: String = content.chars().map(|c| "*".repeat(c.len_utf8())).collect();
             (masked.into(), style.color)

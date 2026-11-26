@@ -75,6 +75,7 @@ mod prompts;
 mod repeats;
 mod running;
 mod runs_view;
+mod secret_mcp;
 mod servers;
 mod servers_view;
 mod settings_view;
@@ -157,6 +158,7 @@ fn main() {
         shim_dir: control::shim_dir,
         github_read_only: github::pr::READ_ONLY,
         idle_for: idle::idle_for,
+        secret_mcp: secret_mcp::command,
     });
     browser::handle_subprocess();
     if control::run_cli() {

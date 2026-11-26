@@ -4,11 +4,12 @@
 //! them off any UI thread.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+
+use crate::secret::Secret;
 
 pub const DEFAULT_URL: &str = "https://app.arakun.dev";
 /// Arakun's OAuth App, which [`DEFAULT_URL`] checks tokens against. Public:
@@ -109,40 +110,24 @@ pub fn same_origin(a: &str, b: &str) -> bool {
     matches!((origin(a), origin(b)), (Some(x), Some(y)) if x == y)
 }
 
-/// What stands in a `Debug` print where a secret is.
-const HIDDEN: &str = "(hidden)";
-
-/// GitHub's answer to the first step of the device flow. `Debug` leaves the
-/// device code out: with it, a poll gets the token.
-#[derive(Clone, PartialEq, Eq)]
+/// GitHub's answer to the first step of the device flow. The device code is
+/// a secret: with it, a poll gets the token.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceCode {
     pub user_code: String,
     pub verification_uri: String,
-    pub device_code: String,
+    pub device_code: Secret,
     /// How long to wait between polls.
     pub interval: Duration,
     pub expires_in: Duration,
 }
 
-impl fmt::Debug for DeviceCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DeviceCode")
-            .field("user_code", &self.user_code)
-            .field("verification_uri", &self.verification_uri)
-            .field("device_code", &HIDDEN)
-            .field("interval", &self.interval)
-            .field("expires_in", &self.expires_in)
-            .finish()
-    }
-}
-
 /// What `POST /auth/github` answers. Its `expires_at` is left out: the server
 /// extends a session that is used, and a 401 says when one has ended.
-/// `Debug` leaves the session out: it opens the account, so it must never
-/// end up in a log or a failed assertion.
-#[derive(Clone, PartialEq, Eq, Deserialize)]
+/// The session opens the account, so it is a [`Secret`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SignedIn {
-    pub session: String,
+    pub session: Secret,
     pub session_id: String,
     pub github_id: u64,
     pub login: String,
@@ -150,19 +135,6 @@ pub struct SignedIn {
     pub flags: Vec<String>,
     #[serde(default)]
     pub plan: String,
-}
-
-impl fmt::Debug for SignedIn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SignedIn")
-            .field("session", &HIDDEN)
-            .field("session_id", &self.session_id)
-            .field("github_id", &self.github_id)
-            .field("login", &self.login)
-            .field("flags", &self.flags)
-            .field("plan", &self.plan)
-            .finish()
-    }
 }
 
 /// Who is signed in, as `GET /me` answers.
@@ -301,7 +273,7 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceCode, Error> {
     Ok(DeviceCode {
         user_code: wire.user_code,
         verification_uri: wire.verification_uri,
-        device_code: wire.device_code,
+        device_code: wire.device_code.into(),
         // A zero interval would poll as fast as the caller can.
         interval: Duration::from_secs(wire.interval.max(1)),
         expires_in: Duration::from_secs(wire.expires_in),
@@ -312,7 +284,7 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceCode, Error> {
 /// `code.interval`. When GitHub asks to slow down, the extra time is
 /// remembered and waited here before each later poll, so a caller that keeps
 /// to `code.interval` keeps GitHub's pace.
-pub fn poll_device_flow(client_id: &str, code: &DeviceCode) -> Result<Option<String>, Error> {
+pub fn poll_device_flow(client_id: &str, code: &DeviceCode) -> Result<Option<Secret>, Error> {
     // The extra wait of each flow, and when its code has run out for sure.
     static EXTRA: OnceLock<Mutex<HashMap<String, (Duration, Instant)>>> = OnceLock::new();
     let extra = EXTRA.get_or_init(Default::default);
@@ -321,21 +293,21 @@ pub fn poll_device_flow(client_id: &str, code: &DeviceCode) -> Result<Option<Str
     // answer: its entry goes once its code is dead.
     forget_expired(&mut lock(), Instant::now());
     let wait = lock()
-        .get(&code.device_code)
+        .get(code.device_code.expose())
         .map(|(wait, _)| *wait)
         .unwrap_or_default();
     if !wait.is_zero() {
         std::thread::sleep(wait);
     }
-    let polled = poll_once(client_id, &code.device_code, code.interval + wait);
+    let polled = poll_once(client_id, code.device_code.expose(), code.interval + wait);
     if !matches!(polled, Ok(Poll::Wait(_)) | Err(Error::Unreachable(_))) {
-        lock().remove(&code.device_code);
+        lock().remove(code.device_code.expose());
     }
     match polled? {
         Poll::Wait(pace) => {
             if let Some(more) = pace.checked_sub(code.interval).filter(|d| *d > wait) {
                 let dead = Instant::now() + code.expires_in;
-                lock().insert(code.device_code.clone(), (more, dead));
+                lock().insert(code.device_code.expose().to_string(), (more, dead));
             }
             Ok(None)
         }
@@ -670,50 +642,26 @@ fn linear_refusal(status: u16, body: &str) -> Error {
 }
 
 /// One answer to a poll of the token endpoint: a token or an error code.
-/// `Debug` leaves the token out.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct TokenAnswer {
-    pub access_token: Option<String>,
+    pub access_token: Option<Secret>,
     pub error: Option<String>,
     pub error_description: Option<String>,
     /// With `slow_down`, the interval GitHub wants from now on, in seconds.
     pub interval: Option<u64>,
 }
 
-impl fmt::Debug for TokenAnswer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TokenAnswer")
-            .field("access_token", &self.access_token.as_ref().map(|_| HIDDEN))
-            .field("error", &self.error)
-            .field("error_description", &self.error_description)
-            .field("interval", &self.interval)
-            .finish()
-    }
-}
-
-/// What to do after a poll. `Debug` leaves the token out.
-#[derive(PartialEq, Eq)]
+/// What to do after a poll.
+#[derive(Debug, PartialEq, Eq)]
 pub enum Poll {
     /// Ask again after this long, and keep that pace.
     Wait(Duration),
-    Token(String),
+    Token(Secret),
     /// The code ran out before the user entered it.
     Expired,
     /// The user turned the request down on GitHub.
     Denied,
     Failed(String),
-}
-
-impl fmt::Debug for Poll {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Poll::Wait(pace) => f.debug_tuple("Wait").field(pace).finish(),
-            Poll::Token(_) => f.debug_tuple("Token").field(&HIDDEN).finish(),
-            Poll::Expired => f.write_str("Expired"),
-            Poll::Denied => f.write_str("Denied"),
-            Poll::Failed(why) => f.debug_tuple("Failed").field(why).finish(),
-        }
-    }
 }
 
 /// One poll of GitHub's token endpoint, polling every `interval` so far.
@@ -735,8 +683,8 @@ pub fn poll_once(client_id: &str, device_code: &str, interval: Duration) -> Resu
 /// Decides the next step of the device flow from GitHub's answer, polling every
 /// `interval` so far. Kept apart from the network so it can be tested.
 pub fn next_poll(answer: &TokenAnswer, interval: Duration) -> Poll {
-    if let Some(token) = answer.access_token.as_deref().filter(|t| !t.is_empty()) {
-        return Poll::Token(token.to_string());
+    if let Some(token) = answer.access_token.as_ref().filter(|t| !t.is_empty()) {
+        return Poll::Token(token.clone());
     }
     match answer.error.as_deref() {
         Some("authorization_pending") => Poll::Wait(interval),

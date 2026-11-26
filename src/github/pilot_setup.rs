@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::board::BoardProblem;
 use super::pilot::{self, Config};
+use crate::secret::Secret;
 
 /// What the user typed, before it is checked. An empty token keeps the one
 /// already saved for the same address, so the admin token can be added
@@ -15,9 +16,9 @@ use super::pilot::{self, Config};
 #[derive(Clone, Debug, Default)]
 pub struct Draft {
     pub url: String,
-    pub token: String,
+    pub token: Secret,
     /// `None` keeps the saved one (same address), `Some("")` drops it.
-    pub admin_token: Option<String>,
+    pub admin_token: Option<Secret>,
 }
 
 /// The settings `draft` makes, with `saved` filling the gaps, or what is
@@ -31,17 +32,17 @@ pub fn settings(draft: &Draft, saved: Option<&Config>) -> Result<Config, String>
         return Err(problem.into());
     }
     let same = saved.filter(|s| s.url == url);
-    let token = match draft.token.trim() {
+    let token = match draft.token.expose().trim() {
         "" => same.map(|s| s.token.clone()).unwrap_or_default(),
-        t => t.to_string(),
+        t => Secret::from(t),
     };
     if token.is_empty() {
         return Err("Type the token: the Worker refuses reads without it.".into());
     }
-    let admin_token = match draft.admin_token.as_deref().map(str::trim) {
+    let admin_token = match draft.admin_token.as_ref().map(|t| t.expose().trim()) {
         None => same.and_then(|s| s.admin_token.clone()),
         Some("") => None,
-        Some(t) => Some(t.to_string()),
+        Some(t) => Some(Secret::from(t)),
     };
     let json = serde_json::json!({ "url": url, "token": token, "admin_token": admin_token });
     // The same rules as reading the file, so what is saved is always read back.
@@ -124,11 +125,11 @@ fn save_at(
     // The keyring first: a file with the address and no token is broken,
     // and a file left as it was still works.
     vault
-        .set(&accounts.token, pilot::TOKEN_LABEL, &cfg.token)
+        .set(&accounts.token, pilot::TOKEN_LABEL, cfg.token.expose())
         .map_err(refused)?;
     match &cfg.admin_token {
         Some(admin) => vault
-            .set(&accounts.admin, pilot::ADMIN_LABEL, admin)
+            .set(&accounts.admin, pilot::ADMIN_LABEL, admin.expose())
             .map_err(refused)?,
         None => vault.forget(&accounts.admin),
     }
@@ -221,7 +222,9 @@ pub fn cli(args: &[String]) -> i32 {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ConnectArgs {
     url: String,
+    // Not a secret: only ever `-`, which reads the token from stdin.
     token: Option<String>,
+    // Not a secret: as `token`.
     admin_token: Option<String>,
     no_admin: bool,
     no_check: bool,
@@ -325,8 +328,8 @@ fn connect_cli(a: ConnectArgs) -> Result<String, String> {
     };
     let draft = Draft {
         url: a.url,
-        token: token.unwrap_or_default(),
-        admin_token: admin,
+        token: token.map(Secret::from).unwrap_or_default(),
+        admin_token: admin.map(Secret::from),
     };
     // A broken file keeps nothing: connecting again is how it gets fixed.
     let cfg = settings(&draft, pilot::read_config().ok().flatten().as_ref())?;
@@ -447,8 +450,8 @@ mod tests {
         let dropped = settings(&draft("https://p.dev", "", Some("")), Some(&s)).unwrap();
         assert_eq!(dropped.admin_token, None);
         let new = settings(&draft("https://p.dev", " t ", Some(" a2 ")), Some(&s)).unwrap();
-        assert_eq!(new.token, "t");
-        assert_eq!(new.admin_token.as_deref(), Some("a2"));
+        assert_eq!(new.token.expose(), "t");
+        assert_eq!(new.admin_token.as_ref().map(Secret::expose), Some("a2"));
     }
 
     #[test]

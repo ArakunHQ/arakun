@@ -25,6 +25,7 @@ pub struct Place {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Pick {
     pub agent: AgentKind,
+    // Not a secret: the setting's name.
     pub key: String,
     pub value: String,
 }

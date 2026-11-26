@@ -167,12 +167,12 @@ impl PilotDialog {
         let admin = self.admin.read(cx).text().trim().to_string();
         Draft {
             url: self.url.read(cx).text().to_string(),
-            token: self.token.read(cx).text().to_string(),
+            token: self.token.read(cx).text().to_string().into(),
             // Typed wins; else empty keeps the saved one, unless it was removed.
             admin_token: if !admin.is_empty() {
-                Some(admin)
+                Some(admin.into())
             } else if self.drop_admin {
-                Some(String::new())
+                Some(Default::default())
             } else {
                 None
             },

@@ -29,6 +29,7 @@ use super::rpc::{RpcError, unix_now, uuid_v4};
 use super::thread::{ConfigOption, Setting, parse_config};
 use crate::headless::broker;
 use crate::headless::sandbox::Jail;
+use crate::secret::Secret;
 
 /// Which API a model is called through.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -187,7 +188,7 @@ pub fn draft_options(picked: &[(Setting, String)]) -> Vec<ConfigOption> {
 #[derive(Debug, PartialEq)]
 pub struct Credentials {
     pub account: String,
-    pub token: String,
+    pub token: Secret,
 }
 
 fn xdg(var: &str, fallback: &str) -> PathBuf {
@@ -266,7 +267,10 @@ fn pick_credentials(
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         })?;
-    Some(Credentials { account, token })
+    Some(Credentials {
+        account,
+        token: token.into(),
+    })
 }
 
 /// Where the model calls go: an OpenAI-compatible chat completions URL, or Anthropic's
@@ -275,7 +279,7 @@ fn pick_credentials(
 pub struct Endpoint {
     pub url: String,
     /// Sent as `Authorization: Bearer` (as `x-api-key` to Anthropic), when there is one.
-    pub token: Option<String>,
+    pub token: Option<Secret>,
     pub api: Api,
 }
 
@@ -292,7 +296,7 @@ pub fn endpoint() -> Result<Endpoint, String> {
     if let Some(url) = env("ARAKUN_WORKERS_AI_URL") {
         return Ok(Endpoint {
             url,
-            token: env("ARAKUN_WORKERS_AI_KEY"),
+            token: env("ARAKUN_WORKERS_AI_KEY").map(Secret::from),
             api: Api::Chat,
         });
     }
@@ -312,7 +316,7 @@ pub fn endpoint_for(model: &Model) -> Result<Endpoint, String> {
         Api::Chat => endpoint(),
         Api::Anthropic => anthropic::endpoint().map(|(url, key)| Endpoint {
             url,
-            token: Some(key),
+            token: Some(key.into()),
             api: Api::Anthropic,
         }),
     }
@@ -570,7 +574,7 @@ pub fn ask(model: &str, prompt: &str, timeout: Duration) -> Result<String, Strin
         .uri(&creds.url)
         .header("Content-Type", "application/json");
     if let Some(token) = &creds.token {
-        builder = builder.header("Authorization", format!("Bearer {token}"));
+        builder = builder.header("Authorization", format!("Bearer {}", token.expose()));
     }
     let request = builder.body(body.to_string()).map_err(|e| e.to_string())?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -2144,7 +2148,7 @@ impl Agent {
             let request = ureq::http::Request::builder()
                 .method("POST")
                 .uri(&creds.url)
-                .header("x-api-key", creds.token.as_deref().unwrap_or(""))
+                .header("x-api-key", creds.token.as_ref().map_or("", Secret::expose))
                 .header("anthropic-version", anthropic::VERSION)
                 .header("anthropic-beta", anthropic::BETA)
                 .header("Content-Type", "application/json")
@@ -2237,7 +2241,7 @@ impl Agent {
             .uri(&url)
             .header("Content-Type", "application/json");
         if let Some(token) = &creds.token {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
+            builder = builder.header("Authorization", format!("Bearer {}", token.expose()));
         }
         let request = builder.body(body.to_string()).map_err(|e| e.to_string())?;
         let mut response = http()
@@ -2979,11 +2983,11 @@ impl Agent {
             .uri(&creds.url);
         match (&creds.token, creds.api) {
             (Some(token), Api::Chat) => {
-                request = request.header("Authorization", format!("Bearer {token}"))
+                request = request.header("Authorization", format!("Bearer {}", token.expose()))
             }
             (token, Api::Anthropic) => {
                 request = request
-                    .header("x-api-key", token.as_deref().unwrap_or(""))
+                    .header("x-api-key", token.as_ref().map_or("", Secret::expose))
                     .header("anthropic-version", anthropic::VERSION)
                     .header("anthropic-beta", anthropic::BETA)
             }

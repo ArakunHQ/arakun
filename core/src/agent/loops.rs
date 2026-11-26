@@ -26,6 +26,7 @@ enum Pattern {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stuck {
     /// Names the pattern, so "Keep going" silences it for the rest of the turn.
+    // Not a secret: the pattern's name.
     pub key: String,
     pattern: Pattern,
     subject: String,

@@ -43,6 +43,7 @@ use sha2::Digest as _;
 use tungstenite::{Message, WebSocket};
 
 use crate::phone_page::Page;
+use crate::secret::Secret;
 
 pub const DEFAULT_PORT: u16 = 7474;
 /// How long a pairing code is good for.
@@ -163,6 +164,7 @@ pub enum ClientMsg {
     /// Changes one of a session's settings (`key` as in `Start`).
     Setting {
         session: String,
+        // Not a secret: the setting's name.
         key: String,
         value: String,
     },
@@ -449,6 +451,7 @@ pub struct Device {
     pub name: String,
     /// Empty for a device the relay brought in: it has no token, and an
     /// empty hash never matches one (`device_for`).
+    // Not a secret: a hash, which opens nothing.
     pub token_hash: String,
     /// What the relay used to check for a phone paired through it. The relay
     /// admits devices by account now; this is only read from old files and
@@ -590,11 +593,11 @@ pub struct Settings {
     /// (`vapid`); this holds it only until it is moved there, or while the
     /// keyring will not take it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    vapid: Option<String>,
+    vapid: Option<Secret>,
     /// Who this computer is to the relay (PKCS#8, base64url), as a file from
     /// before the keyring kept it, until it is moved there (`identity`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    identity: Option<String>,
+    identity: Option<Secret>,
     /// The public half of the relay identity (the raw point, base64url). The
     /// label derives from it, so `relay_label` needs no keyring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -670,7 +673,12 @@ impl Settings {
     /// `identity`, makes none and reads no keyring: the label comes from the
     /// public half in the file.
     pub fn relay_label(&self) -> Option<String> {
-        if let Some(id) = self.identity.as_deref().and_then(identity_from) {
+        if let Some(id) = self
+            .identity
+            .as_ref()
+            .map(Secret::expose)
+            .and_then(identity_from)
+        {
             return Some(id.label());
         }
         let public = base64::Engine::decode(&B64, self.identity_public.as_ref()?).ok()?;
@@ -887,7 +895,7 @@ static KEYS: Mutex<()> = Mutex::new(());
 /// keyring that cannot say (`Err`) never leads to a new key: a locked one
 /// must not look like a first run.
 fn private_key<T>(
-    file: &mut Option<String>,
+    file: &mut Option<Secret>,
     vault: &impl Vault,
     account: &str,
     what: &str,
@@ -896,10 +904,10 @@ fn private_key<T>(
 ) -> Result<T, String> {
     let _held = KEYS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(kept) = file.clone()
-        && let Some(key) = parse(&kept)
+        && let Some(key) = parse(kept.expose())
     {
         if vault.try_move(account) {
-            match vault.set(account, &label(what), &kept) {
+            match vault.set(account, &label(what), kept.expose()) {
                 Ok(()) => *file = None,
                 Err(e) => eprintln!(
                     "arakun: the keyring did not take the {what}, so it stays in the phone settings: {e}"
@@ -2660,7 +2668,10 @@ mod tests {
         let (v, changed) = settings.vapid_in(&ring, "vapid").unwrap();
         assert_eq!(v.public_key(), vapid.public_key());
         assert!(!changed);
-        assert_eq!(settings.identity.as_deref(), Some(id.pkcs8_b64().as_str()));
+        assert_eq!(
+            settings.identity.as_ref().map(Secret::expose),
+            Some(id.pkcs8_b64().as_str())
+        );
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains(&id.pkcs8_b64()), "still saved, so not lost");
         // Asked once a run: the next call uses the file's copy without asking.

@@ -20,32 +20,26 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// What a session signs its calls with. Debug never shows the secret.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+use crate::secret::Secret;
+
+/// What a session signs its calls with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
     /// A personal API key (`lin_api_…`) pasted in the tab. The key is in the
     /// keyring; `key` holds it only as a file from before had it, until it
     /// is moved there.
     ApiKey {
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        key: String,
+        #[serde(default, skip_serializing_if = "Secret::is_empty")]
+        key: Secret,
     },
-}
-
-impl std::fmt::Debug for Credential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Credential::ApiKey { .. } => f.write_str("ApiKey(…)"),
-        }
-    }
 }
 
 impl Credential {
     /// A key that is not in the keyring yet.
     fn in_file(&self) -> Option<&str> {
         match self {
-            Credential::ApiKey { key } => Some(key.as_str()).filter(|k| !k.is_empty()),
+            Credential::ApiKey { key } => Some(key.expose()).filter(|k| !k.is_empty()),
         }
     }
 }
@@ -95,7 +89,9 @@ fn move_to_keyring(id: &str, key: &str) {
     let mut moved = false;
     for s in store.sessions.iter_mut() {
         if s.id == id && s.credential.in_file() == Some(key) {
-            s.credential = Credential::ApiKey { key: String::new() };
+            s.credential = Credential::ApiKey {
+                key: Secret::default(),
+            };
             moved = true;
         }
     }
@@ -131,6 +127,7 @@ pub struct Session {
     pub email: String,
     pub workspace_id: String,
     pub workspace: String,
+    // Not a secret: the workspace's name in its URL.
     pub url_key: String,
     pub credential: Credential,
     pub added_at: u64,
@@ -193,7 +190,9 @@ pub fn save_session(mut s: Session) -> Result<(), String> {
     if let Some(key) = s.credential.in_file() {
         crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, key)
             .map_err(|e| format!("The keyring could not keep the Linear key: {e}"))?;
-        s.credential = Credential::ApiKey { key: String::new() };
+        s.credential = Credential::ApiKey {
+            key: Secret::default(),
+        };
     }
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
@@ -359,9 +358,7 @@ pub fn sign_in_with_key(key: &str) -> Result<Session, ApiError> {
     if key.is_empty() {
         return Err(ApiError::Failed("Paste a Linear API key.".into()));
     }
-    let credential = Credential::ApiKey {
-        key: key.to_string(),
-    };
+    let credential = Credential::ApiKey { key: key.into() };
     let data = call(
         key,
         "query { viewer { id name email organization { id name urlKey } } }",
@@ -495,7 +492,9 @@ mod tests {
     #[test]
     fn the_file_keeps_no_key_once_it_is_in_the_keyring() {
         let mut s = session("w1#u1", "Rik");
-        s.credential = Credential::ApiKey { key: String::new() };
+        s.credential = Credential::ApiKey {
+            key: Secret::default(),
+        };
         let json = serde_json::to_string(&s).unwrap();
         assert!(
             json.contains(r#""credential":{"kind":"api_key"}"#),

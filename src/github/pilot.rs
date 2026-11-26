@@ -20,6 +20,7 @@ use gpui::{AppContext as _, Context, EventEmitter, Task};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::pr::{ItemKind, ItemRef};
+use crate::secret::Secret;
 
 const POLL: Duration = Duration::from_secs(60);
 /// The read's gap while the window is in the background, as the GitHub
@@ -66,37 +67,23 @@ fn book_file() -> PathBuf {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Config {
     pub url: String,
-    pub token: String,
+    pub token: Secret,
     /// Only `POST /tasks` takes it: reading items never needs it.
     #[serde(default)]
-    pub admin_token: Option<String>,
-}
-
-// The tokens never reach a log, not even through `{:?}`.
-impl std::fmt::Debug for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config")
-            .field("url", &self.url)
-            .field("token", &"<hidden>")
-            .field(
-                "admin_token",
-                &self.admin_token.as_ref().map(|_| "<hidden>"),
-            )
-            .finish()
-    }
+    pub admin_token: Option<Secret>,
 }
 
 /// The settings in `bytes`; None when they are missing a part.
 pub fn parse_config(bytes: &[u8]) -> Option<Config> {
     let c: Config = serde_json::from_slice(bytes).ok()?;
     let url = c.url.trim().trim_end_matches('/').to_string();
-    let token = c.token.trim().to_string();
+    let token = Secret::from(c.token.expose().trim());
     let admin_token = c
         .admin_token
-        .map(|t| t.trim().to_string())
+        .map(|t| Secret::from(t.expose().trim()))
         .filter(|t| !t.is_empty());
     let web = url.starts_with("https://") || local_http(&url);
     (web && !token.is_empty()).then_some(Config {
@@ -178,8 +165,8 @@ fn read_config_at(
     };
     Ok(Some(Config {
         url,
-        token,
-        admin_token,
+        token: token.into(),
+        admin_token: admin_token.map(Secret::from),
     }))
 }
 
@@ -760,9 +747,15 @@ fn post_json(
 /// Never the token in an error: only the address.
 pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>), String> {
     let url = format!("{}{path}", cfg.url);
-    let reply =
-        crate::http::json_call(&agent(&cfg.url), "GET", &url, Some(&cfg.token), None, limit)
-            .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
+    let reply = crate::http::json_call(
+        &agent(&cfg.url),
+        "GET",
+        &url,
+        Some(cfg.token.expose()),
+        None,
+        limit,
+    )
+    .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
     Ok((reply.status, reply.bytes))
 }
 
@@ -782,7 +775,7 @@ pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
         &agent(&cfg.url),
         "POST",
         &url,
-        Some(&cfg.token),
+        Some(cfg.token.expose()),
         None,
         64 * 1024,
     )
@@ -832,7 +825,7 @@ pub fn answer_body(a: &Answer) -> serde_json::Value {
 /// Hands the user's answer to the agent, which picks the job up again.
 pub fn send_answer(cfg: &Config, id: &str, a: &Answer) -> Result<(), String> {
     let path = format!("/items/{}/answer", encode(id));
-    post_json(&cfg.url, &path, &cfg.token, &answer_body(a), false).map(|_| ())
+    post_json(&cfg.url, &path, cfg.token.expose(), &answer_body(a), false).map(|_| ())
 }
 
 /// Where a task from the palette lands.
@@ -886,7 +879,11 @@ pub const NO_ADMIN: &str =
 /// Hands the agent new work. Ok with the task's id ("" when the Worker
 /// named none); its result comes back later as an item.
 pub fn send_task(cfg: &Config, t: &TaskRequest) -> Result<String, String> {
-    let admin = cfg.admin_token.as_deref().ok_or(NO_ADMIN)?;
+    let admin = cfg
+        .admin_token
+        .as_ref()
+        .map(Secret::expose)
+        .ok_or(NO_ADMIN)?;
     let bytes = post_json(&cfg.url, "/tasks", admin, &task_body(t), true)?;
     Ok(parse_task_id(&bytes).unwrap_or_default())
 }
@@ -1628,7 +1625,7 @@ pub(super) mod tests {
         let c =
             parse_config(br#"{"url": "https://pilot.example.dev/", "token": " t0k "}"#).unwrap();
         assert_eq!(
-            (c.url.as_str(), c.token.as_str()),
+            (c.url.as_str(), c.token.expose()),
             ("https://pilot.example.dev", "t0k")
         );
         assert!(!format!("{c:?}").contains("t0k"));
@@ -1636,7 +1633,7 @@ pub(super) mod tests {
         let a =
             parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": " s3cr3t "}"#)
                 .unwrap();
-        assert_eq!(a.admin_token.as_deref(), Some("s3cr3t"));
+        assert_eq!(a.admin_token.as_ref().map(Secret::expose), Some("s3cr3t"));
         assert!(!format!("{a:?}").contains("s3cr3t"));
         // An empty one is none.
         let e = parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": ""}"#);
@@ -1866,10 +1863,10 @@ pub(super) mod tests {
         );
         let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
         assert_eq!(
-            (cfg.url.as_str(), cfg.token.as_str()),
+            (cfg.url.as_str(), cfg.token.expose()),
             ("https://p.dev", "t")
         );
-        assert_eq!(cfg.admin_token.as_deref(), Some("a"));
+        assert_eq!(cfg.admin_token.as_ref().map(Secret::expose), Some("a"));
         assert_eq!(ring.entries.borrow()["arakun-pilot-token"], "t");
         assert_eq!(ring.entries.borrow()["arakun-pilot-admin-token"], "a");
         let left: serde_json::Value =
@@ -1900,7 +1897,7 @@ pub(super) mod tests {
         let both = r#"{"url": "https://p.dev", "token": "t", "admin_token": "a"}"#;
         write(&path, both);
         let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
-        assert_eq!(cfg.token, "t");
+        assert_eq!(cfg.token.expose(), "t");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), both);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
@@ -1913,7 +1910,7 @@ pub(super) mod tests {
         assert!(e.contains("no token"), "{e}");
         ring.put("arakun-pilot-token", "t");
         let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
-        assert_eq!((cfg.token.as_str(), cfg.admin_token), ("t", None));
+        assert_eq!((cfg.token.expose(), cfg.admin_token), ("t", None));
         let locked = Fake {
             locked: true,
             ..Fake::default()

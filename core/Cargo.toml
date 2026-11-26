@@ -26,6 +26,8 @@ ignore.workspace = true
 unicode-segmentation.workspace = true
 # secrets in text, one detector for every part of the app (src/secrets.rs)
 regex.workspace = true
+# a secret's memory is wiped when it is dropped (src/secret.rs)
+zeroize = "1"
 # terminal
 alacritty_terminal = { version = "0.26", default-features = false }
 # the server's terminals wait on their PTYs as alacritty does (src/server/pty.rs)

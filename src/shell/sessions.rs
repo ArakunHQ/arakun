@@ -565,7 +565,7 @@ impl Shell {
                 if let Some(env) = self.find_env_mut(env_path) {
                     env.draft.set(prompt.clone());
                 }
-                window.focus(&self.composer_focus, cx);
+                window.focus(&self.composer.focus, cx);
                 self.save(cx);
                 cx.notify();
             }
@@ -2094,7 +2094,7 @@ impl Shell {
         else {
             return;
         };
-        self.composer_flash = Some(format!("{}: {}", s.label(), next.name).into());
+        self.composer.flash = Some(format!("{}: {}", s.label(), next.name).into());
         let id = next.id.clone();
         self.choose_setting(s, &id, cx);
     }

@@ -9,7 +9,8 @@ impl Shell {
         let project = self.project().name.clone();
         let face = self.home_face.read(cx);
         let caret = self
-            .composer_layout
+            .composer
+            .layout
             .borrow()
             .as_ref()
             .and_then(|l| l.position_for_index(self.env().draft.head()));

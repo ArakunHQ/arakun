@@ -116,7 +116,7 @@ impl Shell {
         if !mentions.is_empty() {
             env.draft.insert_word(&format!("{} ", mentions.join(" ")));
         }
-        self.composer_reveal.set(true);
+        self.composer.reveal.set(true);
     }
 
     /// The images waiting in the composer, as thumbnails: a click shows one

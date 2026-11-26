@@ -39,6 +39,75 @@ pub(super) struct CompletionItem {
     prompt: Option<usize>,
 }
 
+/// The composer's own state: its focus, caret, scroll, history and open
+/// completion. The draft itself stays on each environment.
+pub(super) struct Composer {
+    pub focus: FocusHandle,
+    /// The composer's text as last painted, for clicks, Up/Down and the IME.
+    pub layout: Rc<RefCell<Option<TextLayout>>>,
+    pub scroll: ScrollHandle,
+    /// Scroll the composer to its caret on the next paint; set by edits and
+    /// caret moves, not by the wheel.
+    pub reveal: Rc<Cell<bool>>,
+    /// A mouse selection is being dragged in the composer.
+    pub selecting: bool,
+    /// Where Up/Down aim, so the caret keeps its column across shorter lines.
+    pub goal_x: Option<Pixels>,
+    pub history: crate::history::History,
+    /// The history entry Up/Down brought into the composer.
+    pub history_at: Option<usize>,
+    /// Saves the state shortly after the draft stops changing.
+    pub draft_save: Option<Task<()>>,
+    /// The composer's caret, shared with the canvas that paints it.
+    pub caret: Rc<RefCell<crate::caret::Caret>>,
+    /// Open `@`/`/` completion of the composer.
+    pub completion: Option<Completion>,
+    /// `git ls-files` of an environment, cached briefly for `@` completion.
+    pub file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
+    /// The environment whose file index is being read, if any.
+    pub file_index_loading: Option<std::path::PathBuf>,
+    /// The skills an environment's agents read, cached briefly for `/` completion.
+    pub skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
+    pub skill_index_loading: bool,
+    /// A one-line note under the composer (a prompt was saved, ...), until the next key.
+    pub flash: Option<SharedString>,
+    /// Focusing the composer claims its tab; leaving it lets the tab go.
+    _focus: [Subscription; 2],
+}
+
+impl Composer {
+    pub fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
+        let focus = cx.focus_handle();
+        let subs = [
+            cx.on_focus(&focus, window, |this, window, cx| {
+                this.claim_composer_tab(window, cx)
+            }),
+            cx.on_blur(&focus, window, |this, window, cx| {
+                this.spy_from_composer(window, cx)
+            }),
+        ];
+        Self {
+            focus,
+            layout: Rc::default(),
+            scroll: ScrollHandle::new(),
+            reveal: Rc::default(),
+            selecting: false,
+            goal_x: None,
+            history: crate::history::History::load(),
+            history_at: None,
+            draft_save: None,
+            caret: Default::default(),
+            completion: None,
+            file_index: None,
+            file_index_loading: None,
+            skill_index: None,
+            skill_index_loading: false,
+            flash: None,
+            _focus: subs,
+        }
+    }
+}
+
 impl Shell {
     fn composer_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
@@ -49,7 +118,7 @@ impl Shell {
             Accept,
             Close,
         }
-        let prompt_key = match &self.completion {
+        let prompt_key = match &self.composer.completion {
             Some(c) if c.prompts && k.modifiers.alt && !k.modifiers.control => match k.key.as_str()
             {
                 "p" => c
@@ -72,18 +141,18 @@ impl Shell {
                 self.saved_prompts[i].pinned = !self.saved_prompts[i].pinned;
             } else {
                 let gone = self.saved_prompts.remove(i);
-                self.composer_flash = Some(format!("Deleted !{}", gone.name).into());
+                self.composer.flash = Some(format!("Deleted !{}", gone.name).into());
             }
             crate::prompts::store(&self.saved_prompts);
-            let selected = self.completion.as_ref().map_or(0, |c| c.selected);
+            let selected = self.composer.completion.as_ref().map_or(0, |c| c.selected);
             self.update_completion(cx);
-            if let Some(c) = &mut self.completion {
+            if let Some(c) = &mut self.composer.completion {
                 c.selected = selected.min(c.items.len().saturating_sub(1));
             }
             cx.notify();
             return;
         }
-        let comp_key = if self.completion.is_some() {
+        let comp_key = if self.composer.completion.is_some() {
             match k.key.as_str() {
                 "up" => Some(CompKey::Up),
                 "down" => Some(CompKey::Down),
@@ -102,7 +171,7 @@ impl Shell {
             cx.stop_propagation();
             match action {
                 CompKey::Up => {
-                    if let Some(c) = &mut self.completion {
+                    if let Some(c) = &mut self.composer.completion {
                         c.selected = c
                             .selected
                             .checked_sub(1)
@@ -110,12 +179,12 @@ impl Shell {
                     }
                 }
                 CompKey::Down => {
-                    if let Some(c) = &mut self.completion {
+                    if let Some(c) = &mut self.composer.completion {
                         c.selected = (c.selected + 1) % c.items.len().max(1);
                     }
                 }
                 CompKey::Accept => self.accept_completion(cx),
-                CompKey::Close => self.completion = None,
+                CompKey::Close => self.composer.completion = None,
             }
             cx.notify();
             return;
@@ -130,12 +199,12 @@ impl Shell {
             cx.notify();
             return;
         }
-        if self.composer_flash.take().is_some() {
+        if self.composer.flash.take().is_some() {
             cx.notify();
         }
         if ctrl_only && !m.shift && k.key == "enter" {
             cx.stop_propagation();
-            self.completion = None;
+            self.composer.completion = None;
             self.submit_with(true, window, cx);
             return;
         }
@@ -207,13 +276,13 @@ impl Shell {
             (_, key) => (key, crate::platform::word_key(m)),
         };
         if !matches!(key, "up" | "down") {
-            self.composer_goal_x = None;
+            self.composer.goal_x = None;
         }
         let extend = m.shift;
         if matches!(key, "up" | "down") && !word && !extend && self.recall(key == "up") {
             cx.stop_propagation();
             self.composer_changed(cx);
-            self.completion = None;
+            self.composer.completion = None;
             cx.notify();
             return;
         }
@@ -264,8 +333,8 @@ impl Shell {
             });
         }
         self.hold_caret();
-        self.composer_reveal.set(true);
-        self.draft_save = Some(cx.spawn(async move |this, cx| {
+        self.composer.reveal.set(true);
+        self.composer.draft_save = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DRAFT_SAVE_DELAY).await;
             let _ = this.update(cx, |this, cx| this.save(cx));
         }));
@@ -273,7 +342,7 @@ impl Shell {
 
     /// Input shows the caret and keeps it still until the next blink.
     fn hold_caret(&mut self) {
-        self.caret.borrow_mut().hold();
+        self.composer.caret.borrow_mut().hold();
     }
 
     /// Up in an empty composer brings back the last prompt sent, and more Ups
@@ -283,8 +352,9 @@ impl Shell {
     fn recall(&mut self, up: bool) -> bool {
         let draft = &self.env().draft;
         let showing = self
+            .composer
             .history_at
-            .filter(|&i| self.prompt_history.get(i) == Some(&**draft));
+            .filter(|&i| self.composer.history.get(i) == Some(&**draft));
         let (before, after) = draft.split_at(draft.head());
         let edge = if up {
             !before.contains('\n')
@@ -292,17 +362,17 @@ impl Shell {
             !after.contains('\n')
         };
         let next = match showing {
-            None if up && draft.is_empty() => match self.prompt_history.older(None) {
+            None if up && draft.is_empty() => match self.composer.history.older(None) {
                 Some(i) => Some(i),
                 None => return false,
             },
-            Some(i) if edge && up => Some(self.prompt_history.older(Some(i)).unwrap_or(i)),
-            Some(i) if edge => self.prompt_history.newer(i),
+            Some(i) if edge && up => Some(self.composer.history.older(Some(i)).unwrap_or(i)),
+            Some(i) if edge => self.composer.history.newer(i),
             _ => return false,
         };
-        self.history_at = next;
+        self.composer.history_at = next;
         let text = next
-            .and_then(|i| self.prompt_history.get(i))
+            .and_then(|i| self.composer.history.get(i))
             .unwrap_or("")
             .to_string();
         self.env_mut().draft.set(text);
@@ -312,14 +382,14 @@ impl Shell {
     /// Up/Down in the composer: the line above or below at the same column,
     /// or the start or end of the draft past its first or last line.
     fn composer_vertical(&mut self, up: bool, extend: bool) {
-        let layout = self.composer_layout.borrow().clone();
+        let layout = self.composer.layout.borrow().clone();
         let head = self.env().draft.head();
         let target = match layout
             .as_ref()
             .and_then(|l| Some((l, l.position_for_index(head)?)))
         {
             Some((layout, at)) => {
-                let x = *self.composer_goal_x.get_or_insert(at.x);
+                let x = *self.composer.goal_x.get_or_insert(at.x);
                 let line = layout.line_height();
                 let y = if up {
                     at.y - line / 2.
@@ -345,7 +415,7 @@ impl Shell {
 
     /// The draft index under `position`, from the text as last painted.
     fn composer_index_at(&self, position: gpui::Point<Pixels>) -> Option<usize> {
-        let layout = self.composer_layout.borrow().clone()?;
+        let layout = self.composer.layout.borrow().clone()?;
         Some(layout.index_for_position(position).unwrap_or_else(|ix| ix))
     }
 
@@ -358,7 +428,7 @@ impl Shell {
         shift: bool,
         cx: &mut Context<Self>,
     ) {
-        self.composer_goal_x = None;
+        self.composer.goal_x = None;
         let Some(ix) = self.composer_index_at(position) else {
             return;
         };
@@ -369,7 +439,7 @@ impl Shell {
             2 => draft.select(draft.word_at(ix)),
             _ => draft.select(draft.line_at(ix)),
         }
-        self.composer_selecting = true;
+        self.composer.selecting = true;
         self.update_completion(cx);
         cx.notify();
     }
@@ -383,7 +453,7 @@ impl Shell {
     }
 
     fn composer_release(&mut self, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.composer_selecting) {
+        if std::mem::take(&mut self.composer.selecting) {
             self.composer_to_primary(cx);
             self.update_completion(cx);
         }
@@ -406,7 +476,7 @@ impl Shell {
     /// background on the first ask (or once stale).
     fn file_index(&mut self, cx: &mut Context<Self>) -> Option<Arc<Vec<String>>> {
         let env_path = self.env().path.clone();
-        if let Some((path, at, files)) = &self.file_index
+        if let Some((path, at, files)) = &self.composer.file_index
             && *path == env_path
             && at.elapsed() < FILE_INDEX_TTL
         {
@@ -415,15 +485,15 @@ impl Shell {
         // A server's environment: its files are listed over there, and
         // the answer fills the index (`server_files_message`).
         if crate::model::Remote::is_path(&env_path) {
-            if self.file_index_loading.as_ref() != Some(&env_path)
+            if self.composer.file_index_loading.as_ref() != Some(&env_path)
                 && self.server_list_files(&env_path)
             {
-                self.file_index_loading = Some(env_path);
+                self.composer.file_index_loading = Some(env_path);
             }
             return None;
         }
-        if self.file_index_loading.as_ref() != Some(&env_path) {
-            self.file_index_loading = Some(env_path.clone());
+        if self.composer.file_index_loading.as_ref() != Some(&env_path) {
+            self.composer.file_index_loading = Some(env_path.clone());
             cx.spawn(async move |this, cx| {
                 let p = env_path.clone();
                 let files = cx
@@ -432,10 +502,11 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.file_index_loading.as_ref() == Some(&env_path) {
-                        this.file_index_loading = None;
+                    if this.composer.file_index_loading.as_ref() == Some(&env_path) {
+                        this.composer.file_index_loading = None;
                     }
-                    this.file_index = Some((env_path.clone(), Instant::now(), Arc::new(files)));
+                    this.composer.file_index =
+                        Some((env_path.clone(), Instant::now(), Arc::new(files)));
                     // The popup may have been waiting for the index.
                     this.update_completion(cx);
                 });
@@ -456,14 +527,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<Arc<Vec<crate::agent::Choice>>> {
         let env_path = self.env().path.clone();
-        if let Some((path, at, skills)) = &self.skill_index
+        if let Some((path, at, skills)) = &self.composer.skill_index
             && *path == env_path
             && at.elapsed() < FILE_INDEX_TTL
         {
             return Some(skills.clone());
         }
-        if !self.skill_index_loading {
-            self.skill_index_loading = true;
+        if !self.composer.skill_index_loading {
+            self.composer.skill_index_loading = true;
             let for_path = env_path.clone();
             cx.spawn(async move |this, cx| {
                 let p = for_path.clone();
@@ -477,24 +548,25 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.skill_index_loading = false;
-                    this.skill_index = Some((for_path, Instant::now(), Arc::new(skills)));
+                    this.composer.skill_index_loading = false;
+                    this.composer.skill_index = Some((for_path, Instant::now(), Arc::new(skills)));
                     this.update_completion(cx);
                 });
             })
             .detach();
         }
         // While they are read again, the last ones read for this environment.
-        self.skill_index
+        self.composer
+            .skill_index
             .as_ref()
             .filter(|(p, ..)| *p == env_path)
             .map(|(_, _, s)| s.clone())
     }
 
     pub(super) fn update_completion(&mut self, cx: &mut Context<Self>) {
-        let was_open = self.completion.is_some();
-        self.completion = self.compute_completion(cx);
-        if was_open || self.completion.is_some() {
+        let was_open = self.composer.completion.is_some();
+        self.composer.completion = self.compute_completion(cx);
+        if was_open || self.composer.completion.is_some() {
             cx.notify();
         }
     }
@@ -672,7 +744,7 @@ impl Shell {
     }
 
     fn accept_completion(&mut self, cx: &mut Context<Self>) {
-        let Some(comp) = self.completion.take() else {
+        let Some(comp) = self.composer.completion.take() else {
             return;
         };
         let Some(item) = comp.items.get(comp.selected) else {
@@ -700,7 +772,7 @@ impl Shell {
     /// mentions, and images among them are sent along with the prompt.
     fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        self.completion = None;
+        self.composer.completion = None;
         let env_path = self.env().path.clone();
         let picker = cx.new(|cx| AttachPicker::new(env_path.clone(), window, cx));
         let sub = cx.subscribe_in(
@@ -724,12 +796,12 @@ impl Shell {
     fn save_draft_as_prompt(&mut self, cx: &mut Context<Self>) {
         let text = self.env().draft.trim().to_string();
         if text.is_empty() || text.starts_with('!') {
-            self.composer_flash = Some(
+            self.composer.flash = Some(
                 crate::platform::shortcut_label("Write a prompt first; Ctrl+S saves it for !")
                     .into(),
             );
         } else if let Some(p) = self.saved_prompts.iter().find(|p| p.text == text) {
-            self.composer_flash = Some(format!("Already saved as !{}", p.name).into());
+            self.composer.flash = Some(format!("Already saved as !{}", p.name).into());
         } else {
             let name = crate::prompts::name_for(&text, &self.saved_prompts);
             self.saved_prompts.push(crate::prompts::SavedPrompt {
@@ -740,7 +812,7 @@ impl Shell {
                 last_used: model::unix_now(),
             });
             crate::prompts::store(&self.saved_prompts);
-            self.composer_flash = Some(format!("Saved as !{name}. Type ! to use it.").into());
+            self.composer.flash = Some(format!("Saved as !{name}. Type ! to use it.").into());
         }
         cx.notify();
     }
@@ -755,7 +827,7 @@ impl Shell {
         let env_path = self.env().path.clone();
         // A dropped session still being read would miss this prompt.
         if self.dropping.contains_key(&env_path) {
-            self.composer_flash =
+            self.composer.flash =
                 Some("Still reading the dropped session. Send again in a moment.".into());
             cx.notify();
             return;
@@ -835,9 +907,9 @@ impl Shell {
                 cx.notify();
             });
         }
-        self.history_at = None;
-        if self.prompt_history.push(&typed) {
-            let bytes = self.prompt_history.bytes();
+        self.composer.history_at = None;
+        if self.composer.history.push(&typed) {
+            let bytes = self.composer.history.bytes();
             cx.background_spawn(crate::guard::task(
                 async move { crate::history::write(&bytes) },
             ))
@@ -983,9 +1055,9 @@ impl Shell {
             .as_ref()
             .and_then(|t| t.read(cx).seat().map(crate::agent::seats::label))
             .map(|s| crate::redact::value(&s));
-        let focused = self.composer_focus.is_focused(window);
+        let focused = self.composer.focus.is_focused(window);
         let entity = cx.entity();
-        let focus = self.composer_focus.clone();
+        let focus = self.composer.focus.clone();
         let draft = env.draft.bare();
         let pastes: Vec<(usize, usize)> = self
             .pastes
@@ -1056,7 +1128,7 @@ impl Shell {
         let has_images = image_row.is_some();
 
         // The `@`/`/` completion popup sits right above the text line.
-        let comp_popup: Option<AnyElement> = self.completion.as_ref().map(|comp| {
+        let comp_popup: Option<AnyElement> = self.composer.completion.as_ref().map(|comp| {
             div()
                 .id("completion")
                 .flex()
@@ -1100,7 +1172,7 @@ impl Shell {
                             )
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(c) = &mut this.completion {
+                            if let Some(c) = &mut this.composer.completion {
                                 c.selected = i;
                             }
                             this.accept_completion(cx);
@@ -1128,14 +1200,14 @@ impl Shell {
         // bearings and could wrap onto a line of its own.
         let mut painted: Option<(TextLayout, usize)> = None;
         let mut show_caret = focused;
-        let caret = self.caret.clone();
+        let caret = self.composer.caret.clone();
         if draft.is_empty() {
-            self.composer_layout.borrow_mut().take();
+            self.composer.layout.borrow_mut().take();
         }
         let (layout_cell, reveal, scroll) = (
-            self.composer_layout.clone(),
-            self.composer_reveal.clone(),
-            self.composer_scroll.clone(),
+            self.composer.layout.clone(),
+            self.composer.reveal.clone(),
+            self.composer.scroll.clone(),
         );
         let text: AnyElement = if draft.is_empty() {
             div()
@@ -1181,7 +1253,7 @@ impl Shell {
 
         div()
             .id("composer")
-            .track_focus(&self.composer_focus)
+            .track_focus(&self.composer.focus)
             .on_key_down(cx.listener(Self::composer_key))
             .drag_over::<drag::DraggedSession>(|s, _, _, _| {
                 s.border_color(theme::active())
@@ -1198,7 +1270,7 @@ impl Shell {
             .on_drop(
                 cx.listener(|this, paths: &gpui::ExternalPaths, window, cx| {
                     this.push_mentions(paths.paths());
-                    window.focus(&this.composer_focus, cx);
+                    window.focus(&this.composer.focus, cx);
                     this.composer_changed(cx);
                     cx.notify();
                 }),
@@ -1206,7 +1278,7 @@ impl Shell {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    window.focus(&this.composer_focus, cx);
+                    window.focus(&this.composer.focus, cx);
                     cx.notify();
                 }),
             )
@@ -1214,7 +1286,7 @@ impl Shell {
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(|this, _, window, cx| {
-                    window.focus(&this.composer_focus, cx);
+                    window.focus(&this.composer.focus, cx);
                     this.paste_into_composer(crate::platform::read_primary(cx), cx);
                 }),
             )
@@ -1280,7 +1352,7 @@ impl Shell {
                         }),
                 )
             })
-            .when_some(self.composer_flash.clone(), |d, f| {
+            .when_some(self.composer.flash.clone(), |d, f| {
                 d.child(
                     div()
                         .px(crate::ui::sp(12.))
@@ -1301,11 +1373,11 @@ impl Shell {
                     .line_height(px(22.))
                     .max_h(px(160.))
                     .overflow_y_scroll()
-                    .track_scroll(&self.composer_scroll)
+                    .track_scroll(&self.composer.scroll)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, ev: &MouseDownEvent, window, cx| {
-                            window.focus(&this.composer_focus, cx);
+                            window.focus(&this.composer.focus, cx);
                             this.composer_click(
                                 ev.position,
                                 ev.click_count,
@@ -1315,7 +1387,7 @@ impl Shell {
                         }),
                     )
                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                        if this.composer_selecting && ev.pressed_button == Some(MouseButton::Left) {
+                        if this.composer.selecting && ev.pressed_button == Some(MouseButton::Left) {
                             this.composer_drag(ev.position, cx);
                         }
                     }))
@@ -1665,7 +1737,7 @@ impl EntityInputHandler for Shell {
             }
             None => draft.insert(text),
         }
-        self.composer_goal_x = None;
+        self.composer.goal_x = None;
         self.composer_changed(cx);
         self.update_completion(cx);
         cx.notify();
@@ -1698,7 +1770,7 @@ impl EntityInputHandler for Shell {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let layout = self.composer_layout.borrow().clone();
+        let layout = self.composer.layout.borrow().clone();
         let ix = self.env().draft.utf16_to_byte(range_utf16.start);
         Some(
             match layout

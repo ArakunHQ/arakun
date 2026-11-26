@@ -3295,7 +3295,7 @@ impl Shell {
                     {
                         env.draft.set(text(&msg, "prompt"));
                         self.composer_changed(cx);
-                        window.focus(&self.composer_focus, cx);
+                        window.focus(&self.composer.focus, cx);
                     }
                 } else if msg["type"] == "branch_renamed" {
                     let env_path = Remote::env_path(id, &text(&msg, "place"));

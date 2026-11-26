@@ -575,6 +575,20 @@ pub fn linear_activity(
     body: &str,
     links: &[LinearLinkOut],
 ) -> Result<(), Error> {
+    linear_activity_with(base, session, agent_session, kind, body, links, &[])
+}
+
+/// [`linear_activity`] for a question with `options`: its choices, which
+/// Linear shows to pick from. The server takes them for an elicitation only.
+pub fn linear_activity_with(
+    base: &str,
+    session: &str,
+    agent_session: &str,
+    kind: LinearActivity,
+    body: &str,
+    links: &[LinearLinkOut],
+    options: &[String],
+) -> Result<(), Error> {
     let path = format!("/linear/sessions/{}/activity", path_id(agent_session)?);
     let mut payload = serde_json::json!({ "type": kind.wire(), "body": body });
     if kind == LinearActivity::Progress {
@@ -582,6 +596,9 @@ pub fn linear_activity(
     }
     if !links.is_empty() {
         payload["links"] = serde_json::json!(links);
+    }
+    if kind == LinearActivity::Elicitation && !options.is_empty() {
+        payload["options"] = serde_json::json!(options);
     }
     let (status, answer) = send(
         base,
@@ -1736,6 +1753,25 @@ mod tests {
                 serde_json::json!({ "type": word, "body": "hi" })
             );
         }
+    }
+
+    #[test]
+    fn only_a_question_carries_choices() {
+        let (base, rx) = serve(204, "");
+        let options = ["Postgres".to_string(), "SQLite".to_string()];
+        let ask = LinearActivity::Elicitation;
+        linear_activity_with(&base, "s", "as-1", ask, "Which?", &[], &options).unwrap();
+        assert_eq!(
+            body_of(&rx.recv().unwrap()),
+            serde_json::json!({ "type": "elicitation", "body": "Which?", "options": ["Postgres", "SQLite"] })
+        );
+        let (base, rx) = serve(204, "");
+        let thought = LinearActivity::Thought;
+        linear_activity_with(&base, "s", "as-1", thought, "hi", &[], &options).unwrap();
+        assert_eq!(
+            body_of(&rx.recv().unwrap()),
+            serde_json::json!({ "type": "thought", "body": "hi" })
+        );
     }
 
     #[test]

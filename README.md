@@ -718,8 +718,10 @@ after a week).
   *What the issue hears.* Arakun writes to the issue as the work goes:
   `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
   `Waiting on {computer}: {n} other sessions from Linear are running. This one
-  starts when one finishes.`; a question from the session, with its choices one
-  per line; `Waiting for your permission: run a command. Answer it in Arakun or on
+  starts when one finishes.`; a question from the session, with its choices to
+  pick from when it is one question with one answer and two to ten short
+  choices (a pick reaches the session as if you had typed it), and otherwise
+  with its choices one per line; `Waiting for your permission: run a command. Answer it in Arakun or on
   your phone.` (only the kind of action, never the command or file; a permission
   is never answered from Linear); the result; the pull request's link, added to the
   session in Linear as soon as Arakun knows it, also after the result; `The session failed: {reason}` on a failure; and `Still working.`

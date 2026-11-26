@@ -775,6 +775,28 @@ describe("what the computer sends back", () => {
     expect(await dump(env.DB)).not.toMatch(/Done\.|Working on it/);
   });
 
+  it("passes a question's choices on as a select, and only for a question", async () => {
+    const { owner } = await delegatedIssue();
+    const ask = { type: "elicitation", body: "Which database?", options: ["Postgres", "SQLite"] };
+    expect((await activity(owner.session, ask)).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "elicitation", body: "Which database?", signal: "select", options: ["Postgres", "SQLite"] });
+    // Without choices it is a plain question.
+    expect((await activity(owner.session, { type: "elicitation", body: "Go on?", options: [] })).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "elicitation", body: "Go on?" });
+    for (const bad of [
+      { ...ask, type: "thought" },
+      { ...ask, options: ["Only one"] },
+      { ...ask, options: ["a", " "] },
+      { ...ask, options: ["a", 2] },
+      { ...ask, options: ["a", "x".repeat(81)] },
+      { ...ask, options: Array(11).fill("a") },
+      { ...ask, options: "Postgres" },
+    ]) {
+      expect((await activity(owner.session, bad)).status).toBe(400);
+    }
+    expect(await dump(env.DB)).not.toMatch(/Postgres|Which database/);
+  });
+
   it("adds links to a session without an activity, only for its owner and only https", async () => {
     const { owner } = await delegatedIssue();
     const links = (session: string, body: unknown) => call("POST", `/linear/sessions/${SESSION}/links`, as(session), JSON.stringify(body));

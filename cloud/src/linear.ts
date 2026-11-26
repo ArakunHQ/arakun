@@ -304,6 +304,8 @@ const MAX_ACTIVITY_TEXT = 8000;
 const MAX_LINKS = 5;
 const MAX_LINK_LABEL = 80;
 const MAX_URL = 2048;
+const MAX_OPTIONS = 10;
+const MAX_OPTION = 80;
 
 /// Length in characters, not UTF-16 units, so an emoji counts once.
 const chars = (s: string) => [...s].length;
@@ -314,19 +316,25 @@ interface Activity {
   /// Linear replaces it with the next activity: what a session does right now.
   ephemeral: boolean;
   links: { label: string; url: string }[];
+  /// The choices of a question, for Linear to show as ones to pick from.
+  options: string[];
 }
 
 /// The activity, checked, or null. Only the known fields are copied out.
 function parseActivity(v: unknown): Activity | null {
   if (!isObject(v)) return null;
-  const { type, body, ephemeral = false, links = [] } = v;
+  const { type, body, ephemeral = false, links = [], options = [] } = v;
   if (!ACTIVITY_TYPES.includes(type as Activity["type"])) return null;
   // Linear takes it for a thought only.
   if (typeof ephemeral !== "boolean" || (ephemeral && type !== "thought")) return null;
   if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
   const out = parseLinks(links);
   if (!out) return null;
-  return { type: type as Activity["type"], body, ephemeral, links: out };
+  // Only a question has choices, and one choice is none.
+  if (!Array.isArray(options) || options.length > MAX_OPTIONS || options.length === 1) return null;
+  if (options.length > 0 && type !== "elicitation") return null;
+  if (!options.every((o) => typeof o === "string" && o.trim().length > 0 && chars(o) <= MAX_OPTION)) return null;
+  return { type: type as Activity["type"], body, ephemeral, links: out, options: options as string[] };
 }
 
 /// At most MAX_LINKS links, each a label and a plain https address, or null.
@@ -366,7 +374,7 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
   const organizationId = await ownedSession(env, who, agentSessionId);
   if (!organizationId) return error(404, "no such session");
   try {
-    await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral);
+    await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral, activity.options);
     if (activity.links.length > 0) await addLinks(env, organizationId, agentSessionId, activity.links);
   } catch (e) {
     if (e instanceof LinearRefused) return error(502, "linear refused");

@@ -79,7 +79,8 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
             .collect();
         let sent = match activity(r.kind) {
             Some(kind) => {
-                cloud::linear_activity(base, session, &r.agent_session, kind, &r.body, &links)
+                let (to, body) = (&r.agent_session, &r.body);
+                cloud::linear_activity_with(base, session, to, kind, body, &links, &r.options)
             }
             // A link report without its link says nothing: it is let go.
             None if links.is_empty() => Ok(()),
@@ -113,6 +114,7 @@ mod tests {
             kind: ReportKind::Thought,
             body: body.into(),
             link: None,
+            options: Vec::new(),
             made_at: 1,
         }
     }

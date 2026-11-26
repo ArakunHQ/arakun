@@ -21,8 +21,8 @@ use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
-    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, pr_link, progress_line,
-    removed_line, to_report, turn_reply,
+    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of, pr_link,
+    progress_line, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
@@ -842,9 +842,13 @@ impl Daemon {
             Step::Cancelled => Some(Seen::Cancelled),
             Step::Working | Step::Background | Step::Nothing => None,
         };
-        let report = seen.filter(|_| effect.report).and_then(to_report);
+        let seen = seen.filter(|_| effect.report);
+        let options = seen.as_ref().map(options_of).unwrap_or_default();
+        let report = seen.and_then(to_report);
         match report {
-            Some((kind, body)) => self.linear_report(&agent_session, kind, body, None, cx),
+            Some((kind, body)) => {
+                self.linear_report_with(&agent_session, kind, body, None, options, cx)
+            }
             None => self.linear_save_runs(),
         }
         if to == RunState::Running {
@@ -933,12 +937,27 @@ impl Daemon {
         link: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.linear_report_with(agent_session, kind, body, link, Vec::new(), cx);
+    }
+
+    /// [`Self::linear_report`] for a question with `options`: its choices,
+    /// which Linear shows to pick from.
+    fn linear_report_with(
+        &mut self,
+        agent_session: &str,
+        kind: ReportKind,
+        body: String,
+        link: Option<String>,
+        options: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let now = unix_now();
         self.linear_run.runs.queue(Report {
             agent_session: agent_session.to_string(),
             kind,
             body,
             link,
+            options,
             made_at: now,
         });
         // A link is no activity: Linear still needs to hear the run works.

@@ -46,6 +46,7 @@ mod island;
 mod limits;
 mod linear;
 mod linear_env;
+mod linear_outbox;
 mod linear_run;
 mod linear_sync;
 mod menus;
@@ -471,7 +472,7 @@ pub struct Shell {
     linear_sync: linear_sync::LinearSync,
     /// Sessions started from Linear, and the reports Linear has not taken yet.
     linear_runs: crate::linear::runs::Runs,
-    linear_outbox: linear_run::Outbox,
+    linear_outbox: linear_outbox::Outbox,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],

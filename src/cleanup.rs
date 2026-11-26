@@ -308,6 +308,8 @@ const SERVER_IMAGE_AGE: Duration = Duration::from_secs(7 * 86_400);
 /// Slow on a big folder: call it off the UI thread.
 pub fn sweep_leftovers(images: &Path) {
     use crate::housekeep::{DAY, remove_old, remove_write_leftovers};
+    // Secret files and handles agents never used, now and every hour.
+    crate::agent::secret::start_sweeper();
     let mut removed = remove_old(&std::env::temp_dir(), DAY, is_voice_clip);
     // The folder is in the shared temp folder: another user could put a link
     // there that points at the user's own files.

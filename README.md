@@ -296,8 +296,16 @@ sees the project's skills.
   A request is cancelled when you stop the run, send a new message, the turn ends,
   or 10 minutes pass. Claude Code, Codex and Droid sessions on this computer have it
   through Arakun's MCP server (`arakun mcp`, which Arakun starts for each session);
-  the phone and sessions on a server don't show the card yet. Saved values stay in
-  Arakun's memory only, for 24 hours or until a handle is used.
+  the phone and sessions on a server don't show the card yet. Saved values wait in
+  the keyring for 24 hours or until a handle is used. Only Arakun's own tool
+  `run_with_secrets` redeems a handle: it sets the value as an environment variable
+  for one command and masks it in the output. A handle works once, in the project it
+  was made for, and Arakun won't type one into a page or a terminal. For a command
+  that must read the value itself (`sudo -S`, a pairing CLI), the agent asks for a
+  file instead: the card says the agent's commands can read it, and the value goes
+  to a file only you can read in `secret-files` in the data folder
+  (`~/.local/share/arakun`). `secret_to_file` moves a secret you pasted in a message
+  to such a file. Files are deleted after 24 hours.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
   going with the app closed. Its tools run inside a sandbox (workspace writable, the
   rest read-only, no credentials, no network unless `--allow net`), and a policy
@@ -1640,7 +1648,8 @@ arakun github pilot connect <url> --token -
                                   # from stdin (-) or ARAKUN_PILOT_TOKEN and
                                   # ARAKUN_PILOT_ADMIN_TOKEN; also --admin-token -,
                                   # --no-admin-token, --no-check
-arakun mcp                        # Arakun's MCP server on stdio (request_secret); Arakun
+arakun mcp                        # Arakun's MCP server on stdio (request_secret,
+                                  # run_with_secrets, secret_to_file); Arakun
                                   # starts it for each agent session, not you
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)

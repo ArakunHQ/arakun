@@ -554,6 +554,89 @@ pub fn linear_put_routes(
     }
 }
 
+/// Tells the server this computer took a delivery, so it stops offering it
+/// elsewhere. Accepting twice is fine.
+pub fn linear_accept(base: &str, session: &str, delivery_id: &str) -> Result<(), Error> {
+    let path = format!("/linear/deliveries/{}/accept", path_id(delivery_id)?);
+    let (status, answer) = send(base, "POST", &path, Some(session), None, SMALL_LIMIT)?;
+    linear_done(status, &answer)
+}
+
+/// What a session's activity is, as the server's `type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinearActivity {
+    Thought,
+    Elicitation,
+    Response,
+    Error,
+}
+
+impl LinearActivity {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Thought => "thought",
+            Self::Elicitation => "elicitation",
+            Self::Response => "response",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// A link shown with an activity in Linear.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct LinearLinkOut {
+    pub label: String,
+    pub url: String,
+}
+
+/// Reports one step of a delegated session to Linear. The body is text from
+/// the session, so it goes in the request body only. The caller keeps it
+/// within the server's length limit.
+pub fn linear_activity(
+    base: &str,
+    session: &str,
+    agent_session: &str,
+    kind: LinearActivity,
+    body: &str,
+    links: &[LinearLinkOut],
+) -> Result<(), Error> {
+    let path = format!("/linear/sessions/{}/activity", path_id(agent_session)?);
+    let mut payload = serde_json::json!({ "type": kind.wire(), "body": body });
+    if !links.is_empty() {
+        payload["links"] = serde_json::json!(links);
+    }
+    let (status, answer) = send(
+        base,
+        "POST",
+        &path,
+        Some(session),
+        Some(payload),
+        SMALL_LIMIT,
+    )?;
+    linear_done(status, &answer)
+}
+
+/// An id that goes into a path. Anything that could change the path is
+/// refused before a request is made.
+fn path_id(id: &str) -> Result<&str, Error> {
+    let ok =
+        (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if ok {
+        Ok(id)
+    } else {
+        Err(Error::Refused(
+            "an id that is not letters, digits and dashes".into(),
+        ))
+    }
+}
+
+fn linear_done(status: u16, body: &str) -> Result<(), Error> {
+    match status {
+        200..=299 => Ok(()),
+        _ => Err(linear_refusal(status, body)),
+    }
+}
+
 fn linear_json<T: serde::de::DeserializeOwned>(status: u16, body: &str) -> Result<T, Error> {
     match status {
         200..=299 => serde_json::from_str(body).map_err(|_| unreadable()),
@@ -1593,6 +1676,161 @@ mod tests {
         ));
         assert!(matches!(
             linear_put_routes(base, "s", "k", "o", &[], &[]),
+            Err(Error::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn a_delivery_is_accepted_with_an_empty_post() {
+        let (base, rx) = serve(204, "");
+        let id = "0123456789abcdef0123456789abcdef";
+        linear_accept(&base, "s3ss10n", id).unwrap();
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with(&format!("POST /linear/deliveries/{id}/accept HTTP/1.1\r\n")),
+            "{req}"
+        );
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("authorization: bearer s3ss10n\r\n"),
+            "{req}"
+        );
+    }
+
+    #[test]
+    fn accepting_an_unknown_delivery_keeps_the_404() {
+        let (base, _rx) = serve(404, r#"{"error": "no such delivery"}"#);
+        assert_eq!(
+            linear_accept(&base, "s", "abc"),
+            Err(Error::Status {
+                status: 404,
+                message: "no such delivery".into()
+            })
+        );
+        let (base, _rx) = serve(401, r#"{"error": "not signed in"}"#);
+        assert_eq!(linear_accept(&base, "s", "abc"), Err(Error::SignedOut));
+    }
+
+    #[test]
+    fn an_activity_is_posted_with_its_kind_body_and_links() {
+        let (base, rx) = serve(204, "");
+        let links = [LinearLinkOut {
+            label: "PR".into(),
+            url: "https://github.com/a/b/pull/1".into(),
+        }];
+        linear_activity(
+            &base,
+            "s3ss10n",
+            "as-1",
+            LinearActivity::Response,
+            "done \"quoted\" text",
+            &links,
+        )
+        .unwrap();
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with("POST /linear/sessions/as-1/activity HTTP/1.1\r\n"),
+            "{req}"
+        );
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("authorization: bearer s3ss10n\r\n"),
+            "{req}"
+        );
+        assert_eq!(
+            body_of(&req),
+            serde_json::json!({
+                "type": "response", "body": "done \"quoted\" text",
+                "links": [{"label": "PR", "url": "https://github.com/a/b/pull/1"}]
+            })
+        );
+    }
+
+    #[test]
+    fn an_activity_without_links_leaves_them_out_and_names_each_kind() {
+        for (kind, word) in [
+            (LinearActivity::Thought, "thought"),
+            (LinearActivity::Elicitation, "elicitation"),
+            (LinearActivity::Response, "response"),
+            (LinearActivity::Error, "error"),
+        ] {
+            let (base, rx) = serve(204, "");
+            linear_activity(&base, "s", "as-1", kind, "hi", &[]).unwrap();
+            assert_eq!(
+                body_of(&rx.recv().unwrap()),
+                serde_json::json!({ "type": word, "body": "hi" })
+            );
+        }
+    }
+
+    #[test]
+    fn the_activity_refusals_can_be_told_apart() {
+        let call = |status, body| {
+            let (base, _rx) = serve(status, body);
+            linear_activity(
+                &base,
+                "s",
+                "as-1",
+                LinearActivity::Thought,
+                "secret text",
+                &[],
+            )
+        };
+        assert_eq!(
+            call(404, r#"{"error": "no such session"}"#),
+            Err(Error::Status {
+                status: 404,
+                message: "no such session".into()
+            })
+        );
+        assert_eq!(
+            call(400, r#"{"error": "bad activity"}"#),
+            Err(Error::Status {
+                status: 400,
+                message: "bad activity".into()
+            })
+        );
+        assert_eq!(
+            call(429, r#"{"error": "too many requests"}"#),
+            Err(Error::Status {
+                status: 429,
+                message: "too many requests; try again in a minute".into()
+            })
+        );
+        assert_eq!(
+            call(502, r#"{"error": "linear refused"}"#),
+            Err(Error::Status {
+                status: 502,
+                message: "linear refused".into()
+            })
+        );
+        assert_eq!(call(401, "{}"), Err(Error::SignedOut));
+    }
+
+    #[test]
+    fn a_path_value_cannot_change_the_path_and_nothing_is_sent() {
+        let base = "http://127.0.0.1:1";
+        for bad in ["", "a/b", "a?x", "a#x", "../x", "a b", &"a".repeat(65)] {
+            assert!(matches!(
+                linear_accept(base, "s", bad),
+                Err(Error::Refused(_))
+            ));
+            assert!(matches!(
+                linear_activity(base, "s", bad, LinearActivity::Thought, "x", &[]),
+                Err(Error::Refused(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_new_linear_calls_refuse_plain_http_to_another_host_unsent() {
+        let base = "http://arakun.example";
+        assert!(matches!(
+            linear_accept(base, "s", "abc"),
+            Err(Error::Refused(_))
+        ));
+        assert!(matches!(
+            linear_activity(base, "s", "as-1", LinearActivity::Thought, "x", &[]),
             Err(Error::Refused(_))
         ));
     }

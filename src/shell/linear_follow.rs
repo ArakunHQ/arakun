@@ -149,9 +149,14 @@ impl Shell {
             FollowUp::NotStarted => Some((ReportKind::Thought, not_started_line(&computer()))),
             FollowUp::Busy => Some((ReportKind::Thought, busy_line(&computer()))),
             FollowUp::Unreadable => Some((ReportKind::Thought, unread_line(&computer()))),
-            FollowUp::Send => {
-                let text = text.unwrap_or_default();
-                match self.linear_pass_on(agent_session, text, window, cx) {
+            FollowUp::NoDirections => Some((ReportKind::Thought, no_directions_line(&computer()))),
+            FollowUp::Send | FollowUp::Interrupt => {
+                let interrupt = decided == FollowUp::Interrupt;
+                let text = message(text.as_deref().unwrap_or_default()).to_string();
+                match self.linear_pass_on(agent_session, text, interrupt, window, cx) {
+                    Some((_, true)) if interrupt => {
+                        Some((ReportKind::Thought, interrupted_line(&computer())))
+                    }
                     Some((pending, busy)) => {
                         Some((ReportKind::Thought, passed_line(&computer(), pending, busy)))
                     }
@@ -173,6 +178,7 @@ impl Shell {
         &mut self,
         agent_session: &str,
         text: String,
+        interrupt: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Pending, bool)> {
@@ -196,9 +202,18 @@ impl Shell {
             }
             // What the message waits behind, before it starts a turn itself.
             let waits = (pending_in(t), t.is_busy());
-            t.send(text, cx);
-            waits
+            if interrupt {
+                t.interrupt_with(text, cx);
+            } else {
+                t.send(text, cx);
+            }
+            // The cancelled turn still winds down: its end is not the run's.
+            (
+                waits,
+                interrupt && waits.1 && t.is_busy() && t.is_cancelling(),
+            )
         });
+        let (waits, winding_down) = waits;
         if let Some(s) = self.session_mut(&env, &sid) {
             s.updated = crate::model::unix_now();
         }
@@ -208,8 +223,7 @@ impl Shell {
         // below it.
         let mut revived = false;
         if let Some(run) = self.linear_runs.by_agent_session(agent_session) {
-            // A new turn on purpose: a stop's cancel is behind it.
-            run.stopped = false;
+            run.stopped = stopped_after_reply(run.stopped, run.state, winding_down);
             if let Some(to) = after_reply(run.state) {
                 run.state = to;
                 run.asked = None;

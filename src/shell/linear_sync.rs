@@ -109,7 +109,10 @@ pub fn run(
     // A workspace whose call was refused: the rest of its calls are skipped,
     // and the other workspaces still go.
     let mut refused: Option<String> = None;
-    for step in plan(d, &workspaces, local) {
+    let linked: Vec<String> = links.iter().map(|l| l.organization_id.clone()).collect();
+    let mut steps = plan(d, &workspaces, local);
+    steps.extend(clear_signed_out(&workspaces, &linked));
+    for step in steps {
         if refused.as_deref() == Some(step.workspace()) {
             continue;
         }
@@ -395,6 +398,22 @@ pub fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) ->
     steps
 }
 
+/// Empty routes for each workspace the server has a link for and this
+/// computer has no sign-in to. Without them the server would keep sending
+/// that workspace's issues here after the person signed out of it. Never a
+/// link: there is no key. The server's answer holds nothing about routes, so
+/// this goes on every sync while the link stays, to keep "off" true.
+pub fn clear_signed_out(workspaces: &[(String, bool)], linked: &[String]) -> Vec<Step> {
+    linked
+        .iter()
+        .filter(|l| !workspaces.iter().any(|(w, _)| w == *l))
+        .map(|l| Step::Routes {
+            workspace: l.clone(),
+            routes: Routes::default(),
+        })
+        .collect()
+}
+
 /// How a failed sync reads on the page: a limit passes, a failure waits for
 /// the next reconnect.
 pub fn outcome(e: &cloud::Error) -> Sync {
@@ -641,6 +660,22 @@ pub(super) mod tests {
                 routes: teams(&["t1"])
             }]
         );
+    }
+
+    #[test]
+    fn a_workspace_signed_out_here_gets_empty_routes_and_never_a_link() {
+        // The server has links for w1 (signed in) and w9 (signed out here).
+        let ws = [("w1".to_string(), true)];
+        let links = ["w1".to_string(), "w9".to_string()];
+        assert_eq!(
+            clear_signed_out(&ws, &links),
+            [Step::Routes {
+                workspace: "w9".into(),
+                routes: Routes::default()
+            }]
+        );
+        // Signed in but not linked is `plan`'s business, not this one's.
+        assert_eq!(clear_signed_out(&[("w2".into(), false)], &[]), []);
     }
 
     use std::io::{Read as _, Write as _};
@@ -904,6 +939,46 @@ pub(super) mod tests {
                 ("w2".to_string(), "w2#b".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn a_workspace_signed_out_here_is_cleared_on_the_server_without_a_key() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        // On and mapped, but w9 has no sign-in here: no key can exist for it.
+        let d = on(vec![team("w9", "t9", "/p/a")]);
+        let no_keys: [(String, Fake); 0] = [];
+        let ran = run(&base, "s", "k1", &d, &no_keys, &[p("/p/a")], || true);
+        assert!(ran.error.is_none());
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].starts_with("GET /linear/link "));
+        assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
+        assert!(got[1].contains(r#""teams":[]"#), "{}", got[1]);
+        assert!(got[1].contains(r#""projects":[]"#), "{}", got[1]);
+        assert!(got.iter().all(|r| !r.contains("lin_api_")), "{got:?}");
+    }
+
+    #[test]
+    fn off_still_clears_a_signed_out_workspace_once() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        let no_keys: [(String, Fake); 0] = [];
+        let ran = run(&base, "s", "k1", &off(vec![]), &no_keys, &[], || false);
+        assert!(ran.error.is_none() && !ran.stopped);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
     }
 
     #[test]

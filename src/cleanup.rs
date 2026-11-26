@@ -309,7 +309,11 @@ const SERVER_IMAGE_AGE: Duration = Duration::from_secs(7 * 86_400);
 pub fn sweep_leftovers(images: &Path) {
     use crate::housekeep::{DAY, remove_old, remove_write_leftovers};
     let mut removed = remove_old(&std::env::temp_dir(), DAY, is_voice_clip);
-    removed += remove_old(images, SERVER_IMAGE_AGE, |_| true);
+    // The folder is in the shared temp folder: another user could put a link
+    // there that points at the user's own files.
+    if std::fs::symlink_metadata(images).is_ok_and(|m| m.is_dir()) {
+        removed += remove_old(images, SERVER_IMAGE_AGE, is_server_image);
+    }
     let data = crate::state::data_dir();
     for dir in [
         crate::platform::app_dir(),
@@ -335,6 +339,15 @@ fn is_voice_clip(name: &str) -> bool {
                     .split_once('-')
                     .is_some_and(|(pid, n)| is_number(pid) && is_number(n))
         })
+}
+
+/// `servers::keep_image`: 32 hex digits and an image extension.
+fn is_server_image(name: &str) -> bool {
+    name.split_once('.').is_some_and(|(hash, ext)| {
+        hash.len() == 32
+            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            && matches!(ext, "png" | "jpg" | "gif" | "webp")
+    })
 }
 
 fn is_number(s: &str) -> bool {
@@ -534,5 +547,15 @@ mod tests {
         assert!(!is_voice_clip("arakun-voice-x-0.wav"));
         assert!(!is_voice_clip("arakun-voice-123.wav"));
         assert!(!is_voice_clip("arakun-cleanup-123"));
+    }
+
+    #[test]
+    fn only_server_image_copies_are_taken() {
+        assert!(is_server_image("0123456789abcdef0123456789abcdef.png"));
+        assert!(!is_server_image("0123456789abcdef0123456789abcdef.txt"));
+        assert!(!is_server_image("notes.png"));
+        assert!(!is_server_image(
+            ".0123456789abcdef0123456789abcdef.png.1-0.tmp"
+        ));
     }
 }

@@ -469,6 +469,9 @@ pub struct Shell {
     #[cfg(feature = "team")]
     _team_view: Subscription,
     linear_sync: linear_sync::LinearSync,
+    /// Sessions started from Linear, and the reports Linear has not taken yet.
+    linear_runs: crate::linear::runs::Runs,
+    linear_outbox: linear_run::Outbox,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -929,6 +932,8 @@ impl Shell {
             #[cfg(feature = "team")]
             _team_view: team_sub,
             linear_sync: Default::default(),
+            linear_runs: crate::linear::runs::Runs::load(),
+            linear_outbox: Default::default(),
             github,
             pilot,
             _github: github_subs,

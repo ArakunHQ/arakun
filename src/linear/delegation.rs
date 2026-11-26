@@ -144,7 +144,6 @@ pub fn broken(m: &Mapping, local_projects: &[PathBuf]) -> bool {
 }
 
 /// Where an issue goes. The project mapping wins: it is the narrower choice.
-#[allow(dead_code)]
 pub fn project_for<'a>(
     d: &'a Delegation,
     workspace: &str,
@@ -157,7 +156,6 @@ pub fn project_for<'a>(
 }
 
 /// Why a delegated issue does not start on this computer.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The person has not let Linear start sessions here.
@@ -170,7 +168,6 @@ pub enum Refusal {
 
 /// The guard before a delegated issue starts: the switch is on, the issue's
 /// project or team is mapped, and that mapping's project is still here.
-#[allow(dead_code)]
 pub fn target_for<'a>(
     d: &'a Delegation,
     workspace: &str,

@@ -1216,7 +1216,8 @@ impl Shell {
                 self.sync_phone_view(cx);
             }
             Incoming::Relay(status) => {
-                // A Linear sync that failed while the relay was away goes now.
+                // A Linear sync that failed, and reports Linear did not take,
+                // while the relay was away go now.
                 let connected = status == relay::Status::Connected;
                 let mut ended = false;
                 if let Some(link) = &mut self.phone
@@ -1236,6 +1237,7 @@ impl Shell {
                 self.push_linear_host(cx);
                 if connected {
                     self.sync_linear(window, cx);
+                    self.linear_flush(cx);
                 }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),

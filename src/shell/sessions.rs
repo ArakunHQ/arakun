@@ -137,6 +137,21 @@ impl QueuedPrompt {
     pub(super) fn from(&self) -> &Path {
         &self.from
     }
+
+    /// Makes `env` use the agent and settings this was written with. Gives
+    /// back the text and where it was written.
+    pub(super) fn settle_in(self, env: &mut model::Environment) -> (String, PathBuf) {
+        env.agent = self.agent;
+        env.draft_settings = self.draft_settings;
+        env.claude_settings = self.claude_settings;
+        env.opencode_settings = self.opencode_settings;
+        env.codex_settings = self.codex_settings;
+        env.devin_settings = self.devin_settings;
+        env.cursor_settings = self.cursor_settings;
+        env.antigravity_settings = self.antigravity_settings;
+        env.workers_ai_settings = self.workers_ai_settings;
+        (self.text, self.from)
+    }
 }
 
 pub(super) fn summary(text: &str) -> SharedString {
@@ -749,27 +764,7 @@ impl Shell {
     /// A first prompt that waits for its worktree, with the agent and settings
     /// picked where it was written.
     pub(super) fn queue_prompt(&self, text: String) -> QueuedPrompt {
-        let env = self.env();
-        QueuedPrompt {
-            text,
-            from: env.path.clone(),
-            agent: env.agent,
-            draft_settings: env.draft_settings.clone(),
-            claude_settings: env.claude_settings.clone(),
-            // What it uses now: one it inherits could change while it waits.
-            // Not on a server: what this machine's OpenCode last used means
-            // nothing there.
-            opencode_settings: if env.remote.is_some() {
-                env.opencode_settings.clone()
-            } else {
-                opencode_draft(env)
-            },
-            codex_settings: env.codex_settings.clone(),
-            devin_settings: env.devin_settings.clone(),
-            cursor_settings: env.cursor_settings.clone(),
-            antigravity_settings: env.antigravity_settings.clone(),
-            workers_ai_settings: env.workers_ai_settings.clone(),
-        }
+        queued_from(self.env(), text)
     }
 
     /// Starts the session a queued prompt waited for, in the new worktree.
@@ -780,21 +775,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let agent = p.agent;
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        env.agent = p.agent;
-        env.draft_settings = p.draft_settings;
-        env.claude_settings = p.claude_settings;
-        env.opencode_settings = p.opencode_settings;
-        env.codex_settings = p.codex_settings;
-        env.devin_settings = p.devin_settings;
-        env.cursor_settings = p.cursor_settings;
-        env.antigravity_settings = p.antigravity_settings;
-        env.workers_ai_settings = p.workers_ai_settings;
-        let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
+        let (text, from) = p.settle_in(env);
+        let text = crate::agent::attach::move_mentions(&text, &from, env_path);
         let title = summary(&text);
-        self.start_session_in(env_path, p.agent, title, text, true, window, cx);
+        self.start_session_in(env_path, agent, title, text, true, window, cx);
     }
 
     /// The worktree a queued prompt waited for could not be made: the text
@@ -2786,6 +2774,30 @@ pub(super) fn agent_draft(env: &model::Environment, agent: AgentKind) -> &[(Sett
         AgentKind::Cursor => &env.cursor_settings,
         AgentKind::Antigravity => &env.antigravity_settings,
         AgentKind::WorkersAi => &env.workers_ai_settings,
+    }
+}
+
+/// [`Shell::queue_prompt`] for any environment: its agent and settings now.
+pub(super) fn queued_from(env: &model::Environment, text: String) -> QueuedPrompt {
+    QueuedPrompt {
+        text,
+        from: env.path.clone(),
+        agent: env.agent,
+        draft_settings: env.draft_settings.clone(),
+        claude_settings: env.claude_settings.clone(),
+        // What it uses now: one it inherits could change while it waits.
+        // Not on a server: what this machine's OpenCode last used means
+        // nothing there.
+        opencode_settings: if env.remote.is_some() {
+            env.opencode_settings.clone()
+        } else {
+            opencode_draft(env)
+        },
+        codex_settings: env.codex_settings.clone(),
+        devin_settings: env.devin_settings.clone(),
+        cursor_settings: env.cursor_settings.clone(),
+        antigravity_settings: env.antigravity_settings.clone(),
+        workers_ai_settings: env.workers_ai_settings.clone(),
     }
 }
 

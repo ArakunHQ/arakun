@@ -405,7 +405,7 @@ pub fn outcome(e: &cloud::Error) -> Sync {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::linear::delegation::{Kind, Mapping};
 
@@ -647,7 +647,10 @@ mod tests {
 
     /// A server of our own that answers each request with the next of
     /// `answers`, then stops listening. Hands back every request it got.
-    fn serve(answers: Vec<(u16, &'static str)>) -> (String, std::sync::mpsc::Receiver<String>) {
+    /// `linear_run`'s tests use it too.
+    pub(in crate::shell) fn serve(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = std::sync::mpsc::channel();

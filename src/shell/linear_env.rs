@@ -53,8 +53,6 @@ impl Shell {
     /// The environment of the project at `project` on `branch`, made when
     /// there is none, then `then` with its folder. For work nobody started
     /// by hand: the view, the tabs and focus stay as they are.
-    // Task 5 calls it; until then only the tests do.
-    #[allow(dead_code)]
     pub(super) fn env_on_branch(
         &mut self,
         project: &Path,

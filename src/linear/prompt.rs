@@ -112,7 +112,6 @@ pub fn work(d: &Detail) -> String {
 
 /// For an issue delegated in Linear. Nobody may be watching, so the session
 /// ends with a draft pull request instead of handing back to a person.
-#[allow(dead_code)] // Task 5 starts these sessions.
 pub fn delegated(d: &Detail) -> String {
     format!(
         "{}\n\n\
@@ -143,7 +142,6 @@ const MAIN_LINES: [&str; 11] = [
 ];
 
 /// The branch for a delegated issue: Linear's name for it, made safe for git.
-#[allow(dead_code)] // Task 5 makes the environment on it.
 pub fn branch(d: &Detail) -> String {
     let name = git_safe(&d.issue.branch);
     if !name.is_empty() && !MAIN_LINES.iter().any(|m| name.eq_ignore_ascii_case(m)) {

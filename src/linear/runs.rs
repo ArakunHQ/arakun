@@ -4,8 +4,6 @@
 //! with its state, and the reports Linear has not taken yet. It holds ids,
 //! paths and an issue's identifier; only unsent reports carry Linear's text,
 //! and they are dropped after a day.
-// The shell starts using this in Tasks 5 to 7; until then it is dead_code.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +17,13 @@ pub const HANDLED_KEPT: usize = 500;
 /// How long a report Linear has not taken is tried again.
 pub const REPORT_KEPT_SECS: u64 = 24 * 3600;
 /// A running session silent this long tells Linear it is still working.
+#[allow(dead_code)] // Tasks 6 and 7 use it.
 pub const QUIET_SECS: u64 = 25 * 60;
 
 /// Finished runs kept, so a follow-up can still find its run.
 const DONE_KEPT: usize = 200;
 /// The most characters of a reply sent to Linear.
+#[allow(dead_code)] // Tasks 6 and 7 use it.
 const REPLY_LIMIT: usize = 7_500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +221,7 @@ impl Runs {
         self.runs.iter_mut().find(|r| r.agent_session == id)
     }
 
+    #[allow(dead_code)] // Tasks 6 and 7 use it.
     pub fn by_session(&mut self, arakun_session: &str) -> Option<&mut Run> {
         self.runs
             .iter_mut()
@@ -247,6 +248,7 @@ impl Runs {
     }
 
     /// Marks the runs Arakun lost while they ran, and gives their agent sessions.
+    #[allow(dead_code)] // Tasks 6 and 7 use it.
     pub fn interrupted(&mut self, live: &dyn Fn(&str) -> bool) -> Vec<String> {
         let mut lost = Vec::new();
         for r in &mut self.runs {
@@ -262,6 +264,7 @@ impl Runs {
 
     /// The agent sessions of running runs Linear has not heard from in a while.
     /// Only `Running`: an `Asked` run is waiting on a person, not working.
+    #[allow(dead_code)] // Tasks 6 and 7 use it.
     pub fn quiet(&self, now: u64) -> Vec<String> {
         self.runs
             .iter()
@@ -301,6 +304,7 @@ impl Runs {
 }
 
 /// A reply short enough for Linear; the whole of it stays in Arakun.
+#[allow(dead_code)] // Tasks 6 and 7 use it.
 pub fn cut(reply: &str) -> String {
     match reply.char_indices().nth(REPLY_LIMIT) {
         Some((end, _)) => format!("{}…\n\nThe rest is in Arakun.", &reply[..end]),

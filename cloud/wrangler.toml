@@ -12,6 +12,13 @@ main = "src/index.ts"
 # itself (src/channel.ts relies on it).
 compatibility_date = "2026-11-01"
 
+# The tests and `wrangler dev` run without the cloud machine's container: it
+# would need Docker and an image build on every run. `ctx.container` is then
+# unset: machines can be made, and a wake answers 503.
+# `wrangler dev --enable-containers` builds it and runs it locally.
+[dev]
+enable_containers = false
+
 # The phone page, as built into phone/dist (`npm run build` in phone/ writes
 # it, and it is committed): the Worker runs first and hands the rest to the
 # assets.
@@ -139,9 +146,33 @@ class_name = "Channel"
 name = "RELAY"
 class_name = "Relay"
 
+# One SQLite-backed object per cloud machine, named by its label: the
+# container that runs `arakun-server` for an account with the `cloud` flag
+# (src/cloud_machine.ts). Only this test Worker has it so far; production gets
+# it, with its container, once it has been tried here (cloud/README.md, "Cloud
+# machines").
+[[durable_objects.bindings]]
+name = "CLOUD_MACHINE"
+class_name = "CloudMachine"
+
+# The container behind CloudMachine. Under the `durable_object` policy the
+# object picks the image and the size at each start, and can snapshot the disk.
+# The build context is the repository, so the image can take the release
+# installer from tools/; machine/Dockerfile.dockerignore keeps the rest out.
+[[containers]]
+name = "arakun-cloud-dev-machine"
+class_name = "CloudMachine"
+scheduling_policy = "durable_object"
+
+  [containers.images.server]
+  dockerfile = "./machine/Dockerfile"
+  build_context = ".."
+
 # The relay's history comes first: a Worker deployed from the old relay/ is at
 # `v1` with `Relay`, so deploying this one over it only adds `Channel`. Never
 # reorder or rename a tag; add a new one, here and under [env.production].
+# `v3` is here only until production gets cloud machines; it then goes there
+# too, with the same tag.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Relay"]
@@ -149,6 +180,10 @@ new_sqlite_classes = ["Relay"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Channel"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CloudMachine"]
 
 # The hosted Worker (`npx wrangler deploy --env production`), which
 # .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET,
@@ -241,7 +276,8 @@ class_name = "Channel"
 name = "RELAY"
 class_name = "Relay"
 
-# The same tags in the same order as the top-level list.
+# The same tags in the same order as the top-level list, up to `v2`: `v3`
+# (CloudMachine) comes here when production gets cloud machines.
 [[env.production.migrations]]
 tag = "v1"
 new_sqlite_classes = ["Relay"]

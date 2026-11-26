@@ -28,6 +28,10 @@ declare namespace Cloudflare {
     /// Counts the beta sign-ups each user makes, since each one asks GitHub
     /// and may post to the webhook.
     BETA_LIMIT: RateLimit;
+    /// One object per cloud machine, named by its label: the container that
+    /// runs `arakun-server` (cloud_machine.ts). Unset where cloud machines are
+    /// not set up, as in production for now.
+    CLOUD_MACHINE?: DurableObjectNamespace<import("./cloud_machine").CloudMachine>;
     /// One object per channel: its messages and live sockets.
     CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.

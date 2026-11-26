@@ -11,6 +11,7 @@ import { teamsFetch } from "./teams-router";
 import { error, type Env } from "./util";
 
 export { Channel } from "./channel";
+export { CloudMachine } from "./cloud_machine";
 export { Relay } from "./relay/relay";
 
 export default {

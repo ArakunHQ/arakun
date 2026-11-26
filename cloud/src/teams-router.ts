@@ -6,6 +6,7 @@
 import { admin } from "./admin";
 import { beta } from "./beta";
 import { cloudAccess } from "./cloud_access";
+import { cloudMachines } from "./cloud_machines";
 import { feedback } from "./feedback";
 import { authConfig, deleteSession, ForeignOrigin, listSessions, logout, me, signIn } from "./auth";
 import { linear } from "./linear";
@@ -82,11 +83,13 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (pathname.startsWith("/admin/")) return await admin(request, env, url);
     const cloud = await cloudAccess(request, env, url, ctx);
     if (cloud) return cloud;
+    const cloudMachine = await cloudMachines(request, env, url, ctx);
+    if (cloudMachine) return cloudMachine;
     const signup = await beta(request, env, url, ctx);
     if (signup) return signup;
     const sent = await feedback(request, env, url, ctx);
     if (sent) return sent;
-    const machine = await machines(request, env, url);
+    const machine = await machines(request, env, url, ctx);
     if (machine) return machine;
     const notice = await notices(request, env, url);
     if (notice) return notice;

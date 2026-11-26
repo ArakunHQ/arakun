@@ -2,11 +2,13 @@
 //! projects they can see, which one belongs to the open Arakun project, and
 //! what that project's overview shows.
 //!
-//! Sign-ins (`Session`) are personal API keys, kept in `app_dir/posthog/sessions.json` (0600) and never printed. One
-//! session covers every organization its user belongs to. The projects they
-//! see are the `Directory`, cached in `app_dir/cache/posthog-projects.json`.
-//! An Arakun project is matched to a PostHog project by the `phc_` keys in its
-//! files (`scan`), or by the user's pick, kept in `app_dir/posthog/links.json`.
+//! Sign-ins (`Session`) are personal API keys. Who signed in is kept in
+//! `app_dir/posthog/sessions.json`; the key is kept in the keyring
+//! (`secret_store`) and never printed. One session covers every organization
+//! its user belongs to. The projects they see are the `Directory`, cached
+//! in `app_dir/cache/posthog-projects.json`. An Arakun project is matched
+//! to a PostHog project by the `phc_` keys in its files (`scan`), or by the
+//! user's pick, kept in `app_dir/posthog/links.json`.
 //!
 //! PostHog counts query API calls per hour (since 2026-11-02): the overview
 //! reads three small HogQL queries with time ranges, keeps the answer on disk
@@ -73,8 +75,13 @@ impl Region {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
-    /// A personal API key (`phx_…`) pasted in the tab.
-    ApiKey { key: String },
+    /// A personal API key (`phx_…`) pasted in the tab. The key is in the
+    /// keyring; `key` holds it only as a file from before had it, until it
+    /// is moved there, and between checking a new key and saving it.
+    ApiKey {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        key: String,
+    },
 }
 
 impl std::fmt::Debug for Credential {
@@ -91,6 +98,85 @@ impl Credential {
             Credential::ApiKey { key } => key,
         }
     }
+
+    /// A key that is not in the keyring yet.
+    fn in_file(&self) -> Option<&str> {
+        Some(self.bearer()).filter(|k| !k.is_empty())
+    }
+}
+
+/// The keyring entry of the session `id`. Not per test Arakun: the sessions
+/// file it goes with is shared too.
+fn secret_account(id: &str) -> String {
+    format!("posthog:{id}")
+}
+
+const SECRET_LABEL: &str = "arakun: PostHog personal API key";
+
+/// The keys read from the keyring this run, by session. The tab makes many
+/// calls at once, and each would ask the keyring again otherwise.
+fn keys() -> std::sync::MutexGuard<'static, HashMap<String, String>> {
+    static KEYS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    KEYS.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The key `s` signs its calls with, from the keyring. A key still in the
+/// file is moved to the keyring first. Not on the UI thread: the keyring may
+/// wait for the person to unlock it.
+fn key_for(s: &Session) -> Result<String, ApiError> {
+    // A fixture answers every call, and its sessions have no key to look for.
+    if fixture::active() {
+        return Ok(String::new());
+    }
+    if let Some(key) = s.credential.in_file() {
+        move_to_keyring(&s.id, key);
+        return Ok(key.to_string());
+    }
+    // Held while the keyring is asked, so calls that start together wait for
+    // one answer instead of each asking.
+    let mut keys = keys();
+    if let Some(key) = keys.get(&s.id) {
+        return Ok(key.clone());
+    }
+    match crate::secret_store::get(&secret_account(&s.id)) {
+        Ok(Some(key)) => {
+            keys.insert(s.id.clone(), key.clone());
+            Ok(key)
+        }
+        Ok(None) => Err(ApiError::SignedOut(
+            "The keyring has no key for this sign-in. Sign in again.".into(),
+        )),
+        Err(e) => Err(ApiError::Failed(format!(
+            "The keyring could not give the PostHog key: {e}"
+        ))),
+    }
+}
+
+/// Moves the key of session `id` from the file to the keyring. When the
+/// keyring can't take it, it stays in the file and is still used.
+fn move_to_keyring(id: &str, key: &str) {
+    let _g = store_lock();
+    let file = store_file();
+    let mut store = Store::read_from(&file);
+    // Removed or signed in again since `key` was read: nothing to move.
+    let Some(s) = store
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == id && s.credential.in_file() == Some(key))
+    else {
+        return;
+    };
+    if let Err(e) = crate::secret_store::set(&secret_account(id), SECRET_LABEL, key) {
+        eprintln!("arakun: could not move the PostHog key to the keyring: {e}");
+        return;
+    }
+    s.credential = Credential::ApiKey { key: String::new() };
+    if let Err(e) = store.write_to(&file) {
+        eprintln!("arakun: {e}");
+    }
+    keys().insert(id.to_string(), key.to_string());
 }
 
 /// One signed-in PostHog user on one region.
@@ -108,6 +194,17 @@ pub struct Session {
 impl Session {
     pub fn region_label(&self) -> &'static str {
         Region::of_host(&self.host).map_or("self-hosted", Region::label)
+    }
+
+    /// Whether `other` is this sign-in, with no key change since. Signing in
+    /// again sets a new `added_at`. The key is left out: it moves from the
+    /// file to the keyring without the sign-in changing.
+    fn same_sign_in(&self, other: &Session) -> bool {
+        self.id == other.id
+            && self.host == other.host
+            && self.email == other.email
+            && self.name == other.name
+            && self.added_at == other.added_at
     }
 }
 
@@ -169,30 +266,62 @@ pub fn sessions() -> Vec<Session> {
     Store::read_from(&store_file()).sessions
 }
 
-pub fn save_session(s: Session) -> Result<(), String> {
+/// Saves `s`, its key in the keyring and the rest in the file. Not on the UI
+/// thread: it asks the keyring.
+pub fn save_session(mut s: Session) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
+    let key = s.credential.bearer().to_string();
+    // The key saved before, to tell whether this is the same one again.
+    let before =
+        store
+            .sessions
+            .iter()
+            .find(|o| o.id == s.id)
+            .map(|o| match o.credential.in_file() {
+                Some(k) => Some(k.to_string()),
+                None => crate::secret_store::get(&secret_account(&o.id))
+                    .ok()
+                    .flatten(),
+            });
+    if !key.is_empty() {
+        crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, &key)
+            .map_err(|e| format!("The keyring could not keep the PostHog key: {e}"))?;
+        s.credential = Credential::ApiKey { key: String::new() };
+        keys().insert(s.id.clone(), key.clone());
+    }
     invalidate_directory()?;
     // The same key again keeps its answers and pins; a new one may see less.
-    if store
-        .sessions
-        .iter()
-        .find(|o| o.id == s.id)
-        .is_none_or(|o| o.credential != s.credential)
-    {
+    if before.flatten().is_none_or(|k| k != key) {
         clear_answers(&s.id)?;
     }
     store.upsert(s);
     store.write_to(&store_file())
 }
 
+/// Removes the sign-in `id`. Its key leaves the keyring on a thread of its
+/// own, as the keyring may wait to be unlocked.
 pub fn remove_session(id: &str) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
     invalidate_directory()?;
     clear_answers(id)?;
     store.remove(id);
-    store.write_to(&store_file())
+    store.write_to(&store_file())?;
+    keys().remove(id);
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let _g = store_lock();
+        // Signed in again meanwhile: that key is the new one.
+        if !Store::read_from(&store_file())
+            .sessions
+            .iter()
+            .any(|s| s.id == id)
+        {
+            crate::secret_store::forget(&secret_account(&id));
+        }
+    });
+    Ok(())
 }
 
 /// Where `id`'s answers are kept. Each account has its own directory, so two
@@ -222,7 +351,7 @@ fn clear_answers(id: &str) -> Result<(), String> {
 /// a late answer can't come back after its cache was cleared.
 fn cache_answer(s: &Session, file: &Path, value: &impl Serialize) -> std::io::Result<()> {
     let _guard = store_lock();
-    if !sessions().contains(s) {
+    if !sessions().iter().any(|o| o.same_sign_in(s)) {
         return Err(std::io::Error::other("The sign-in changed."));
     }
     crate::durable::write_private(file, &serde_json::to_vec(value)?)
@@ -488,10 +617,11 @@ pub(crate) fn call(
     if let Some(until) = blocked_until(&s.id, path, now) {
         return Err(ApiError::RateLimited(until));
     }
+    let key = key_for(s)?;
     if bucket(path) == "query" {
         query::reserve(&s.id, now)?;
     }
-    let reply = match fetch(&s.host, s.credential.bearer(), method, path, body) {
+    let reply = match fetch(&s.host, &key, method, path, body) {
         Err(ApiError::Failed(e)) if writes(method, path) => Err(ApiError::Failed(format!(
             "{e} The change may still have been saved. Reload before trying again."
         ))),
@@ -795,7 +925,9 @@ pub fn load_directory(sessions: &[Session]) -> Directory {
     // Same as `cache_answer`: a directory read with a sign-in that changed
     // since is not saved.
     let _guard = store_lock();
-    if sessions == self::sessions()
+    let now = self::sessions();
+    if sessions.len() == now.len()
+        && sessions.iter().zip(&now).all(|(a, b)| a.same_sign_in(b))
         && let Ok(bytes) = serde_json::to_vec(&dir)
         && let Err(e) = crate::durable::write_private(&directory_file(), &bytes)
     {
@@ -1313,6 +1445,39 @@ mod tests {
         assert!(store.remove("us#b"));
         assert!(!store.remove("us#b"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_file_keeps_no_key_once_it_is_in_the_keyring() {
+        let s = Session {
+            id: "https://us.posthog.com#a".into(),
+            host: "https://us.posthog.com".into(),
+            email: "alice@example.com".into(),
+            name: String::new(),
+            credential: Credential::ApiKey { key: String::new() },
+            added_at: 1,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains(r#""credential":{"kind":"api_key"}"#),
+            "{json}"
+        );
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.credential.in_file(), None);
+        // A file from before still has it, to be moved.
+        let old = json.replace(
+            r#"{"kind":"api_key"}"#,
+            r#"{"kind":"api_key","key":"phx_1"}"#,
+        );
+        let old: Session = serde_json::from_str(&old).unwrap();
+        assert_eq!(old.credential.in_file(), Some("phx_1"));
+        // Moving the key does not make it another sign-in.
+        assert!(old.same_sign_in(&back));
+        let again = Session {
+            added_at: 2,
+            ..back.clone()
+        };
+        assert!(!again.same_sign_in(&back));
     }
 
     #[test]

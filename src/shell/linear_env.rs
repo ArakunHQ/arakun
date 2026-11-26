@@ -92,9 +92,11 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, b) = (repo.clone(), branch.clone());
             let made = cx
-                .background_spawn(crate::guard::task(async move {
-                    worktree_on(&r, &name, &b, start.as_deref())
-                }))
+                // A panic's text could hold anything; Linear gets a fixed reason.
+                .background_spawn(crate::guard::task_or(
+                    async move { worktree_on(&r, &name, &b, start.as_deref()) },
+                    |_| Err(super::linear_run::HIT_AN_ERROR.to_string()),
+                ))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending_envs

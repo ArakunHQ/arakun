@@ -22,10 +22,16 @@ use crate::phone::linear::{Delivery, DeliveryKind};
 /// The most characters of a reason shown in Linear: git and Linear can say a lot.
 const REASON_LIMIT: usize = 300;
 
+/// What a panic while reading the issue or making the environment shows in
+/// Linear, in place of its text.
+pub(super) const HIT_AN_ERROR: &str = "Arakun hit an error.";
+
 /// What a delivery's first look decides, before the issue is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum First {
-    /// No Arakun account, flag or relay label: the relay sends it again later.
+    /// No Arakun account, flag or relay label: the relay sends it again
+    /// later. Or the same delivery is being handled now: that one accepts it
+    /// when it is done.
     Ignore,
     /// Handled before: accepted again so the relay stops sending it.
     AcceptOnly,
@@ -34,10 +40,10 @@ pub enum First {
     Read,
 }
 
-pub fn first_step(seen: bool, gate: bool, signed_in_workspace: bool) -> First {
-    if !gate {
+pub fn first_step(in_flight: bool, handled: bool, gate: bool, signed_in_workspace: bool) -> First {
+    if !gate || in_flight {
         First::Ignore
-    } else if seen {
+    } else if handled {
         First::AcceptOnly
     } else if !signed_in_workspace {
         First::RefuseNoSignIn
@@ -81,26 +87,71 @@ pub fn no_sign_in_line(computer: &str) -> String {
     )
 }
 
-pub fn unreadable_line(reason: &str) -> String {
+pub fn busy_line(computer: &str) -> String {
+    format!(
+        "Arakun is already working on this issue on {computer}. Reply in that session, or \
+         stop it first."
+    )
+}
+
+pub fn unreadable_line(text: &str) -> String {
     format!(
         "Arakun could not read this issue from Linear: {}",
-        short(reason)
+        said(text)
     )
 }
 
-pub fn no_env_line(reason: &str) -> String {
+pub fn no_env_line(text: &str) -> String {
     format!(
         "Arakun could not make an environment for this: {}",
-        short(reason)
+        said(text)
     )
 }
 
-fn failed_line(reason: &str) -> String {
-    format!("The session failed: {}", short(reason))
+fn failed_line(text: &str) -> String {
+    format!("The session failed: {}", said(text))
 }
 
-fn short(reason: &str) -> String {
-    reason.chars().take(REASON_LIMIT).collect()
+/// [`reason`] with this computer's home folder.
+fn said(text: &str) -> String {
+    reason(text, std::env::home_dir().as_deref())
+}
+
+/// A reason as Linear shows it: its first line, the home folder as `~` so the
+/// person's local paths stay here, no control characters, and short.
+pub fn reason(text: &str, home: Option<&Path>) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    let home = home
+        .and_then(Path::to_str)
+        .map(|h| h.trim_end_matches(['/', '\\']))
+        .filter(|h| !h.is_empty());
+    let line = match home {
+        Some(home) => tilde(line, home),
+        None => line.to_string(),
+    };
+    line.chars()
+        .filter(|c| !c.is_control())
+        .take(REASON_LIMIT)
+        .collect()
+}
+
+/// `home` as `~` wherever it is a whole folder: `/home/rik` in
+/// `/home/rikki` stays.
+fn tilde(line: &str, home: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find(home) {
+        let after = &rest[i + home.len()..];
+        let whole = after
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_alphanumeric() || matches!(c, '-' | '_' | '.')));
+        out.push_str(&rest[..i]);
+        out.push_str(if whole { "~" } else { home });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The branch a delegated session works on. Never one of the project's base
@@ -144,40 +195,42 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let gate = self.linear_gate(cx).is_some();
-        // Without the gate it is not recorded: the relay sends it again later.
-        let seen = gate && self.linear_runs.seen(&d.id);
-        let sessions = if gate && !seen {
+        let in_flight = self.linear_in_flight.contains(&d.id);
+        let handled = self.linear_runs.was_seen(&d.id);
+        let sessions = if gate && !in_flight && !handled {
             crate::linear::sessions()
         } else {
             Vec::new()
         };
         let sign_in = crate::linear::session_for(&sessions, &d.organization).cloned();
-        match (first_step(seen, gate, sign_in.is_some()), sign_in) {
+        match (
+            first_step(in_flight, handled, gate, sign_in.is_some()),
+            sign_in,
+        ) {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),
-            (First::Read, Some(sign_in)) => {
-                // Recorded before anything goes out, so a crash never runs it twice.
-                self.linear_save();
-                match d.kind {
-                    DeliveryKind::Created => {
-                        let start = Start {
-                            agent_session: d.agent_session,
-                            organization: d.organization,
-                            issue: d.issue,
-                            delivery: Some(d.id),
-                        };
-                        self.linear_read(start, sign_in, window, cx);
-                    }
-                    DeliveryKind::Prompt | DeliveryKind::Stop => {
-                        self.linear_follow_up(d, window, cx)
-                    }
+            (First::Read, Some(sign_in)) => match d.kind {
+                DeliveryKind::Created => {
+                    // Recorded as handled only with its outcome, so a crash
+                    // while the issue is read leaves it for the relay to send again.
+                    self.linear_in_flight.insert(d.id.clone());
+                    let start = Start {
+                        agent_session: d.agent_session,
+                        organization: d.organization,
+                        issue: d.issue,
+                        delivery: Some(d.id),
+                    };
+                    self.linear_read(start, sign_in, window, cx);
                 }
-            }
+                DeliveryKind::Prompt | DeliveryKind::Stop => self.linear_follow_up(d, window, cx),
+            },
             (First::RefuseNoSignIn | First::Read, _) => {
-                self.linear_save();
+                self.linear_runs.mark_seen(&d.id);
                 let line = no_sign_in_line(&computer());
                 self.linear_report(&d.agent_session, ReportKind::Error, line, None, cx);
                 self.linear_accept(&d.id, cx);
+                // The server must stop sending this workspace's issues here.
+                self.sync_linear(window, cx);
             }
         }
     }
@@ -185,6 +238,8 @@ impl Shell {
     /// A prompt or a stop for a run. Taking them is a later change; until
     /// then they are accepted, so the relay stops sending them.
     fn linear_follow_up(&mut self, d: Delivery, _window: &mut Window, cx: &mut Context<Self>) {
+        self.linear_runs.mark_seen(&d.id);
+        self.linear_save();
         self.linear_accept(&d.id, cx);
     }
 
@@ -202,7 +257,10 @@ impl Shell {
             let sessions = crate::linear::sessions();
             match crate::linear::session_for(&sessions, &start.organization) {
                 Some(s) => self.linear_read(start, s.clone(), window, cx),
-                None => self.linear_fail(&start, no_sign_in_line(&computer()), window, cx),
+                None => {
+                    self.linear_fail(&start, no_sign_in_line(&computer()), window, cx);
+                    self.sync_linear(window, cx);
+                }
             }
         }
     }
@@ -218,9 +276,11 @@ impl Shell {
         let issue = start.issue.clone();
         cx.spawn_in(window, async move |this, cx| {
             let read = cx
-                .background_spawn(crate::guard::task(async move {
-                    issues::detail(&sign_in, &issue)
-                }))
+                // A panic's text could hold anything; Linear gets a fixed reason.
+                .background_spawn(crate::guard::task_or(
+                    async move { issues::detail(&sign_in, &issue) },
+                    |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
+                ))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.linear_issue_read(start, read, window, cx)
@@ -236,6 +296,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(id) = &start.delivery {
+            self.linear_in_flight.remove(id);
+            // Signed out of Arakun meanwhile: not handled, so the relay sends
+            // it again once there is an account to accept it with.
+            if self.linear_gate(cx).is_none() {
+                return;
+            }
+        }
         let detail = match read {
             Ok(detail) => detail,
             Err(e) => {
@@ -263,6 +331,23 @@ impl Shell {
             self.linear_save();
             return self.linear_make_env(start, detail, project, window, cx);
         };
+        // From here every outcome is saved together with the handled id.
+        self.linear_runs.mark_seen(&id);
+        let known = self
+            .linear_runs
+            .by_agent_session(&start.agent_session)
+            .is_some();
+        if !known
+            && self
+                .linear_runs
+                .active_for_issue(&start.organization, &start.issue)
+        {
+            // Two sessions on one issue would share its worktree.
+            let line = busy_line(&computer());
+            self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
+            self.linear_accept(&id, cx);
+            return;
+        }
         let added = self.linear_runs.add(Run {
             agent_session: start.agent_session.clone(),
             organization: start.organization.clone(),
@@ -466,6 +551,8 @@ impl Shell {
         let Some(id) = &start.delivery else {
             return self.linear_fail(start, line, window, cx);
         };
+        // Saved with the report.
+        self.linear_runs.mark_seen(id);
         self.linear_report(&start.agent_session, ReportKind::Error, line, None, cx);
         self.linear_accept(id, cx);
     }
@@ -584,15 +671,61 @@ mod tests {
 
     #[test]
     fn the_first_look_goes_in_order() {
+        let all = [false, true];
         // No account, flag or label: the relay sends it again later.
-        for (seen, signed_in) in [(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(first_step(seen, false, signed_in), First::Ignore);
+        for in_flight in all {
+            for handled in all {
+                for signed_in in all {
+                    assert_eq!(
+                        first_step(in_flight, handled, false, signed_in),
+                        First::Ignore
+                    );
+                }
+            }
         }
-        // Seen before: accepted again, whatever else holds.
-        assert_eq!(first_step(true, true, false), First::AcceptOnly);
-        assert_eq!(first_step(true, true, true), First::AcceptOnly);
-        assert_eq!(first_step(false, true, false), First::RefuseNoSignIn);
-        assert_eq!(first_step(false, true, true), First::Read);
+        // Being handled now: not accepted yet, the first frame does that.
+        for handled in all {
+            for signed_in in all {
+                assert_eq!(first_step(true, handled, true, signed_in), First::Ignore);
+            }
+        }
+        // Handled before: accepted again, whatever else holds.
+        assert_eq!(first_step(false, true, true, false), First::AcceptOnly);
+        assert_eq!(first_step(false, true, true, true), First::AcceptOnly);
+        assert_eq!(first_step(false, false, true, false), First::RefuseNoSignIn);
+        assert_eq!(first_step(false, false, true, true), First::Read);
+    }
+
+    #[test]
+    fn an_issue_in_work_has_its_line() {
+        assert_eq!(
+            busy_line("rik-mac"),
+            "Arakun is already working on this issue on rik-mac. Reply in that session, or \
+             stop it first."
+        );
+    }
+
+    #[test]
+    fn a_reason_keeps_local_paths_and_extra_lines_out() {
+        let home = Some(Path::new("/home/rik"));
+        assert_eq!(
+            reason(
+                "fatal: '/home/rik/arakun-workspaces/app/eng-7' already exists\nhint: more",
+                home
+            ),
+            "fatal: '~/arakun-workspaces/app/eng-7' already exists"
+        );
+        assert_eq!(
+            reason("in /home/rik", Some(Path::new("/home/rik/"))),
+            "in ~"
+        );
+        assert_eq!(reason("/home/rikki/x", home), "/home/rikki/x");
+        assert_eq!(reason("a\tb\u{7}c", None), "abc");
+        assert_eq!(reason("  \n second", home), "");
+        assert_eq!(
+            reason(&"é".repeat(REASON_LIMIT + 5), None).chars().count(),
+            REASON_LIMIT
+        );
     }
 
     #[test]

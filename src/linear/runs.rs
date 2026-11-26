@@ -166,15 +166,34 @@ impl Runs {
             .map_err(|e| format!("Couldn't save the sessions started from Linear: {e}"))
     }
 
-    /// Whether `delivery_id` was handled before. Records it if not.
-    pub fn seen(&mut self, delivery_id: &str) -> bool {
-        if self.handled.iter().any(|h| h == delivery_id) {
-            return true;
+    /// Whether `delivery_id` was handled before. Records nothing: the id is
+    /// recorded with the outcome it led to (`mark_seen`), in the same save.
+    pub fn was_seen(&self, delivery_id: &str) -> bool {
+        self.handled.iter().any(|h| h == delivery_id)
+    }
+
+    /// Records `delivery_id` as handled, forgetting the oldest beyond
+    /// `HANDLED_KEPT`.
+    pub fn mark_seen(&mut self, delivery_id: &str) {
+        if self.was_seen(delivery_id) {
+            return;
         }
         self.handled.push(delivery_id.to_string());
         let extra = self.handled.len().saturating_sub(HANDLED_KEPT);
         self.handled.drain(..extra);
-        false
+    }
+
+    /// Whether a run for this issue is still at work (waiting, running or
+    /// asking), so a second delegation of it must not start another session.
+    pub fn active_for_issue(&self, organization: &str, issue: &str) -> bool {
+        self.runs.iter().any(|r| {
+            r.organization == organization
+                && r.issue == issue
+                && matches!(
+                    r.state,
+                    RunState::Waiting | RunState::Running | RunState::Asked
+                )
+        })
     }
 
     /// Stores `run` as `Running` when a slot is free and nobody waits, else
@@ -348,14 +367,56 @@ mod tests {
     #[test]
     fn a_delivery_is_seen_once_and_old_ones_are_forgotten() {
         let mut r = Runs::default();
-        assert!(!r.seen("d0"));
-        assert!(r.seen("d0"));
+        assert!(!r.was_seen("d0"));
+        assert!(!r.was_seen("d0"), "asking records nothing");
+        r.mark_seen("d0");
+        r.mark_seen("d0");
+        assert!(r.was_seen("d0"));
+        assert_eq!(r.handled.len(), 1);
         for i in 1..=HANDLED_KEPT {
-            assert!(!r.seen(&format!("d{i}")));
+            r.mark_seen(&format!("d{i}"));
         }
         assert_eq!(r.handled.len(), HANDLED_KEPT);
-        assert!(!r.seen("d0"), "the oldest is forgotten");
-        assert!(r.seen(&format!("d{HANDLED_KEPT}")));
+        assert!(!r.was_seen("d0"), "the oldest is forgotten");
+        assert!(r.was_seen(&format!("d{HANDLED_KEPT}")));
+    }
+
+    #[test]
+    fn a_handled_delivery_and_its_run_are_saved_together() {
+        let dir = crate::stored::tests::scratch("runs-handled");
+        let file = dir.join("runs.json");
+        let mut r = Runs::default();
+        // Nothing is saved while the issue is read: a crash then leaves the
+        // delivery unhandled, and the relay's next frame runs it.
+        assert!(!r.was_seen("d1"));
+        r.save_to(&file).unwrap();
+        assert!(!Runs::load_from(&file).was_seen("d1"));
+        // The outcome and the id go in one save.
+        r.mark_seen("d1");
+        assert_eq!(r.add(run("a")), Added::Start);
+        r.save_to(&file).unwrap();
+        let mut back = Runs::load_from(&file);
+        assert!(back.was_seen("d1"));
+        assert_eq!(state(&mut back, "a"), RunState::Running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_issue_in_work_blocks_a_second_run_until_it_is_over() {
+        let mut r = Runs::default();
+        assert!(!r.active_for_issue("w1", "i1"));
+        r.add(run("a"));
+        assert!(r.active_for_issue("w1", "i1"));
+        assert!(!r.active_for_issue("w1", "i2") && !r.active_for_issue("w2", "i1"));
+        for (state, active) in [
+            (RunState::Waiting, true),
+            (RunState::Asked, true),
+            (RunState::Done, false),
+            (RunState::Interrupted, false),
+        ] {
+            r.by_agent_session("a").unwrap().state = state;
+            assert_eq!(r.active_for_issue("w1", "i1"), active, "{state:?}");
+        }
     }
 
     #[test]
@@ -532,7 +593,7 @@ mod tests {
         assert_eq!(Runs::load_from(&file), Runs::default());
 
         let mut r = Runs::default();
-        r.seen("d1");
+        r.mark_seen("d1");
         r.add(run("a"));
         r.by_agent_session("a").unwrap().environment = Some(PathBuf::from("/e/a"));
         r.queue(Report {

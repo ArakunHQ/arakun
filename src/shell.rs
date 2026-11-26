@@ -473,6 +473,8 @@ pub struct Shell {
     /// Sessions started from Linear, and the reports Linear has not taken yet.
     linear_runs: crate::linear::runs::Runs,
     linear_outbox: linear_outbox::Outbox,
+    /// Deliveries whose issue is being read: a second frame waits for the first.
+    linear_in_flight: std::collections::HashSet<String>,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -935,6 +937,7 @@ impl Shell {
             linear_sync: Default::default(),
             linear_runs: crate::linear::runs::Runs::load(),
             linear_outbox: Default::default(),
+            linear_in_flight: Default::default(),
             github,
             pilot,
             _github: github_subs,

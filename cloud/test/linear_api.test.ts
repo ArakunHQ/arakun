@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { LinearRefused, addLinks, asApp, exchangeCode, issuePlace, postActivity, saveWorkspace, viewer } from "../src/linear_api";
+import { open } from "../src/linear_seal";
 import { linearFake, nowSeconds, signIn } from "./helpers";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -26,8 +27,18 @@ async function workspace(overrides: Partial<Workspace>): Promise<Workspace> {
     ...overrides,
   };
   linearFake.tokens.set(w.access, who);
-  linearFake.refreshTokens.add(w.refresh);
+  linearFake.refreshTokens.set(w.refresh, w.access);
   return w;
+}
+
+/// The pair stored for the workspace, opened, and when it expires.
+async function stored(): Promise<{ access: string; refresh: string; expiresAt: number }> {
+  const row = await env.DB.prepare("SELECT access_token, refresh_token, expires_at FROM linear_workspaces").first<{
+    access_token: string;
+    refresh_token: string;
+    expires_at: number;
+  }>();
+  return { access: (await open(env, ORG, row!.access_token))!, refresh: (await open(env, ORG, row!.refresh_token))!, expiresAt: row!.expires_at };
 }
 
 /// Saves the default workspace, with the overrides.
@@ -79,6 +90,13 @@ describe("Linear's API", () => {
     await postActivity(env, ORG, SESSION, "thought", "hi");
     expect(linearFake.exchanges.map((e) => e.get("grant_type"))).toEqual(["refresh_token"]);
     expect(linearFake.activities()).toEqual([{ agentSessionId: SESSION, type: "thought", body: "hi" }]);
+    // The new pair is stored and used; the old one is revoked.
+    const now = await stored();
+    expect(now.access).toBe("lin_oauth_issued1");
+    expect(now.refresh).toBe("lin_refresh_issued1");
+    expect(now.expiresAt).toBeGreaterThan(nowSeconds() + 86000);
+    expect(linearFake.calls.at(-1)!.token).toBe("lin_oauth_issued1");
+    expect(linearFake.tokens.has("A1")).toBe(false);
   });
   it("refreshes and retries after a 401", async () => {
     await save({});
@@ -86,6 +104,8 @@ describe("Linear's API", () => {
     await postActivity(env, ORG, SESSION, "thought", "hi");
     expect(linearFake.activities()).toHaveLength(1);
     expect(linearFake.exchanges).toHaveLength(1);
+    expect((await stored()).access).toBe("lin_oauth_issued1");
+    expect(linearFake.calls.at(-1)!.token).toBe("lin_oauth_issued1");
   });
   it("gives up after a second 401", async () => {
     await save({});
@@ -95,10 +115,44 @@ describe("Linear's API", () => {
   });
   it("two refreshes at once leave one valid pair", async () => {
     await save({ expiresAt: nowSeconds() + 60 });
+    linearFake.grace = true;
     await Promise.all([postActivity(env, ORG, SESSION, "thought", "a"), postActivity(env, ORG, SESSION, "thought", "b")]);
     expect(linearFake.activities()).toHaveLength(2);
     await postActivity(env, ORG, SESSION, "thought", "c"); // the stored pair still works
     expect(linearFake.activities()).toHaveLength(3);
+    // Both asked Linear, it answered one pair twice, and that pair is stored.
+    expect(linearFake.exchanges).toHaveLength(2);
+    linearFake.grace = false;
+    const now = await stored();
+    expect(linearFake.refreshTokens.has(now.refresh)).toBe(true);
+    expect(linearFake.tokens.has(now.access)).toBe(true);
+    expect(linearFake.calls.at(-1)!.token).toBe(now.access);
+  });
+  it("does not overwrite a pair another request stored first", async () => {
+    await save({ expiresAt: nowSeconds() + 60 });
+    // While our refresh is out, another request refreshes again and stores its pair.
+    linearFake.afterRefresh = async (first) => {
+      linearFake.afterRefresh = null;
+      const res = await fetch("https://api.linear.app/oauth/token", {
+        method: "POST",
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: first.refresh, client_id: "lin-test", client_secret: "lin-secret" }),
+      });
+      const next = (await res.json()) as { access_token: string; refresh_token: string };
+      await saveWorkspace(env, { ...(await workspace({ access: next.access_token, refresh: next.refresh_token })) });
+    };
+    await postActivity(env, ORG, SESSION, "thought", "hi");
+    expect(linearFake.calls[0]!.token).toBe("lin_oauth_issued2");
+    expect((await stored()).access).toBe("lin_oauth_issued2");
+  });
+  it("a rotated refresh token is refused without grace", async () => {
+    await save({ expiresAt: nowSeconds() + 60 });
+    await postActivity(env, ORG, SESSION, "thought", "a");
+    linearFake.grace = false;
+    const res = await fetch("https://api.linear.app/oauth/token", {
+      method: "POST",
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: "R1", client_id: "lin-test", client_secret: "lin-secret" }),
+    });
+    expect(res.status).toBe(400);
   });
   it("a refusal is LinearRefused, not a crash", async () => {
     await save({});

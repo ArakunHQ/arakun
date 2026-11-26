@@ -217,8 +217,12 @@ export const linearFake = {
   /// Access token → who Linear says it belongs to. A test adds the tokens it
   /// saves; an exchange or refresh adds the pair it issues.
   tokens: new Map<string, { userId: string; organizationId: string; organizationName: string }>(),
-  /// Refresh tokens Linear still takes.
-  refreshTokens: new Set<string>(),
+  /// Refresh tokens Linear still takes → the access token issued with each.
+  refreshTokens: new Map<string, string>(),
+  /// Refresh tokens already rotated → the pair that answered them. Linear
+  /// answers the same pair again for 30 minutes; with `grace` off it refuses.
+  rotated: new Map<string, { access: string; refresh: string }>(),
+  grace: true,
   /// Issue id → its team and project.
   issues: new Map<string, { teamId: string; projectId: string | null }>(),
   /// Every GraphQL call: the query, its variables and the access token.
@@ -235,6 +239,11 @@ export const linearFake = {
   expireNext: false,
   /// Every GraphQL call answers 401, whatever the token.
   expireAlways: false,
+  /// Runs after a refresh issued its pair and before the answer goes out: a
+  /// test uses it to let another request refresh in between.
+  afterRefresh: null as ((pair: { access: string; refresh: string }) => Promise<void>) | null,
+  /// Makes a query answer a 200 with data of the wrong shape.
+  malformed: null as "viewer" | "issue-null" | "no-team" | null,
   /// The agent activities created, in order.
   activities(): { agentSessionId: string; type: string; body: string }[] {
     return this.accepted
@@ -260,6 +269,8 @@ let linearIssued = 0;
 function resetLinear(): void {
   linearFake.tokens.clear();
   linearFake.refreshTokens.clear();
+  linearFake.rotated.clear();
+  linearFake.grace = true;
   linearFake.issues.clear();
   linearFake.calls = [];
   linearFake.accepted = [];
@@ -268,6 +279,8 @@ function resetLinear(): void {
   linearFake.refuse = null;
   linearFake.expireNext = false;
   linearFake.expireAlways = false;
+  linearFake.malformed = null;
+  linearFake.afterRefresh = null;
   linearIssued = 0;
 }
 
@@ -282,13 +295,25 @@ async function linearReply(req: Request): Promise<Response> {
     if (form.get("client_id") !== "lin-test" || form.get("client_secret") !== "lin-secret")
       return Response.json({ error: "invalid_client" }, { status: 401 });
     const grant = form.get("grant_type");
-    if (grant === "refresh_token" ? !linearFake.refreshTokens.has(form.get("refresh_token") ?? "") : !form.get("code"))
-      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    const used = form.get("refresh_token") ?? "";
+    if (grant === "refresh_token") {
+      const again = linearFake.rotated.get(used);
+      if (again && linearFake.grace)
+        return Response.json({ access_token: again.access, refresh_token: again.refresh, expires_in: 86400, token_type: "Bearer", scope: "read" });
+      if (!linearFake.refreshTokens.has(used)) return Response.json({ error: "invalid_grant" }, { status: 400 });
+    } else if (!form.get("code")) return Response.json({ error: "invalid_grant" }, { status: 400 });
     linearIssued++;
     const access = `lin_oauth_issued${linearIssued}`;
     const refresh = `lin_refresh_issued${linearIssued}`;
+    if (grant === "refresh_token") {
+      // The pair it replaces stops working.
+      linearFake.tokens.delete(linearFake.refreshTokens.get(used)!);
+      linearFake.refreshTokens.delete(used);
+      linearFake.rotated.set(used, { access, refresh });
+    }
     linearFake.tokens.set(access, { userId: "app-user", organizationId: "org-fake", organizationName: "Fake" });
-    linearFake.refreshTokens.add(refresh);
+    linearFake.refreshTokens.set(refresh, access);
+    if (grant === "refresh_token") await linearFake.afterRefresh?.({ access, refresh });
     return Response.json({ access_token: access, refresh_token: refresh, expires_in: 86400, token_type: "Bearer", scope: "read" });
   }
   const header = req.headers.get("Authorization") ?? "";
@@ -302,6 +327,9 @@ async function linearReply(req: Request): Promise<Response> {
     return Response.json({ errors: [{ message: "expired", extensions: { code: "AUTHENTICATION_ERROR" } }] }, { status: 401 });
   }
   linearFake.accepted.push({ query, variables, token });
+  if (linearFake.malformed === "viewer") return Response.json({ data: { viewer: null } });
+  if (linearFake.malformed === "issue-null") return Response.json({ data: { issue: null } });
+  if (linearFake.malformed === "no-team") return Response.json({ data: { issue: { team: null, project: null } } });
   if (query.includes("viewer"))
     return Response.json({ data: { viewer: { id: who.userId, organization: { id: who.organizationId, name: who.organizationName } } } });
   if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))

@@ -217,3 +217,106 @@ struct QuestionCard: View {
         }
     }
 }
+
+/// The agent asks for a secret (`request_secret`): masked fields it never sees,
+/// with Save and Decline. What is typed goes to the computer, which keeps it and
+/// hands the agent a handle, so it stays out of the transcript. Over a
+/// connection the computer does not call private, only Decline is offered.
+struct SecretCard: View {
+    let ask: SecretAsk
+    /// The values to save, or nil to decline. Whether it went out.
+    let answer: ([String]?) -> Bool
+    @State private var values: [String] = []
+    @State private var shown: Set<Int> = []
+    @FocusState private var focus: Int?
+    @Environment(\.openURL) private var openURL
+
+    static let notPrivate = "This connection is not encrypted, so the secret can't be sent over it. Decline, or answer from a device that reaches the computer through your account or Tailscale."
+
+    var body: some View {
+        AskFrame(icon: "alert-circle", title: "Secret", trailing: "Stays out of the transcript") {
+            Text(ask.label).font(.geist(16, .medium))
+            if !ask.reason.isEmpty {
+                Text(ask.reason).font(.small).foregroundStyle(Color.textMuted)
+            }
+            if let url = ask.url {
+                Button(url.absoluteString) { openURL(url) }
+                    .font(.code)
+                    .foregroundStyle(Color.amberInk)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .buttonStyle(.plain)
+            }
+            if ask.isPrivate {
+                if values.count == ask.fields.count {
+                    ForEach(Array(ask.fields.enumerated()), id: \.offset) { i, f in field(f, at: i) }
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    Icon("alert-circle", size: 15).foregroundStyle(Color.failure)
+                    Text(Self.notPrivate).font(.small).foregroundStyle(Color.text)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            HStack(spacing: 8) {
+                Button("Decline") { if answer(nil) { clear() } }.buttonStyle(.outline)
+                Spacer()
+                if ask.isPrivate {
+                    Button("Save", action: save).buttonStyle(.primaryCompact).disabled(!ready)
+                }
+            }
+        }
+        .onAppear { clear() }
+        // Leave nothing typed behind when the card goes.
+        .onDisappear { clear() }
+    }
+
+    private func field(_ f: SecretAsk.Field, at i: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(f.label).font(.small).foregroundStyle(Color.textMuted)
+            HStack(spacing: 8) {
+                Group {
+                    if shown.contains(i) {
+                        TextField("", text: $values[i])
+                    } else {
+                        SecureField("", text: $values[i])
+                    }
+                }
+                .font(.code)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textContentType(.password)
+                .privacySensitive()
+                .focused($focus, equals: i)
+                .submitLabel(i == ask.fields.count - 1 ? .send : .next)
+                .onSubmit { if i == ask.fields.count - 1 { save() } else { focus = i + 1 } }
+                .accessibilityLabel(f.label)
+                Button(shown.contains(i) ? "Hide" : "Show") {
+                    if shown.contains(i) { shown.remove(i) } else { shown.insert(i) }
+                }
+                .font(.small)
+                .foregroundStyle(Color.textMuted)
+                .buttonStyle(.plain)
+                .accessibilityLabel(shown.contains(i) ? "Hide \(f.label)" : "Show \(f.label)")
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 40)
+            .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.raised))
+            .overlay(RoundedRectangle(cornerRadius: Radius.control).strokeBorder(Color.lineStrong))
+        }
+    }
+
+    private var ready: Bool {
+        ask.isPrivate && values.count == ask.fields.count && !values.contains(where: \.isEmpty)
+    }
+
+    private func save() {
+        guard ready else { return }
+        if answer(values) { clear() }
+    }
+
+    private func clear() {
+        values = ask.fields.map { _ in "" }
+        shown = []
+    }
+}

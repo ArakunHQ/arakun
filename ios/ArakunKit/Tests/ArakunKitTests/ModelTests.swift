@@ -67,6 +67,24 @@ struct ModelTests {
         #expect(s.turnStarted != nil)
     }
 
+    @Test func readsASecret() {
+        var s = LiveSession(id: "s1", title: "", agent: "")
+        s.apply(state: json(#"""
+        {"status":"needs_input","secret":{"id":7,"label":"OpenAI API key","reason":"To call the API.","deliver":"handle",
+         "url":"https://platform.openai.com/api-keys","fields":[{"name":"key","label":"Key"}],"timeout_secs":300,"private":true}}
+        """#))
+        #expect(s.secret?.id == 7)
+        #expect(s.secret?.fields == [SecretAsk.Field(name: "key", label: "Key")])
+        #expect(s.secret?.url?.host == "platform.openai.com")
+        #expect(s.secret?.isPrivate == true)
+        // Only an http(s) link, and a connection is private only when it says so.
+        s.apply(state: json(#"{"secret":{"id":8,"label":"L","reason":"R","url":"javascript:alert(1)","fields":[]}}"#))
+        #expect(s.secret?.url == nil)
+        #expect(s.secret?.isPrivate == false)
+        s.apply(state: json(#"{"secret":null}"#))
+        #expect(s.secret == nil)
+    }
+
     @Test func readsTheChangesTurnByTurn() {
         let turns = ChangedTurn.list(json(#"""
         {"type":"changes","id":"s1","turns":[

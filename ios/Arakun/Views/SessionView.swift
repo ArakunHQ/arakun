@@ -85,6 +85,8 @@ struct SessionView: View {
                         PermissionCard(ask: p) { model.allow($0) }
                     } else if let q = s?.question {
                         QuestionCard(ask: q, answer: model.answer, skip: model.skipQuestion).id(q.toolCallId)
+                    } else if let r = s?.secret {
+                        SecretCard(ask: r) { model.answerSecret(r, values: $0) }.id(r.id)
                     }
                 }
                 .disabled(!model.isLinked)

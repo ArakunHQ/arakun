@@ -79,19 +79,46 @@ pub(crate) fn key_for(s: &Session) -> Result<String, ApiError> {
 /// Moves the key of session `id` from the file to the keyring. When the
 /// keyring can't take it, it stays in the file and is still used.
 fn move_to_keyring(id: &str, key: &str) {
-    let _g = store_lock();
+    let _k = keyring_lock();
+    // Signed out or in again since this session was read: its key is not
+    // this one any more.
+    if !holds_key(id, key) {
+        return;
+    }
     if let Err(e) = crate::secret_store::set(&secret_account(id), SECRET_LABEL, key) {
         eprintln!("arakun: could not move the Linear key to the keyring: {e}");
         return;
     }
+    let _g = store_lock();
     let file = store_file();
     let mut store = Store::read_from(&file);
-    for s in store.sessions.iter_mut().filter(|s| s.id == id) {
-        s.credential = Credential::ApiKey { key: String::new() };
+    let mut moved = false;
+    for s in store.sessions.iter_mut() {
+        if s.id == id && s.credential.in_file() == Some(key) {
+            s.credential = Credential::ApiKey { key: String::new() };
+            moved = true;
+        }
     }
-    if let Err(e) = store.write_to(&file) {
+    if moved && let Err(e) = store.write_to(&file) {
         eprintln!("arakun: {e}");
     }
+}
+
+/// Whether the file still keeps `key` for session `id`.
+fn holds_key(id: &str, key: &str) -> bool {
+    let _g = store_lock();
+    Store::read_from(&store_file())
+        .sessions
+        .iter()
+        .any(|s| s.id == id && s.credential.in_file() == Some(key))
+}
+
+/// One keyring write at a time. Apart from `store_lock`, which the UI thread
+/// takes to sign out: a keyring can wait minutes for the person to unlock it,
+/// and the UI must not wait with it.
+fn keyring_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// One signed-in Linear user in one workspace.
@@ -162,23 +189,36 @@ pub fn sessions() -> Vec<Session> {
 
 /// Saves `s`, its key in the keyring and the rest in the file.
 pub fn save_session(mut s: Session) -> Result<(), String> {
-    let _g = store_lock();
+    let _k = keyring_lock();
     if let Some(key) = s.credential.in_file() {
         crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, key)
             .map_err(|e| format!("The keyring could not keep the Linear key: {e}"))?;
         s.credential = Credential::ApiKey { key: String::new() };
     }
+    let _g = store_lock();
     let mut store = Store::read_from(&store_file());
     store.upsert(s);
     store.write_to(&store_file())
 }
 
+/// Removes session `id` from the file now, and its key from the keyring on
+/// a thread of its own: the tab signs out on the UI thread.
 pub fn remove_session(id: &str) -> Result<(), String> {
-    let _g = store_lock();
-    let mut store = Store::read_from(&store_file());
-    store.remove(id);
-    store.write_to(&store_file())?;
-    crate::secret_store::forget(&secret_account(id));
+    {
+        let _g = store_lock();
+        let mut store = Store::read_from(&store_file());
+        store.remove(id);
+        store.write_to(&store_file())?;
+    }
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let _k = keyring_lock();
+        // Signed in again meanwhile: that key is the new one.
+        let back = sessions_in_file().iter().any(|s| s.id == id);
+        if !back {
+            crate::secret_store::forget(&secret_account(&id));
+        }
+    });
     Ok(())
 }
 
@@ -187,6 +227,11 @@ pub fn remove_session(id: &str) -> Result<(), String> {
 /// act as the same person.
 pub fn session_for<'a>(sessions: &'a [Session], organization: &str) -> Option<&'a Session> {
     sessions.iter().find(|s| s.workspace_id == organization)
+}
+
+fn sessions_in_file() -> Vec<Session> {
+    let _g = store_lock();
+    Store::read_from(&store_file()).sessions
 }
 
 // ---------------------------------------------------------------------------

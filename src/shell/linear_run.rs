@@ -35,8 +35,7 @@ pub(super) const HIT_AN_ERROR: &str = "Arakun hit an error.";
 pub const KEPT: usize = 50;
 
 /// New issues read from Linear at once. A computer back after days can get
-/// many deliveries together; the rest are not accepted, so the relay sends
-/// them again.
+/// many deliveries together; the rest are kept until a read ends.
 pub const MAX_READS: usize = 8;
 
 /// Keeps `d` for when the account is loaded: once per delivery id, and the
@@ -283,9 +282,10 @@ impl Shell {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),
             (First::Read, Some(sign_in)) if d.kind == DeliveryKind::Created => {
-                // Not accepted: the relay sends it again when fewer are read.
+                // Kept for when a read ends: the relay only sends an
+                // unaccepted delivery again after the next connect.
                 if !may_read(self.linear_reads) {
-                    return;
+                    return keep(&mut self.linear_kept, d);
                 }
                 self.linear_reads += 1;
                 // Recorded as handled only with its outcome, so a crash
@@ -423,6 +423,8 @@ impl Shell {
         if let Some(id) = &start.delivery {
             self.linear_in_flight.remove(id);
             self.linear_reads = self.linear_reads.saturating_sub(1);
+            // Room for one that waited for a read to end.
+            self.linear_replay_kept(window, cx);
             // Signed out of Arakun meanwhile: not handled. It is kept, or
             // the relay sends it again, for when there is an account to
             // accept it with.

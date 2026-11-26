@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Prints a panel session cookie for a local run, so screenshots need no GitHub
-// OAuth App: `node scripts/dev-cookie.mjs 1001 octo`. It signs with
-// SESSION_SECRET from .dev.vars, as signSession in worker/session.ts does.
-// The Worker still checks the ID against ADMIN_GITHUB_IDS. This file is in no
-// build: the Worker has no way in without GitHub.
+// OAuth App and no authenticator code: `node scripts/dev-cookie.mjs 1001 octo`.
+// It signs with SESSION_SECRET from .dev.vars, as signSession in
+// worker/session.ts does. The Worker still checks the ID against
+// ADMIN_GITHUB_IDS. This file is in no build: the Worker has no way in without
+// GitHub and a code.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -37,5 +38,6 @@ function b64url(bytes) {
 const now = Math.floor(Date.now() / 1000);
 const payload = b64url(new TextEncoder().encode(JSON.stringify({ github_id: githubId, login, exp: now + SESSION_SECONDS })));
 const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+// The purpose goes into the MAC, as in worker/session.ts.
+const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`session.${payload}`));
 console.log(`${SESSION_COOKIE}=${payload}.${b64url(new Uint8Array(mac))}`);

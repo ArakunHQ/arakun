@@ -20,7 +20,10 @@ export type LogAction =
   | "cloud.grant"
   | "cloud.decline"
   | "beta.admit"
-  | "beta.decline";
+  | "beta.decline"
+  | "operator.totp.add"
+  | "operator.totp.replace"
+  | "operator.totp.reset";
 
 export interface Operator {
   id: number | null;

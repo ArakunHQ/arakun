@@ -52,7 +52,7 @@ APNS_TOPIC = "com.arakun.ios"
 # Rate limits with the same namespace_id in one account share their counters,
 # so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
 # 1011, 1013, 1015 and 1017, production 1001, 1002, 1006, 1008, 1012, 1014,
-# 1016 and 1018. cloud/admin has 1009 and 1010.
+# 1016 and 1018. cloud/admin has 1009, 1010, 1019 and 1020.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"

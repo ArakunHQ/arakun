@@ -12,6 +12,7 @@ declare namespace Cloudflare {
     ADMIN_GITHUB_IDS?: string;
     SESSION_SECRET?: string;
     SIGN_IN_LIMIT: RateLimit;
+    CODE_LIMIT: RateLimit;
   }
 }
 

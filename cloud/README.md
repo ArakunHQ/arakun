@@ -620,6 +620,32 @@ in with GitHub, using its own OAuth App, not the desktop app's. The browser neve
 Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
 session is a signed cookie, `__Host-arakun_admin`, that lasts 12 hours.
 
+Sign-in has two steps, so a taken-over GitHub account is not enough to get in:
+
+1. GitHub's web flow says who the operator is. The Worker then sets
+   `__Host-arakun_admin_code` (`SameSite=Strict`, ten minutes), which is not a session,
+   and sends the browser to `/sign-in?step=code`, or to `/sign-in?step=setup` for an
+   operator with no authenticator app yet.
+2. The operator types the six-digit code from an authenticator app (TOTP, RFC 6238:
+   SHA-1, 30-second steps; the codes of the step before and after count too). The page
+   posts it to `POST /auth/code`, which needs the panel's own `Origin`. A right code
+   trades the code step's cookie for the session. Each code works once, and none older
+   than the last one taken. Each operator gets five codes a minute, wherever they come
+   from.
+
+Operators set up their own authenticator app. At the first sign-in, the page shows a new
+key as a QR code and as text (`POST /auth/setup/start`), and stores it once a code from
+the app is right (`POST /auth/setup`). This step can set up a first key only, never
+replace one, so a taken-over GitHub account cannot swap in its own. Until then the
+first person through GitHub as that operator gets to set it up, so set it up soon after
+adding an operator. Settings replaces the app, for a new phone; that needs a code from
+the current app as well as the new one.
+
+The keys are in this Worker's D1, in `operator_totp`, sealed by the admin Worker with
+AES-GCM and a key derived from `SESSION_SECRET`: the database alone cannot make a code.
+The admin Worker reaches them at `/admin/operators/<github_id>/totp` and never forwards
+the page there.
+
 Every change made in the panel is recorded in `admin_log` with the operator's name, and
 the panel shows it under Activity.
 
@@ -654,7 +680,7 @@ GITHUB_CLIENT_SECRET=<your OAuth App's secret>
 
 For a real sign-in, create a personal OAuth App on GitHub (Settings, Developer
 settings) whose callback is `http://localhost:5173/auth/github/callback`; use the port
-vite prints. Without an OAuth App, print a session cookie for the local
+vite prints. Without an OAuth App or an authenticator app, print a session cookie for the local
 `SESSION_SECRET` and send it from your browser's developer tools or with curl:
 
 ```sh
@@ -725,6 +751,22 @@ npx wrangler secret put ADMIN_GITHUB_IDS --env production   # e.g. <github_id>,<
 The ID is checked on every request, so removing one ends that operator's access at
 once, even with a valid cookie. Unset or empty, nobody gets in. Changing
 `SESSION_SECRET` signs everyone out.
+
+A new operator sets up an authenticator app at their first sign-in. For one who lost
+their phone, forget their key; they set up a new one at their next sign-in, which is
+recorded in Activity:
+
+```sh
+printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X DELETE -H @- \
+  "https://app.arakun.dev/admin/operators/<github_id>/totp"
+```
+
+Changing `SESSION_SECRET` also makes every stored key unreadable, and the page tells
+each operator to ask for a reset. Forget them all after such a change:
+
+```sh
+npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "DELETE FROM operator_totp"   # in cloud/
+```
 
 If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators stay signed in but
 the panel's calls fail with "unauthorized" errors (a missing one answers "the admin

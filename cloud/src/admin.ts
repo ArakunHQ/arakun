@@ -21,6 +21,7 @@
 //   GET    /admin/beta/signups                    → sign-ups for the phone app betas, pending first, ?platform= ?status=
 //   PUT    /admin/beta/signups/<github_id>/<platform>/admit   → marks one admitted, { by? }
 //   PUT    /admin/beta/signups/<github_id>/<platform>/decline → declines one, { by? }
+//   …      /admin/operators/<github_id>/totp[/use] → the panel operators' authenticator keys (admin_totp.ts)
 //
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
@@ -34,6 +35,7 @@
 
 import { listLog, operator, record, type Operator } from "./admin_log";
 import { getUser, listNotices, listPlans, listUsers } from "./admin_lists";
+import { operatorTotp } from "./admin_totp";
 import { decideSignup, listSignups } from "./beta";
 import { decideRequest, listRequests } from "./cloud_access";
 import { recheckAccount } from "./machines";
@@ -75,6 +77,8 @@ export async function admin(request: Request, env: Env, url: URL): Promise<Respo
   if (path === "/admin/beta/signups" && request.method === "GET") return listSignups(env, url);
   const signup = /^\/admin\/beta\/signups\/([^/]+)\/([^/]+)\/(admit|decline)$/.exec(path);
   if (signup && request.method === "PUT") return decideSignup(request, env, signup[1]!, signup[2]!, signup[3] as "admit" | "decline", op);
+  const totp = /^\/admin\/operators\/([^/]+)\/totp(\/use)?$/.exec(path);
+  if (totp) return (await operatorTotp(request, env, op, totp[1]!, !!totp[2])) ?? error(404, "not found");
   return error(404, "not found");
 }
 

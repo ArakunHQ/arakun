@@ -1,5 +1,6 @@
-import { authCallback, authStart, logout } from "./auth";
+import { authCallback, authCode, authStart, logout } from "./auth";
 import { page, proxy } from "./proxy";
+import { setupFinish, setupStart } from "./setup";
 import { readSession } from "./session";
 import { error, json } from "./util";
 
@@ -9,6 +10,9 @@ export default {
     const route = `${request.method} ${pathname}`;
     if (route === "GET /auth/github/start") return authStart(request, env);
     if (route === "GET /auth/github/callback") return authCallback(request, env);
+    if (route === "POST /auth/code") return authCode(request, env);
+    if (route === "POST /auth/setup/start") return setupStart(request, env);
+    if (route === "POST /auth/setup") return setupFinish(request, env);
     if (route === "POST /auth/logout") return logout(request);
     // Answered here for every method, never forwarded.
     if (pathname === "/api/me") {

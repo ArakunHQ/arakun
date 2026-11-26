@@ -11,6 +11,68 @@ const NEW_SESSION_TIP: &str = "A session in its own environment. Alt+click to pi
 const NEW_ENV_TIP: &str =
     "New session in its own environment (Ctrl+Shift+N). Alt+click for options";
 
+/// The rail's own state: whether it is open, its width, the rows picked in
+/// it and the session tree's folds, hover and search.
+pub(super) struct Rail {
+    pub open: bool,
+    /// Dragged width; state::RAIL_W until dragged.
+    pub width: f32,
+    /// Rows picked with Ctrl or Shift+click (`rail_pick`), by path.
+    pub pick: Vec<std::path::PathBuf>,
+    /// The row Shift+click picks from.
+    pub pick_anchor: Option<std::path::PathBuf>,
+    /// Sessions of the tree picked with Ctrl or Shift+click, by id, and the
+    /// one clicked last, where Shift starts.
+    pub tree_pick: Vec<SharedString>,
+    pub tree_pick_anchor: Option<SharedString>,
+    /// Projects the user folded (false) or opened (true) in the tree of
+    /// sessions, over what `tab_layout::Quiet` does by itself.
+    pub tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
+    /// The tree's row under the pointer, which Alt+P pins.
+    pub tree_hover: Option<(usize, usize, SharedString)>,
+    /// Where the tree's rows sat when the pointer came over it. They stay
+    /// there until it leaves, so no row moves from under the pointer.
+    pub tree_held: Option<session_tree::HeldRows>,
+    /// The tree menu's Applies to is on Select projects: the order picked
+    /// goes to the projects ticked in the list beside it.
+    pub tree_sort_select: bool,
+    /// The id of the active row under the pointer, which shows its archive
+    /// button.
+    pub active_hover: Option<SharedString>,
+    /// The search of the Sessions menu.
+    pub tree_filter: Entity<TextInput>,
+    _tree_filter: Subscription,
+}
+
+impl Rail {
+    pub fn new(layout: &state::Layout, cx: &mut Context<Shell>) -> Self {
+        let tree_filter = cx.new(|cx| TextInput::new("Find a session", cx));
+        let sub = cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
+            match ev {
+                InputEvent::Cancel => this.menu = None,
+                InputEvent::Changed => {}
+                _ => return,
+            }
+            cx.notify();
+        });
+        Self {
+            open: layout.rail_open,
+            width: layout.rail_w,
+            pick: Vec::new(),
+            pick_anchor: None,
+            tree_pick: Vec::new(),
+            tree_pick_anchor: None,
+            tree_open: std::collections::HashMap::new(),
+            tree_hover: None,
+            tree_held: None,
+            tree_sort_select: false,
+            active_hover: None,
+            tree_filter,
+            _tree_filter: sub,
+        }
+    }
+}
+
 /// The one thing an environment row says at its end, the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EnvSignal {

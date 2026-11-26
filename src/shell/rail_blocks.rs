@@ -181,7 +181,7 @@ impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
     pub(super) fn rail_narrow(&self) -> bool {
         self.sidebar.style.collapse == Collapse::Icons
-            && !self.rail_open
+            && !self.rail.open
             && self.has_projects()
             && !self.arranging()
     }

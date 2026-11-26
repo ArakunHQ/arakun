@@ -1413,7 +1413,7 @@ impl Shell {
                 "Sidebar",
                 "Layout",
                 "Projects and views, at the side of the window.",
-                self.rail_open,
+                self.rail.open,
             ),
             (
                 Setting::Panel,

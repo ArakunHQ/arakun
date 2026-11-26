@@ -8,7 +8,7 @@ impl Shell {
     fn rail_look(&self) -> crate::customize_view::RailLook {
         crate::customize_view::RailLook {
             style: self.sidebar.style,
-            width: self.rail_w,
+            width: self.rail.width,
             preset: self.sidebar_preset(),
             can_undo: self.builder.history.can_undo(),
             can_redo: self.builder.history.can_redo(),

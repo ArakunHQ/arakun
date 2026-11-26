@@ -355,14 +355,6 @@ pub struct Shell {
     /// The background read of `repo_slugs`; a new one replaces it.
     repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
-    /// Rows of the sidebar picked with Ctrl or Shift+click (`rail_pick`), by path.
-    rail_pick: Vec<std::path::PathBuf>,
-    /// The row Shift+click picks from.
-    rail_pick_anchor: Option<std::path::PathBuf>,
-    /// Sessions of the sidebar's tree picked with Ctrl or Shift+click, by id,
-    /// and the one clicked last, where Shift starts.
-    tree_pick: Vec<SharedString>,
-    tree_pick_anchor: Option<SharedString>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// When the last background `git fetch` ended, so the network is asked rarely.
@@ -415,14 +407,14 @@ pub struct Shell {
     teams: Entity<crate::arakun_teams::Teams>,
     teams_view: Entity<crate::arakun_teams::view::TeamsView>,
     _teams: [Subscription; 2],
-    rail_open: bool,
     panel_open: bool,
+    /// The project rail on the left: open, width, picks and the session tree.
+    rail: rail::Rail,
     /// What the rail shows, in the user's order.
     sidebar: crate::sidebar::Sidebar,
     /// The sidebar builder tab's selection, fields and undo.
     builder: sidebar_builder::Builder,
-    /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
-    rail_w: f32,
+    /// Dragged width of the Workspace panel; state::PANEL_W until dragged.
     panel_w: f32,
     /// The widths the rail and workspace panel are drawn at this frame: the
     /// dragged ones, narrowed when the window is too small to leave the work
@@ -515,11 +507,6 @@ pub struct Shell {
     /// The session on screen pinned itself, or something was pinned: after
     /// that, nothing pins by itself in this window.
     pins_seeded: bool,
-    /// Projects the user folded (false) or opened (true) in the sidebar's
-    /// tree of sessions, over what `tab_layout::Quiet` does by itself.
-    tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
-    /// The tree's row under the pointer, which Alt+P pins.
-    tree_hover: Option<(usize, usize, SharedString)>,
     /// The local servers found by the last look (`shell::running`).
     running: Vec<crate::running::Server>,
     /// A look is under way.
@@ -527,18 +514,6 @@ pub struct Shell {
     /// Look once more when the one under way ends.
     running_again: bool,
     running_checked: Option<Instant>,
-    /// Where the tree's rows sat when the pointer came over it. They stay
-    /// there until it leaves, so no row moves from under the pointer.
-    tree_held: Option<session_tree::HeldRows>,
-    /// The tree menu's Applies to is on Select projects: the order picked
-    /// goes to the projects ticked in the list beside it.
-    tree_sort_select: bool,
-    /// The id of the sidebar's active row under the pointer, which shows
-    /// its archive button.
-    active_hover: Option<SharedString>,
-    /// The search of the Sessions menu.
-    tree_filter: Entity<TextInput>,
-    _tree_filter: Subscription,
     /// The pinned tabs drawn under "N more" in the last frame.
     bar_more: RefCell<Vec<u64>>,
     /// Where the pinned tabs' part of the title bar was in the last frame.
@@ -767,15 +742,7 @@ impl Shell {
                 InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
                 _ => {}
             });
-        let tree_filter = cx.new(|cx| TextInput::new("Find a session", cx));
-        let tree_filter_sub = cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
-            match ev {
-                InputEvent::Cancel => this.menu = None,
-                InputEvent::Changed => {}
-                _ => return,
-            }
-            cx.notify();
-        });
+        let rail = rail::Rail::new(&layout, cx);
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -892,10 +859,6 @@ impl Shell {
             repo_slugs: Default::default(),
             repo_slugs_read: None,
             menu: None,
-            rail_pick: Vec::new(),
-            rail_pick_anchor: None,
-            tree_pick: Vec::new(),
-            tree_pick_anchor: None,
             poll: None,
             last_fetch: None,
             fetching: false,
@@ -924,11 +887,10 @@ impl Shell {
             teams,
             teams_view,
             _teams: teams_subs,
-            rail_open: layout.rail_open,
+            rail,
             panel_open: layout.panel_open,
             sidebar,
             builder: Default::default(),
-            rail_w: layout.rail_w,
             panel_w: layout.panel_w,
             side_fit: Cell::new([layout.rail_w, layout.panel_w]),
             side_crowded: Cell::new(false),
@@ -985,17 +947,10 @@ impl Shell {
             tab_drop: None,
             tab_drop_over: None,
             pins_seeded: false,
-            tree_open: std::collections::HashMap::new(),
-            tree_hover: None,
             running: Vec::new(),
             running_scanning: false,
             running_again: false,
             running_checked: None,
-            tree_held: None,
-            tree_sort_select: false,
-            active_hover: None,
-            tree_filter,
-            _tree_filter: tree_filter_sub,
             bar_more: RefCell::default(),
             bar_area: Rc::default(),
             slide: None,
@@ -1335,9 +1290,9 @@ impl Shell {
         let layout = state::Layout {
             dock_open: self.dock_open,
             dock_height: self.dock_height,
-            rail_open: self.rail_open,
+            rail_open: self.rail.open,
             panel_open: self.panel_open,
-            rail_w: self.rail_w,
+            rail_w: self.rail.width,
             panel_w: self.panel_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
@@ -2586,7 +2541,7 @@ impl Shell {
             self.sync_ci_roots(cx);
             self.sync_poll(window, cx);
         }
-        self.rail_pick.retain(|p| !paths.contains(p));
+        self.rail.pick.retain(|p| !paths.contains(p));
         // Their tabs, and the pages of their browser tabs, go with them.
         self.settle_strip(cx);
         self.unfloat_github(cx);
@@ -2888,7 +2843,7 @@ impl Shell {
                 cx,
             )
         });
-        let rail_w = self.rail_w;
+        let rail_w = self.rail.width;
         dialog.update(cx, |d, _| d.rail_w = rail_w);
         let sub = cx.subscribe_in(
             &dialog,
@@ -2924,7 +2879,7 @@ impl Shell {
                     this.apply_tab_layout(*layout, *preset, cx)
                 }
                 SettingsEvent::SidebarWidth(w) => {
-                    this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
+                    this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
                     this.save(cx);
                     cx.notify();
                 }
@@ -3143,14 +3098,14 @@ impl Shell {
                             this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
-                            this.rail_w = *w;
+                            this.rail.width = *w;
                             this.save(cx);
                             cx.notify();
                         }
                         CustomizeEvent::ResetSidebar => {
                             this.change_sidebar(cx, |s| *s = crate::sidebar::Sidebar::default());
                             this.clear_builder_selection();
-                            this.rail_w = crate::state::RAIL_W;
+                            this.rail.width = crate::state::RAIL_W;
                             this.save(cx);
                         }
                         CustomizeEvent::UndoSidebar(redo) => this.undo_sidebar(*redo, cx),
@@ -3227,7 +3182,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        self.rail_open = !self.rail_open;
+        self.rail.open = !self.rail.open;
         self.save(cx);
         cx.notify();
     }
@@ -3245,7 +3200,7 @@ impl Shell {
     /// Narrowed to icons it still shows, and some rails never close.
     fn rail_shown(&self) -> bool {
         use crate::sidebar::Collapse;
-        self.rail_open
+        self.rail.open
             || self.arranging()
             || !self.has_projects()
             || matches!(
@@ -3286,7 +3241,7 @@ impl Shell {
         let rail_card = match (rail, self.rail_narrow()) {
             (false, _) => (0., 0.),
             (true, true) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
-            (true, false) => (self.rail_w, RAIL_W_RANGE.start),
+            (true, false) => (self.rail.width, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
         let crowded = crowd_out(
@@ -3312,7 +3267,7 @@ impl Shell {
             ],
         );
         self.side_fit.set([
-            if rail { r } else { self.rail_w },
+            if rail { r } else { self.rail.width },
             if panel { p } else { self.panel_w },
         ]);
     }
@@ -4340,7 +4295,7 @@ impl Render for Shell {
                                 } else {
                                     x - gap()
                                 };
-                                this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
+                                this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
                                 this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())

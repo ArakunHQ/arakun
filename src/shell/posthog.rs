@@ -40,12 +40,13 @@ impl Shell {
             PostHogEvent::Draft(text) => {
                 // Stage text only. The usual Send action chooses the new session's worktree.
                 self.show_new_session_tab(window, cx);
-                let draft = &mut self.env_mut().draft;
-                let before = draft.trim_end().to_owned();
-                draft.set(if before.is_empty() {
-                    text.clone()
-                } else {
-                    format!("{before}\n\n{text}")
+                self.edit_draft(&env_path, cx, |draft| {
+                    let before = draft.trim_end().to_owned();
+                    draft.set(if before.is_empty() {
+                        text.clone()
+                    } else {
+                        format!("{before}\n\n{text}")
+                    });
                 });
                 self.composer_changed(cx);
                 cx.notify();

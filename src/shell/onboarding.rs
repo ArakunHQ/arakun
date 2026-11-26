@@ -340,7 +340,7 @@ impl Shell {
             // Someone new lands on the start screen with a few keys to know.
             self.setup_tips = o.fresh;
             self.phone_after_project = false;
-            window.focus(&self.composer.focus, cx);
+            self.focus_composer(window, cx);
             if o.pair_phone {
                 self.open_phone_tab(window, cx);
             }

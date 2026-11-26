@@ -1666,7 +1666,8 @@ impl Shell {
             let ei = match p.env_index(&env_path) {
                 Some(ei) => ei,
                 None => {
-                    // Moved here from another project: its tabs and draft come along.
+                    // Moved here from another project: its tabs come along, and
+                    // its draft stays with its path in the composer.
                     let env = moving.remove(&env_path).unwrap_or_else(|| {
                         let main = !place.repo.is_empty() && place.repo == place.path;
                         let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
@@ -2267,7 +2268,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let active = self.has_projects() && self.env().path == env_path;
-        let Some(env) = self.find_env_mut(env_path) else {
+        let Some(env) = self.find_env(env_path) else {
             return;
         };
         let machine = env
@@ -2275,9 +2276,13 @@ impl Shell {
             .as_ref()
             .map(|r| r.machine.to_string())
             .unwrap_or_default();
-        let back = env.draft.trim().is_empty();
+        let back = self
+            .composer
+            .read(cx)
+            .draft(env_path)
+            .is_none_or(|d| d.text.trim().is_empty());
         if back {
-            env.draft.set(prompt);
+            self.edit_draft(env_path, cx, |d| d.set(prompt));
             if let Some(note) = note {
                 self.rename_notes
                     .entry(env_path.to_path_buf())
@@ -3291,11 +3296,11 @@ impl Shell {
                     self.servers_open_session(id, &session, window, cx);
                     if msg["type"] == "rewound"
                         && let Some(env_path) = self.server_session_env(id, &session)
-                        && let Some(env) = self.find_env_mut(&env_path)
+                        && self.find_env(&env_path).is_some()
                     {
-                        env.draft.set(text(&msg, "prompt"));
+                        self.edit_draft(&env_path, cx, |d| d.set(text(&msg, "prompt")));
                         self.composer_changed(cx);
-                        window.focus(&self.composer.focus, cx);
+                        self.focus_composer(window, cx);
                     }
                 } else if msg["type"] == "branch_renamed" {
                     let env_path = Remote::env_path(id, &text(&msg, "place"));
@@ -4291,7 +4296,6 @@ mod tests {
         let theirs = Remote::project_path("s1/srv/app");
         let mut old = crate::state::new_project(&theirs);
         old.environments = vec![remote_env("/srv/app"), remote_env("/srv/gone")];
-        old.environments[0].draft.set("half a prompt");
         old.active_env = 1;
         let mut projects = vec![crate::state::new_project(&local), old];
         let moved = Remote::env_path("s1", "/srv/app");
@@ -4304,7 +4308,7 @@ mod tests {
         // The local project's own folder stays where it is.
         assert_eq!(projects[0].environments.len(), 1);
         let env = moving.remove(&moved).expect("handed back to be moved");
-        assert_eq!(&*env.draft, "half a prompt");
+        assert_eq!(env.path, moved);
         // A folder no server lists any more is not kept for anywhere.
         assert!(moving.is_empty());
     }

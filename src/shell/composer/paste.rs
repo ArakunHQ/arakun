@@ -11,7 +11,7 @@ use gpui::{
     StyledImage as _, div, img, px,
 };
 
-use super::Shell;
+use super::{Composer, ComposerEvent};
 use crate::agent::attach;
 use crate::state;
 use crate::theme;
@@ -19,10 +19,10 @@ use crate::ui::icon;
 
 /// A large paste waiting in the composer. The counts are taken once when it
 /// lands, because a paste can be megabytes and the chip shows them every frame.
-pub(super) struct Paste {
-    pub(super) text: String,
-    pub(super) lines: usize,
-    pub(super) chars: usize,
+pub(in crate::shell) struct Paste {
+    pub(in crate::shell) text: String,
+    pub(in crate::shell) lines: usize,
+    pub(in crate::shell) chars: usize,
 }
 
 impl Paste {
@@ -35,12 +35,8 @@ impl Paste {
     }
 }
 
-impl Shell {
-    pub(super) fn paste_into_composer(
-        &mut self,
-        item: Option<ClipboardItem>,
-        cx: &mut Context<Self>,
-    ) {
+impl Composer {
+    pub(super) fn paste(&mut self, item: Option<ClipboardItem>, cx: &mut Context<Self>) {
         let Some(item) = item else {
             return;
         };
@@ -50,14 +46,11 @@ impl Shell {
                     let text = s.text();
                     match pasted_paths(text) {
                         Some(paths) => self.push_mentions(&paths),
-                        None if attach::is_large_paste(text) => {
-                            let env_path = self.env().path.clone();
-                            self.pastes
-                                .entry(env_path)
-                                .or_default()
-                                .push(Paste::new(text.replace("\r\n", "\n")));
-                        }
-                        None => self.env_mut().draft.insert(&text.replace("\r\n", "\n")),
+                        None if attach::is_large_paste(text) => self
+                            .here_mut()
+                            .pastes
+                            .push(Paste::new(text.replace("\r\n", "\n"))),
+                        None => self.here_mut().text.insert(&text.replace("\r\n", "\n")),
                     }
                 }
                 ClipboardEntry::Image(image) => {
@@ -69,13 +62,13 @@ impl Shell {
                 ClipboardEntry::ExternalPaths(paths) => self.push_mentions(paths.paths()),
             }
         }
-        self.composer_changed(cx);
+        self.changed(cx);
         self.update_completion(cx);
         cx.notify();
     }
 
-    pub(super) fn copy_composer(&mut self, cut: bool, cx: &mut Context<Self>) {
-        let draft = &self.env().draft;
+    pub(super) fn copy(&mut self, cut: bool, cx: &mut Context<Self>) {
+        let draft = &self.here().text;
         let range = if draft.has_selection() {
             draft.selection()
         } else {
@@ -86,7 +79,7 @@ impl Shell {
         }
         cx.write_to_clipboard(ClipboardItem::new_string(draft[range.clone()].to_string()));
         if cut {
-            self.env_mut().draft.replace(range, "");
+            self.here_mut().text.replace(range, "");
             self.update_completion(cx);
         }
         cx.notify();
@@ -96,14 +89,14 @@ impl Shell {
     /// environment when they are inside it. Images wait above the text as
     /// pictures instead, and go along with the prompt.
     pub(super) fn push_mentions(&mut self, paths: &[PathBuf]) {
-        let env = self.env_mut();
-        let root = env.path.clone();
+        let root = self.frame.env.clone();
+        let env = self.here_mut();
         let (images, files): (Vec<&PathBuf>, Vec<&PathBuf>) = paths
             .iter()
             .partition(|p| attach::mime_type(p).is_some() && p.is_file());
         for image in images {
-            if !env.draft_images.contains(image) {
-                env.draft_images.push(image.clone());
+            if !env.images.contains(image) {
+                env.images.push(image.clone());
             }
         }
         let mentions: Vec<String> = files
@@ -114,15 +107,15 @@ impl Shell {
             .collect();
         // All in one edit, so one Ctrl+Z takes them back.
         if !mentions.is_empty() {
-            env.draft.insert_word(&format!("{} ", mentions.join(" ")));
+            env.text.insert_word(&format!("{} ", mentions.join(" ")));
         }
-        self.composer.reveal.set(true);
+        self.reveal.set(true);
     }
 
     /// The images waiting in the composer, as thumbnails: a click shows one
     /// beside the chat, the cross takes it out.
     pub(super) fn render_image_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let images = &self.env().draft_images;
+        let images = &self.here().images;
         if images.is_empty() {
             return None;
         }
@@ -158,9 +151,8 @@ impl Shell {
                                         .into_any_element()
                                 }),
                         )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let env = this.env().path.clone();
-                            this.open_file_beside(&env, &open, None, window, cx);
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ComposerEvent::OpenImage(open.clone()))
                         }))
                         .child(
                             div()
@@ -180,11 +172,11 @@ impl Shell {
                                 .child(icon("cancel01", 10.).text_color(gpui::white()))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    let env = this.env_mut();
-                                    if i < env.draft_images.len() {
-                                        env.draft_images.remove(i);
+                                    let images = &mut this.here_mut().images;
+                                    if i < images.len() {
+                                        images.remove(i);
                                     }
-                                    this.composer_changed(cx);
+                                    this.changed(cx);
                                     cx.notify();
                                 })),
                         )
@@ -236,7 +228,7 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-pub(super) fn save_image(bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> {
+pub(in crate::shell) fn save_image(bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> {
     let dir = state::data_dir().join("pastes");
     std::fs::create_dir_all(&dir)?;
     let stamp = std::time::SystemTime::now()

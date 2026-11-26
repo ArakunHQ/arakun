@@ -5,7 +5,7 @@ use std::path::Path;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, Focusable as _, FontWeight,
+    AnyElement, App, AppContext as _, Context, Entity, Focusable as _, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
@@ -62,29 +62,21 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.notes.entry(env.to_path_buf()).or_default().push(note);
+        self.composer
+            .update(cx, |c, _| c.draft_mut(env).notes.push(note));
         self.sync_note_marks(env, cx);
-        window.focus(&self.composer.focus, cx);
-        cx.notify();
-    }
-
-    fn remove_note(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let env = self.env().path.clone();
-        if let Some(v) = self.notes.get_mut(&env) {
-            if ix < v.len() {
-                v.remove(ix);
-            }
-            if v.is_empty() {
-                self.notes.remove(&env);
-            }
-        }
-        self.sync_note_marks(&env, cx);
+        self.focus_composer(window, cx);
         cx.notify();
     }
 
     /// Tells each open transcript of `env` which of its passages have notes.
     pub(super) fn sync_note_marks(&mut self, env: &Path, cx: &mut Context<Self>) {
-        let notes = self.notes.get(env).cloned().unwrap_or_default();
+        let notes = self
+            .composer
+            .read(cx)
+            .draft(env)
+            .map(|d| d.notes.clone())
+            .unwrap_or_default();
         let Some(e) = self.find_env(env) else {
             return;
         };
@@ -168,7 +160,8 @@ impl Shell {
                 lines: Some(d.lines),
                 mark: None,
             };
-            self.notes.entry(env).or_default().push(n);
+            self.composer
+                .update(cx, |c, _| c.draft_mut(&env).notes.push(n));
         }
         window.focus(&self.focus, cx);
         cx.notify();
@@ -276,154 +269,15 @@ impl Shell {
     }
 
     /// Review comments waiting for `path` in the visible environment, as line ranges.
-    pub(super) fn commented_lines(&self, path: &str) -> Vec<(usize, usize)> {
-        self.notes
-            .get(&self.env().path)
+    pub(super) fn commented_lines(&self, path: &str, cx: &App) -> Vec<(usize, usize)> {
+        self.composer
+            .read(cx)
+            .draft(&self.env().path)
             .into_iter()
-            .flatten()
+            .flat_map(|d| &d.notes)
             .filter(|n| n.kind == NoteKind::Review && n.path.as_deref() == Some(path))
             .filter_map(|n| n.lines)
             .collect()
-    }
-
-    pub(super) fn render_note_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let notes = self.notes.get(&self.env().path).filter(|v| !v.is_empty())?;
-        let annotations = notes
-            .iter()
-            .filter(|n| n.kind == NoteKind::Annotation)
-            .count();
-        let reviews = notes.len() - annotations;
-        let mut summary = Vec::new();
-        if annotations > 0 {
-            summary.push(format!(
-                "{annotations} annotation{}",
-                if annotations == 1 { "" } else { "s" }
-            ));
-        }
-        if reviews > 0 {
-            summary.push(format!(
-                "{reviews} review comment{}",
-                if reviews == 1 { "" } else { "s" }
-            ));
-        }
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .px(crate::ui::sp(12.))
-                .pt(crate::ui::sp(10.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(crate::ui::sp(4.))
-                                .h(px(20.))
-                                .px(crate::ui::sp(8.))
-                                .rounded_full()
-                                .bg(crate::agent::mark_color().opacity(0.14))
-                                .text_size(px(crate::ui::TEXT_XS))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(crate::agent::mark_color())
-                                .child(
-                                    icon("comment01", 11.).text_color(crate::agent::mark_color()),
-                                )
-                                .child(summary.join(" · ")),
-                        )
-                        .child(div().flex_1())
-                        .when(reviews > 0, |d| {
-                            d.child(
-                                div()
-                                    .id("submit-review")
-                                    .flex()
-                                    .items_center()
-                                    .gap(crate::ui::sp(6.))
-                                    .h(px(24.))
-                                    .px(crate::ui::sp(8.))
-                                    .rounded(crate::ui::rad(8.))
-                                    .cursor_pointer()
-                                    .bg(theme::content())
-                                    .text_color(theme::background())
-                                    .text_size(px(crate::ui::TEXT_XS))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Submit review")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.submit(window, cx);
-                                    })),
-                            )
-                        })
-                        .child(
-                            div()
-                                .id("notes-clear")
-                                .text_size(px(crate::ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(theme::text_muted()))
-                                .child("Clear")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let env = this.env().path.clone();
-                                    this.notes.remove(&env);
-                                    this.sync_note_marks(&env, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(div().flex().flex_wrap().gap(crate::ui::sp(6.)).children(
-                    notes.iter().enumerate().map(|(i, n)| {
-                        let review = n.kind == NoteKind::Review;
-                        div()
-                            .id(("note-chip", i))
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(6.))
-                            .h(px(26.))
-                            .max_w(px(320.))
-                            .pl(crate::ui::sp(8.))
-                            .pr(crate::ui::sp(4.))
-                            .rounded(crate::ui::rad(8.))
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::fill_hover())
-                            .text_size(px(crate::ui::TEXT_SM))
-                            .child(
-                                icon(if review { "comment-add01" } else { "note01" }, 12.)
-                                    .text_color(theme::text_subtle()),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(theme::text_muted())
-                                    .child(n.label()),
-                            )
-                            .child(
-                                div()
-                                    .id(("note-remove", i))
-                                    .flex_none()
-                                    .size(px(18.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(crate::ui::rad(4.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme::fill_selected()))
-                                    .child(icon("cancel01", 11.).text_color(theme::text_subtle()))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.remove_note(i, cx);
-                                    })),
-                            )
-                    }),
-                ))
-                .into_any_element(),
-        )
     }
 }
 

@@ -828,7 +828,7 @@ impl Shell {
                 });
                 let review_path = subtitle.to_string();
                 let target = tab.target_line.filter(|_| !is_diff);
-                let commented = self.commented_lines(&review_path);
+                let commented = self.commented_lines(&review_path, cx);
                 let drafting = self
                     .review_draft
                     .as_ref()

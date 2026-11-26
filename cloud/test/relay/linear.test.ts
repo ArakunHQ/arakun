@@ -207,6 +207,26 @@ describe("Linear deliveries in the relay", () => {
     expect(at! - Date.now()).toBeGreaterThan(89 * DAY_MS);
   });
 
+  it("does not report a delivery dropped while the alarm was expiring another", async () => {
+    const { me } = await awayComputer();
+    const first = delivery("created", 20);
+    const second = delivery("created", 10);
+    await deliver(env, me.label, first, null);
+    await deliver(env, me.label, second, null);
+    await runInDurableObject(stub(me.label), async (_i, state) => {
+      await state.storage.put(`linear:${first.id}`, { ...first, created: first.created - 8 * 86_400 });
+      await state.storage.put(`linear:${second.id}`, { ...second, created: second.created - 8 * 86_400 });
+      await state.storage.setAlarm(Date.now());
+    });
+    // The computer accepts the second while linear.ts hears about the first.
+    const spy = vi.spyOn(expire, "expired").mockImplementation(async () => {
+      await dropDelivery(env, me.label, second.id);
+    });
+    expect(await runDurableObjectAlarm(stub(me.label))).toBe(true);
+    expect(spy.mock.calls.map((c) => c[1])).toEqual([first.id]);
+    expect(await stored(me.label, `linear:${second.id}`)).toBeUndefined();
+  });
+
   it("refuses the 51st queued delivery", async () => {
     const { me } = await awayComputer();
     for (let i = 0; i < 50; i++) expect(await deliver(env, me.label, delivery(), null)).toEqual({ online: false });

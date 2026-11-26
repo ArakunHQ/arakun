@@ -748,6 +748,9 @@ export class Relay extends DurableObject<Env> {
   private async expireDeliveries(now: number): Promise<void> {
     for (const d of await this.deliveries()) {
       if (expiresAt(d) > now) break;
+      // The computer may have accepted it while an earlier one was told:
+      // then it was not given up on.
+      if ((await this.ctx.storage.get(LINEAR_KEY + d.id)) === undefined) continue;
       await this.ctx.storage.delete(LINEAR_KEY + d.id);
       try {
         await expired(this.env, d.id);

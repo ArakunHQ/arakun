@@ -800,8 +800,19 @@ describe("a delivery dropped after 7 days", () => {
     expect(await expiredAt(follow)).toBeTypeOf("number");
     expect((await call("POST", `/linear/deliveries/${id}/accept`, as(owner.session))).status).toBe(204);
     await expired(env, id);
-    expect(await expiredAt(id)).toBeTypeOf("number");
     expect(linearFake.activities()).toEqual([SENT]);
+  });
+
+  it("leaves a delivery the computer accepted unexpired, so its session still takes follow-ups", async () => {
+    const { id, pc } = await delegatedIssue();
+    // The accept wrote the row, but dropping the relay's copy failed: the
+    // relay still expires it a week later.
+    await env.DB.prepare("UPDATE linear_deliveries SET accepted_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
+    await expired(env, id);
+    expect(await expiredAt(id)).toBeNull();
+    expect(linearFake.activities()).toEqual([SENT]);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "make it red" });
   });
 
   it("expired() never throws", async () => {

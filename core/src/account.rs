@@ -1,8 +1,9 @@
 //! The Factory account's plan usage: the same limits `droid` checks before every
 //! turn (5-hour, weekly and monthly windows of Standard Usage, the Droid Core
 //! pool, and the Extra Usage balance), read from `GET /api/billing/limits` with a
-//! Factory API key. The key lives in the desktop keyring (Secret Service via
-//! `secret-tool` on Linux, Credential Manager on Windows), or comes from `FACTORY_API_KEY`.
+//! Factory API key. The key lives in the desktop keyring (the Secret Service on Linux,
+//! the Keychain on macOS, the Credential Manager on Windows), or comes from
+//! `FACTORY_API_KEY`.
 
 use std::io::Write as _;
 use std::process::Stdio;
@@ -524,7 +525,7 @@ fn droid_decrypt(raw: &str, key_b64: &str) -> Option<String> {
 }
 
 fn keyring_store(key: &str) -> Result<(), String> {
-    keyring::store(KEYRING_ACCOUNT, "arakun: Factory API key", key)
+    keyring::store(KEYRING_ACCOUNT, "arakun: Factory API key", key).map_err(String::from)
 }
 
 fn keyring_clear() {

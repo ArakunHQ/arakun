@@ -746,8 +746,8 @@ after a week).
   the device it is on. A server other than the default (`ARAKUN_TEAMS_URL`) names its
   own GitHub app, which Arakun asks it for. Arakun drops the GitHub token and keeps the
   session the server answers with in the system keyring: the Keychain on macOS, the
-  Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
-  (without it, the session lasts until Arakun quits). Signed in, the User row shows
+  Credential Manager on Windows, and the Secret Service (gnome-keyring, KWallet or
+  KeePassXC) on Linux (without one, the session lasts until Arakun quits). Signed in, the User row shows
   your GitHub picture and "Signed in with GitHub". An account the server has turned
   Teams on for gets a **Team** row under Search in the sidebar; any other account is
   signed in all the same, but cannot use Teams. A Team tab left open from
@@ -1311,11 +1311,11 @@ is an estimate, at about 4 bytes a token. It only reads the files: nothing is se
 anywhere and your setup is not changed.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
-from GLib (`libglib2.0-bin` on Debian), `tailscale` (phone over Tailscale), `cf`
-(Cloudflare tab). Teams on Linux does not work without `secret-tool`, which keeps the
-session and the device keys, and on its first run it needs `gdbus` too, to tell a locked
-keyring from one with no device yet.
+(headless agents on Linux), `tailscale` (phone over Tailscale), `cf` (Cloudflare tab).
+Stored logins and Teams on Linux need a Secret Service on the session bus, such as
+gnome-keyring, KWallet or KeePassXC; Arakun talks to it over D-Bus, with no
+`secret-tool` needed. Teams does not work without one, since it keeps the session and
+the device keys there.
 
 ## Build from source
 

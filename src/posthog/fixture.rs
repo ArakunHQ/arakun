@@ -55,6 +55,11 @@ fn loaded() -> Option<&'static Fixture> {
     .as_ref()
 }
 
+/// Whether a fixture answers every call, so no key is needed.
+pub(super) fn active() -> bool {
+    loaded().is_some()
+}
+
 pub(super) fn sessions() -> Option<Vec<Session>> {
     loaded().map(|f| f.sessions.clone())
 }

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs the Claude Code ACP adapter as `agent`, called as root by claude-acp
+# through sudo. The capabilities go before the user changes, bounding set
+# included, so nothing the agent starts can get them back; no_new_privs keeps
+# setuid programs (sudo among them) from raising it again. Group `work` and
+# umask 002 let the server and the agent share the files under /work.
+set -eu
+umask 0002
+export HOME=/home/agent USER=agent LOGNAME=agent
+exec /usr/bin/setpriv --reuid=agent --regid=agent --init-groups \
+  --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+  -- /opt/arakun/agent/node_modules/.bin/claude-agent-acp "$@"

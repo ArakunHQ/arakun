@@ -1,0 +1,6 @@
+#!/bin/sh
+# What arakun-server runs for a Claude session (ARAKUN_CLAUDE_ACP): the adapter,
+# as the user `agent`. sudo lets `arakun` run as-agent and nothing else, and
+# as-agent starts nothing but the adapter. -E keeps the variables the server
+# gives the adapter; sudo still drops the dangerous ones (LD_*).
+exec sudo -n -E /opt/arakun/bin/as-agent "$@"

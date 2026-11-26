@@ -19,6 +19,7 @@ export type LogAction =
   | "notice.delete"
   | "cloud.grant"
   | "cloud.decline"
+  | "cloud.machine.sleep"
   | "beta.admit"
   | "beta.decline"
   | "operator.totp.add"

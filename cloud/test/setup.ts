@@ -18,6 +18,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM cloud_access_requests"),
     env.DB.prepare("DELETE FROM notice_reads"),
     env.DB.prepare("DELETE FROM notices"),
+    env.DB.prepare("DELETE FROM cloud_machines"),
     env.DB.prepare("DELETE FROM machines"),
     env.DB.prepare("DELETE FROM envelopes"),
     env.DB.prepare("DELETE FROM channels"),

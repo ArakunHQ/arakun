@@ -3,7 +3,8 @@
 // to the account when it claims; a device comes in at /machines/<label>/ws
 // with a session of the same account. Everything the label's object needs to
 // know about who is calling, it hears from here in headers built from the
-// session, never from the client.
+// session, never from the client. A device at the door of a cloud machine
+// that sleeps wakes it (cloud_machine.ts).
 //
 //   GET    /machines              → [{ label, pub, name, kind, online, last_seen_at }]
 //   DELETE /machines/<label>      → forgets the machine and closes its sockets
@@ -11,6 +12,7 @@
 //   GET    /machines/<label>/ws   → a device's socket
 
 import { session, type Session } from "./auth";
+import { wakeIfCloud } from "./cloud_machines";
 import { PAGE_ID, phoneControl, pcControl } from "./relay/frames";
 import { disabledReason, planFor } from "./relay/limits";
 import { CLOSE_FORBIDDEN, CLOSE_GONE, CLOSE_LIMIT, CLOSE_NOT_FOUND, CLOSE_UNAUTHORIZED, CLOSE_UNAVAILABLE } from "./relay/relay";
@@ -35,7 +37,7 @@ const REFUSALS = {
 export type Refusal = keyof typeof REFUSALS;
 
 /// The answer for a /machines route, or null when the path is not one.
-export async function machines(request: Request, env: Env, url: URL): Promise<Response | null> {
+export async function machines(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response | null> {
   if (url.pathname === "/machines") return request.method === "GET" ? list(request, env) : null;
   const match = MACHINE.exec(url.pathname);
   if (!match) return null;
@@ -43,7 +45,7 @@ export async function machines(request: Request, env: Env, url: URL): Promise<Re
   const door = match[2];
   if (!door) return request.method === "DELETE" ? forget(request, env, label) : null;
   if (request.method !== "GET") return null;
-  return door === "pc" ? computerDoor(request, env, url, label) : deviceDoor(request, env, url, label);
+  return door === "pc" ? computerDoor(request, env, url, label) : deviceDoor(request, env, url, label, ctx);
 }
 
 async function list(request: Request, env: Env): Promise<Response> {
@@ -96,15 +98,22 @@ async function computerDoor(request: Request, env: Env, url: URL, label: string)
 }
 
 /// A device's door: only a session of the account the machine is registered to.
-async function deviceDoor(request: Request, env: Env, url: URL, label: string): Promise<Response> {
+async function deviceDoor(request: Request, env: Env, url: URL, label: string, ctx: ExecutionContext): Promise<Response> {
   if (!isUpgrade(request)) return notASocket(env);
   const [disabled, s] = await Promise.all([disabledReason(env.CONFIG), session(request, env)]);
   if (disabled) return refuseSocket("ws", "disabled", disabled);
   if (!s) return refuseSocket("ws", "signed_out");
   if (s.blocked) return refuseSocket("ws", "blocked");
-  const owner = await env.DB.prepare("SELECT github_id FROM machines WHERE label = ?").bind(label).first<number>("github_id");
-  if (owner === null) return refuseSocket("ws", "no_machine");
-  if (owner !== s.githubId) return refuseSocket("ws", "not_yours");
+  const row = await env.DB.prepare(
+    `SELECT m.github_id, c.label IS NOT NULL AS cloud FROM machines m LEFT JOIN cloud_machines c ON c.label = m.label WHERE m.label = ?`,
+  )
+    .bind(label)
+    .first<{ github_id: number; cloud: number }>();
+  if (row === null) return refuseSocket("ws", "no_machine");
+  if (row.github_id !== s.githubId) return refuseSocket("ws", "not_yours");
+  // A start takes seconds: the socket opens now, and the relay tells the
+  // device the computer is offline until the server has dialed in.
+  if (row.cloud === 1) ctx.waitUntil(wakeIfCloud(env, label));
   const page = url.searchParams.get("page");
   return toObject(env, label, "ws", page !== null && PAGE_ID.test(page) ? page : null, s, {
     "x-arakun-device": s.id,
@@ -153,7 +162,7 @@ export async function recheckAccount(env: Env, githubId: number): Promise<void> 
 
 /// A recheck that fails is not the caller's failure: the object's alarm
 /// rechecks within 15 minutes anyway.
-async function recheckMachine(env: Env, label: string): Promise<void> {
+export async function recheckMachine(env: Env, label: string): Promise<void> {
   try {
     const res = await relayStub(env, label).fetch("https://relay/_recheck", { method: "POST", headers: { "x-arakun-label": label } });
     if (!res.ok) console.error(`recheck of ${label} answered ${res.status}`);

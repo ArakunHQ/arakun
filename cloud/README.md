@@ -44,6 +44,8 @@ cloud/
                         POST /admin/notices, DELETE /admin/notices/<id>,
                         GET /admin/cloud/requests,
                         PUT /admin/cloud/requests/<github_id>/grant|decline,
+                        GET /admin/cloud/machines,
+                        POST /admin/cloud/machines/<label>/sleep,
                         GET /admin/beta/signups,
                         PUT /admin/beta/signups/<github_id>/<platform>/admit|decline,
                         GET /admin/log
@@ -54,6 +56,12 @@ cloud/
                         and the operator's side of them
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
+  src/cloud_machine.ts  the CloudMachine Durable Object: one container running
+                        arakun-server per cloud machine, its key, start, sleep and wake
+  src/cloud_machines.ts the account's cloud machines: /cloud/machines, and the
+                        operator's side of them
+  machine/              the cloud machine's image: Dockerfile, entrypoint and the
+                        wrapper that runs agents as their own user
   src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the
@@ -799,6 +807,55 @@ auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<yo
   "https://<host>/admin/cloud/requests/<github_id>/decline"
 ```
 
+## Cloud machines
+
+A cloud machine is `arakun-server` in a Cloudflare container that we run for an
+account with the `cloud` flag (`src/cloud_machine.ts`, the image in `machine/`).
+It registers on the relay like any computer of the account, so the app and the
+phone reach it at the usual `/machines/<label>` doors. One per account for now.
+
+- **Identity.** The machine's object makes its relay key when the machine is
+  made, so the label is known before the container first runs. The key goes in
+  only on a start from the image; a snapshot has it on disk.
+- **Sign-in.** Each start makes a new `cloud` session for the label, which ends
+  the one before and is good only at that label's computer door. It goes in as an
+  environment variable. Sleep removes the server's sign-in file and ends the
+  session before the snapshot, so no snapshot holds a live token.
+- **Lifecycle.** A device at the machine's door wakes it, from its snapshot when
+  there is one. Every 5 minutes an alarm asks the server (`arakun-server status`)
+  whether an agent turn runs or a device is connected; while one does, it renews
+  the container's inactivity timeout, since work inside the container is no
+  activity to Cloudflare. After 15 minutes of neither, it snapshots the disk and
+  stops the container. Taking the `cloud` flag or blocking the account stops the
+  machine at the next check and refuses the next wake.
+- **Users.** `arakun` runs the server; `agent` runs the agents, without
+  capabilities, through `machine/claude-acp`. On Cloudflare's `durable_object`
+  policy every process has root's capabilities whatever its user, so this
+  separation holds in Docker but has not been shown to hold there; the session's
+  one door is what limits a token an agent reads.
+- **Size.** 1 vCPU, 6 GiB and 20 GB of disk (`INSTANCE`), the most disk an
+  account gets and a snapshot holds.
+
+Only the test Worker (the top level of `wrangler.toml`) has the container and the
+`CLOUD_MACHINE` binding; production answers 503 on these routes until both are
+added under `[env.production]`, with the migration tag `v3`, and the deploy token
+may push container images. `wrangler deploy` of the test Worker builds the image
+with Docker, from the repository (`/.dockerignore` lets in what it needs); the
+tests and `wrangler dev` run without it.
+
+```sh
+# the account's machines; make one (it starts at once), wake it, put it to sleep, remove it
+curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/machines"
+curl -fsS -X POST -H "Authorization: Bearer <session>" -H "Content-Type: application/json" \
+  -d '{"name":"Cloud"}' "https://<host>/cloud/machines"
+curl -fsS -X POST -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/wake"
+curl -fsS -X POST -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/sleep"
+curl -fsS -X DELETE -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>"
+# the operator: every machine, and stopping one now
+auth | curl -fsS -H @- "https://<host>/admin/cloud/machines"
+auth | curl -fsS -X POST -H @- "https://<host>/admin/cloud/machines/<label>/sleep"
+```
+
 ## Phone app betas
 
 The iOS app is tested through TestFlight and the Android app through a Play testing
@@ -1108,6 +1165,13 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `DELETE /admin/users/<github_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {github_id, closed}`, with how many ended. |
 | `GET /cloud/access` with the session | `200 {status, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `granted` or `declined`; a time is `null` where it does not apply, and `retry_at` is set only for `declined`: when the account may ask again. `401` without a session. |
 | `POST /cloud/access` with the session, `{"reason"?: "..."}` | Asks for cloud access: `201` with the same shape, `pending`. `400` for a reason over 500 characters, `401` without a session, `403 {error: "blocked"}` for a blocked account, `409 {error, status, requested_at, decided_at, retry_at}` when the account has asked already (`already pending`), has access (`already granted`) or was declined less than 30 days ago (`declined recently`), `429` after 5 a minute. |
+| `GET /cloud/machines` with a session of an account with the `cloud` flag | `200 [{label, name, running, snapshot, last_active}]`. `401` without a session, `403` for a blocked account or one without the flag, `503` where cloud machines are not set up. |
+| `POST /cloud/machines`, `{"name"?: "..."}` | Makes a machine and starts it: `201 {label, name, running, snapshot, last_active}`. `400` for a name not of 1 to 100 characters, `409` when the account has a cloud machine already or as many machines as its plan allows. |
+| `POST /cloud/machines/<label>/wake` | Starts it if it sleeps: `200` with its state. `403` when the account may not run one now, `404` for another account's, `503` without containers. |
+| `POST /cloud/machines/<label>/sleep` | Snapshots it and stops it: `204`. |
+| `DELETE /cloud/machines/<label>` | Stops it and forgets it, with its key, snapshot, registration and session: `204`. |
+| `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, github_id, login, name, created_at, running, snapshot}]`, newest first. |
+| `POST /admin/cloud/machines/<label>/sleep` with `ADMIN_SECRET` | Snapshots it and stops it now: `204`, and a `cloud.machine.sleep` entry in the log. `404` for no such machine. |
 | `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
 | `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
 | `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |

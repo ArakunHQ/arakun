@@ -1,0 +1,8 @@
+# The one image built from this repository is the cloud machine's
+# (cloud/machine/Dockerfile), with the repository as its build context. wrangler
+# hands Docker the Dockerfile on stdin, so a Dockerfile.dockerignore next to it
+# would not be read: this file keeps everything else out of the context.
+*
+!tools/install-release.sh
+!core/src/agent/launch.rs
+!cloud/machine/

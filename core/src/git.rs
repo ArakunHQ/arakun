@@ -510,6 +510,24 @@ pub fn branch_name_ok(repo: &Path, name: &str) -> bool {
     )
 }
 
+/// A branch name that is safe to pass to git as a bare argument, for a name
+/// that came from somewhere else. A leading `-` would be read as an option,
+/// and `--branch` reads `@{-1}` as the branch checked out before.
+pub fn branch_arg_ok(repo: &Path, name: &str) -> bool {
+    !name.starts_with('-') && !name.contains("@{") && branch_name_ok(repo, name)
+}
+
+/// Brings origin's `branch` into `origin/<branch>`. False when that fails:
+/// offline, no origin, or no such branch there. A full refspec, so the name
+/// is never read as an option.
+pub fn fetch_branch(repo: &Path, branch: &str) -> bool {
+    let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
+    succeeds(
+        git(repo).args(["fetch", "--quiet", "origin", &spec]),
+        GIT_REMOTE,
+    )
+}
+
 /// Renames the branch checked out in `dir` from `old` to `new`. Refuses when the
 /// branch is no longer `old` or was pushed (it has an upstream): the remote would
 /// keep the old name. When `new` is taken, `next_free` tries `new-2`, `new-3`…;
@@ -2549,6 +2567,54 @@ test: cover the resize\u{1f}\u{1e}\n";
             .collect();
         assert!(on.contains(&"taken".to_string()) && on.contains(&"linear/ara-1".to_string()));
         for d in [dir, old, new] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_branch_name_git_would_misread_is_refused() {
+        let dir = repo();
+        for bad in [
+            "",
+            "-x",
+            "--upload-pack=touch /tmp/pwned",
+            "a b",
+            "a..b",
+            "@{-1}",
+        ] {
+            assert!(!super::branch_arg_ok(&dir, bad), "{bad:?}");
+        }
+        for good in ["linear/ara-1", "fix-x", "taken"] {
+            assert!(super::branch_arg_ok(&dir, good), "{good:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_branch_pushed_elsewhere_is_fetched_by_name() {
+        let (dir, origin) = (repo(), repo());
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        // No origin yet: it fails quietly.
+        assert!(!super::fetch_branch(&dir, "linear/ara-9"));
+        let (d, o) = (dir.to_str().unwrap(), origin.to_str().unwrap());
+        assert!(git(&["-C", o, "branch", "linear/ara-9"]));
+        assert!(git(&["-C", d, "remote", "add", "origin", o]));
+        assert!(super::fetch_branch(&dir, "linear/ara-9"));
+        let remote = super::branches(&dir).unwrap().remote;
+        assert!(
+            remote.contains(&"origin/linear/ara-9".to_string()),
+            "{remote:?}"
+        );
+        // Only that branch came: the others stay on origin.
+        assert!(!remote.contains(&"origin/taken".to_string()), "{remote:?}");
+        assert!(!super::fetch_branch(&dir, "linear/none"));
+        for d in [dir, origin] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

@@ -16,13 +16,6 @@ pub(super) type Waiter =
 
 const NOT_HERE: &str = "the project is not on this computer";
 
-/// The environment of `envs` on `branch`, if one is on this computer.
-pub(super) fn existing<'a>(envs: &'a [Environment], branch: &str) -> Option<&'a Environment> {
-    // A server's folder can be on the branch too, but the work must run here.
-    envs.iter()
-        .find(|e| !branch.is_empty() && e.remote.is_none() && e.branch.as_ref() == branch)
-}
-
 /// Creations still running, by project root and branch, with who waits on each.
 pub(super) struct InFlight<T> {
     waiting: HashMap<(PathBuf, String), Vec<T>>,
@@ -79,25 +72,24 @@ impl Shell {
             then(self, Err(NOT_HERE.into()), window, cx);
             return;
         };
-        if branch.trim().is_empty() {
-            then(self, Err("no branch was named".into()), window, cx);
-            return;
-        }
-        if let Some(env) = existing(&p.environments, branch) {
-            let path = env.path.clone();
-            then(self, Ok(path), window, cx);
-            return;
-        }
+        // Git decides which worktree is on the branch, even when one is
+        // listed here: a `git switch` in a terminal leaves the list behind.
+        let listed = p
+            .environments
+            .iter()
+            .any(|e| e.remote.is_none() && e.branch.as_ref() == branch);
         let (repo, name, start) = (p.path.clone(), p.name.clone(), p.base.clone());
         if !self.linear_envs.join(&repo, branch, Box::new(then)) {
             return;
         }
-        // Its row shows in the sidebar while git works.
-        self.pending_envs.push(PendingEnv {
-            repo: repo.clone(),
-            name: branch.to_string(),
-        });
-        cx.notify();
+        // A row shows in the sidebar while git works, unless one likely is there.
+        if !listed {
+            self.pending_envs.push(PendingEnv {
+                repo: repo.clone(),
+                name: branch.to_string(),
+            });
+            cx.notify();
+        }
         let branch = branch.to_string();
         cx.spawn_in(window, async move |this, cx| {
             let (r, b) = (repo.clone(), branch.clone());
@@ -138,7 +130,7 @@ impl Shell {
             .projects
             .iter()
             .position(|p| p.path == repo)
-            .ok_or_else(|| NOT_HERE.to_string())?;
+            .ok_or_else(|| "the project was removed while the environment was made".to_string())?;
         let project = &mut self.projects[pi];
         if project.env_index(path).is_none() {
             // Not auto-named: the branch was chosen for it and must stay.
@@ -167,7 +159,8 @@ impl Shell {
 
 /// Off the UI thread: the worktree of `repo` on `branch`, and whether it was
 /// made now. A branch only on origin is checked out from there; a new one
-/// starts where `quick_create_env_then` would start it.
+/// starts where `quick_create_env_then` would start it. The branch name
+/// comes from outside, so it is checked before git sees it.
 fn worktree_on(
     repo: &Path,
     project: &str,
@@ -179,7 +172,10 @@ fn worktree_on(
         let line = e.lines().next().unwrap_or("").trim();
         format!("git said \"{line}\"")
     };
-    // Made outside Arakun, or not yet listed: used as it is.
+    if !git::branch_arg_ok(repo, branch) {
+        return Err("the branch name is not one git accepts".into());
+    }
+    // Listed here or not, the worktree git has on the branch now is used as it is.
     if let Some(tree) = git::worktrees(repo)
         .map_err(said)?
         .into_iter()
@@ -190,9 +186,14 @@ fn worktree_on(
     if !git::has_commits(repo).map_err(said)? {
         return Err("the project has no commits yet".into());
     }
-    let branches = git::branches(repo).map_err(said)?;
-    let path = model::worktree_path(project, branch);
+    let mut branches = git::branches(repo).map_err(said)?;
     let local = branches.local.iter().any(|b| b == branch);
+    // Pushed from another computer and not fetched here yet, it would look
+    // new, and a fresh branch made from the base could not be pushed later.
+    if !local && git::fetch_branch(repo, branch) {
+        branches = git::branches(repo).map_err(said)?;
+    }
+    let path = model::worktree_path(project, branch);
     let on_origin = branches
         .remote
         .iter()
@@ -209,39 +210,6 @@ fn worktree_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn env(path: &str, branch: &str) -> Environment {
-        Environment::new(PathBuf::from(path), Some(branch.into()), false)
-    }
-
-    #[test]
-    fn existing_finds_the_environment_on_the_branch() {
-        let envs = vec![env("/r", "main"), env("/w/a", "linear/ara-1")];
-        assert_eq!(
-            existing(&envs, "linear/ara-1").map(|e| e.path.clone()),
-            Some(PathBuf::from("/w/a"))
-        );
-        assert!(existing(&envs, "linear/ara-2").is_none());
-        // The main checkout on that branch counts too.
-        assert_eq!(
-            existing(&envs, "main").map(|e| e.path.clone()),
-            Some(PathBuf::from("/r"))
-        );
-    }
-
-    #[test]
-    fn existing_skips_a_servers_folder_and_a_detached_head() {
-        let mut far = env("/far", "linear/ara-1");
-        far.remote = Some(crate::model::Remote {
-            server: "s".into(),
-            machine: "box".into(),
-            place: "/srv/a".into(),
-        });
-        let detached = Environment::new(PathBuf::from("/w/d"), None, false);
-        let envs = vec![far, detached];
-        assert!(existing(&envs, "linear/ara-1").is_none());
-        assert!(existing(&envs, "").is_none());
-    }
 
     #[test]
     fn a_second_call_for_the_same_branch_waits_on_the_first() {

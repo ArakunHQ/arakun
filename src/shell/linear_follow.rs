@@ -247,8 +247,10 @@ impl Shell {
     ) {
         self.linear_in_flight.remove(&d.id);
         if self.linear_gate(cx).is_none() {
-            // Signed out of Arakun meanwhile: not handled, so the relay sends
-            // it again once there is an account to accept it with.
+            // Signed out of Arakun meanwhile: not handled. It is kept, or the
+            // relay sends it again, for when there is an account to accept
+            // it with. The text is read again then.
+            self.linear_keep(d.clone(), cx);
         } else if !Delegation::load().enabled {
             // Turned off while the text was read.
             let line = refusal_line(&Refusal::Off, &computer());
@@ -273,8 +275,8 @@ impl Shell {
     }
 
     /// Runs the stops held for `agent_session`, once nothing else for it is
-    /// in flight. Signed out of Arakun meanwhile, they are dropped unrecorded:
-    /// the relay sends them again.
+    /// in flight. Signed out of Arakun meanwhile, they are not recorded: they
+    /// are kept, or the relay sends them again.
     pub(super) fn linear_release_stops(
         &mut self,
         agent_session: &str,
@@ -286,11 +288,13 @@ impl Shell {
             &mut self.linear_in_flight,
             agent_session,
         );
-        if stops.is_empty() || self.linear_gate(cx).is_none() {
-            return;
-        }
+        let open = self.linear_gate(cx).is_some();
         for d in stops {
-            self.linear_stop(&d, window, cx);
+            if open {
+                self.linear_stop(&d, window, cx);
+            } else {
+                self.linear_keep(d, cx);
+            }
         }
     }
 

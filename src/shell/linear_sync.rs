@@ -249,7 +249,8 @@ impl Shell {
     }
 
     /// Teams changed: the page hears of it, and an account that may now use
-    /// Linear (a sign-in, or the flag) is synced once.
+    /// Linear (a sign-in, or the flag) is synced once. What Linear's
+    /// deliveries, runs and reports waited on an account for goes on.
     pub(super) fn linear_account_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.push_linear_host(cx);
         let teams = self.teams.read(cx);
@@ -270,8 +271,11 @@ impl Shell {
             self.linear_sync.account = now.clone();
             if now.is_some() {
                 self.sync_linear(window, cx);
+                // The reports that waited for an account go now.
+                self.linear_flush(cx);
             }
         }
+        self.linear_replay_kept(window, cx);
     }
 
     /// Brings the server in line with the switch and the mappings. A call

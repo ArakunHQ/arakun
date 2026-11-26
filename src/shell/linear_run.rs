@@ -4,6 +4,10 @@
 //! The relay's word starts nothing by itself: the issue is read with the
 //! person's own Linear key, and the guard (`target_for`) must say yes for it
 //! on this computer. Text from Linear goes only into the prompt, never a log.
+//!
+//! A delivery that comes before the Arakun account is loaded is kept in
+//! memory and handled once it is, without waiting for the relay to send it
+//! again.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +30,44 @@ const REASON_LIMIT: usize = 300;
 /// What a panic while reading the issue or making the environment shows in
 /// Linear, in place of its text.
 pub(super) const HIT_AN_ERROR: &str = "Arakun hit an error.";
+
+/// Deliveries kept while the Arakun account is not loaded yet.
+pub const KEPT: usize = 50;
+
+/// Keeps `d` for when the account is loaded: once per delivery id, and the
+/// oldest go beyond [`KEPT`].
+pub fn keep(kept: &mut Vec<Delivery>, d: Delivery) {
+    if kept.iter().any(|k| k.id == d.id) {
+        return;
+    }
+    kept.push(d);
+    let extra = kept.len().saturating_sub(KEPT);
+    kept.drain(..extra);
+}
+
+/// What becomes of the kept deliveries when the account changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// Still not known whether this account may use Linear.
+    Hold,
+    /// The gate is open: they are handled now.
+    Replay,
+    /// The account may not use Linear: they will never be handled here.
+    Drop,
+}
+
+pub fn kept_after(account_loaded: bool, flagged: bool, label: bool) -> Kept {
+    if !account_loaded {
+        Kept::Hold
+    } else if !flagged {
+        Kept::Drop
+    } else if label {
+        Kept::Replay
+    } else {
+        // No relay label: nothing new comes in, and nothing can be accepted.
+        Kept::Hold
+    }
+}
 
 /// What a delivery's first look decides, before the issue is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +238,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let gate = self.linear_gate(cx).is_some();
+        if !gate {
+            return self.linear_keep(d, cx);
+        }
         let in_flight = self.linear_in_flight.contains_key(&d.id);
         let handled = self.linear_runs.was_seen(&d.id);
         let sessions = if gate && !in_flight && !handled {
@@ -233,6 +278,35 @@ impl Shell {
                 self.linear_accept(&d.id, cx);
                 // The server must stop sending this workspace's issues here.
                 self.sync_linear(window, cx);
+            }
+        }
+    }
+
+    /// Keeps a delivery that met a closed gate, when the reason is that the
+    /// Arakun account is not loaded yet. Otherwise it is let go: an account
+    /// without the flag never handles it.
+    pub(super) fn linear_keep(&mut self, d: Delivery, cx: &Context<Self>) {
+        if self.teams.read(cx).me().is_none() {
+            keep(&mut self.linear_kept, d);
+        }
+    }
+
+    /// The account changed: the kept deliveries are handled if the gate is
+    /// open now, and dropped if this account may not use Linear.
+    pub(super) fn linear_replay_kept(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.linear_kept.is_empty() {
+            return;
+        }
+        let teams = self.teams.read(cx);
+        let (loaded, flagged) = (teams.me().is_some(), teams.linear_enabled());
+        let label = crate::phone::Settings::load().relay_label().is_some();
+        match kept_after(loaded, flagged, label) {
+            Kept::Hold => {}
+            Kept::Drop => self.linear_kept.clear(),
+            Kept::Replay => {
+                for d in std::mem::take(&mut self.linear_kept) {
+                    self.linear_delivery(d, window, cx);
+                }
             }
         }
     }
@@ -310,10 +384,20 @@ impl Shell {
     ) {
         if let Some(id) = &start.delivery {
             self.linear_in_flight.remove(id);
-            // Signed out of Arakun meanwhile: not handled, so the relay sends
-            // it again once there is an account to accept it with.
+            // Signed out of Arakun meanwhile: not handled. It is kept, or
+            // the relay sends it again, for when there is an account to
+            // accept it with.
             if self.linear_gate(cx).is_none() {
-                return;
+                let again = Delivery {
+                    id: id.clone(),
+                    kind: DeliveryKind::Created,
+                    agent_session: start.agent_session,
+                    issue: start.issue,
+                    organization: start.organization,
+                    activity: None,
+                    body: None,
+                };
+                return self.linear_keep(again, cx);
             }
         }
         let detail = match read {
@@ -710,6 +794,58 @@ mod tests {
         assert_eq!(first_step(false, true, true, true), First::AcceptOnly);
         assert_eq!(first_step(false, false, true, false), First::RefuseNoSignIn);
         assert_eq!(first_step(false, false, true, true), First::Read);
+    }
+
+    fn delivery(id: &str) -> Delivery {
+        Delivery {
+            id: id.into(),
+            kind: DeliveryKind::Created,
+            agent_session: format!("as-{id}"),
+            issue: "i1".into(),
+            organization: "w1".into(),
+            activity: None,
+            body: None,
+        }
+    }
+
+    #[test]
+    fn a_delivery_before_the_account_is_kept_once() {
+        let mut kept = Vec::new();
+        keep(&mut kept, delivery("d1"));
+        keep(&mut kept, delivery("d2"));
+        // The relay sent it again: still one.
+        keep(&mut kept, delivery("d1"));
+        let ids: Vec<&str> = kept.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["d1", "d2"], "in the order they came");
+    }
+
+    #[test]
+    fn the_oldest_kept_deliveries_go_beyond_the_limit() {
+        let mut kept = Vec::new();
+        for i in 0..KEPT + 2 {
+            keep(&mut kept, delivery(&format!("d{i}")));
+        }
+        assert_eq!(kept.len(), KEPT);
+        assert_eq!(kept[0].id, "d2");
+        assert_eq!(kept[KEPT - 1].id, format!("d{}", KEPT + 1));
+        // One that fell off is new again.
+        keep(&mut kept, delivery("d0"));
+        assert_eq!((kept.len(), kept[KEPT - 1].id.as_str()), (KEPT, "d0"));
+    }
+
+    #[test]
+    fn kept_deliveries_go_when_the_gate_opens_or_the_flag_is_missing() {
+        // Not loaded yet: whatever else holds, they wait.
+        for flagged in [false, true] {
+            for label in [false, true] {
+                assert_eq!(kept_after(false, flagged, label), Kept::Hold);
+            }
+        }
+        assert_eq!(kept_after(true, true, true), Kept::Replay);
+        // Loaded without the flag: never handled here.
+        assert_eq!(kept_after(true, false, true), Kept::Drop);
+        assert_eq!(kept_after(true, false, false), Kept::Drop);
+        assert_eq!(kept_after(true, true, false), Kept::Hold);
     }
 
     #[test]

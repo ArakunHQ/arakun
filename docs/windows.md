@@ -154,7 +154,8 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | By default `%LOCALAPPDATA%\arakun\pilot.json`; with `ARAKUN_STATE` set, `pilot.json` next to that state file |
-| arakun-pilot's Worker address and token | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
+| arakun-pilot's Worker address | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
+| arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key, typed address and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-address`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Claude seats' tokens (`arakun seat add`), one file per seat | `%LOCALAPPDATA%\arakun\seats\<name>` |

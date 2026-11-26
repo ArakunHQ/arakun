@@ -437,11 +437,13 @@ sees the project's skills.
   `ARAKUN_PILOT_TOKEN`, else the token already saved for the same address. The admin
   token comes the same way, from `--admin-token -` or `ARAKUN_PILOT_ADMIN_TOKEN` (only
   one of the two can come from stdin); `--no-admin-token` removes the saved one, and
-  `--no-check` saves without asking the Worker first. An empty stdin is an error. They go in
-  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
-  `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
-  starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
+  `--no-check` saves without asking the Worker first. An empty stdin is an error. The tokens
+  go in the system keyring and the address in `~/.config/arakun-pilot/client.json`
+  (`$XDG_CONFIG_HOME` when set to an absolute path; `{"url": "…"}`, readable only by you), and
+  Arakun reads `GET <url>/board` and `GET <url>/items` every minute. A `token` or
+  `admin_token` written in that file by hand moves to the keyring the first time Arakun reads
+  it. A test Arakun with `ARAKUN_STATE` set, as `arakun dev` starts one, reads
+  `arakun-pilot/client.json` in the folder of that state file instead, and keeps its own tokens.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
   and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
   queue; the rows pilot doesn't follow fold under "More on GitHub". When pilot

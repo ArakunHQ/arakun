@@ -320,7 +320,11 @@ impl Shell {
     pub(super) fn open_pilot_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::github_view::connect::{PilotDialog, PilotDialogEvent};
         self.menu = None;
-        let dialog = cx.new(|cx| PilotDialog::new(window, cx));
+        let (saved, broken) = {
+            let p = self.pilot.read(cx);
+            (p.config().cloned(), p.config_problem().map(str::to_string))
+        };
+        let dialog = cx.new(|cx| PilotDialog::new(saved, broken, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,

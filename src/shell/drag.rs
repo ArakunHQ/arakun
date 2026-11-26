@@ -500,8 +500,7 @@ impl Shell {
             let (title, path) = (title.clone(), path.clone());
             move |entries: Vec<Entry>| {
                 let text = crate::agent::notes::transcript_markdown(&title, agent, &entries);
-                let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text))
+                state::write_linked(&path, &text)
             }
         };
         self.with_dragged_entries(d, env, cx, work, move |this, env, written, cx| {

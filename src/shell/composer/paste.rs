@@ -3,7 +3,7 @@
 //! nothing is selected. Pasted images are saved under arakun's data dir and
 //! attached as `@` mentions, the same way the attach picker attaches files.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, InteractiveElement as _, IntoElement as _,
@@ -228,25 +228,10 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Saves a pasted image where the session that mentions it can find it to
+/// delete it with it.
 pub(in crate::shell) fn save_image(bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> {
-    let dir = state::data_dir().join("pastes");
-    std::fs::create_dir_all(&dir)?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
-    let path = unique(&dir, &format!("paste-{stamp}"), ext);
-    std::fs::write(&path, bytes)?;
-    Ok(path)
-}
-
-fn unique(dir: &Path, stem: &str, ext: &str) -> PathBuf {
-    let mut path = dir.join(format!("{stem}.{ext}"));
-    let mut n = 1;
-    while path.exists() {
-        path = dir.join(format!("{stem}-{n}.{ext}"));
-        n += 1;
-    }
-    path
+    state::save_paste(&state::pastes_dir(), bytes, ext)
 }
 
 #[cfg(test)]

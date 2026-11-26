@@ -37,6 +37,26 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_in(path, bytes, true, true)
 }
 
+/// `write_private` into a directory that must already be there, like
+/// `replace`.
+pub fn replace_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    after_queued(path);
+    write_in(path, bytes, false, true)
+}
+
+/// Creates `dir` and its missing parents. On Unix those it creates are 0700,
+/// as `write_private` makes them; one already there keeps its mode.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
 /// What `path` holds, or will once the `write_soon` queued for it lands: a
 /// load right after a save must not see the file from before it.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -73,14 +93,11 @@ fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Res
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     if make_dir {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
         if private {
-            use std::os::unix::fs::DirBuilderExt as _;
-            builder.mode(0o700);
+            create_private_dir(dir)?;
+        } else {
+            std::fs::create_dir_all(dir)?;
         }
-        builder.create(dir)?;
     }
     let name = path
         .file_name()
@@ -361,6 +378,25 @@ mod tests {
         super::write_private(&fresh, b"x").unwrap();
         assert_eq!(mode(&fresh), 0o600);
         assert_eq!(mode(&dir.join("fresh")), 0o700);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_privately_needs_the_directory_and_leaves_a_private_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("replace-private");
+        let path = dir.join("session").join("meta.json");
+        assert!(super::replace_private(&path, b"x").is_err());
+        super::create_private_dir(&dir.join("session")).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("session")), 0o700);
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::replace_private(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(mode(&path), 0o600);
         let _ = std::fs::remove_dir_all(dir);
     }
 

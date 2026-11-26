@@ -51,9 +51,10 @@ pub fn load_with<T>(path: &Path, parse: impl FnOnce(&[u8]) -> Result<T, String>)
     }
 }
 
-/// Saves `bytes` to `path` with `durable::write`, unless `path` still holds a
-/// file that could not be read: that one is moved first, or kept and the save
-/// fails.
+/// Saves `bytes` to `path` with `durable::write_private`, unless `path` still
+/// holds a file that could not be read: that one is moved first, or kept and
+/// the save fails. Private, since what these files keep (prompts, drafts,
+/// session titles, memory) is the user's own text.
 pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if !clear(path, crate::model::unix_now()) {
         return Err(std::io::Error::other(format!(
@@ -61,12 +62,12 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             path.display()
         )));
     }
-    crate::durable::write(path, bytes)
+    crate::durable::write_private(path, bytes)
 }
 
 /// `write` on the background writer, for saves made in a click handler, where
 /// the disk flushes would stall the window. A load right after still sees it.
-/// A failure is logged after `what`.
+/// A failure is logged after `what`. Private like `write`.
 pub fn write_soon(path: &Path, bytes: Vec<u8>, what: &'static str) {
     if !clear(path, crate::model::unix_now()) {
         eprintln!(
@@ -75,7 +76,12 @@ pub fn write_soon(path: &Path, bytes: Vec<u8>, what: &'static str) {
         );
         return;
     }
-    crate::durable::write_soon(path.to_path_buf(), bytes, what);
+    // Nobody waits for it: a failure is logged.
+    drop(crate::durable::write_private_soon(
+        path.to_path_buf(),
+        bytes,
+        what,
+    ));
 }
 
 /// The files set aside since the last call.
@@ -242,6 +248,21 @@ pub(crate) mod tests {
         let kept = reports[0].kept.clone().unwrap();
         assert!(kept.to_string_lossy().contains("state.json.corrupt-"));
         assert_eq!(std::fs::read_to_string(kept).unwrap(), "[1,\"two\"]");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saves_are_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("private");
+        let (now, soon) = (dir.join("history.json"), dir.join("pins.json"));
+        write(&now, b"[]").unwrap();
+        write_soon(&soon, b"[]".to_vec(), "test");
+        crate::durable::flush();
+        assert_eq!(mode(&now), 0o600);
+        assert_eq!(mode(&soon), 0o600);
         let _ = std::fs::remove_dir_all(dir);
     }
 

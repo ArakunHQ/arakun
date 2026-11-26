@@ -37,7 +37,7 @@ pub fn store(prompts: &[SavedPrompt]) {
     store_to(&file(), prompts);
 }
 
-fn store_to(path: &Path, prompts: &[SavedPrompt]) {
+pub(crate) fn store_to(path: &Path, prompts: &[SavedPrompt]) {
     if let Err(e) = crate::stored::write(
         path,
         &serde_json::to_vec_pretty(prompts).unwrap_or_default(),

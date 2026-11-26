@@ -1067,6 +1067,7 @@ impl Shell {
             .collect();
         let images = servers::images_dir();
         cx.background_spawn(crate::guard::task(async move {
+            state::make_chat_files_private();
             state::sweep_orphans(listed);
             crate::cleanup::sweep_leftovers(&images);
         }))

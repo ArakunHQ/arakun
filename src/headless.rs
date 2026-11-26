@@ -213,8 +213,10 @@ fn inbox(id: &str) -> PathBuf {
     dir(id).join("inbox")
 }
 
+/// Every file in a session folder is private: it holds the chat, its
+/// prompts and the calls it waits on.
 fn write_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
-    crate::durable::write(
+    crate::durable::write_private(
         path,
         &serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?,
     )
@@ -223,7 +225,7 @@ fn write_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
 /// `write_json` into a session folder that must still be there. The check and
 /// the write can't race a delete: with the folder gone, the write fails.
 fn save_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
-    crate::durable::replace(
+    crate::durable::replace_private(
         path,
         &serde_json::to_vec_pretty(v).map_err(std::io::Error::other)?,
     )
@@ -551,7 +553,7 @@ fn post(id: &str, text: &str) -> std::io::Result<()> {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    crate::durable::write(
+    crate::durable::write_private(
         &inbox(id).join(format!("{:020}.txt", t.as_nanos())),
         text.as_bytes(),
     )
@@ -630,9 +632,12 @@ fn spawn_host(
     append: Option<&Path>,
 ) -> Result<std::process::Child, String> {
     let exe = std::env::current_exe().map_err(|e| format!("can't find arakun's binary: {e}"))?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut log = std::fs::OpenOptions::new();
+    log.create(true).append(true);
+    // The host's output can quote the chat, like the rest of the folder.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut log, 0o600);
+    let log = log
         .open(dir(id).join("host.log"))
         .map_err(|e| e.to_string())?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
@@ -1952,6 +1957,57 @@ pub fn set_shown(id: &str, on: bool) {
             s.remove(id);
         }
     });
+}
+
+/// Writes each file a session folder holds through the calls the host makes
+/// (under `TEST_ROOT`), for the test of what the data dir leaves readable.
+#[cfg(test)]
+pub(crate) fn write_every_file(id: &str) {
+    let m = Meta {
+        id: id.to_string(),
+        agent: AgentKind::WorkersAi,
+        model: String::new(),
+        effort: String::new(),
+        policy: Policy::ReadOnly,
+        cwd: "/tmp/x".into(),
+        title: "a private title".into(),
+        created: 1,
+        updated: 2,
+        status: Status::Idle,
+        pid: None,
+        last: String::new(),
+        cost: 0.,
+        error: None,
+        session_id: None,
+        caps: Vec::new(),
+        reads: Vec::new(),
+        no_sandbox: false,
+        unsandboxed: false,
+        unattended: false,
+        declined: 0,
+        stop_reason: None,
+    };
+    create_meta(&m);
+    write_meta(&m);
+    let p = Pending {
+        req_id: "r1".into(),
+        session: id.to_string(),
+        tool: "execute".into(),
+        title: "cat secrets".into(),
+        command: None,
+        args: Value::Null,
+        level: Level::Always,
+        why: String::new(),
+        summary: String::new(),
+        phrase: String::new(),
+        created: 1,
+        expires: 2,
+        answer: None,
+        note: None,
+    };
+    write_json(&pending_path(id), &p).unwrap();
+    save_json(&transcript_path(id), &serde_json::json!({ "entries": [] })).unwrap();
+    post(id, "a private prompt").unwrap();
 }
 
 #[cfg(test)]

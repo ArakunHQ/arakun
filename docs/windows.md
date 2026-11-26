@@ -143,7 +143,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Doop sign-ins (their keys and tokens are in the Credential Manager), canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
-| `arakun server`: its settings, sign-in (`account.json`), Linear settings (`linear.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
+| `arakun server`: its settings, sign-in (`account.json`), Linear settings and runs (`linear.json`, `linear-runs.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with or reaches through your account (Computers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | The token each server paired by link gave (Computers tab) | Credential Manager, as `arakun:server-token:<id>`; with `ARAKUN_STATE` set, `@<that file>` is added to the name |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |

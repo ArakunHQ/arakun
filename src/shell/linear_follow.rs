@@ -151,10 +151,11 @@ impl Shell {
             FollowUp::Unreadable => Some((ReportKind::Thought, unread_line(&computer()))),
             FollowUp::Send => {
                 let text = text.unwrap_or_default();
-                if self.linear_pass_on(agent_session, text, window, cx) {
-                    None
-                } else {
-                    Some((ReportKind::Error, no_session_line(&computer())))
+                match self.linear_pass_on(agent_session, text, window, cx) {
+                    Some((pending, busy)) => {
+                        Some((ReportKind::Thought, passed_line(&computer(), pending, busy)))
+                    }
+                    None => Some((ReportKind::Error, no_session_line(&computer()))),
                 }
             }
         };
@@ -166,28 +167,25 @@ impl Shell {
     }
 
     /// Sends `text` to the run's session as the composer would: one that is
-    /// busy queues it. No tab opens and focus stays where it is.
+    /// busy queues it. No tab opens and focus stays where it is. Gives what
+    /// the message waits behind, or None when there was no session to take it.
     fn linear_pass_on(
         &mut self,
         agent_session: &str,
         text: String,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        let Some((env, sid)) = self.linear_session_of(agent_session) else {
-            return false;
-        };
+    ) -> Option<(Pending, bool)> {
+        let (env, sid) = self.linear_session_of(agent_session)?;
         // Another process runs it: the app only shows it, and a message to
         // that view would be dropped.
         if crate::headless::shown(&sid) {
-            return false;
+            return None;
         }
         // A session is retired after its turn when no tab shows it.
         self.ensure_live(&env, &sid, window, cx);
-        let Some(thread) = self.phone_thread(&env, &sid) else {
-            return false;
-        };
-        thread.update(cx, |t, cx| {
+        let thread = self.phone_thread(&env, &sid)?;
+        let waits = thread.update(cx, |t, cx| {
             // A question that waits is answered by this reply: it is skipped,
             // and the reply goes to the agent as the next message.
             for _ in 0..SKIPS {
@@ -196,7 +194,10 @@ impl Shell {
                 }
                 t.skip_question(cx);
             }
+            // What the message waits behind, before it starts a turn itself.
+            let waits = (pending_in(t), t.is_busy());
             t.send(text, cx);
+            waits
         });
         if let Some(s) = self.session_mut(&env, &sid) {
             s.updated = crate::model::unix_now();
@@ -219,7 +220,7 @@ impl Shell {
             self.linear_watch(cx);
         }
         cx.notify();
-        true
+        Some(waits)
     }
 
     fn linear_mark_stopped(&mut self, agent_session: &str, stopped: bool) {

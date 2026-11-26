@@ -31,7 +31,7 @@ pub fn set_default_agent(agent: AgentKind) {
     LAST_AGENT.store(i as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-pub use arakun_core::model::{Status, unix_now};
+pub use arakun_core::model::{Status, unix_now, workspaces_root, worktree_path};
 
 #[derive(Clone)]
 pub enum TabKind {
@@ -1169,34 +1169,6 @@ pub fn pretty_path(path: &Path) -> String {
 
 pub fn home() -> PathBuf {
     crate::platform::home()
-}
-
-/// Worktrees arakun creates live in `~/arakun-workspaces/<project>/<branch>`: visible to
-/// editors and file managers, and outside every repository.
-pub fn workspaces_root() -> PathBuf {
-    home().join("arakun-workspaces")
-}
-
-pub fn worktree_path(project: &str, branch: &str) -> PathBuf {
-    let slug: String = branch
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let slug = slug.trim_matches('-');
-    let base = workspaces_root().join(project);
-    let mut path = base.join(slug);
-    let mut n = 2;
-    while path.exists() {
-        path = base.join(format!("{slug}-{n}"));
-        n += 1;
-    }
-    path
 }
 
 /// Logo colors for new projects, picked from the path so a project

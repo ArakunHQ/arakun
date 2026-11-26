@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, Context, Window};
 
 use super::{PendingEnv, Shell};
-use crate::git;
-use crate::model::{self, Environment};
+
+use crate::model::Environment;
 
 /// Called once the environment is there, with its folder, or why it is not.
 pub(super) type Waiter =
@@ -121,50 +121,4 @@ impl Shell {
         }
         Ok(())
     }
-}
-
-/// Off the UI thread: the worktree of `repo` on `branch`, and whether it was
-/// made now. A branch only on origin is checked out from there; a new one
-/// starts where `quick_create_env_then` would start it. The branch name
-/// comes from outside, so it is checked before git sees it.
-fn worktree_on(
-    repo: &Path,
-    project: &str,
-    branch: &str,
-    start: Option<&str>,
-) -> Result<(PathBuf, bool), String> {
-    let said = |e: anyhow::Error| format!("git said \"{}\"", why(&e.to_string()));
-    if !git::branch_arg_ok(repo, branch) {
-        return Err(BAD_NAME.into());
-    }
-    // Listed here or not, the worktree git has on the branch now is used as it is.
-    if let Some(tree) = git::worktrees(repo)
-        .map_err(said)?
-        .into_iter()
-        .find(|t| t.branch.as_deref() == Some(branch))
-    {
-        return Ok((tree.path, false));
-    }
-    if !git::has_commits(repo).map_err(said)? {
-        return Err("the project has no commits yet".into());
-    }
-    let mut branches = git::branches(repo).map_err(said)?;
-    let local = branches.local.iter().any(|b| b == branch);
-    // Pushed from another computer and not fetched here yet, it would look
-    // new, and a fresh branch made from the base could not be pushed later.
-    if !local && git::fetch_branch(repo, branch) {
-        branches = git::branches(repo).map_err(said)?;
-    }
-    let path = model::worktree_path(project, branch);
-    let on_origin = branches
-        .remote
-        .iter()
-        .any(|b| b == &format!("origin/{branch}"));
-    if !local && on_origin {
-        git::add_branch_worktree(repo, &path, branch).map_err(said)?;
-    } else {
-        let base = git::new_env_base(repo, start);
-        git::add_worktree(repo, &path, branch, base.as_deref(), false).map_err(said)?;
-    }
-    Ok((path, true))
 }

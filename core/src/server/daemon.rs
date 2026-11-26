@@ -22,6 +22,7 @@ use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
 use serde_json::json;
 
 mod linear;
+mod linear_run;
 
 use super::files;
 use super::local::{self, Reply, Request};
@@ -238,6 +239,8 @@ pub struct Daemon {
     housekept_at: Option<Instant>,
     /// The Linear settings the app sent, and the routes they made.
     linear: linear::Linear,
+    /// The issues delegated in Linear that run here.
+    linear_run: linear_run::Runner,
     _tasks: Vec<Task<()>>,
     _account: Subscription,
 }
@@ -576,6 +579,7 @@ pub fn run(opts: Options) -> i32 {
             );
             daemon.check_relay_devices(cx);
             daemon.finish_deletions(cx);
+            daemon.linear_recover(cx);
             daemon
         });
         cx.set_global(Keep(daemon));
@@ -1246,6 +1250,7 @@ impl Daemon {
             relay_pruning: false,
             housekept_at: None,
             linear: linear::Linear::new(linear::load(&super::dir())),
+            linear_run: linear_run::Runner::load(&super::dir()),
             _tasks: tasks,
             _account: account_events,
         }
@@ -1295,8 +1300,10 @@ impl Daemon {
         self.signed_in = signed_in;
         // `login` tells of a sign-in the account just took or just vouched for.
         self.session_dead = false;
-        // Routes owed while signed out go now.
+        // Routes, reports and runs owed while signed out go now.
         self.linear_sync(cx);
+        self.linear_flush(cx);
+        self.linear_start_waiting(cx);
         match change {
             // The client follows `signed_in`, which is now none for a sign-out.
             RelayChange::Restart | RelayChange::SignOut => self.restart_relay(cx),
@@ -1771,6 +1778,9 @@ impl Daemon {
         ) && self.install_missing_adapter(id, thread, cx);
         if !installing {
             self.notify(id, thread, ev, cx);
+            // The error that asks for the install is not the session's
+            // failure: Linear hears only what the devices hear.
+            self.linear_thread_event(id, thread, ev, cx);
         }
         match ev {
             ThreadEvent::TitleChanged => {
@@ -2848,8 +2858,9 @@ impl Daemon {
                     };
                     self.relay_rejected = matches!(status, relay::Status::Rejected(_));
                     if status == relay::Status::Connected {
-                        // Routes owed while away go now.
+                        // Routes and reports owed while away go now.
                         self.linear_sync(cx);
+                        self.linear_flush(cx);
                     }
                     self.relay_signed_out = status == relay::Status::SignedOut;
                     if self.relay_signed_out {
@@ -2867,9 +2878,7 @@ impl Daemon {
                 }
             }
             Incoming::Message(id, msg) => self.message(id, msg, cx),
-            // Linear runs on a server come in the next step; until then a
-            // delivery stays with the relay, unaccepted.
-            Incoming::Linear(_) => {}
+            Incoming::Linear(d) => self.linear_delivery(d, cx),
         }
     }
 
@@ -3929,6 +3938,7 @@ impl Daemon {
             .map(|s| s.id.clone())
             .collect();
         let mut muted = false;
+        let removed = ids.clone();
         for id in ids {
             if let Some(live) = self.live.remove(&id) {
                 live.thread.update(cx, |t, _| t.shutdown());
@@ -3960,6 +3970,7 @@ impl Daemon {
         self.deletions += 1;
         // A mapping to a place that went takes no more work.
         self.linear_sync(cx);
+        self.linear_sessions_removed(&removed, cx);
         self.store.save().inspect_err(|e| {
             eprintln!("arakun server: could not save its state: {e}");
         })
@@ -4694,6 +4705,7 @@ impl Daemon {
             }
         }
         self.drop_session(id, cx);
+        self.linear_sessions_removed(&[id.to_string()], cx);
         self.save_store();
         self.inbox_changed(cx);
         Ok(format!("removed {id}"))

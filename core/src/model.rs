@@ -27,6 +27,34 @@ pub fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Worktrees arakun creates live in `~/arakun-workspaces/<project>/<branch>`: visible to
+/// editors and file managers, and outside every repository.
+pub fn workspaces_root() -> std::path::PathBuf {
+    crate::platform::home().join("arakun-workspaces")
+}
+
+pub fn worktree_path(project: &str, branch: &str) -> std::path::PathBuf {
+    let slug: String = branch
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    let base = workspaces_root().join(project);
+    let mut path = base.join(slug);
+    let mut n = 2;
+    while path.exists() {
+        path = base.join(format!("{slug}-{n}"));
+        n += 1;
+    }
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

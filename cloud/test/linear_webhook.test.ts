@@ -107,6 +107,8 @@ describe("verifying Linear's signature", () => {
 
 describe("Linear's webhook", () => {
   it("refuses a webhook that is unsigned, wrongly signed, altered or old", async () => {
+    // Everything a forged webhook would need is in place, so the checks below can fail.
+    const { pc } = await linkedComputerWithRoute();
     for (const bad of [
       unsigned(body),
       signedWebhook(body, { secret: "other" }),
@@ -117,6 +119,7 @@ describe("Linear's webhook", () => {
       expect((await send(bad)).status).toBe(401);
     expect(await count("linear_deliveries")).toBe(0);
     expect(linearFake.calls).toEqual([]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 
   it("refuses a body over 1 MB", async () => {
@@ -183,7 +186,7 @@ describe("Linear's webhook", () => {
     await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 
-  it("a retry after Linear refused the activity finishes the same delivery", async () => {
+  it("a retry after Linear refused the issue lookup finishes the same delivery", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     await linkedComputerWithRoute();
     const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE }));

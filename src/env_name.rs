@@ -218,6 +218,9 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 
 fn instruction(task: &str) -> String {
     let task: String = task.chars().take(TASK_CHARS).collect();
+    // The model may be another provider's, and its answer becomes a branch
+    // that can be pushed.
+    let task = crate::secrets::scrub(&task);
     format!(
         "Name a git branch for the task below. Reply with the name only: <type>/<two to five words>, \
          lower case, words joined by hyphens, at most 40 characters. <type> is one of {}. \
@@ -550,6 +553,13 @@ fn clean(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_branch_namer_never_reads_a_secret() {
+        let text = instruction("deploy with ghp_abcdefghijklmnopqrstuvwxyz0123456789 to staging");
+        assert!(!text.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
+        assert!(text.contains("deploy with [secret] to staging"));
+    }
 
     /// A namer that leaves a child running must not hold the call until the child ends.
     #[cfg(unix)]

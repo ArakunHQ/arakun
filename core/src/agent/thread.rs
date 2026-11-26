@@ -859,16 +859,7 @@ pub struct Thread {
 impl EventEmitter<ThreadEvent> for Thread {}
 
 fn summarize(text: &str) -> String {
-    let text = attach::title_text(text);
-    let line = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    match line.char_indices().nth(80) {
-        Some((i, _)) => format!("{}…", &line[..i]),
-        None => line.to_string(),
-    }
+    attach::title(text, 80)
 }
 
 /// What Claude's adapter appends to its system prompt: the window's commands

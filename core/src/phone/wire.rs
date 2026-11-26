@@ -20,9 +20,8 @@
 //!
 //! A client may number what it sends with `seq`. The server then answers
 //! each with an `ack` once it has read it, so a client can tell a message
-//! lost in a dropped connection from one that arrived. It says it does with
-//! the [`ACKS_HEADER`] on its own socket, and with `acks` in its `ok` or
-//! `paired` through the relay.
+//! lost in a dropped connection from one that arrived. Every sealed channel
+//! does, through the relay and on the server's own `/e2e` socket.
 
 use std::path::{Path, PathBuf};
 
@@ -62,9 +61,6 @@ pub fn status(s: Status) -> &'static str {
         Status::Error => "error",
     }
 }
-
-/// Sent with the WebSocket upgrade by a server that acknowledges `seq`.
-pub const ACKS_HEADER: &str = "x-arakun-acks";
 
 /// The number a client gave its message, which the server acknowledges.
 pub fn seq(msg: &Value) -> Option<u64> {

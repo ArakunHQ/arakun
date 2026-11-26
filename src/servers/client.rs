@@ -3,12 +3,14 @@
 //! waiting longer each time, and gives up only when the server will not have
 //! this app any more. The shell hears how it goes as [`Event`]s.
 //!
-//! The app is the phone here. To a server with a socket of its own it pairs
-//! over HTTP and then talks JSON on a WebSocket, as the page does. To a server
-//! of the same account it goes through the relay as `phone/public/relay.js` does:
-//! one WebSocket to the relay with the app's sign-in, a handshake that proves
-//! the other end holds the key the account lists for it (`phone::e2e`), and
-//! every message sealed from then on.
+//! The app is the phone here, and every message is sealed end to end
+//! (`phone::e2e`). To a server with a socket of its own it goes as the page
+//! does (`phone::direct`): a handshake on `/e2e` that proves the other end
+//! holds the key pinned at pairing, then the pairing code or the token inside
+//! the sealed channel. To a server of the same account it goes through the
+//! relay as `phone/public/relay.js` does: one WebSocket to the relay with the
+//! app's sign-in, and a handshake that proves the other end holds the key the
+//! account lists for it.
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +27,7 @@ use tungstenite::http::HeaderValue;
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::{Invite, Saved, Vault, Way, socket_origin};
-use crate::phone::e2e::{Handshake, Session};
+use crate::phone::e2e::{E2eError, Handshake, Session};
 use crate::phone::identity::label_of;
 use crate::phone::relay::{CONTROL, DATA, HELLO, Joiner};
 use crate::phone::wire;
@@ -99,6 +101,9 @@ pub enum Event {
     /// The token a file from before held is in the keyring now: the file
     /// can go without it.
     TokenKept,
+    /// A server paired before keys were pinned showed this key's label on
+    /// its first sealed connection: from now on only that key is trusted.
+    KeyPinned(String),
     /// A message from the server, whole (`wire`'s `part`s put back together).
     Message(Value),
     /// A message [`Client::send`] was given that the server did not get:
@@ -548,44 +553,154 @@ impl Link {
     // ---- a socket of the server's own -------------------------------------
 
     fn direct(&mut self, wait: &mut Duration) -> Ended {
-        if let Who::Invite(invite) = &self.who {
-            match pair_direct(invite, &self.name, &self.id) {
-                Ok(saved) => self.paired(saved),
-                Err(ended) => return ended,
+        // Who this app says it is inside the channel, where, and the key
+        // pinned for it there.
+        let (origin, pinned, first) = match &self.who {
+            Who::Invite(invite) => (
+                invite.origin.clone(),
+                invite.key.clone(),
+                json!({ "pair": { "code": invite.code, "name": self.name } }),
+            ),
+            Who::Saved(_) => {
+                let token = match self.token() {
+                    Ok(token) => token,
+                    Err(ended) => return ended,
+                };
+                let Who::Saved(saved) = &self.who else {
+                    return Ended::Refused("Pairing did not finish.".into());
+                };
+                let pinned = (!saved.key.is_empty()).then(|| saved.key.clone());
+                (
+                    saved.origin.clone(),
+                    pinned,
+                    json!({ "auth": { "token": token } }),
+                )
             }
-        }
-        let token = match self.token() {
-            Ok(token) => token,
-            Err(ended) => return ended,
+            Who::Account(..) | Who::Held(_) => {
+                return Ended::Refused("Pairing did not finish.".into());
+            }
         };
-        let Who::Saved(saved) = &self.who else {
-            return Ended::Refused("Pairing did not finish.".into());
-        };
-        let url = format!("{}/ws?t={token}", socket_origin(&saved.origin));
-        let unpair = (format!("{}/unpair", saved.origin), token);
-        let (mut ws, acks) = match connect(&url, None) {
+        let mut ws = match connect(&format!("{}/e2e", socket_origin(&origin)), None) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
-        self.acks = acks;
-        self.connected(wait);
-        let ended = self.talk_direct(&mut ws, &unpair);
+        let ended = match self.greet(&mut ws, &origin, pinned.as_deref(), &first) {
+            Ok(session) => {
+                self.acks = true;
+                self.connected(wait);
+                self.talk_direct(&mut ws, session)
+            }
+            Err(ended) => ended,
+        };
         self.hang_up(&mut ws);
         self.lost_unacked();
         ended
     }
 
-    /// `unpair` is where the server is told to forget this app, and the token to say it with.
-    fn talk_direct(&mut self, ws: &mut Socket, unpair: &(String, String)) -> Ended {
+    /// The handshake on a server's own socket, then who this app is: the
+    /// pairing code or the token, sealed. The session, once the server let
+    /// the app in.
+    fn greet(
+        &mut self,
+        ws: &mut Socket,
+        origin: &str,
+        pinned: Option<&str>,
+        first: &Value,
+    ) -> Result<Session, Ended> {
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let hs = Handshake::begin();
+        send_frame(ws, HELLO, &hs.hello())?;
+        let reply = self.read_frame(ws, HELLO, deadline)?;
+        let (mut session, label) = hs.finish_direct(&reply, pinned).map_err(|e| match e {
+            E2eError::BadHello("label") => Ended::Refused(NOT_THE_SERVER.into()),
+            e => Ended::Refused(format!("{NOT_THE_SERVER} ({e})")),
+        })?;
+        send_frame(ws, DATA, &session.seal(first.to_string().as_bytes()))?;
+        let answer = self.read_frame(ws, DATA, deadline)?;
+        let msg: Value = session
+            .open(&answer)
+            .ok()
+            .and_then(|plain| serde_json::from_slice(&plain).ok())
+            .ok_or_else(|| Ended::Retry("A message from the server did not open.".into()))?;
+        if let Some(paired) = msg.get("paired") {
+            let text = |key: &str| paired[key].as_str().unwrap_or("").to_string();
+            if text("token").is_empty() {
+                return Err(Ended::Refused(format!("{origin} paired without a token.")));
+            }
+            self.paired(Saved {
+                id: self.id.clone(),
+                name: text("host"),
+                origin: origin.to_string(),
+                way: Way::Direct,
+                device: text("id"),
+                token: text("token").into(),
+                key: label,
+                removed: false,
+            });
+            return Ok(session);
+        }
+        if msg.get("authed").is_some() {
+            if pinned.is_none() {
+                if let Who::Saved(saved) = &mut self.who {
+                    saved.key = label.clone();
+                }
+                self.tell(Event::KeyPinned(label));
+            }
+            return Ok(session);
+        }
+        Err(hung_up(
+            msg["refused"]["reason"].as_str().unwrap_or(""),
+            None,
+        ))
+    }
+
+    /// The next frame on a server's own socket, which must be of `kind`.
+    fn read_frame(&self, ws: &mut Socket, kind: u8, deadline: Instant) -> Result<Vec<u8>, Ended> {
+        loop {
+            if self.stop.load(Ordering::Relaxed) {
+                return Err(Ended::Stopped);
+            }
+            if Instant::now() > deadline {
+                return Err(Ended::Retry("The server did not answer in time.".into()));
+            }
+            match ws.read() {
+                Ok(Message::Binary(bytes)) => match bytes.split_first() {
+                    Some((&k, payload)) if k == kind => return Ok(payload.to_vec()),
+                    _ => return Err(Ended::Retry("The server said something unexpected.".into())),
+                },
+                Ok(Message::Close(_)) => {
+                    let _ = ws.flush();
+                    return Err(Ended::Retry("The server closed the connection.".into()));
+                }
+                Ok(_) => {}
+                Err(e) if would_block(&e) => {}
+                Err(e) => return Err(Ended::Retry(format!("The connection dropped: {e}"))),
+            }
+        }
+    }
+
+    /// Talks to a server on its own socket once it let this app in.
+    fn talk_direct(&mut self, ws: &mut Socket, mut session: Session) -> Ended {
         let mut pulse = Pulse::new(self.timing);
         loop {
             // Read before the queue is: `unpair` is queued before the client
             // is dropped, so a stop seen here has its unpair in the queue below.
             let stopping = self.stop.load(Ordering::Relaxed);
             match ws.read() {
-                Ok(Message::Text(text)) => {
+                Ok(Message::Binary(bytes)) => {
                     pulse.heard();
-                    if let Ok(msg) = serde_json::from_str::<Value>(text.as_str()) {
+                    let Some((&DATA, payload)) = bytes.split_first() else {
+                        continue;
+                    };
+                    let Some(msg) = session
+                        .open(payload)
+                        .ok()
+                        .and_then(|plain| serde_json::from_slice::<Value>(&plain).ok())
+                    else {
+                        return Ended::Retry("A message from the server did not open.".into());
+                    };
+                    // `res` answers a `req`, and the app asks none it waits on.
+                    if msg.get("res").is_none() {
                         self.heard(msg);
                     }
                 }
@@ -598,22 +713,24 @@ impl Link {
                 Err(e) => return Ended::Retry(format!("The connection dropped: {e}")),
             }
             while let Ok(out) = self.queued.try_recv() {
-                match out {
+                // Inside the channel, what would be an HTTP request is a `req`.
+                let (text, said, last) = match out {
                     Out::Say(text) => {
                         let said = self.numbered(&text);
-                        if let Err(e) = write_alone(ws, Message::text(said)) {
-                            self.torn = true;
-                            // Told back with the rest, in the order they went.
-                            if !self.acks {
-                                self.undelivered(&text);
-                            }
-                            return Ended::Retry(format!("Could not write to the server: {e}"));
-                        }
+                        (text, said, false)
                     }
-                    Out::Unpair => {
-                        let _ = fetch("POST", &unpair.0, None, Some(&unpair.1));
-                        return Ended::Stopped;
+                    Out::Unpair => (String::new(), unpair_req(), true),
+                };
+                if let Err(ended) = send_frame(ws, DATA, &session.seal(said.as_bytes())) {
+                    self.torn = true;
+                    // Numbered, it is told back with the rest.
+                    if !last && !self.acks {
+                        self.undelivered(&text);
                     }
+                    return ended;
+                }
+                if last {
+                    return Ended::Stopped;
                 }
             }
             if stopping {
@@ -648,7 +765,7 @@ impl Link {
         };
         let label = label.clone();
         let url = account_url(&account.base, &label, &self.page);
-        let (mut ws, _) = match connect(&url, Some(&account.session)) {
+        let mut ws = match connect(&url, Some(&account.session)) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
@@ -804,15 +921,14 @@ impl Link {
                 // Inside the channel, what would be an HTTP request is a `req`.
                 let (text, said, last) = match out {
                     Out::Say(text) => {
-                        let said = if ready { self.numbered(&text) } else { text.clone() };
+                        let said = if ready {
+                            self.numbered(&text)
+                        } else {
+                            text.clone()
+                        };
                         (text, said, false)
                     }
-                    Out::Unpair => (
-                        String::new(),
-                        json!({ "req": { "id": 1, "method": "POST", "path": "/unpair", "body": null } })
-                            .to_string(),
-                        true,
-                    ),
+                    Out::Unpair => (String::new(), unpair_req(), true),
                 };
                 // Before the server knows who this is, it would not listen.
                 if let (true, Some(seal)) = (ready, session.as_mut()) {
@@ -917,6 +1033,14 @@ fn write_alone<S: std::io::Read + std::io::Write>(
 ) -> tungstenite::Result<()> {
     ws.flush()?;
     ws.send(msg)
+}
+
+/// What a server says when the key that answered is not the one pinned.
+const NOT_THE_SERVER: &str = "The machine at this address is not the server that was paired.";
+
+/// Asks the server, inside the channel, to forget this app.
+fn unpair_req() -> String {
+    json!({ "req": { "id": 1, "method": "POST", "path": "/unpair", "body": null } }).to_string()
 }
 
 /// What a server reached through the account says when its user removed
@@ -1024,52 +1148,9 @@ fn held_back(which: &str) -> Ended {
     )
 }
 
-/// A small JSON answer to a request, with its status. `bearer` is the token
-/// the server knows this app by, where the request needs one.
-fn fetch(
-    method: &str,
-    url: &str,
-    body: Option<String>,
-    bearer: Option<&str>,
-) -> Result<(u16, Value), String> {
-    let agent = crate::http::agent(CONNECT_TIMEOUT);
-    let reply = crate::http::json_call(agent, method, url, bearer, body, 64 * 1024)?;
-    Ok((
-        reply.status,
-        serde_json::from_slice(&reply.bytes).unwrap_or_default(),
-    ))
-}
-
-/// Pairs with a server on a socket of its own: the code for a token.
-fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
-    let body = json!({ "code": invite.code, "name": name }).to_string();
-    let (status, answer) = fetch("POST", &format!("{}/pair", invite.origin), Some(body), None)
-        .map_err(|e| Ended::Refused(format!("Could not reach {}: {e}", invite.origin)))?;
-    let text = |key: &str| answer[key].as_str().unwrap_or("").to_string();
-    match status {
-        200 if !text("token").is_empty() => Ok(Saved {
-            id: id.to_string(),
-            name: text("host"),
-            origin: invite.origin.clone(),
-            way: Way::Direct,
-            device: text("id"),
-            token: text("token").into(),
-            removed: false,
-        }),
-        403 => Err(Ended::Refused(
-            "The link has run out or was used already; ask the server for a new one.".into(),
-        )),
-        other => Err(Ended::Refused(format!(
-            "{} answered {other} to the pairing.",
-            invite.origin
-        ))),
-    }
-}
-
 /// TCP, TLS when the address asks for it, and the WebSocket handshake, with
-/// the sign-in as the bearer when there is one. The socket, and whether the
-/// server acknowledges what it reads.
-fn connect(url: &str, bearer: Option<&str>) -> Result<(Socket, bool), Ended> {
+/// the sign-in as the bearer when there is one.
+fn connect(url: &str, bearer: Option<&str>) -> Result<Socket, Ended> {
     let req = request(url, bearer)?;
     let (host, port) =
         host_port(url).ok_or_else(|| Ended::Refused(format!("Bad address: {url}")))?;
@@ -1088,7 +1169,7 @@ fn connect(url: &str, bearer: Option<&str>) -> Result<(Socket, bool), Ended> {
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
     // A `ws://` address comes back as a plain stream in the same wrapper.
-    let (ws, res) = tungstenite::client_tls(req, stream).map_err(|e| match e {
+    let (ws, _) = tungstenite::client_tls(req, stream).map_err(|e| match e {
         tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
             match (res.status().as_u16(), bearer.is_some()) {
                 // No such door, or a page where it would be: a relay from
@@ -1097,10 +1178,10 @@ fn connect(url: &str, bearer: Option<&str>) -> Result<(Socket, bool), Ended> {
                     Ended::Refused("This relay does not support account sign-in.".into())
                 }
                 (401, true) => Ended::Refused(SIGNED_OUT.into()),
-                // The door itself said no: the token is no longer good.
-                (401 | 403, false) => {
-                    Ended::Refused("This app is no longer paired with the server.".into())
-                }
+                // The door itself said no: a server from before `/e2e`.
+                (403 | 404, false) => Ended::Refused(
+                    "This server needs a newer Arakun. Update arakun-server on it.".into(),
+                ),
                 (status, _) => Ended::Retry(format!("{host} answered {status}.")),
             }
         }
@@ -1116,7 +1197,7 @@ fn connect(url: &str, bearer: Option<&str>) -> Result<(Socket, bool), Ended> {
     if let MaybeTlsStream::Rustls(s) = ws.get_ref() {
         let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
     }
-    Ok((ws, res.headers().contains_key(wire::ACKS_HEADER)))
+    Ok(ws)
 }
 
 /// Host and port out of a `ws://` or `wss://` address.
@@ -1189,6 +1270,7 @@ mod tests {
             Event::Status(s) => s,
             Event::Paired(_) => panic!("paired, where a status was expected"),
             Event::TokenKept => panic!("a token kept, where a status was expected"),
+            Event::KeyPinned(_) => panic!("a key pinned, where a status was expected"),
             Event::Message(m) => panic!("{m}, where a status was expected"),
             Event::Undelivered(m) => panic!("{m} undelivered, where a status was expected"),
         }
@@ -1217,7 +1299,8 @@ mod tests {
     #[test]
     fn it_pairs_with_a_server_talks_to_it_and_is_told_when_unpaired() {
         let access = Access::new(Vec::new(), String::new());
-        let (server, mut incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (server, mut incoming) =
+            Server::start(Ipv4Addr::LOCALHOST, 0, access.clone(), Identity::generate()).unwrap();
         let origin = format!("http://127.0.0.1:{}", server.port());
         let code = access.lock().unwrap().begin_pairing();
 
@@ -1225,6 +1308,7 @@ mod tests {
         let invite = Invite {
             origin: origin.clone(),
             code,
+            key: None,
         };
         let vault = fake();
         let client = Client::start(
@@ -1240,6 +1324,8 @@ mod tests {
             panic!("not paired");
         };
         assert_eq!((saved.id.as_str(), &saved.way), ("srv", &Way::Direct));
+        // The key that answered is the only one trusted there from now on.
+        assert_eq!(saved.key.len(), 16);
         // The token went to the keyring, not to what the file keeps.
         assert!(saved.token.is_empty());
         assert_eq!(vault.entries.lock().unwrap().len(), 1);
@@ -1331,6 +1417,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            key: String::new(),
             removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
@@ -1359,11 +1446,13 @@ mod tests {
     #[test]
     fn what_a_refusing_server_never_got_is_told_back() {
         let access = Access::new(Vec::new(), String::new());
-        let (server, _incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access).unwrap();
+        let (server, _incoming) =
+            Server::start(Ipv4Addr::LOCALHOST, 0, access, Identity::generate()).unwrap();
         // No pairing was begun, so the link is refused and not tried again.
         let invite = Invite {
             origin: format!("http://127.0.0.1:{}", server.port()),
             code: "not-a-code".into(),
+            key: None,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start(
@@ -1451,42 +1540,30 @@ mod tests {
         }
     }
 
-    /// A server's own socket, answered by hand: says it acknowledges when
-    /// `acks`, and returns what the app sent first.
-    // The callback's error type is tungstenite's to choose.
-    #[allow(clippy::result_large_err)]
-    fn accept_direct(listener: &TcpListener, acks: bool) -> WebSocket<TcpStream> {
+    /// A server's own socket, answered by hand as `phone::direct` does: the
+    /// handshake signed by `identity`, then the app let in by its token.
+    fn accept_direct(
+        listener: &TcpListener,
+        identity: &Identity,
+    ) -> (WebSocket<TcpStream>, Session) {
         let (stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        tungstenite::accept_hdr(
-            stream,
-            |_: &tungstenite::handshake::server::Request,
-             mut res: tungstenite::handshake::server::Response| {
-                if acks {
-                    res.headers_mut().insert(
-                        wire::ACKS_HEADER,
-                        tungstenite::http::HeaderValue::from_static("1"),
-                    );
-                }
-                Ok(res)
-            },
-        )
-        .unwrap()
+        let mut ws = tungstenite::accept(stream).unwrap();
+        let (kind, hello) = next_frame(&mut ws);
+        assert_eq!(kind, HELLO);
+        let hello = PhoneHello::parse(&hello).unwrap();
+        let (reply, mut session) = Handshake::begin()
+            .answer(&hello, identity, crate::phone::e2e::DIRECT, "box")
+            .unwrap();
+        ws.send(phone_frame(HELLO, &reply)).unwrap();
+        assert_eq!(sealed(&mut ws, &mut session)["auth"]["token"], "t");
+        seal(&mut ws, &mut session, json!({ "authed": { "id": "d" } }));
+        (ws, session)
     }
 
-    fn next_text(ws: &mut WebSocket<TcpStream>) -> Value {
-        loop {
-            match ws.read().unwrap() {
-                Message::Text(t) => return serde_json::from_str(t.as_str()).unwrap(),
-                Message::Ping(_) | Message::Pong(_) => continue,
-                other => panic!("unexpected {other:?}"),
-            }
-        }
-    }
-
-    fn direct_saved(listener: &TcpListener) -> Saved {
+    fn direct_saved(listener: &TcpListener, identity: &Identity) -> Saved {
         Saved {
             id: "srv".into(),
             name: "box".into(),
@@ -1494,6 +1571,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            key: identity.label(),
             removed: false,
         }
     }
@@ -1501,8 +1579,9 @@ mod tests {
     #[test]
     fn what_went_out_and_was_not_acknowledged_is_told_back() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let identity = Identity::generate();
         let (tx, mut rx) = mpsc::unbounded();
-        let saved = direct_saved(&listener);
+        let saved = direct_saved(&listener, &identity);
         let client = Client::start(
             "srv".into(),
             Who::Saved(saved),
@@ -1512,18 +1591,18 @@ mod tests {
             fake(),
         );
         assert_eq!(status(&mut rx), Status::Connecting);
-        let mut ws = accept_direct(&listener, true);
+        let (mut ws, mut session) = accept_direct(&listener, &identity);
         assert_eq!(status(&mut rx), Status::Connected);
 
         let got = json!({ "type": "answer", "session": "s1", "answers": [] });
         let lost = json!({ "type": "send", "session": "s1", "text": "hi" });
         client.send(&got);
-        let first = next_text(&mut ws);
+        let first = sealed(&mut ws, &mut session);
         assert_eq!(first["type"], "answer");
-        ws.send(Message::text(wire::ack(wire::seq(&first).unwrap())))
-            .unwrap();
+        let ack: Value = serde_json::from_str(&wire::ack(wire::seq(&first).unwrap())).unwrap();
+        seal(&mut ws, &mut session, ack);
         client.send(&lost);
-        let second = next_text(&mut ws);
+        let second = sealed(&mut ws, &mut session);
         assert_eq!(second["type"], "send");
         assert!(wire::seq(&second) > wire::seq(&first));
 
@@ -1537,11 +1616,29 @@ mod tests {
     }
 
     #[test]
-    fn a_server_that_does_not_acknowledge_gets_plain_messages() {
+    fn an_old_pairing_pins_the_key_its_server_shows_and_then_only_that_one() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let identity = Identity::generate();
+        let mut saved = direct_saved(&listener, &identity);
+        saved.key.clear();
         let (tx, mut rx) = mpsc::unbounded();
-        let saved = direct_saved(&listener);
-        let client = Client::start(
+        let _client = Client::start(
+            "srv".into(),
+            Who::Saved(saved.clone()),
+            String::new(),
+            tx,
+            QUICK,
+            fake(),
+        );
+        assert_eq!(status(&mut rx), Status::Connecting);
+        let _server = accept_direct(&listener, &identity);
+        assert!(matches!(next(&mut rx), Event::KeyPinned(key) if key == identity.label()));
+        assert_eq!(status(&mut rx), Status::Connected);
+
+        // Another key at the address: refused, before the token goes out.
+        let (tx, mut rx) = mpsc::unbounded();
+        saved.key = identity.label();
+        let _client = Client::start(
             "srv".into(),
             Who::Saved(saved),
             String::new(),
@@ -1550,55 +1647,62 @@ mod tests {
             fake(),
         );
         assert_eq!(status(&mut rx), Status::Connecting);
-        let mut ws = accept_direct(&listener, false);
-        assert_eq!(status(&mut rx), Status::Connected);
-        let msg = json!({ "type": "cancel", "session": "s1" });
-        client.send(&msg);
-        assert_eq!(next_text(&mut ws), msg);
-        // Written whole, it counts as got, as before servers acknowledged.
-        drop(ws);
-        assert!(matches!(status(&mut rx), Status::Waiting { .. }));
+        let (stream, _) = listener.accept().unwrap();
+        let mut ws = tungstenite::accept(stream).unwrap();
+        let (_, hello) = next_frame(&mut ws);
+        let (reply, _) = Handshake::begin()
+            .answer(
+                &PhoneHello::parse(&hello).unwrap(),
+                &Identity::generate(),
+                crate::phone::e2e::DIRECT,
+                "box",
+            )
+            .unwrap();
+        ws.send(phone_frame(HELLO, &reply)).unwrap();
+        assert!(
+            matches!(status(&mut rx), Status::Refused(why) if why.contains("not the server that was paired"))
+        );
+        // Nothing more came: the token stayed here.
+        assert!(matches!(ws.read(), Ok(Message::Close(_)) | Err(_)));
     }
 
     #[test]
-    fn the_server_acknowledges_what_it_reads() {
+    fn a_pairing_link_with_a_key_trusts_only_that_key() {
         let access = Access::new(Vec::new(), String::new());
-        let (server, mut incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let code = access.lock().unwrap().begin_pairing();
-        let (_, token) = access.lock().unwrap().pair(&code, "pc", 0).unwrap();
-        let url = format!("ws://127.0.0.1:{}/ws?t={token}", server.port());
-        let (mut ws, res) = tungstenite::connect(url).unwrap();
-        assert!(res.headers().contains_key(wire::ACKS_HEADER));
-        assert!(matches!(
-            from_server(&mut incoming),
-            Incoming::Connected(..)
-        ));
-        ws.send(Message::text(r#"{"type":"usage","seq":4}"#))
-            .unwrap();
-        ws.send(Message::text(r#"{"type":"nonsense","seq":5}"#))
-            .unwrap();
-        ws.send(Message::text(r#"{"type":"usage"}"#)).unwrap();
-        let mut acks = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while acks.len() < 2 && Instant::now() < deadline {
-            if let Ok(Message::Text(t)) = ws.read() {
-                let msg: Value = serde_json::from_str(t.as_str()).unwrap();
-                if msg["type"] == "ack" {
-                    acks.push(msg["seq"].as_u64().unwrap());
-                }
-            }
-        }
-        // A message it could not make sense of was read all the same.
-        assert_eq!(acks, [4, 5]);
+        let (server, _incoming) =
+            Server::start(Ipv4Addr::LOCALHOST, 0, access.clone(), Identity::generate()).unwrap();
+        let invite = Invite {
+            origin: format!("http://127.0.0.1:{}", server.port()),
+            code: access.lock().unwrap().begin_pairing(),
+            key: Some(Identity::generate().label()),
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let _client = Client::start(
+            "srv".into(),
+            Who::Invite(invite),
+            "x".into(),
+            tx,
+            QUICK,
+            fake(),
+        );
+        assert_eq!(status(&mut rx), Status::Connecting);
+        assert!(
+            matches!(status(&mut rx), Status::Refused(why) if why.contains("not the server that was paired"))
+        );
+        // The code never went out, so it is still good.
+        assert!(access.lock().unwrap().pairing().is_some());
+        assert!(access.lock().unwrap().devices.is_empty());
     }
 
     #[test]
     fn forgetting_a_server_has_it_forget_this_app() {
         let access = Access::new(Vec::new(), String::new());
-        let (server, mut incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (server, mut incoming) =
+            Server::start(Ipv4Addr::LOCALHOST, 0, access.clone(), Identity::generate()).unwrap();
         let invite = Invite {
             origin: format!("http://127.0.0.1:{}", server.port()),
             code: access.lock().unwrap().begin_pairing(),
+            key: None,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start(
@@ -1634,10 +1738,12 @@ mod tests {
         for round in 0..12u64 {
             let access = Access::new(Vec::new(), String::new());
             let (server, mut incoming) =
-                Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+                Server::start(Ipv4Addr::LOCALHOST, 0, access.clone(), Identity::generate())
+                    .unwrap();
             let invite = Invite {
                 origin: format!("http://127.0.0.1:{}", server.port()),
                 code: access.lock().unwrap().begin_pairing(),
+                key: None,
             };
             let (tx, mut rx) = mpsc::unbounded();
             let client = Client::start(
@@ -1767,6 +1873,7 @@ mod tests {
             },
             device: String::new(),
             token: Default::default(),
+            key: String::new(),
             removed: false,
         };
         let account = Account {
@@ -2043,6 +2150,7 @@ mod tests {
             },
             device: "dev1".into(),
             token: "tok".into(),
+            key: String::new(),
             removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
@@ -2145,6 +2253,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: token.into(),
+            key: String::new(),
             removed: false,
         }
     }

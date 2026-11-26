@@ -38,7 +38,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 use super::e2e::{Handshake, PhoneHello, Session};
 use super::identity::Identity;
 use super::quiet::Quiet;
-use super::{ClientId, ClientMsg, Effect, Head, Incoming, Seen, Shared, linear, wire};
+use super::{ClientId, ClientMsg, Effect, Incoming, Seen, Shared, linear, wire};
 
 pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
@@ -57,8 +57,6 @@ const CHUNK: usize = 160 * 1024;
 /// The longest message that goes out whole: sealed, it stays under the
 /// relay's frame limit (256 KiB). A `res` piece fits, so it is not split again.
 const WHOLE: usize = 250 * 1024;
-/// The most a `req` body may carry, like `MAX_BODY` over TCP.
-const MAX_REQ_BODY: usize = 4096;
 /// The most of the operator's text a status carries.
 const MAX_MESSAGE: usize = 300;
 
@@ -1095,9 +1093,6 @@ impl Link {
     ) -> Result<Result<(), &'static str>, Ended> {
         match effect {
             Effect::None => {}
-            Effect::Paired => {
-                let _ = self.tx.unbounded_send(Incoming::Paired);
-            }
             Effect::Subscribed => {
                 let _ = self.tx.unbounded_send(Incoming::Subscribed);
             }
@@ -1122,16 +1117,7 @@ impl Link {
 
     /// A `req` from a client, answered as the HTTP it stands for, as `device`.
     fn route(&self, req: &Value, device: &str, now: u64) -> (super::Reply, Effect) {
-        let method = req["method"].as_str().unwrap_or("GET");
-        let path = req["path"].as_str().unwrap_or("/");
-        let body = req["body"]
-            .as_str()
-            .map(|b| b.as_bytes().to_vec())
-            .filter(|b| b.len() <= MAX_REQ_BODY);
-        match Head::relayed(method, path, device) {
-            Some(head) => super::route(&head, body, &self.access, now),
-            None => (super::Reply::error(400, "bad request"), Effect::None),
-        }
+        super::asked(req, device, super::Door::Relay, &self.access, now)
     }
 
     /// The keys are agreed on a channel the relay opened for this account:

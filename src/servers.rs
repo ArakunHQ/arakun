@@ -47,6 +47,11 @@ pub struct Saved {
     /// it.
     #[serde(default, skip_serializing_if = "Secret::is_empty")]
     pub token: Secret,
+    /// The label of the key a server reached directly signs its handshake
+    /// with, pinned at pairing: no other key is trusted at its address.
+    /// Empty for one paired before keys were pinned, until it next connects.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
     /// The server's user removed this app from its devices: it is not dialed
     /// again until it is forgotten here and connected anew, or the server
     /// would take the app back.
@@ -154,10 +159,13 @@ pub struct Invite {
     pub origin: String,
     /// What the server's door takes.
     pub code: String,
+    /// The label of the server's key, to pin; a link from before keys were
+    /// pinned has none, and the first handshake's key is taken.
+    pub key: Option<String>,
 }
 
 /// Reads the link `arakun server pair` prints for a server reached directly:
-/// `https://host/?p=<code>`. One of the old relay,
+/// `https://host/?p=<code>&k=<label>`. One of the old relay,
 /// `https://<label>.<relay>/#p=<code>&s=<secret>`, says what to do instead.
 pub fn parse_link(link: &str) -> Result<Invite, String> {
     const HELP: &str = "That is not a pairing link. `arakun-server pair` prints one.";
@@ -184,8 +192,15 @@ pub fn parse_link(link: &str) -> Result<Invite, String> {
     if value(fragment, "p").is_some() && value(fragment, "s").is_some() {
         return Err(RELAY_LINK.into());
     }
+    let key = value(query, "k");
+    if key
+        .as_deref()
+        .is_some_and(|k| !crate::phone::identity::is_label(k))
+    {
+        return Err(HELP.into());
+    }
     match value(query, "p") {
-        Some(code) => Ok(Invite { origin, code }),
+        Some(code) => Ok(Invite { origin, code, key }),
         None => Err("That link carries no pairing code. Ask the server for a new one.".into()),
     }
 }
@@ -450,7 +465,22 @@ mod tests {
             Ok(Invite {
                 origin: "http://10.0.0.2:7474".into(),
                 code: "123456".into(),
+                key: None,
             })
+        );
+        assert_eq!(
+            parse_link("http://10.0.0.2:7474/?p=123456&k=5pmbdp76s6bol6ax"),
+            Ok(Invite {
+                origin: "http://10.0.0.2:7474".into(),
+                code: "123456".into(),
+                key: Some("5pmbdp76s6bol6ax".into()),
+            })
+        );
+        // A key that is no label is no link of ours.
+        assert!(
+            parse_link("http://10.0.0.2:7474/?p=123456&k=nope")
+                .unwrap_err()
+                .contains("not a pairing link")
         );
         // The page's address alone pairs nothing.
         assert!(
@@ -496,6 +526,7 @@ mod tests {
                 },
                 device: String::new(),
                 token: Secret::default(),
+                key: String::new(),
                 removed: false,
             },
             Saved {
@@ -505,6 +536,7 @@ mod tests {
                 way: Way::Direct,
                 device: "d2".into(),
                 token: "k2".into(),
+                key: String::new(),
                 removed: false,
             },
         ];
@@ -582,6 +614,7 @@ mod tests {
             way: Way::Direct,
             device: "d2".into(),
             token: "k2".into(),
+            key: String::new(),
             removed: false,
         }
     }

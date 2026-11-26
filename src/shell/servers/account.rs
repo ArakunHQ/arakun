@@ -208,6 +208,7 @@ pub(super) fn joining(
             },
             device: String::new(),
             token: Default::default(),
+            key: String::new(),
             removed: false,
         })
         .collect()
@@ -527,6 +528,7 @@ mod tests {
             },
             device: String::new(),
             token: Default::default(),
+            key: String::new(),
             removed: false,
         }
     }

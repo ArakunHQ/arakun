@@ -20,9 +20,12 @@ impl Transport {
         }
     }
 
-    /// Whether what goes over it is encrypted on the way: through the relay
-    /// (end to end), or a server on the loopback that only Tailscale's https
-    /// and this computer reach. A server on every interface is plain http.
+    /// Whether a secret may be typed on the phone: through the relay, or a
+    /// server on the loopback that only Tailscale's https and this computer
+    /// reach. On every interface the page itself comes over plain http: its
+    /// socket is sealed end to end (`direct`), which keeps out someone who
+    /// listens, but someone who can change the page on its way could change
+    /// what it does.
     pub fn private(&self) -> bool {
         match self {
             Transport::Local(s) => s.loopback(),

@@ -63,6 +63,9 @@ pub(super) struct PhoneLink {
     _remote: Option<Task<()>>,
     /// The paired devices and the pairing code, shared with the server's threads.
     access: phone::Shared,
+    /// The label of the key this computer signs handshakes with, which the
+    /// pairing link carries for the phone to pin.
+    label: String,
     /// The session each phone is looking at.
     watching: HashMap<ClientId, SharedString>,
     /// Phones whose page left the screen: they still get updates, but a push too.
@@ -680,7 +683,7 @@ impl Shell {
         if self.phone_keys.making.is_some() {
             return;
         }
-        let make = cx.background_spawn(async { phone::Settings::load_keys(true).map(drop) });
+        let make = cx.background_spawn(async { phone::Settings::load_keys().map(drop) });
         self.phone_keys.making = Some(cx.spawn(async move |this, cx| {
             let made = make.await;
             let _ = this.update(cx, |this, cx| {
@@ -1026,8 +1029,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let mut settings = settings.clone();
-        let relay = settings.reach == Reach::Relay;
-        let keys = cx.background_spawn(async move { phone::Settings::load_keys(relay) });
+        let keys = cx.background_spawn(async move { phone::Settings::load_keys() });
         self.phone_keys.starting = Some(cx.spawn_in(window, async move |this, cx| {
             let keys = keys.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -1057,6 +1059,7 @@ impl Shell {
     ) {
         let vapid = Arc::new(keys.vapid);
         let access = Access::new(settings.devices.clone(), vapid.public_key());
+        let label = keys.identity.label();
         let teams_account = (settings.reach == Reach::Relay)
             .then(|| self.teams.read(cx).account())
             .flatten();
@@ -1070,7 +1073,12 @@ impl Shell {
         );
         let (server, mut incoming) = match settings.reach {
             Reach::Lan | Reach::Tailscale => {
-                match Server::start(settings.reach.bind(), settings.port, access.clone()) {
+                match Server::start(
+                    settings.reach.bind(),
+                    settings.port,
+                    access.clone(),
+                    keys.identity,
+                ) {
                     Ok((s, rx)) => (Transport::Local(s), rx),
                     Err(e) => {
                         self.views.phone.update(cx, |v, cx| {
@@ -1084,10 +1092,7 @@ impl Shell {
                 }
             }
             Reach::Relay => {
-                // Read with the keys when the relay is the way in.
-                let Some(identity) = keys.identity else {
-                    return;
-                };
+                let identity = keys.identity;
                 // The window's sign-in; without one the client waits signed
                 // out, and a sign-in starts a new one (`account_changed`).
                 let machine = relay::Machine {
@@ -1141,6 +1146,7 @@ impl Shell {
             remote,
             _remote: watch,
             access,
+            label,
             watching: HashMap::new(),
             hidden: HashSet::new(),
             dirty: HashMap::new(),
@@ -1239,7 +1245,7 @@ impl Shell {
                 let connected = link.server.connected_devices();
                 let mut access = link.access.lock().unwrap();
                 let pairing = access.pairing().map(|(code, left)| PairingInfo {
-                    url: phone::link(&base, &code),
+                    url: phone::link(&base, &code, &link.label),
                     code,
                     seconds_left: left.as_secs(),
                 });

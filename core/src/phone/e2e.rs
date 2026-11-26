@@ -8,6 +8,9 @@
 //! and every `data` frame from then on is numbered and sealed; a frame out of
 //! order or tampered with ends the session. `phone/public/e2e.js` is the phone's half:
 //! the two must agree byte for byte, which `phone/test/vectors/e2e.json` checks.
+//!
+//! The computer's own server speaks the same protocol on its `/e2e` socket
+//! (`direct`), with nobody in between: there the channel is `DIRECT`.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -19,6 +22,10 @@ use super::relay::DATA;
 
 /// The protocol the hello speaks; a phone that knows only an older one is told so.
 pub const VERSION: u64 = 1;
+/// The channel a handshake on the computer's own server signs. The relay
+/// numbers devices from 1, so a transcript signed for one way in is never
+/// good for the other.
+pub const DIRECT: u32 = 0;
 const TRANSCRIPT_TAG: &[u8] = b"arakun-phone-v1";
 const KEYS_INFO: &[u8] = b"arakun-phone-v1 keys";
 const NONCE_LEN: usize = 16;
@@ -186,6 +193,26 @@ impl Handshake {
         let shared = agree(self.private, &ephemeral)?;
         let (phone_to_pc, pc_to_phone) = derive_keys(&shared, &self.nonce, &nonce);
         Ok(Session::new(phone_to_pc, pc_to_phone))
+    }
+}
+
+impl Handshake {
+    /// The phone's side on the computer's own server (`DIRECT`), where no
+    /// account lists the key: the hello must come from the key `pinned`
+    /// names, or, with nothing pinned yet (a code typed by hand), the key it
+    /// shows is the one from now on. The session, and the label to pin.
+    pub fn finish_direct(
+        self,
+        reply: &[u8],
+        pinned: Option<&str>,
+    ) -> Result<(Session, String), E2eError> {
+        let v: Value = serde_json::from_slice(reply).map_err(|_| E2eError::BadHello("not json"))?;
+        let label = label_of(&field(&v, "pub", POINT_LEN)?);
+        if pinned.is_some_and(|p| p != label) {
+            return Err(E2eError::BadHello("label"));
+        }
+        let session = self.finish(reply, &label, DIRECT)?;
+        Ok((session, label))
     }
 }
 
@@ -386,6 +413,40 @@ mod tests {
             .unwrap();
         assert_eq!(
             phone.finish(&reply, &me.label(), CHANNEL).err(),
+            Some(E2eError::BadHello("sig"))
+        );
+    }
+
+    #[test]
+    fn on_the_computers_own_server_the_phone_pins_the_key() {
+        let me = Identity::generate();
+        let answer = |phone: &Handshake, who: &Identity, channel: u32| {
+            let hello = PhoneHello::parse(&phone.hello()).unwrap();
+            Handshake::begin()
+                .answer(&hello, who, channel, "t")
+                .unwrap()
+        };
+        // Nothing pinned: the key the hello shows, and its label to keep.
+        let phone = Handshake::begin();
+        let (reply, mut pc) = answer(&phone, &me, DIRECT);
+        let (mut session, label) = phone.finish_direct(&reply, None).unwrap();
+        assert_eq!(label, me.label());
+        assert_eq!(pc.open(&session.seal(b"hi")).unwrap(), b"hi");
+        // Pinned: only that key.
+        let phone = Handshake::begin();
+        let (reply, _) = answer(&phone, &me, DIRECT);
+        assert!(phone.finish_direct(&reply, Some(&label)).is_ok());
+        let phone = Handshake::begin();
+        let (reply, _) = answer(&phone, &Identity::generate(), DIRECT);
+        assert_eq!(
+            phone.finish_direct(&reply, Some(&label)).err(),
+            Some(E2eError::BadHello("label"))
+        );
+        // A hello signed for a relay channel is not one for the direct socket.
+        let phone = Handshake::begin();
+        let (reply, _) = answer(&phone, &me, 1);
+        assert_eq!(
+            phone.finish_direct(&reply, None).err(),
             Some(E2eError::BadHello("sig"))
         );
     }

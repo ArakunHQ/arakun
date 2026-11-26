@@ -492,7 +492,21 @@ pub fn run(opts: Options) -> i32 {
     let access = Access::new(settings.devices.clone(), vapid.public_key());
     let (transport, incoming, address) = match settings.reach {
         Reach::Lan | Reach::Tailscale => {
-            match Server::start(settings.reach.bind(), settings.port, access.clone()) {
+            // What each phone's handshake is signed with; the pairing link
+            // carries its label.
+            let identity = match settings.identity() {
+                Ok(identity) => identity,
+                Err(e) => {
+                    eprintln!("arakun server: {e}");
+                    return 1;
+                }
+            };
+            match Server::start(
+                settings.reach.bind(),
+                settings.port,
+                access.clone(),
+                identity,
+            ) {
                 Ok((server, rx)) => {
                     let address = match settings.reach {
                         Reach::Lan => lan_address(server.port()),
@@ -4469,8 +4483,11 @@ impl Daemon {
                 return Err(format!("devices can't reach the server yet: {what}"));
             }
         };
+        let Some(label) = self.settings.relay_label() else {
+            return Err("this server has no key to pair with yet".into());
+        };
         let code = self.access.lock().unwrap().begin_pairing();
-        let url = phone::link(&base, &code);
+        let url = phone::link(&base, &code, &label);
         let waiting = match &self.address {
             Address::Ready(_) => String::new(),
             other => other.line(),

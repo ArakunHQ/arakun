@@ -3038,6 +3038,13 @@ impl Shell {
                 link.saved.push(saved);
                 servers::save(&link.saved);
             }
+            Event::KeyPinned(key) => {
+                if let Some(s) = link.saved.iter_mut().find(|s| s.id == id) {
+                    s.key = key;
+                    servers::save(&link.saved);
+                }
+                return;
+            }
             Event::TokenKept => {
                 match link.saved.iter_mut().find(|s| s.id == id) {
                     Some(s) if !s.token.is_empty() => {
@@ -4615,6 +4622,7 @@ mod tests {
             way,
             device: "d".into(),
             token: "t".into(),
+            key: String::new(),
             removed: false,
         };
         assert!(in_the_clear(&saved(
@@ -4641,6 +4649,7 @@ mod tests {
             way: servers::Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            key: String::new(),
             removed: false,
         };
         let servers = [

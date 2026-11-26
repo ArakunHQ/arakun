@@ -64,7 +64,7 @@ impl Shell {
     ) {
         self.notes.entry(env.to_path_buf()).or_default().push(note);
         self.sync_note_marks(env, cx);
-        window.focus(&self.composer_focus, cx);
+        window.focus(&self.composer.focus, cx);
         cx.notify();
     }
 

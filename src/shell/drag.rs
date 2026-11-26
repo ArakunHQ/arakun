@@ -406,7 +406,7 @@ impl Shell {
     ) {
         self.lifted = None;
         if self.active_session_id().as_ref() == Some(&d.id) {
-            self.composer_flash =
+            self.composer.flash =
                 Some("That is this session. Drop it on another session's composer.".into());
             cx.notify();
             return;
@@ -478,7 +478,7 @@ impl Shell {
         };
         self.with_dragged_entries(d, env, cx, work, move |this, env, block, _| {
             let Some(block) = block else {
-                this.composer_flash = Some("That session has no messages yet.".into());
+                this.composer.flash = Some("That session has no messages yet.".into());
                 return;
             };
             let list = this.attached.entry(env.to_path_buf()).or_default();
@@ -503,7 +503,7 @@ impl Shell {
         };
         self.with_dragged_entries(d, env, cx, work, move |this, env, written, cx| {
             if let Err(e) = written {
-                this.composer_flash = Some(format!("Could not link the session: {e}").into());
+                this.composer.flash = Some(format!("Could not link the session: {e}").into());
                 return;
             }
             let title = if title.is_empty() {
@@ -610,7 +610,7 @@ impl Shell {
                                         if let Some(m) = this.drop_menu.take() {
                                             this.add_session_context(&m.dragged, cx);
                                         }
-                                        window.focus(&this.composer_focus, cx);
+                                        window.focus(&this.composer.focus, cx);
                                         cx.notify();
                                     },
                                 )),
@@ -627,7 +627,7 @@ impl Shell {
                                         if let Some(m) = this.drop_menu.take() {
                                             this.link_session(&m.dragged, cx);
                                         }
-                                        window.focus(&this.composer_focus, cx);
+                                        window.focus(&this.composer.focus, cx);
                                         cx.notify();
                                     },
                                 )),

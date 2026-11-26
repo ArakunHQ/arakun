@@ -213,10 +213,10 @@ impl Shell {
                             .collect()
                     })
                     .unwrap_or_default();
-                if self.file_index_loading.as_ref() == Some(&env_path) {
-                    self.file_index_loading = None;
+                if self.composer.file_index_loading.as_ref() == Some(&env_path) {
+                    self.composer.file_index_loading = None;
                 }
-                self.file_index = Some((env_path, Instant::now(), Arc::new(files)));
+                self.composer.file_index = Some((env_path, Instant::now(), Arc::new(files)));
                 // The popup may have been waiting for them.
                 self.update_completion(cx);
             }
@@ -271,8 +271,8 @@ impl Shell {
                 }
             }
             _ => {
-                if self.file_index_loading.as_ref() == Some(&env_path) {
-                    self.file_index_loading = None;
+                if self.composer.file_index_loading.as_ref() == Some(&env_path) {
+                    self.composer.file_index_loading = None;
                 }
             }
         }
@@ -295,11 +295,12 @@ impl Shell {
             })
             .collect();
         if self
+            .composer
             .file_index_loading
             .as_ref()
             .is_some_and(|e| envs.contains(e))
         {
-            self.file_index_loading = None;
+            self.composer.file_index_loading = None;
         }
         for tab in self.strip.tabs.iter_mut() {
             let waiting = matches!(tab.doc, Some(Document::Loading))

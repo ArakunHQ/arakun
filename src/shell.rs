@@ -119,7 +119,6 @@ use crate::team_view::{TeamEvent, TeamView};
 use crate::terminal::{Terminal, TerminalEvent, TerminalView};
 use crate::theme;
 use crate::ui::{self, hover_icon, icon, icon_button};
-use composer::Completion;
 
 gpui::actions!(
     arakun,
@@ -339,30 +338,11 @@ pub struct Shell {
     /// Where the environment menu was opened from below (the composer); `None`
     /// anchors it under the panel header.
     env_menu_at: Option<gpui::Point<Pixels>>,
-    /// The composer's text as last painted, for clicks, Up/Down and the IME.
-    composer_layout: Rc<RefCell<Option<TextLayout>>>,
-    composer_scroll: ScrollHandle,
     tab_scroll: ScrollHandle,
     /// The tab last scrolled into view in the title bar, so a new active tab is too.
     tab_revealed: Cell<Option<u64>>,
     /// A check is queued for keyboard focus that went nowhere (see `render`).
     refocus_queued: bool,
-    /// Scroll the composer to its caret on the next paint; set by edits and
-    /// caret moves, not by the wheel.
-    composer_reveal: Rc<Cell<bool>>,
-    /// A mouse selection is being dragged in the composer.
-    composer_selecting: bool,
-    /// Where Up/Down aim, so the caret keeps its column across shorter lines.
-    composer_goal_x: Option<Pixels>,
-    prompt_history: crate::history::History,
-    /// The history entry Up/Down brought into the composer.
-    history_at: Option<usize>,
-    /// Saves the state shortly after the draft stops changing.
-    draft_save: Option<Task<()>>,
-    /// The composer's caret, shared with the canvas that paints it.
-    caret: Rc<RefCell<crate::caret::Caret>>,
-    _caret_focus: Subscription,
-    _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
     /// The popover survey card and what its clock knows (`shell::survey_card`).
     survey: survey_card::CardState,
@@ -393,15 +373,6 @@ pub struct Shell {
     git_reads: git_actions::GitReads,
     /// Diff tabs whose file lost its changes; closed from `render` (needs a window).
     stale_diffs: Vec<(std::path::PathBuf, String)>,
-    /// Open `@`/`/` completion of the composer.
-    completion: Option<Completion>,
-    /// `git ls-files` of an environment, cached briefly for `@` completion.
-    file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
-    /// The environment whose file index is being read, if any.
-    file_index_loading: Option<std::path::PathBuf>,
-    /// The skills an environment's agents read, cached briefly for `/` completion.
-    skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
-    skill_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
     /// while its intro fades the screen in) and the small raccoon atop the
     /// rail, which steps aside while a raccoon shows in the main view.
@@ -410,7 +381,8 @@ pub struct Shell {
     rail_mascot: Entity<crate::mascot::Mascot>,
     explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
-    composer_focus: FocusHandle,
+    /// The composer's focus, caret, scroll, history and completion.
+    composer: composer::Composer,
     _activation: Subscription,
     /// Where the window is, saved with the state so it reopens there.
     window_state: Option<state::WindowState>,
@@ -578,8 +550,6 @@ pub struct Shell {
     /// Dropped sessions still being read for each environment's composer.
     dropping: std::collections::HashMap<std::path::PathBuf, usize>,
     saved_prompts: Vec<crate::prompts::SavedPrompt>,
-    /// A one-line note under the composer (a prompt was saved, ...), until the next key.
-    composer_flash: Option<SharedString>,
     /// The agent whose models the model menu shows; `None` is the composer's.
     menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
@@ -744,13 +714,7 @@ impl Shell {
             this.sync_polled_shown(window, cx);
         });
         let focus = cx.focus_handle();
-        let composer_focus = cx.focus_handle();
-        let caret_focus = cx.on_focus(&composer_focus, window, |this, window, cx| {
-            this.claim_composer_tab(window, cx)
-        });
-        let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| {
-            this.spy_from_composer(window, cx)
-        });
+        let composer = composer::Composer::new(window, cx);
         let (projects, active_project, layout, strip) = state::restore(state::load());
         crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
             std::iter::once(&p.path)
@@ -887,7 +851,7 @@ impl Shell {
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
-            window.focus(&composer_focus, cx);
+            window.focus(&composer.focus, cx);
         }
         crate::mascot::set_animated(layout.arcade);
         crate::ui::motion::apply(cx);
@@ -919,20 +883,9 @@ impl Shell {
             env_menu_open: false,
             pending_envs: Vec::new(),
             env_menu_at: None,
-            composer_layout: Rc::default(),
-            composer_scroll: ScrollHandle::new(),
             tab_scroll: ScrollHandle::new(),
             tab_revealed: Cell::new(None),
             refocus_queued: false,
-            composer_reveal: Rc::default(),
-            composer_selecting: false,
-            composer_goal_x: None,
-            prompt_history: crate::history::History::load(),
-            history_at: None,
-            draft_save: None,
-            caret: Default::default(),
-            _caret_focus: caret_focus,
-            _composer_blur: composer_blur,
             modal: None,
             survey: survey_card::CardState::new(Instant::now()),
             palette_watch: None,
@@ -948,17 +901,12 @@ impl Shell {
             fetching: false,
             git_reads: Default::default(),
             stale_diffs: Vec::new(),
-            completion: None,
-            file_index: None,
-            file_index_loading: None,
-            skill_index: None,
-            skill_index_loading: false,
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
             explorer_scroll: UniformListScrollHandle::new(),
             focus,
-            composer_focus,
+            composer,
             _activation: activation,
             window_state: layout.window,
             _bounds: cx
@@ -1055,7 +1003,6 @@ impl Shell {
             attached: std::collections::HashMap::new(),
             dropping: std::collections::HashMap::new(),
             saved_prompts: crate::prompts::load(),
-            composer_flash: None,
             menu_agent: None,
             menu_cursor: None,
             effort_hover: None,
@@ -1305,7 +1252,7 @@ impl Shell {
         self.active_project = pi;
         self.projects[pi].active_env = ei;
         self.env_menu_open = false;
-        self.completion = None;
+        self.composer.completion = None;
         self.sync_teams_project(cx);
         self.refresh_visible(cx);
         if self.panel_tab == PanelTab::Explorer {
@@ -1752,7 +1699,7 @@ impl Shell {
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
         self.save(cx);
-        window.focus(&self.composer_focus, cx);
+        window.focus(&self.composer.focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
         // The setup goes on to its next step, or ends when the project
@@ -2156,7 +2103,7 @@ impl Shell {
         }
         self.select_env(pi, ei, window, cx);
         // It opens on its New session tab, ready for the first prompt.
-        window.focus(&self.composer_focus, cx);
+        window.focus(&self.composer.focus, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -3275,7 +3222,7 @@ impl Shell {
     fn toggle_rail(&mut self, cx: &mut Context<Self>) {
         if self.sidebar.style.collapse == crate::sidebar::Collapse::Never {
             // Otherwise the key looks broken.
-            self.composer_flash =
+            self.composer.flash =
                 Some("The sidebar always shows: Customize sidebar → When hidden.".into());
             cx.notify();
             return;
@@ -3482,7 +3429,7 @@ impl Shell {
         if let Some(focus) = self.onboarding_focus() {
             window.focus(focus, cx);
         } else if self.has_projects() {
-            window.focus(&self.composer_focus, cx);
+            window.focus(&self.composer.focus, cx);
         } else {
             window.focus(&self.focus, cx);
         }
@@ -3531,7 +3478,7 @@ impl Shell {
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_teams_project(cx);
-        self.completion = None;
+        self.composer.completion = None;
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -3834,7 +3781,7 @@ impl Shell {
             None => self.strip.add(Tab::new_session(&path)),
         };
         self.note_active_tab(cx);
-        window.focus(&self.composer_focus, cx);
+        window.focus(&self.composer.focus, cx);
         cx.notify();
     }
 }
@@ -4115,7 +4062,7 @@ impl Shell {
         if k.key != "tab" || m.control || m.alt || m.platform || m.function {
             return;
         }
-        if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
+        if self.composer.focus.is_focused(window) || types_tab(&window.context_stack()) {
             return;
         }
         let step = |window: &mut Window, cx: &mut Context<Self>| {

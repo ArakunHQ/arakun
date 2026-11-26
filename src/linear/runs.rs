@@ -39,8 +39,9 @@ pub enum RunState {
     Interrupted,
 }
 
-/// One Linear agent session and the Arakun session that works on it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// One Linear agent session and the Arakun session that works on it. Debug
+/// leaves out the branch: Linear builds it from the issue's title.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
     /// Linear's agent session id.
     pub agent_session: String,
@@ -64,6 +65,23 @@ pub struct Run {
     /// When Linear last heard from this run, in unix seconds.
     #[serde(default)]
     pub reported_at: u64,
+}
+
+impl std::fmt::Debug for Run {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run")
+            .field("agent_session", &self.agent_session)
+            .field("organization", &self.organization)
+            .field("issue", &self.issue)
+            .field("identifier", &self.identifier)
+            .field("project", &self.project)
+            .field("environment", &self.environment)
+            .field("branch", &format_args!("…"))
+            .field("session", &self.session)
+            .field("state", &self.state)
+            .field("reported_at", &self.reported_at)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,8 +128,9 @@ pub enum Added {
     Already,
 }
 
-/// Each field defaults, so a file from an older or newer Arakun still loads
-/// what it can.
+/// Each field defaults, so an older file loads and a newer one's extra
+/// fields are skipped. A state or kind this version does not know makes
+/// the whole file unreadable: it is kept aside and the record starts empty.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]
@@ -480,6 +499,14 @@ mod tests {
             )
             .contains("secret")
         );
+    }
+
+    #[test]
+    fn a_run_never_prints_its_branch() {
+        let mut r = run("a");
+        r.branch = "rik/eng-412-secret-launch-plan".into();
+        let text = format!("{r:?}");
+        assert!(!text.contains("secret") && text.contains("ENG-412"));
     }
 
     #[test]

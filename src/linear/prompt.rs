@@ -126,11 +126,27 @@ pub fn delegated(d: &Detail) -> String {
     )
 }
 
+/// Names a repository's main line often has. The session pushes its
+/// branch, so it must never be one of these.
+const MAIN_LINES: [&str; 11] = [
+    "main",
+    "master",
+    "trunk",
+    "develop",
+    "development",
+    "dev",
+    "staging",
+    "production",
+    "prod",
+    "release",
+    "head",
+];
+
 /// The branch for a delegated issue: Linear's name for it, made safe for git.
 #[allow(dead_code)] // Task 5 makes the environment on it.
 pub fn branch(d: &Detail) -> String {
     let name = git_safe(&d.issue.branch);
-    if !name.is_empty() {
+    if !name.is_empty() && !MAIN_LINES.iter().any(|m| name.eq_ignore_ascii_case(m)) {
         return name;
     }
     match git_safe(&d.issue.identifier.to_lowercase()) {
@@ -454,6 +470,13 @@ mod tests {
             assert!(git_accepts(&b), "{name:?} gave {b:?}");
         }
         assert_eq!(branch_of(&long).len(), 100);
+    }
+
+    #[test]
+    fn a_main_line_name_is_never_the_branch() {
+        assert_eq!(branch_of("main"), "linear/eng-412");
+        assert_eq!(branch_of("MASTER"), "linear/eng-412");
+        assert_eq!(branch_of("feature/main"), "feature/main");
     }
 
     #[test]

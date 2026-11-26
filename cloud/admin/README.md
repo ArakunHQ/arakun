@@ -1,8 +1,9 @@
 # Admin panel
 
 The operator panel for Arakun's cloud: a second Cloudflare Worker that signs operators
-in with GitHub and a code from an authenticator app, serves a React page (`src/`, built by Vite) and forwards `/api/*` to the
-cloud Worker's `/admin/*` routes over a service binding (`worker/`).
+in with GitHub and a code from an authenticator app they set up themselves, serves a
+React page (`src/`, built by Vite) and forwards `/api/*` to the cloud Worker's
+`/admin/*` routes over a service binding (`worker/`).
 
 ```sh
 npm ci

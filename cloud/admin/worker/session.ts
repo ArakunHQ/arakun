@@ -5,9 +5,10 @@ import { b64url, cookie, fromB64url } from "./util";
 export const SESSION_COOKIE = "__Host-arakun_admin";
 export const SESSION_SECONDS = 12 * 60 * 60;
 /// Between GitHub's answer and the code. The code step's cookie only lets the
-/// browser ask POST /auth/code, so it is short.
+/// browser give a code (POST /auth/code), or set up a first key
+/// (worker/setup.ts), so it is short: time to install an app, no more.
 export const CODE_STEP_COOKIE = "__Host-arakun_admin_code";
-export const CODE_STEP_SECONDS = 5 * 60;
+export const CODE_STEP_SECONDS = 10 * 60;
 
 export interface Operator {
   githubId: number;

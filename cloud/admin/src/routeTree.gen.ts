@@ -14,6 +14,7 @@ import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as BetaRouteImport } from './routes/beta'
 import { Route as MachinesRouteImport } from './routes/machines'
 import { Route as NoticesRouteImport } from './routes/notices'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SignInRouteImport } from './routes/sign-in'
 import { Route as UsersIndexRouteImport } from './routes/users.index'
 import { Route as UsersGithubIdRouteImport } from './routes/users.$githubId'
@@ -43,6 +44,11 @@ const NoticesRoute = NoticesRouteImport.update({
   path: '/notices',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SignInRoute = SignInRouteImport.update({
   id: '/sign-in',
   path: '/sign-in',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
+  '/settings': typeof SettingsRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users/': typeof UsersIndexRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
+  '/settings': typeof SettingsRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users': typeof UsersIndexRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/beta': typeof BetaRoute
   '/machines': typeof MachinesRoute
   '/notices': typeof NoticesRoute
+  '/settings': typeof SettingsRoute
   '/sign-in': typeof SignInRoute
   '/users/$githubId': typeof UsersGithubIdRoute
   '/users/': typeof UsersIndexRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/beta'
     | '/machines'
     | '/notices'
+    | '/settings'
     | '/sign-in'
     | '/users/$githubId'
     | '/users/'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/beta'
     | '/machines'
     | '/notices'
+    | '/settings'
     | '/sign-in'
     | '/users/$githubId'
     | '/users'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/beta'
     | '/machines'
     | '/notices'
+    | '/settings'
     | '/sign-in'
     | '/users/$githubId'
     | '/users/'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   BetaRoute: typeof BetaRoute
   MachinesRoute: typeof MachinesRoute
   NoticesRoute: typeof NoticesRoute
+  SettingsRoute: typeof SettingsRoute
   SignInRoute: typeof SignInRoute
   UsersGithubIdRoute: typeof UsersGithubIdRoute
   UsersIndexRoute: typeof UsersIndexRoute
@@ -171,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NoticesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sign-in': {
       id: '/sign-in'
       path: '/sign-in'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   BetaRoute: BetaRoute,
   MachinesRoute: MachinesRoute,
   NoticesRoute: NoticesRoute,
+  SettingsRoute: SettingsRoute,
   SignInRoute: SignInRoute,
   UsersGithubIdRoute: UsersGithubIdRoute,
   UsersIndexRoute: UsersIndexRoute,

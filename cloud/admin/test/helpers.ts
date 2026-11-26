@@ -2,9 +2,57 @@
 // isolate as the tests, so replacing the global fetch reaches it.
 import { env } from "cloudflare:test";
 import { vi } from "vitest";
+import { seal } from "../worker/seal";
+import { codeAt } from "../worker/totp";
 
-/// The Worker's bindings with the client ID the fake GitHub knows.
-export const testEnv: Env = { ...env, GITHUB_CLIENT_ID: "Iv-test" };
+/// What the fake cloud Worker keeps at /admin/operators/<id>/totp, as
+/// ../../src/admin_totp.ts does, and whether it answers at all.
+export const cloud = {
+  keys: new Map<number, { sealed: string; last_step: number }>(),
+  down: false,
+};
+
+const fakeCloud = {
+  fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = new Request(input, init);
+    if (cloud.down) throw new TypeError("Network connection lost.");
+    if (req.headers.get("Authorization") !== "Bearer test-secret") return Response.json({ error: "unauthorized" }, { status: 401 });
+    const m = /^https:\/\/cloud\.test\/admin\/operators\/(\d+)\/totp(\/use)?$/.exec(req.url);
+    if (!m) throw new Error(`unexpected cloud call: ${req.method} ${req.url}`);
+    const id = Number(m[1]);
+    const row = cloud.keys.get(id);
+    const body = (req.method === "GET" || req.method === "DELETE" ? {} : await req.json()) as { sealed: string; step: number };
+    if (m[2]) {
+      if (req.method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
+      if (!row || row.last_step >= body.step) return Response.json({ error: "code used" }, { status: 409 });
+      row.last_step = body.step;
+      return new Response(null, { status: 204 });
+    }
+    if (req.method === "GET") return row ? Response.json(row) : Response.json({ error: "no key" }, { status: 404 });
+    if (req.method === "POST" && row) return Response.json({ error: "a key exists" }, { status: 409 });
+    if (req.method === "POST" || req.method === "PUT") {
+      cloud.keys.set(id, { sealed: body.sealed, last_step: body.step });
+      return new Response(null, { status: req.method === "POST" ? 201 : 204 });
+    }
+    throw new Error(`unexpected cloud call: ${req.method} ${req.url}`);
+  },
+} as unknown as Fetcher;
+
+/// The Worker's bindings with the client ID the fake GitHub knows, and the fake cloud.
+export const testEnv: Env = { ...env, GITHUB_CLIENT_ID: "Iv-test", CLOUD: fakeCloud, CLOUD_ORIGIN: "https://cloud.test" };
+
+/// RFC 6238's SHA-1 test key, "12345678901234567890".
+export const TEST_KEY = new TextEncoder().encode("12345678901234567890");
+
+/// The operator has set up this key, as the setup would have stored it.
+export async function enroll(githubId: number, key: Uint8Array<ArrayBuffer> = TEST_KEY, lastStep = 0): Promise<void> {
+  cloud.keys.set(githubId, { sealed: await seal(key, `totp:${githubId}`, "test-session-secret"), last_step: lastStep });
+}
+
+/// The code the app with this key shows `offset` steps from now.
+export function codeNow(key: Uint8Array<ArrayBuffer> = TEST_KEY, offset = 0): Promise<string> {
+  return codeAt(key, Math.floor(Date.now() / 1000 / 30) + offset);
+}
 
 /// What the fake GitHub knows and what it was asked.
 export const github = {
@@ -27,6 +75,8 @@ export const github = {
 };
 
 export function fakeGitHub(): void {
+  cloud.keys.clear();
+  cloud.down = false;
   github.users.clear();
   github.codes.clear();
   github.outage = null;

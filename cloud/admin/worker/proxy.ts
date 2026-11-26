@@ -21,6 +21,10 @@ export async function proxy(request: Request, env: Env, op: Operator): Promise<R
   // segment or encoded separator is let through.
   const rest = url.pathname.slice("/api/".length);
   if (!rest || /\.\.|\/\/|\\|%2e|%2f|%5c/i.test(rest)) return error(404, "not found");
+  // The operators' authenticator keys are this Worker's to read and write
+  // (worker/keys.ts), never the page's: a signed-in page could replace
+  // another operator's key, or anyone's, without a code.
+  if (/^operators(\/|$)/i.test(rest)) return error(404, "not found");
 
   const change = request.method !== "GET" && request.method !== "HEAD";
   if (change && request.headers.get("Origin") !== url.origin) return error(403, "the request comes from another origin");

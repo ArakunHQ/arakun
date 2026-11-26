@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkCode, codeAt, fromBase32, totpKey } from "../worker/totp";
+import { checkCode, codeAt, fromBase32, otpauthUri, toBase32 } from "../worker/totp";
 
 // RFC 6238's SHA-1 test key, "12345678901234567890", as base32.
 const KEY = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
@@ -31,30 +31,26 @@ describe("totp", () => {
     }
   });
 
-  it("takes the code of this step and the ones either side, and no other", async () => {
+  it("takes the code of this step and the ones either side, and says which step it was", async () => {
     const now = 1234567890;
     const step = Math.floor(now / 30);
-    for (const d of [-1, 0, 1]) expect(await checkCode(key(), await codeAt(key(), step + d), now)).toBe(true);
-    for (const d of [-3, -2, 2, 3]) expect(await checkCode(key(), await codeAt(key(), step + d), now)).toBe(false);
+    for (const d of [-1, 0, 1]) expect(await checkCode(key(), await codeAt(key(), step + d), now)).toBe(step + d);
+    for (const d of [-3, -2, 2, 3]) expect(await checkCode(key(), await codeAt(key(), step + d), now)).toBeNull();
+    expect(await checkCode(key(), "005 924", now)).toBe(step);
   });
 
   it("refuses what is not six digits", async () => {
     const now = 1234567890;
-    for (const code of ["", "00592", "0059245", "abcdef", " 005924", "005924\n", "٠٠٥٩٢٤"]) {
-      expect(await checkCode(key(), code, now), JSON.stringify(code)).toBe(false);
+    for (const code of ["", "00592", "0059245", "abcdef", "005924x", "٠٠٥٩٢٤"]) {
+      expect(await checkCode(key(), code, now), JSON.stringify(code)).toBeNull();
     }
   });
 
-  it("finds an operator's key in the list, and none for anyone else", () => {
-    expect(totpKey(`1001:${KEY}`, 1001)).toEqual(key());
-    expect(totpKey(` 7:${KEY} , 1001 : ${KEY.toLowerCase()} `, 1001)).toEqual(key());
-    expect(totpKey(`1001:${KEY}`, 1002)).toBeNull();
-    expect(totpKey(`10011:${KEY}`, 1001)).toBeNull();
-    expect(totpKey(undefined, 1001)).toBeNull();
-    expect(totpKey("", 1001)).toBeNull();
-    expect(totpKey(KEY, 1001)).toBeNull();
-    // Too short to be a key, or not base32: the operator has none.
-    expect(totpKey("1001:MZXW6", 1001)).toBeNull();
-    expect(totpKey("1001:not-a-key", 1001)).toBeNull();
+  it("writes base32 that reads back, and the link apps read", () => {
+    expect(toBase32(key())).toBe(KEY);
+    expect(toBase32(new TextEncoder().encode("foo"))).toBe("MZXW6");
+    const bytes = crypto.getRandomValues(new Uint8Array(20));
+    expect(fromBase32(toBase32(bytes))).toEqual(bytes);
+    expect(otpauthUri("octo-cat", key())).toBe(`otpauth://totp/Arakun%20admin%3Aocto-cat?secret=${KEY}&issuer=Arakun%20admin`);
   });
 });

@@ -1,16 +1,18 @@
 // The second step of an operator's sign-in: a six-digit code from an
 // authenticator app (TOTP, RFC 6238, with the defaults every app uses: SHA-1,
-// 30-second steps, six digits). Each operator's key is in the Worker secret
-// ADMIN_TOTP_SECRETS as `<github_id>:<base32 key>` entries, comma-separated.
-// scripts/totp-secret.mjs makes a key.
+// 30-second steps, six digits). Operators set up their own key, at their
+// first sign-in or in Settings (worker/setup.ts); the cloud Worker keeps it
+// sealed (worker/keys.ts).
 
-const STEP_SECONDS = 30;
+export const STEP_SECONDS = 30;
 const DIGITS = 6;
 /// One step either side, for a phone clock that is a little off.
 const DRIFT_STEPS = 1;
-/// RFC 4226 asks for at least 128 bits; the script makes 160.
-const MIN_KEY_BYTES = 16;
+/// 160 bits, as RFC 4226 recommends; 32 base32 characters exactly.
+export const KEY_BYTES = 20;
 const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+/// What the authenticator app lists the key under.
+const ISSUER = "Arakun admin";
 
 /// The bytes of a base32 text (RFC 4648, the form authenticator apps show),
 /// or null if it is not one. Spaces and padding are ignored, case too.
@@ -21,7 +23,7 @@ export function fromBase32(text: string): Uint8Array<ArrayBuffer> | null {
   let bits = 0;
   let value = 0;
   for (const c of clean) {
-    value = (value << 5) | BASE32.indexOf(c);
+    value = ((value << 5) | BASE32.indexOf(c)) & 0xffff;
     bits += 5;
     if (bits >= 8) {
       bits -= 8;
@@ -31,17 +33,30 @@ export function fromBase32(text: string): Uint8Array<ArrayBuffer> | null {
   return Uint8Array.from(out);
 }
 
-/// The operator's key, or null: not in the list, or the entry is not a key.
-export function totpKey(secrets: string | undefined, githubId: number): Uint8Array<ArrayBuffer> | null {
-  for (const part of (secrets ?? "").split(",")) {
-    const colon = part.indexOf(":");
-    if (colon < 0) continue;
-    const id = part.slice(0, colon).trim();
-    if (!/^\d+$/.test(id) || Number(id) !== githubId) continue;
-    const key = fromBase32(part.slice(colon + 1));
-    return key && key.length >= MIN_KEY_BYTES ? key : null;
+export function toBase32(bytes: Uint8Array): string {
+  let out = "";
+  let bits = 0;
+  let value = 0;
+  for (const b of bytes) {
+    value = ((value << 8) | b) & 0xffff;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += BASE32[(value >> bits) & 31];
+    }
   }
-  return null;
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31];
+  return out;
+}
+
+export function newKey(): Uint8Array<ArrayBuffer> {
+  return crypto.getRandomValues(new Uint8Array(KEY_BYTES));
+}
+
+/// The link an authenticator app reads, from a QR code or a tap on a phone.
+export function otpauthUri(login: string, key: Uint8Array): string {
+  const label = encodeURIComponent(`${ISSUER}:${login}`);
+  return `otpauth://totp/${label}?secret=${toBase32(key)}&issuer=${encodeURIComponent(ISSUER)}`;
 }
 
 /// The code for one time step (RFC 4226's HOTP with the step as the counter).
@@ -55,16 +70,18 @@ export async function codeAt(key: Uint8Array<ArrayBuffer>, step: number): Promis
   return String(n % 10 ** DIGITS).padStart(DIGITS, "0");
 }
 
-/// Whether the code is the key's at `now` (seconds), give or take a step.
-export async function checkCode(key: Uint8Array<ArrayBuffer>, code: string, now: number): Promise<boolean> {
-  if (!new RegExp(`^\\d{${DIGITS}}$`).test(code)) return false;
+/// The step whose code this is, at `now` (seconds) give or take a step, or
+/// null. The step is what keeps a code from being taken twice.
+export async function checkCode(key: Uint8Array<ArrayBuffer>, code: string, now: number): Promise<number | null> {
+  const digits = code.replace(/\s/g, "");
+  if (!new RegExp(`^\\d{${DIGITS}}$`).test(digits)) return null;
   const step = Math.floor(now / STEP_SECONDS);
-  let ok = false;
+  let matched: number | null = null;
   // Every step is tried, so the time taken does not say which one matched.
   for (let d = -DRIFT_STEPS; d <= DRIFT_STEPS; d++) {
-    if (sameDigits(await codeAt(key, step + d), code)) ok = true;
+    if (sameDigits(await codeAt(key, step + d), digits)) matched = step + d;
   }
-  return ok;
+  return matched;
 }
 
 function sameDigits(a: string, b: string): boolean {

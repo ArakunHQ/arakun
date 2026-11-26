@@ -604,3 +604,36 @@ textarea.input {
 .log-account {
   font-family: var(--font-mono);
 }
+
+/* Authenticator setup: the QR code and the key to type. */
+
+.setup {
+  display: grid;
+  gap: var(--space-4);
+  max-width: var(--reading-width);
+}
+
+.setup-steps {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.qr {
+  width: var(--qr-size);
+  height: var(--qr-size);
+  border-radius: var(--radius-md);
+}
+
+/* Dark on light in both color schemes: some apps read no other. */
+.qr-light {
+  fill: var(--qr-light);
+}
+
+.qr-dark {
+  fill: var(--qr-dark);
+}
+
+.setup-key {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}

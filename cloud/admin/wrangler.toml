@@ -22,8 +22,9 @@ binding = "CLOUD"
 service = "arakun-cloud-dev"
 
 # The GitHub OAuth App for operator sign-in is not the desktop app's. Its
-# secret, ADMIN_SECRET, SESSION_SECRET, ADMIN_GITHUB_IDS and ADMIN_TOTP_SECRETS
-# (each operator's authenticator key) are Worker secrets.
+# secret, ADMIN_SECRET, SESSION_SECRET and ADMIN_GITHUB_IDS are Worker secrets.
+# Operators' authenticator keys are in the cloud Worker's database, sealed
+# with a key derived from SESSION_SECRET (worker/seal.ts).
 [vars]
 CLOUD_ORIGIN = "http://localhost:8787"
 GITHUB_CLIENT_ID = "PLACEHOLDER"

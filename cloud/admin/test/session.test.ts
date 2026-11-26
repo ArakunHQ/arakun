@@ -113,12 +113,12 @@ describe("session", () => {
     expect(await readSession(withCookie(bare), env, T)).toBeNull();
   });
 
-  it("ends the code step after five minutes", async () => {
+  it("ends the code step after ten minutes", async () => {
     const step = await signCodeStep(op, env.SESSION_SECRET!, T);
     const request = new Request("https://admin.test/", { headers: { Cookie: `${CODE_STEP_COOKIE}=${step}` } });
-    expect(await readCodeStep(request, env, T + 299)).toEqual(op);
-    expect(await readCodeStep(request, env, T + 300)).toBeNull();
-    expect(codeStepCookie("v")).toBe(`${CODE_STEP_COOKIE}=v; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=300`);
+    expect(await readCodeStep(request, env, T + 599)).toEqual(op);
+    expect(await readCodeStep(request, env, T + 600)).toBeNull();
+    expect(codeStepCookie("v")).toBe(`${CODE_STEP_COOKIE}=v; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=600`);
     expect(clearedCodeStepCookie()).toContain("Max-Age=0");
   });
 

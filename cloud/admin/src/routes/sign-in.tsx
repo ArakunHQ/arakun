@@ -1,11 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
+import { AuthenticatorSetup, errorText, post } from "../components/AuthenticatorSetup";
 import { isOutcome, type SignInOutcome } from "../signIn";
+
+type Step = "code" | "setup";
 
 interface SignInSearch {
   sign_in?: SignInOutcome;
   signed_out?: 1;
-  step?: "code";
+  step?: Step;
 }
 
 export const Route = createFileRoute("/sign-in")({
@@ -13,7 +16,7 @@ export const Route = createFileRoute("/sign-in")({
     sign_in: isOutcome(search.sign_in) ? search.sign_in : undefined,
     // The router reads ?signed_out=1 as the number 1.
     signed_out: search.signed_out === 1 || search.signed_out === "1" ? 1 : undefined,
-    step: search.step === "code" ? "code" : undefined,
+    step: search.step === "code" || search.step === "setup" ? search.step : undefined,
   }),
   component: SignIn,
 });
@@ -21,16 +24,23 @@ export const Route = createFileRoute("/sign-in")({
 const MESSAGES = {
   denied: "This GitHub account is not an operator.",
   failed: "Sign-in failed. Try again.",
-  no_key: "This operator has no authenticator app set up. Ask a maintainer to add one.",
+  reset: "Your authenticator app can no longer be read. Ask a maintainer to reset it, then set it up again.",
   signedOut: "You were signed out. The last change was not made.",
 };
 
 /// What the Worker's POST /auth/code answers, as the operator should read it.
 const CODE_ERRORS: Record<string, string> = {
   "wrong code": "That code is not right. Try the one your app shows now.",
+  "code used": "That code was just used. Wait for the next one.",
   "sign-in expired": "The sign-in took too long. Sign in with GitHub again.",
+  "key unreadable": MESSAGES.reset,
   "too many codes; wait a minute": "Too many codes. Wait a minute, then try again.",
 };
+
+/// A full load, so the panel starts again with the session.
+function enterPanel() {
+  window.location.assign("/");
+}
 
 function SignIn() {
   const { sign_in, signed_out, step } = Route.useSearch();
@@ -43,6 +53,8 @@ function SignIn() {
         </p>
         {step === "code" ? (
           <CodeStep />
+        ) : step === "setup" ? (
+          <SetupStep />
         ) : (
           <>
             <h1>Sign in</h1>
@@ -69,9 +81,34 @@ function GitHubButton() {
   );
 }
 
+/// The first sign-in: GitHub said who this is, and there is no key yet.
+function SetupStep() {
+  const navigate = useNavigate();
+  const [expired, setExpired] = useState(false);
+  return (
+    <>
+      <h1>Set up your authenticator app</h1>
+      <p className="muted">The panel asks for a code from an authenticator app at every sign-in, after GitHub. Set one up now.</p>
+      {expired ? (
+        <GitHubButton />
+      ) : (
+        <AuthenticatorSetup
+          replacing={false}
+          onDone={enterPanel}
+          onFailed={(error) => {
+            if (error === "a key exists") void navigate({ to: "/sign-in", search: { step: "code" } });
+            else if (error === "sign-in expired") setExpired(true);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
 /// The second step: GitHub said who this is, and the Worker holds the
 /// session until the authenticator app's code is right.
 function CodeStep() {
+  const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
@@ -82,19 +119,18 @@ function CodeStep() {
     setSending(true);
     setError(null);
     try {
-      const res = await fetch("/auth/code", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ code }),
-      });
+      const res = await post("/auth/code", { code });
       if (res.ok) {
-        // A full load, so the panel starts again with the session.
-        window.location.assign("/");
+        enterPanel();
         return;
       }
       const text = await errorText(res);
-      setExpired(text === "sign-in expired");
+      // The key was reset since GitHub's answer: set up a new one.
+      if (text === "no key") {
+        void navigate({ to: "/sign-in", search: { step: "setup" } });
+        return;
+      }
+      setExpired(text === "sign-in expired" || text === "key unreadable");
       setError(CODE_ERRORS[text] ?? `The server answered ${res.status}.`);
       setCode("");
     } catch {
@@ -138,15 +174,4 @@ function CodeStep() {
       )}
     </>
   );
-}
-
-/// The Worker's `error` text, or "" for an answer that is not its JSON.
-async function errorText(res: Response): Promise<string> {
-  try {
-    const body: unknown = await res.json();
-    const error = typeof body === "object" && body !== null ? (body as { error?: unknown }).error : null;
-    return typeof error === "string" ? error : "";
-  } catch {
-    return "";
-  }
 }

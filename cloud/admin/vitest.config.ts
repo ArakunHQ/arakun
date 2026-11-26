@@ -16,8 +16,6 @@ export default defineConfig({
                 SESSION_SECRET: "test-session-secret",
                 ADMIN_GITHUB_IDS: "1001,1002",
                 GITHUB_CLIENT_SECRET: "client-secret",
-                // 1001 has an authenticator key (RFC 6238's test key), 1002 none.
-                ADMIN_TOTP_SECRETS: "1001:GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
               },
             },
           }),

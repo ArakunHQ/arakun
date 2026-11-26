@@ -42,6 +42,12 @@ function words({ action, detail }: LogEntry): string {
     case "beta.decline":
       if (has("platform")) return `declined for the ${platformName(detail!.platform)} beta`;
       break;
+    case "operator.totp.add":
+      return "set up an authenticator app";
+    case "operator.totp.replace":
+      return "replaced the authenticator app";
+    case "operator.totp.reset":
+      return "reset the authenticator app";
   }
   return String(action);
 }

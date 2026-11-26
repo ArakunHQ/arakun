@@ -5,14 +5,27 @@
 //
 // GitHub is the first step only. An operator then gives a code from an
 // authenticator app (worker/totp.ts), so a taken-over GitHub account is not
-// enough to get in.
+// enough to get in. An operator with no key yet sets one up first
+// (worker/setup.ts).
 //
 // The `state` ties the callback to the browser that started it. Without it, a
 // foreign page could send an operator's browser to the callback with the
 // attacker's code and sign the operator in as the attacker.
 
-import { allowed, clearedCodeStepCookie, clearedCookie, codeStepCookie, readCodeStep, sessionCookie, signCodeStep, signSession } from "./session";
-import { checkCode, totpKey } from "./totp";
+import {
+  allowed,
+  clearedCodeStepCookie,
+  clearedCookie,
+  codeStepCookie,
+  readCodeStep,
+  sessionCookie,
+  signCodeStep,
+  signSession,
+  type Operator,
+} from "./session";
+import { loadKey, useStep, type StoredKey } from "./keys";
+import { clearedSetupCookie } from "./setup";
+import { checkCode } from "./totp";
 import { b64url, cookie, error } from "./util";
 
 /// `__Host-`, as the session cookie: a sibling host cannot plant a state of
@@ -32,12 +45,12 @@ const GITHUB_LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 /// nothing GitHub or the request said goes back.
 const FAILED = "/?sign_in=failed";
 const DENIED = "/?sign_in=denied";
-/// An operator with no authenticator key in ADMIN_TOTP_SECRETS.
-const NO_KEY = "/?sign_in=no_key";
+/// The operator's stored key does not open: SESSION_SECRET changed.
+const RESET = "/?sign_in=reset";
 /// GitHub said yes; the sign-in screen asks for the code.
 const CODE_STEP = "/sign-in?step=code";
-/// The code's digits, and room for spaces an app shows in the middle.
-const MAX_CODE_BODY = 256;
+/// GitHub said yes to an operator with no key; the screen sets one up.
+const SETUP_STEP = "/sign-in?step=setup";
 
 /// What wrangler.toml holds until a person creates the OAuth App and sets the
 /// real ID. GitHub would be asked with a client that does not exist.
@@ -82,7 +95,7 @@ async function callback(request: Request, env: Env): Promise<Response> {
   // A stale or doubled callback (the back button, a second tab) ends here.
   if (!(await sameState(url.searchParams.get("state"), cookie(request, OAUTH_COOKIE)))) return redirect(FAILED);
   if (!(await signInAllowed(request, env))) return redirect(FAILED);
-  if (!configured(env) || !env.SESSION_SECRET) return redirect(FAILED);
+  if (!configured(env) || !env.SESSION_SECRET || !env.ADMIN_SECRET) return redirect(FAILED);
 
   // No code when the user refused on GitHub's page.
   const code = url.searchParams.get("code");
@@ -97,10 +110,13 @@ async function callback(request: Request, env: Env): Promise<Response> {
   // A token that still works is not a sign-in either.
   if (!user || !revoked) return redirect(FAILED);
   if (!allowed(env.ADMIN_GITHUB_IDS, user.id)) return redirect(DENIED);
-  if (!totpKey(env.ADMIN_TOTP_SECRETS, user.id)) return redirect(NO_KEY);
+  const op = { githubId: user.id, login: user.login };
+  const stored = await loadKey(env, op);
+  if (stored === "error") return redirect(FAILED);
+  if (stored === "unreadable") return redirect(RESET);
 
-  const value = await signCodeStep({ githubId: user.id, login: user.login }, env.SESSION_SECRET, Math.floor(Date.now() / 1000));
-  const res = redirect(CODE_STEP);
+  const value = await signCodeStep(op, env.SESSION_SECRET, Math.floor(Date.now() / 1000));
+  const res = redirect(stored === "none" ? SETUP_STEP : CODE_STEP);
   res.headers.append("Set-Cookie", codeStepCookie(value));
   return res;
 }
@@ -113,29 +129,56 @@ export async function authCode(request: Request, env: Env): Promise<Response> {
   const op = await readCodeStep(request, env, now);
   // Expired, or a browser that never went through GitHub.
   if (!op || !env.SESSION_SECRET) return error(401, "sign-in expired");
-  const key = totpKey(env.ADMIN_TOTP_SECRETS, op.githubId);
-  if (!key) return error(401, "sign-in expired");
-  // Counted per operator, not per IP: a million codes are few enough to try
-  // from many addresses.
-  const { success } = await env.CODE_LIMIT.limit({ key: String(op.githubId) });
-  if (!success) return error(429, "too many codes; wait a minute");
+  if (!(await codeAllowed(env, op))) return error(429, "too many codes; wait a minute");
+  const code = text((await smallJson(request))?.["code"]);
+  if (code === null) return error(400, "no code");
 
-  const text = await request.text().catch(() => "");
-  if (text.length > MAX_CODE_BODY) return error(400, "no code");
-  let code: unknown;
-  try {
-    code = (JSON.parse(text) as Record<string, unknown> | null)?.["code"];
-  } catch {
-    return error(400, "no code");
-  }
-  if (typeof code !== "string") return error(400, "no code");
-  if (!(await checkCode(key, code.replace(/\s/g, ""), now))) return error(401, "wrong code");
+  const stored = await loadKey(env, op);
+  if (stored === "none") return error(409, "no key");
+  if (stored === "unreadable") return error(409, "key unreadable");
+  if (stored === "error") return error(502, "the cloud did not answer");
+  const result = await takeCode(env, op, stored, code, now);
+  if (result !== "ok") return error(result === "used" ? 409 : 401, result === "used" ? "code used" : "wrong code");
 
-  const session = await signSession(op, env.SESSION_SECRET, now);
   const res = new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
-  res.headers.append("Set-Cookie", sessionCookie(session));
+  res.headers.append("Set-Cookie", sessionCookie(await signSession(op, env.SESSION_SECRET, now)));
   res.headers.append("Set-Cookie", clearedCodeStepCookie());
   return res;
+}
+
+/// Checks a code against the stored key and takes its step, so the same code
+/// does not work twice, not even in two requests at once.
+export async function takeCode(env: Env, op: Operator, stored: StoredKey, code: string, now: number): Promise<"ok" | "wrong" | "used"> {
+  const step = await checkCode(stored.key, code, now);
+  if (step === null) return "wrong";
+  if (step <= stored.lastStep || !(await useStep(env, op, step))) return "used";
+  return "ok";
+}
+
+/// Counted per operator, not per IP: a million codes are few enough to try
+/// from many addresses. Every request that checks a code counts.
+export async function codeAllowed(env: Env, op: Operator): Promise<boolean> {
+  const { success } = await env.CODE_LIMIT.limit({ key: String(op.githubId) });
+  return success;
+}
+
+/// Codes, and room for spaces an app shows in the middle.
+const MAX_CODE_BODY = 256;
+
+/// The request's small JSON object, or null.
+export async function smallJson(request: Request): Promise<Record<string, unknown> | null> {
+  const body = await request.text().catch(() => "");
+  if (body.length > MAX_CODE_BODY) return null;
+  try {
+    const value: unknown = JSON.parse(body);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function text(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 
 /// POST /auth/logout. Only the panel's own page may ask, so another site
@@ -145,6 +188,7 @@ export function logout(request: Request): Response {
   const res = new Response(null, { status: 204 });
   res.headers.append("Set-Cookie", clearedCookie());
   res.headers.append("Set-Cookie", clearedCodeStepCookie());
+  res.headers.append("Set-Cookie", clearedSetupCookie());
   return res;
 }
 

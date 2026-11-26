@@ -42,6 +42,16 @@ async function api(path: string, init: RequestInit = {}, e: Env = env, withSessi
 const change = { method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json" }, body: "{}" };
 
 describe("forwarding", () => {
+  it("never forwards the page to the operators' authenticator keys", async () => {
+    for (const path of ["/api/operators/1001/totp", "/api/operators/1002/totp/use", "/api/OPERATORS/1001/totp", "/api/operators"]) {
+      for (const method of ["GET", "PUT", "POST", "DELETE"]) {
+        const res = await api(path, method === "GET" ? {} : { ...change, method });
+        expect(res.status, `${method} ${path}`).toBe(404);
+      }
+    }
+    expect(seen).toEqual([]);
+  });
+
   it("forwards a signed-in operator's call with the secret and their name", async () => {
     const res = await api("/api/users?q=octo");
     expect(res.status).toBe(200);

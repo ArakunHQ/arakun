@@ -1022,7 +1022,7 @@ impl Shell {
         // A server signed in since shows up.
         self.servers_list_machines(window, cx);
         self.sync_servers_view(cx);
-        self.servers_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.servers.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -1159,7 +1159,8 @@ impl Shell {
 
     pub(super) fn sync_servers_view(&mut self, cx: &mut Context<Self>) {
         let targets = self.server_targets();
-        self.extensions_view
+        self.views
+            .extensions
             .update(cx, |v, cx| v.set_servers(targets, cx));
         let yours = self.servers_yours();
         let Some(link) = &self.servers else {
@@ -1209,7 +1210,9 @@ impl Shell {
             error: link.error.clone(),
             balance: link.balance.clone(),
         };
-        self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
+        self.views
+            .servers
+            .update(cx, |v, cx| v.set_state(state, cx));
         self.sync_this_computer(cx);
         cx.notify();
     }
@@ -1253,7 +1256,7 @@ impl Shell {
             envs,
             agents: crate::servers_view::agents_of(&self.local_usage(cx)),
         };
-        self.servers_view.update(cx, |v, cx| v.set_this(this, cx));
+        self.views.servers.update(cx, |v, cx| v.set_this(this, cx));
     }
 
     /// The paired servers, for the Marketplace to install on. Before the
@@ -1663,7 +1666,8 @@ impl Shell {
             let ei = match p.env_index(&env_path) {
                 Some(ei) => ei,
                 None => {
-                    // Moved here from another project: its tabs and draft come along.
+                    // Moved here from another project: its tabs come along, and
+                    // its draft stays with its path in the composer.
                     let env = moving.remove(&env_path).unwrap_or_else(|| {
                         let main = !place.repo.is_empty() && place.repo == place.path;
                         let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
@@ -2264,7 +2268,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let active = self.has_projects() && self.env().path == env_path;
-        let Some(env) = self.find_env_mut(env_path) else {
+        let Some(env) = self.find_env(env_path) else {
             return;
         };
         let machine = env
@@ -2272,9 +2276,13 @@ impl Shell {
             .as_ref()
             .map(|r| r.machine.to_string())
             .unwrap_or_default();
-        let back = env.draft.trim().is_empty();
+        let back = self
+            .composer
+            .read(cx)
+            .draft(env_path)
+            .is_none_or(|d| d.text.trim().is_empty());
         if back {
-            env.draft.set(prompt);
+            self.edit_draft(env_path, cx, |d| d.set(prompt));
             if let Some(note) = note {
                 self.rename_notes
                     .entry(env_path.to_path_buf())
@@ -2485,7 +2493,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_servers_tab(window, cx);
-        self.servers_view
+        self.views
+            .servers
             .update(cx, |v, cx| v.add_place(server, window, cx));
     }
 
@@ -3173,7 +3182,8 @@ impl Shell {
                     return;
                 }
                 if matches!(kind, "market" | "market_done") {
-                    self.extensions_view
+                    self.views
+                        .extensions
                         .update(cx, |v, cx| v.server_said(id, &msg, cx));
                     return;
                 }
@@ -3181,7 +3191,8 @@ impl Shell {
                 // there; a start's goes on to whoever asked for it.
                 if kind == "error"
                     && self
-                        .extensions_view
+                        .views
+                        .extensions
                         .update(cx, |v, cx| v.server_error(id, &msg, cx))
                 {
                     return;
@@ -3211,7 +3222,7 @@ impl Shell {
                     if link.adding.remove(id) {
                         link.from_picker.remove(id);
                         link.added = Some((id.to_string(), text(&msg, "path")));
-                        self.servers_view.update(cx, |v, cx| v.place_added(id, cx));
+                        self.views.servers.update(cx, |v, cx| v.place_added(id, cx));
                     }
                     // The server sends its inbox before this: the folder is here.
                     self.servers_open_added(window, cx);
@@ -3285,11 +3296,11 @@ impl Shell {
                     self.servers_open_session(id, &session, window, cx);
                     if msg["type"] == "rewound"
                         && let Some(env_path) = self.server_session_env(id, &session)
-                        && let Some(env) = self.find_env_mut(&env_path)
+                        && self.find_env(&env_path).is_some()
                     {
-                        env.draft.set(text(&msg, "prompt"));
+                        self.edit_draft(&env_path, cx, |d| d.set(text(&msg, "prompt")));
                         self.composer_changed(cx);
-                        window.focus(&self.composer_focus, cx);
+                        self.focus_composer(window, cx);
                     }
                 } else if msg["type"] == "branch_renamed" {
                     let env_path = Remote::env_path(id, &text(&msg, "place"));
@@ -4285,7 +4296,6 @@ mod tests {
         let theirs = Remote::project_path("s1/srv/app");
         let mut old = crate::state::new_project(&theirs);
         old.environments = vec![remote_env("/srv/app"), remote_env("/srv/gone")];
-        old.environments[0].draft.set("half a prompt");
         old.active_env = 1;
         let mut projects = vec![crate::state::new_project(&local), old];
         let moved = Remote::env_path("s1", "/srv/app");
@@ -4298,7 +4308,7 @@ mod tests {
         // The local project's own folder stays where it is.
         assert_eq!(projects[0].environments.len(), 1);
         let env = moving.remove(&moved).expect("handed back to be moved");
-        assert_eq!(&*env.draft, "half a prompt");
+        assert_eq!(env.path, moved);
         // A folder no server lists any more is not kept for anywhere.
         assert!(moving.is_empty());
     }

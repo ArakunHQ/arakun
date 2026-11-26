@@ -6,9 +6,6 @@
 //! Here a file goes by the environment's path joined with that, as a local
 //! one does, so the tree and the tabs need nothing of their own.
 
-use std::sync::Arc;
-use std::time::Instant;
-
 use super::*;
 use crate::explorer::{self, FileKind};
 use crate::model::Document;
@@ -213,12 +210,8 @@ impl Shell {
                             .collect()
                     })
                     .unwrap_or_default();
-                if self.file_index_loading.as_ref() == Some(&env_path) {
-                    self.file_index_loading = None;
-                }
-                self.file_index = Some((env_path, Instant::now(), Arc::new(files)));
-                // The popup may have been waiting for them.
-                self.update_completion(cx);
+                self.composer
+                    .update(cx, |c, cx| c.set_file_index(env_path, files, cx));
             }
         }
         true
@@ -270,11 +263,9 @@ impl Shell {
                     tab.doc = Some(Document::Failed(away(&machine).into()));
                 }
             }
-            _ => {
-                if self.file_index_loading.as_ref() == Some(&env_path) {
-                    self.file_index_loading = None;
-                }
-            }
+            _ => self
+                .composer
+                .update(cx, |c, _| c.file_index_failed(&env_path)),
         }
         cx.notify();
     }
@@ -294,13 +285,11 @@ impl Shell {
                 e.path.clone()
             })
             .collect();
-        if self
-            .file_index_loading
-            .as_ref()
-            .is_some_and(|e| envs.contains(e))
-        {
-            self.file_index_loading = None;
-        }
+        self.composer.update(cx, |c, _| {
+            for env in &envs {
+                c.file_index_failed(env);
+            }
+        });
         for tab in self.strip.tabs.iter_mut() {
             let waiting = matches!(tab.doc, Some(Document::Loading))
                 && matches!(tab.kind, TabKind::File { .. })

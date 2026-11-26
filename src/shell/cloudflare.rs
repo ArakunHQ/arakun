@@ -25,7 +25,7 @@ impl Shell {
         self.note_active_tab(cx);
         let roots: Vec<PathBuf> = self.projects.iter().map(|p| p.path.clone()).collect();
         let agent = self.env().agent;
-        self.cloudflare_view.update(cx, |v, cx| {
+        self.views.cloudflare.update(cx, |v, cx| {
             v.set_roots(roots);
             v.set_agent(agent, cx);
             v.refresh_if_stale(cx);
@@ -106,7 +106,8 @@ impl Shell {
                     ),
                     None => ("Couldn't open a terminal.".to_string(), true),
                 };
-                self.cloudflare_view
+                self.views
+                    .cloudflare
                     .update(cx, |v, cx| v.shared(note.0, note.1, cx));
             }
             CloudflareEvent::SignIn { install } => {

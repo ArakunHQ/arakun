@@ -92,7 +92,7 @@ impl Shell {
     /// Looks up the pull request of the visible environment's branch while the
     /// Changes tab is open.
     pub(super) fn maybe_lookup_pr(&mut self, path: &Path, cx: &mut Context<Self>) {
-        if !self.has_projects() || self.panel_tab != PanelTab::Changes || self.env().path != path {
+        if !self.has_projects() || self.panel.tab != PanelTab::Changes || self.env().path != path {
             return;
         }
         let env = self.env_mut();
@@ -298,7 +298,7 @@ impl Shell {
                 match crate::github::pr::ItemRef::from_url(url) {
                     Some(item) => {
                         this.open_github_tab(window, cx);
-                        this.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+                        this.views.github.update(cx, |v, cx| v.reveal(&item, cx));
                     }
                     None if !url.is_empty() => cx.open_url(url),
                     None => {}

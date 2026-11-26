@@ -39,7 +39,7 @@ impl Shell {
         self.ci.update(cx, |ci, cx| {
             ci.refresh_if_stale(&root, Duration::from_secs(20), cx)
         });
-        self.runs_view.update(cx, |v, cx| {
+        self.views.runs.update(cx, |v, cx| {
             if run.is_some() {
                 v.select(run, cx);
             }
@@ -72,7 +72,7 @@ impl Shell {
     /// Hands the Runs tab the visible project and the fix sessions of its runs.
     pub(super) fn sync_runs_view(&self, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.runs_view.update(cx, |v, _| {
+            self.views.runs.update(cx, |v, _| {
                 v.set_project(None, SharedString::default(), Vec::new(), None)
             });
             return;
@@ -108,7 +108,7 @@ impl Shell {
         }
         let (root, name) = (p.path.clone(), p.name.clone());
         let current = Some(self.env().branch.to_string());
-        self.runs_view.update(cx, |v, _| {
+        self.views.runs.update(cx, |v, _| {
             v.set_project(Some(root), name, branches, current);
             v.set_sessions(linked, prs);
         });
@@ -313,7 +313,7 @@ impl Shell {
             .clone()
             .unwrap_or_else(|| "origin".to_string());
         let (dir, root, branch) = (env.path.clone(), p.path.clone(), branch.to_string());
-        self.runs_view.update(cx, |v, cx| {
+        self.views.runs.update(cx, |v, cx| {
             v.set_notice(format!("Pushing {branch}…"), false, cx)
         });
         cx.spawn(async move |this, cx| {
@@ -329,7 +329,8 @@ impl Shell {
                     }
                     Err(e) => (format!("Couldn't push {branch}: {}", first_line(&e)), true),
                 };
-                this.runs_view
+                this.views
+                    .runs
                     .update(cx, |v, cx| v.set_notice(text, error, cx));
                 this.refresh_status(&dir, cx);
             });
@@ -366,7 +367,8 @@ impl Shell {
                         "Couldn't open a pull request for {branch}: {}",
                         first_line(&e)
                     );
-                    this.runs_view
+                    this.views
+                        .runs
                         .update(cx, |v, cx| v.set_notice(text, true, cx));
                 });
             }
@@ -420,7 +422,7 @@ impl Shell {
                         rounds,
                     },
                 );
-                this.runs_view.update(cx, |v, cx| {
+                this.views.runs.update(cx, |v, cx| {
                     v.set_notice(
                         format!(
                             "Droid is committing and pushing {branch}; Arakun will follow its CI."
@@ -504,7 +506,7 @@ impl Shell {
                     open(),
                     cx,
                 );
-                self.runs_view.update(cx, |v, cx| {
+                self.views.runs.update(cx, |v, cx| {
                     v.set_notice(format!("CI passes on {branch}. Fixed."), false, cx)
                 });
             }
@@ -578,7 +580,8 @@ impl Shell {
                     ),
                     Err(e) => (format!("Couldn't revert {short}: {}", first_line(&e)), true),
                 };
-                this.runs_view
+                this.views
+                    .runs
                     .update(cx, |v, cx| v.set_notice(text, error, cx));
                 this.ci.update(cx, |ci, cx| ci.forget_graphs(&root, cx));
                 if let Some(pi) = this.projects.iter().position(|p| p.path == root) {

@@ -294,7 +294,7 @@ impl Shell {
         self.list_signed_in(window, cx);
         self.list_beta(window, cx);
         self.sync_phone_view(cx);
-        self.phone_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.phone.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -974,7 +974,7 @@ impl Shell {
                 match Server::start(settings.reach.bind(), settings.port, access.clone()) {
                     Ok((s, rx)) => (Transport::Local(s), rx),
                     Err(e) => {
-                        self.phone_view.update(cx, |v, cx| {
+                        self.views.phone.update(cx, |v, cx| {
                             v.set_error(
                                 format!("Could not listen on port {}: {e}", settings.port),
                                 cx,
@@ -1165,7 +1165,7 @@ impl Shell {
             None => PhoneState::Off { reach, relay },
         };
         let (beta, email) = self.beta_state(cx);
-        self.phone_view.update(cx, |v, cx| {
+        self.views.phone.update(cx, |v, cx| {
             v.set_state(state, cx);
             v.set_beta(beta, email.as_deref(), cx);
         });
@@ -1333,7 +1333,7 @@ impl Shell {
                 let Some(link) = &mut self.phone else { return };
                 let saved =
                     link.uploads
-                        .piece(&upload, &name, part, of, &data, super::paste::save_image);
+                        .piece(&upload, &name, part, of, &data, super::composer::save_image);
                 if let Some(path) = saved {
                     let name = path
                         .file_name()
@@ -1813,7 +1813,7 @@ impl Shell {
         };
         // The tab counts the code down and drops it when it expires.
         if link.access.lock().unwrap().pairing().is_some()
-            || self.phone_view.read(cx).pairing_shown()
+            || self.views.phone.read(cx).pairing_shown()
         {
             self.sync_phone_view(cx);
         }
@@ -1835,7 +1835,9 @@ impl Shell {
                 }
             }
         }
-        self.phone_view.update(cx, |v, cx| v.set_phones(phones, cx));
+        self.views
+            .phone
+            .update(cx, |v, cx| v.set_phones(phones, cx));
     }
 
     /// A session as a phone opens it: its state and its last entries.

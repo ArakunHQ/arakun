@@ -105,7 +105,8 @@ impl Shell {
         }
         let machine = self.server_name_of(server);
         if !added.is_empty() {
-            self.extensions_view
+            self.views
+                .extensions
                 .update(cx, |v, cx| v.server_changed(server, cx));
             self.notify(
                 AlertKind::Info,

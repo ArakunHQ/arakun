@@ -589,7 +589,7 @@ impl Shell {
         let layout = crate::tab_layout::current();
         let orders = Sort::ALL.len();
         let shown = self.tree_menu_sort();
-        let select = self.tree_sort_select && layout.group;
+        let select = self.rail.tree_sort_select && layout.group;
         let picked = self.tree_sort_picked().len();
         let menu = ui::menu_panel("tree-sort-menu", 240.)
             .child(ui::menu_heading("Order sessions by"))

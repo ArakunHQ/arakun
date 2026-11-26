@@ -143,6 +143,8 @@ fn messages(entries: &[super::Entry], tools: bool) -> Vec<String> {
             Entry::Tool(t) if tools => Some(format!("[tool] {}", t.title.trim())),
             _ => None,
         })
+        // Another agent reads these, maybe at another provider.
+        .map(|m| crate::secrets::scrub(&m).into_owned())
         .collect()
 }
 
@@ -168,7 +170,7 @@ pub fn context_block(title: &str, agent: &str, entries: &[super::Entry], budget:
     }
     kept.reverse();
     let omitted = all.len() - kept.len();
-    let title = title.replace('"', "'");
+    let title = crate::secrets::scrub(title).replace('"', "'");
     let mut s = format!("<attached_context session=\"{title}\" agent=\"{agent}\">\n");
     if omitted > 0 {
         s.push_str(&format!("[{omitted} earlier messages left out]\n\n"));
@@ -180,6 +182,7 @@ pub fn context_block(title: &str, agent: &str, entries: &[super::Entry], budget:
 
 /// A whole transcript as markdown, for a session linked into another.
 pub fn transcript_markdown(title: &str, agent: &str, entries: &[super::Entry]) -> String {
+    let title = crate::secrets::scrub(title);
     let mut s = format!("# {title}\n\nA {agent} session in Arakun.\n\n");
     s.push_str(&messages(entries, true).join("\n\n"));
     s.push('\n');
@@ -281,6 +284,33 @@ Agent: fixed
 </attached_context>
 </handoff>"
         ));
+    }
+
+    #[test]
+    fn another_agent_never_reads_a_secret() {
+        use super::super::Entry;
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let entries = vec![
+            Entry::User {
+                text: format!("push with {key}"),
+                at: 0,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: format!("pushed with {key}"),
+            },
+        ];
+        let title = format!("Push {key}");
+        let text = handoff("Droid", &title, &entries, "/data/linked/s1.md", 1024);
+        let whole = transcript_markdown(&title, "Droid", &entries);
+        for t in [&text, &whole] {
+            assert!(!t.contains(key), "{t}");
+            assert!(t.contains("User: push with [secret]"), "{t}");
+        }
+        assert!(text.contains("session=\"Push [secret]\""), "{text}");
     }
 
     fn note(

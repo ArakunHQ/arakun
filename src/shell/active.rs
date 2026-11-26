@@ -151,7 +151,8 @@ impl Shell {
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the project name gives up.
         // Not on the open session: archiving it there is too easy by accident.
-        let archive_shown = can_archive && !current && self.active_hover.as_ref() == Some(&s.id);
+        let archive_shown =
+            can_archive && !current && self.rail.active_hover.as_ref() == Some(&s.id);
         let hovered = s.id.clone();
         div()
             .id(SharedString::from(format!("active-{pi}-{ei}-{}", s.id)))
@@ -237,9 +238,9 @@ impl Shell {
             })
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 if *over {
-                    this.active_hover = Some(hovered.clone());
-                } else if this.active_hover.as_ref() == Some(&hovered) {
-                    this.active_hover = None;
+                    this.rail.active_hover = Some(hovered.clone());
+                } else if this.rail.active_hover.as_ref() == Some(&hovered) {
+                    this.rail.active_hover = None;
                 } else {
                     return;
                 }

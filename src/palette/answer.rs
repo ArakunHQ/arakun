@@ -78,8 +78,13 @@ impl Answer {
     }
 }
 
-/// The user message: the question, then the context in tagged blocks.
+/// The user message: the question, then the context in tagged blocks, with
+/// any secret in them replaced.
 pub fn prompt(ctx: &Context) -> String {
+    crate::secrets::scrub(&context_text(ctx)).into_owned()
+}
+
+fn context_text(ctx: &Context) -> String {
     let mut out = format!(
         "Question: {}\n\nProject: {} (branch {})\n",
         ctx.question, ctx.project, ctx.branch
@@ -97,7 +102,8 @@ pub fn prompt(ctx: &Context) -> String {
         ));
     }
     for (id, title, body) in &ctx.memories {
-        let body: String = body.chars().take(1200).collect();
+        // Scrubbed before it is cut, so no part of a secret is left.
+        let body: String = crate::secrets::scrub(body).chars().take(1200).collect();
         out.push_str(&format!(
             "\n<memory id=\"{id}\" title=\"{title}\">\n{body}\n</memory>\n"
         ));
@@ -316,7 +322,7 @@ pub fn rule_body(sentence: &str, sessions: &[String]) -> Value {
             sessions
                 .iter()
                 .take(40)
-                .cloned()
+                .map(|t| crate::secrets::scrub(t).into_owned())
                 .collect::<Vec<_>>()
                 .join("; ")
         )
@@ -575,6 +581,21 @@ fn cut_short(code: Option<i32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_quick_answer_model_never_reads_a_secret() {
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let ctx = Context {
+            question: format!("why does {key} fail?"),
+            memories: vec![("#1".into(), "Deploy".into(), format!("token {key}"))],
+            ..Context::default()
+        };
+        let p = prompt(&ctx);
+        assert!(!p.contains(key), "{p}");
+        assert!(p.contains("why does [secret] fail?"));
+        let b = rule_body("merge when done", &[format!("deploy {key}")]).to_string();
+        assert!(!b.contains(key) && b.contains("deploy [secret]"), "{b}");
+    }
 
     #[test]
     fn the_request_is_small_and_streams() {

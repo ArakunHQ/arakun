@@ -2,7 +2,7 @@
 use arakun_core::{
     accept, account, agent, assets, browser, caret, clone_source, cloud, durable, explorer, fetch,
     frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
-    redact, schedule, secrets, server, signals, terminal, theme, ui, zoom,
+    redact, schedule, secret_store, secrets, server, signals, terminal, theme, ui, zoom,
 };
 mod account_view;
 mod app_menu;
@@ -75,6 +75,7 @@ mod prompts;
 mod repeats;
 mod running;
 mod runs_view;
+mod secret_mcp;
 mod servers;
 mod servers_view;
 mod settings_view;
@@ -106,6 +107,7 @@ mod update;
 mod update_dialog;
 mod usage_history;
 mod usage_view;
+mod usage_where;
 mod voice;
 mod window_error;
 #[cfg(test)]
@@ -157,6 +159,7 @@ fn main() {
         shim_dir: control::shim_dir,
         github_read_only: github::pr::READ_ONLY,
         idle_for: idle::idle_for,
+        secret_mcp: secret_mcp::command,
     });
     browser::handle_subprocess();
     if control::run_cli() {

@@ -190,6 +190,7 @@ pub fn question(q: &AskUserRequest) -> Value {
         "tool_call_id": q.tool_call_id,
         "questions": q.questions.iter().map(|q| json!({
             "index": q.index, "topic": q.topic, "question": q.question, "options": q.options, "multi": q.multi,
+            "secret": q.secret,
         })).collect::<Vec<_>>(),
     })
 }

@@ -146,9 +146,9 @@ impl Shell {
             .and_then(|p| p.min_sidebar_w())
             .or((layout.tree() && !was.tree()).then_some(crate::tab_layout::SIDEBAR_W));
         if let Some(min) = min
-            && self.rail_w < min
+            && self.rail.width < min
         {
-            self.rail_w = min;
+            self.rail.width = min;
         }
         self.save(cx);
         cx.notify();
@@ -244,7 +244,7 @@ impl Shell {
         if !self.has_projects() || !crate::tab_layout::current().tree() {
             return;
         }
-        if let Some((pi, ei, id)) = self.tree_hover.clone() {
+        if let Some((pi, ei, id)) = self.rail.tree_hover.clone() {
             let pinned = self.is_pinned(&id);
             self.set_pinned(pi, ei, id, !pinned, None, cx);
             return;
@@ -509,7 +509,12 @@ impl Shell {
                     .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_raised())
                     .child(icon("search01", 14.).text_color(theme::text_subtle()))
-                    .child(div().flex_1().min_w_0().child(self.tree_filter.clone())),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.rail.tree_filter.clone()),
+                    ),
             )
             .child(
                 div()
@@ -578,7 +583,7 @@ impl Shell {
                     target: MenuTarget::Sessions,
                     at: point(at.x, px(44.)),
                 });
-                let focus = this.tree_filter.focus_handle(cx);
+                let focus = this.rail.tree_filter.focus_handle(cx);
                 window.focus(&focus, cx);
                 cx.notify();
             }))

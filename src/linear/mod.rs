@@ -1,8 +1,9 @@
 //! Linear for the Linear tab: saved sign-ins and the GraphQL client.
 //!
-//! Sign-ins (`Session`) are personal API keys, kept in
-//! `app_dir/linear/sessions.json` (0600) and never printed. The key goes to
-//! `api.linear.app` and nowhere else.
+//! Sign-ins (`Session`) are personal API keys. Who signed in is kept in
+//! `app_dir/linear/sessions.json`; the key is kept in the keyring
+//! (`secret_store`) and never printed. The key goes to `api.linear.app` and
+//! nowhere else.
 
 mod fixture;
 pub mod issues;
@@ -19,8 +20,13 @@ use serde_json::{Value, json};
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
-    /// A personal API key (`lin_api_…`) pasted in the tab.
-    ApiKey { key: String },
+    /// A personal API key (`lin_api_…`) pasted in the tab. The key is in the
+    /// keyring; `key` holds it only as a file from before had it, until it
+    /// is moved there.
+    ApiKey {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        key: String,
+    },
 }
 
 impl std::fmt::Debug for Credential {
@@ -32,11 +38,54 @@ impl std::fmt::Debug for Credential {
 }
 
 impl Credential {
-    /// Linear takes a personal API key as it is, without `Bearer`.
-    fn header(&self) -> &str {
+    /// A key that is not in the keyring yet.
+    fn in_file(&self) -> Option<&str> {
         match self {
-            Credential::ApiKey { key } => key,
+            Credential::ApiKey { key } => Some(key.as_str()).filter(|k| !k.is_empty()),
         }
+    }
+}
+
+/// The keyring entry of the session `id`. Not per test Arakun: the sessions
+/// file it goes with is shared too.
+fn secret_account(id: &str) -> String {
+    format!("linear:{id}")
+}
+
+const SECRET_LABEL: &str = "arakun: Linear API key";
+
+/// The key `s` signs its calls with, from the keyring. A key still in the
+/// file is moved to the keyring first. Not on the UI thread: the keyring may
+/// wait for the person to unlock it.
+fn key_for(s: &Session) -> Result<String, ApiError> {
+    if let Some(key) = s.credential.in_file() {
+        move_to_keyring(&s.id, key);
+        return Ok(key.to_string());
+    }
+    match crate::secret_store::get(&secret_account(&s.id)) {
+        Ok(Some(key)) => Ok(key),
+        Ok(None) => Err(ApiError::SignedOut),
+        Err(e) => Err(ApiError::Failed(format!(
+            "The keyring could not give the Linear key: {e}"
+        ))),
+    }
+}
+
+/// Moves the key of session `id` from the file to the keyring. When the
+/// keyring can't take it, it stays in the file and is still used.
+fn move_to_keyring(id: &str, key: &str) {
+    let _g = store_lock();
+    if let Err(e) = crate::secret_store::set(&secret_account(id), SECRET_LABEL, key) {
+        eprintln!("arakun: could not move the Linear key to the keyring: {e}");
+        return;
+    }
+    let file = store_file();
+    let mut store = Store::read_from(&file);
+    for s in store.sessions.iter_mut().filter(|s| s.id == id) {
+        s.credential = Credential::ApiKey { key: String::new() };
+    }
+    if let Err(e) = store.write_to(&file) {
+        eprintln!("arakun: {e}");
     }
 }
 
@@ -106,8 +155,14 @@ pub fn sessions() -> Vec<Session> {
     Store::read_from(&store_file()).sessions
 }
 
-pub fn save_session(s: Session) -> Result<(), String> {
+/// Saves `s`, its key in the keyring and the rest in the file.
+pub fn save_session(mut s: Session) -> Result<(), String> {
     let _g = store_lock();
+    if let Some(key) = s.credential.in_file() {
+        crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, key)
+            .map_err(|e| format!("The keyring could not keep the Linear key: {e}"))?;
+        s.credential = Credential::ApiKey { key: String::new() };
+    }
     let mut store = Store::read_from(&store_file());
     store.upsert(s);
     store.write_to(&store_file())
@@ -117,7 +172,9 @@ pub fn remove_session(id: &str) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
     store.remove(id);
-    store.write_to(&store_file())
+    store.write_to(&store_file())?;
+    crate::secret_store::forget(&secret_account(id));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -186,10 +243,15 @@ const ENDPOINT: &str = "https://api.linear.app/graphql";
 /// Runs `query` as `s` and returns its `data` object. The key goes in the
 /// header only.
 pub(crate) fn graphql(s: &Session, query: &str, variables: Value) -> Result<Value, ApiError> {
-    call(&s.credential, query, variables)
+    // A fixture's sessions have no key.
+    if let Some((status, text)) = fixture::reply(query) {
+        return answer(status, None, &text, crate::model::unix_now());
+    }
+    call(&key_for(s)?, query, variables)
 }
 
-fn call(credential: &Credential, query: &str, variables: Value) -> Result<Value, ApiError> {
+/// Linear takes a personal API key as it is, without `Bearer`.
+fn call(key: &str, query: &str, variables: Value) -> Result<Value, ApiError> {
     let now = crate::model::unix_now();
     if let Some((status, text)) = fixture::reply(query) {
         return answer(status, None, &text, now);
@@ -198,7 +260,7 @@ fn call(credential: &Credential, query: &str, variables: Value) -> Result<Value,
         .method("POST")
         .uri(ENDPOINT)
         .header("Content-Type", "application/json")
-        .header("Authorization", credential.header());
+        .header("Authorization", key);
     let body = json!({ "query": query, "variables": variables }).to_string();
     let reply = crate::http::run(
         crate::http::agent(Duration::from_secs(30)),
@@ -244,7 +306,7 @@ pub fn sign_in_with_key(key: &str) -> Result<Session, ApiError> {
         key: key.to_string(),
     };
     let data = call(
-        &credential,
+        key,
         "query { viewer { id name email organization { id name urlKey } } }",
         json!({}),
     )?;
@@ -361,6 +423,26 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_file_keeps_no_key_once_it_is_in_the_keyring() {
+        let mut s = session("w1#u1", "Rik");
+        s.credential = Credential::ApiKey { key: String::new() };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains(r#""credential":{"kind":"api_key"}"#),
+            "{json}"
+        );
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.credential.in_file(), None);
+        // A file from before still has it, to be moved.
+        let old = json.replace(
+            r#"{"kind":"api_key"}"#,
+            r#"{"kind":"api_key","key":"lin_api_1"}"#,
+        );
+        let old: Session = serde_json::from_str(&old).unwrap();
+        assert_eq!(old.credential.in_file(), Some("lin_api_1"));
     }
 
     #[test]

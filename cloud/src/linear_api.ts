@@ -5,6 +5,9 @@
 import { open, seal } from "./linear_seal";
 import { now, type Env } from "./util";
 
+/// The ids Linear uses are UUIDs.
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const TOKEN_URL = "https://api.linear.app/oauth/token";
 const GRAPHQL_URL = "https://api.linear.app/graphql";
 const TIMEOUT_MS = 3000;
@@ -84,16 +87,26 @@ async function graphql<T>(token: string, query: string, variables: Record<string
   return j.data as T;
 }
 
-export async function viewer(token: string): Promise<{ userId: string; organizationId: string; organizationName: string }> {
-  const data = await graphql<{ viewer?: { id?: unknown; organization?: { id?: unknown; name?: unknown } | null } | null }>(
+/// Who a token belongs to. `app` is true for an app's own token (`actor=app`)
+/// and false for a person's. Ids that are not UUIDs are refused: they are
+/// stored and later matched against webhooks.
+export async function viewer(token: string): Promise<{ userId: string; app: boolean; organizationId: string; organizationName: string }> {
+  const data = await graphql<{ viewer?: { id?: unknown; app?: unknown; organization?: { id?: unknown; name?: unknown } | null } | null }>(
     token,
-    "query { viewer { id organization { id name } } }",
+    "query { viewer { id app organization { id name } } }",
     {},
   );
   const v = data?.viewer;
-  if (typeof v?.id !== "string" || typeof v.organization?.id !== "string" || typeof v.organization.name !== "string")
+  if (
+    typeof v?.id !== "string" ||
+    !UUID.test(v.id) ||
+    typeof v.app !== "boolean" ||
+    typeof v.organization?.id !== "string" ||
+    !UUID.test(v.organization.id) ||
+    typeof v.organization.name !== "string"
+  )
     throw new LinearRefused("Linear sent an unusable viewer answer", 502);
-  return { userId: v.id, organizationId: v.organization.id, organizationName: v.organization.name };
+  return { userId: v.id, app: v.app, organizationId: v.organization.id, organizationName: v.organization.name };
 }
 
 export async function saveWorkspace(

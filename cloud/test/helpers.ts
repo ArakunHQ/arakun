@@ -213,10 +213,26 @@ export async function flagged(id: number, login: string): Promise<{ id: number; 
 // A fake Linear: its token endpoint and GraphQL API. It issues the tokens it
 // then accepts, and takes an old refresh token again, as Linear does for 30
 // minutes after a refresh.
+
+/// Who a token is. `app` says it is an app's own token (`actor=app`); left
+/// out, it is a person's.
+export interface LinearWho {
+  userId: string;
+  organizationId: string;
+  organizationName: string;
+  app?: boolean;
+}
+
+/// The workspace and app user an exchanged code belongs to.
+export const FAKE_ORG = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+export const FAKE_APP_USER = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a";
+
 export const linearFake = {
   /// Access token → who Linear says it belongs to. A test adds the tokens it
   /// saves; an exchange or refresh adds the pair it issues.
-  tokens: new Map<string, { userId: string; organizationId: string; organizationName: string }>(),
+  tokens: new Map<string, LinearWho>(),
+  /// What an exchange or refresh issues a token as, over the app in FAKE_ORG.
+  issueAs: {} as Partial<LinearWho>,
   /// Refresh tokens Linear still takes → the access token issued with each.
   refreshTokens: new Map<string, string>(),
   /// Refresh tokens already rotated → the pair that answered them. Linear
@@ -270,6 +286,7 @@ let linearIssued = 0;
 
 function resetLinear(): void {
   linearFake.tokens.clear();
+  linearFake.issueAs = {};
   linearFake.refreshTokens.clear();
   linearFake.rotated.clear();
   linearFake.grace = true;
@@ -314,7 +331,7 @@ async function linearReply(req: Request): Promise<Response> {
       linearFake.refreshTokens.delete(used);
       linearFake.rotated.set(used, { access, refresh });
     }
-    linearFake.tokens.set(access, { userId: "app-user", organizationId: "org-fake", organizationName: "Fake" });
+    linearFake.tokens.set(access, { userId: FAKE_APP_USER, organizationId: FAKE_ORG, organizationName: "Fake", app: true, ...linearFake.issueAs });
     linearFake.refreshTokens.set(refresh, access);
     if (grant === "refresh_token") await linearFake.afterRefresh?.({ access, refresh });
     return Response.json({ access_token: access, refresh_token: refresh, expires_in: 86400, token_type: "Bearer", scope: "read" });
@@ -336,7 +353,9 @@ async function linearReply(req: Request): Promise<Response> {
   if (linearFake.malformed === "issue-null") return Response.json({ data: { issue: null } });
   if (linearFake.malformed === "no-team") return Response.json({ data: { issue: { team: null, project: null } } });
   if (query.includes("viewer"))
-    return Response.json({ data: { viewer: { id: who.userId, organization: { id: who.organizationId, name: who.organizationName } } } });
+    return Response.json({
+      data: { viewer: { id: who.userId, app: who.app ?? false, organization: { id: who.organizationId, name: who.organizationName } } },
+    });
   if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))
     return Response.json({ data: { agentActivityCreate: { success: true }, agentSessionUpdate: { success: true } } });
   if (query.includes("issue(")) {

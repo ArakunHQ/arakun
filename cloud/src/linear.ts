@@ -18,15 +18,13 @@
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
-import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, viewer } from "./linear_api";
+import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, UUID, viewer } from "./linear_api";
 import { webhook } from "./linear_webhook";
 import { dropDelivery } from "./machines";
 import { b64url, error, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 export const FLAG = "linear";
-
-/// The ids Linear uses are UUIDs.
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export { UUID };
 
 /// Whether the app is set up: a Worker without its secrets does not pretend
 /// to take part.
@@ -123,6 +121,9 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
   try {
     const tokens = await exchangeCode(env, code, callbackUri(url));
     const app = await viewer(tokens.access);
+    // A member who authorized without actor=app gets a token of their own.
+    // Saved, it would replace the app's and break delegation in the workspace.
+    if (!app.app) return done(error(400, "that was not an app install"));
     await saveWorkspace(env, {
       organizationId: app.organizationId,
       name: app.organizationName,
@@ -169,6 +170,9 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
     if (e instanceof LinearRefused) return error(400, "linear refused that token");
     throw e;
   }
+  // A link stands for a person who delegates. An app's token names the app,
+  // which never does.
+  if (seen.app) return error(400, "linear refused that token");
   // Whoever proves the Linear user holds the link. The routes of the account
   // it leaves go too: they no longer have a link to stand on.
   const [, , installed] = await env.DB.batch<{ n: number }>([

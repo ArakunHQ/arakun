@@ -2,7 +2,7 @@ import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { linear, routeFor } from "../src/linear";
 import { open, seal } from "../src/linear_seal";
-import { ADMIN, as, call, dump, flagged, linearFake, signIn } from "./helpers";
+import { ADMIN, FAKE_APP_USER, FAKE_ORG, as, call, dump, flagged, linearFake, signIn } from "./helpers";
 import { account, connectedComputer } from "./relay/helpers";
 
 describe("the /linear gate", () => {
@@ -104,7 +104,7 @@ describe("installing Arakun in a workspace", () => {
     expect(res.headers.getSetCookie().some((c) => /^__Host-arakun_linear_state=;.*Max-Age=0/.test(c))).toBe(true);
     const all = (await rows()).results;
     expect(all).toHaveLength(1);
-    expect(all[0]).toMatchObject({ organization_id: "org-fake", name: "Fake", app_user_id: "app-user", installed_by: 1 });
+    expect(all[0]).toMatchObject({ organization_id: FAKE_ORG, name: "Fake", app_user_id: FAKE_APP_USER, installed_by: 1 });
     expect(String(all[0]!.access_token)).toMatch(/^v1\./);
     expect(String(all[0]!.access_token)).not.toContain("lin_oauth");
   });
@@ -142,6 +142,29 @@ describe("installing Arakun in a workspace", () => {
     expect(await res.json()).toEqual({ error: "linear refused the install" });
     expect((await rows()).results).toHaveLength(0);
   });
+  it("refuses a token that is not the app's, and stores nothing", async () => {
+    // A workspace member who authorized without actor=app gets a token of their own.
+    const u = await flagged(1, "ada");
+    const { value, state } = await begin(u);
+    linearFake.issueAs = { app: false, userId: "22222222-2222-4222-8222-222222222222" };
+    const res = await callback(u, `code=abc&state=${state}`, value);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "that was not an app install" });
+    expect(res.headers.getSetCookie().some((c) => /^__Host-arakun_linear_state=;.*Max-Age=0/.test(c))).toBe(true);
+    expect((await rows()).results).toHaveLength(0);
+  });
+  it.each([
+    ["user", { userId: "app-user" }],
+    ["workspace", { organizationId: "org-fake" }],
+  ])("answers 502 when Linear names the %s with an id that is not a UUID", async (_n, issueAs) => {
+    const u = await flagged(1, "ada");
+    const { value, state } = await begin(u);
+    linearFake.issueAs = issueAs;
+    const res = await callback(u, `code=abc&state=${state}`, value);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "linear refused the install" });
+    expect((await rows()).results).toHaveLength(0);
+  });
   it("keeps one row when the same workspace is installed twice", async () => {
     const u = await flagged(1, "ada");
     for (let i = 0; i < 2; i++) {
@@ -150,7 +173,7 @@ describe("installing Arakun in a workspace", () => {
     }
     const all = (await rows()).results;
     expect(all).toHaveLength(1);
-    expect(await open(env, "org-fake", String(all[0]!.access_token))).toBe("lin_oauth_issued2");
+    expect(await open(env, FAKE_ORG, String(all[0]!.access_token))).toBe("lin_oauth_issued2");
   });
 });
 
@@ -225,6 +248,18 @@ describe("linking a Linear user and routing", () => {
     const res = await link(u.session, "lin_api_nope");
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "linear refused that token" });
+    expect(await links()).toEqual([]);
+  });
+  it("refuses an app's token, or one whose ids are not UUIDs", async () => {
+    const u = await flagged(1, "ada");
+    linearFake.tokens.set("lin_oauth_app", { userId: LU, organizationId: ORG, organizationName: "Acme", app: true });
+    linearFake.tokens.set("lin_api_odd_user", { userId: "someone", organizationId: ORG, organizationName: "Acme" });
+    linearFake.tokens.set("lin_api_odd_org", { userId: LU, organizationId: "acme", organizationName: "Acme" });
+    for (const token of ["lin_oauth_app", "lin_api_odd_user", "lin_api_odd_org"]) {
+      const res = await link(u.session, token);
+      expect(res.status, token).toBe(400);
+      expect(await res.json()).toEqual({ error: "linear refused that token" });
+    }
     expect(await links()).toEqual([]);
   });
   it("refuses a missing, odd or long token without calling Linear", async () => {

@@ -8,7 +8,8 @@ const ORG = "11111111-1111-4111-8111-111111111111";
 const SESSION = "22222222-2222-4222-8222-222222222222";
 const ISSUE = "33333333-3333-4333-8333-333333333333";
 const TEAM = "44444444-4444-4444-8444-444444444444";
-const who = { userId: "app-user", organizationId: ORG, organizationName: "Acme" };
+const APP_USER = "55555555-5555-4555-8555-555555555555";
+const who = { userId: APP_USER, organizationId: ORG, organizationName: "Acme", app: true };
 
 type Workspace = Parameters<typeof saveWorkspace>[1];
 
@@ -60,7 +61,15 @@ describe("Linear's API", () => {
   });
   it("reads who a token is", async () => {
     linearFake.tokens.set("lin_oauth_t", who);
-    expect(await viewer("lin_oauth_t")).toEqual({ userId: "app-user", organizationId: ORG, organizationName: "Acme" });
+    expect(await viewer("lin_oauth_t")).toEqual({ userId: APP_USER, app: true, organizationId: ORG, organizationName: "Acme" });
+    linearFake.tokens.set("lin_api_person", { ...who, app: false });
+    expect(await viewer("lin_api_person")).toMatchObject({ app: false });
+  });
+  it("refuses a viewer whose ids are not UUIDs", async () => {
+    linearFake.tokens.set("lin_oauth_u", { ...who, userId: "app-user" });
+    linearFake.tokens.set("lin_oauth_o", { ...who, organizationId: "org" });
+    await expect(viewer("lin_oauth_u")).rejects.toMatchObject({ status: 502 });
+    await expect(viewer("lin_oauth_o")).rejects.toMatchObject({ status: 502 });
   });
   it("exchanges a code", async () => {
     const got = await exchangeCode(env, "code-1", "https://teams.test/linear/callback");

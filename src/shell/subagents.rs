@@ -169,9 +169,9 @@ impl Shell {
     /// The Workspace panel is on screen at its Session tab.
     pub(super) fn subagents_shown(&self) -> bool {
         self.has_projects()
-            && self.customize.is_none()
+            && self.panel.customize.is_none()
             && self.panel_shown()
-            && self.panel_tab == PanelTab::Session
+            && self.panel.tab == PanelTab::Session
     }
 
     /// Opens the Workspace panel at its Session tab, or goes back to its
@@ -190,10 +190,10 @@ impl Shell {
     /// Switches the Workspace panel's tab. Leaving Session means a new
     /// subagent or pull request should not pull the panel back to it.
     pub(super) fn set_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
-        if self.panel_tab == PanelTab::Session && tab != PanelTab::Session {
+        if self.panel.tab == PanelTab::Session && tab != PanelTab::Session {
             self.subagents_dismissed = true;
         }
-        self.panel_tab = tab;
+        self.panel.tab = tab;
         if tab == PanelTab::Session {
             self.sync_subagent_tick(cx);
         }
@@ -203,12 +203,12 @@ impl Shell {
     /// Shows the Workspace panel at its Session tab, in Customize's place
     /// if that is open.
     fn show_subagents_tab(&mut self, cx: &mut Context<Self>) {
-        if self.customize.is_some() {
+        if self.panel.customize.is_some() {
             self.close_customize(cx);
         }
-        self.panel_tab = PanelTab::Session;
-        if !self.panel_open {
-            self.panel_open = true;
+        self.panel.tab = PanelTab::Session;
+        if !self.panel.open {
+            self.panel.open = true;
             self.save(cx);
         }
     }
@@ -245,8 +245,8 @@ impl Shell {
             .is_some_and(|a| a.as_ref() == session);
         if active
             && !self.subagents_dismissed
-            && self.customize.is_none()
-            && self.panel_tab == PanelTab::Sessions
+            && self.panel.customize.is_none()
+            && self.panel.tab == PanelTab::Sessions
         {
             self.show_subagents_tab(cx);
         }

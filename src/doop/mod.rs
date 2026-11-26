@@ -6,8 +6,9 @@
 //! Everything is read through its MCP endpoint, `<instance>/mcp`, the same one
 //! the agents use: JSON-RPC over POST with a bearer token. The token is an
 //! OAuth one from a sign-in in the browser (`oauth`), or an agent key the user
-//! pasted. Sign-ins (`Session`) are kept in `app_dir/doop/sessions.json`
-//! (0600) and never printed.
+//! pasted. Who signed in (`Session`) is kept in `app_dir/doop/sessions.json`;
+//! the key or the tokens are kept in the keyring (`secret_store`), and never
+//! printed.
 //!
 //! Instances differ in version, so nothing here assumes a fixed tool list. The
 //! tab asks for the tools first (`tools/list`), picks the ones it knows by
@@ -187,9 +188,14 @@ fn file_safe(s: &str) -> String {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Credential {
-    /// An agent key pasted in the tab.
-    AgentKey { key: String },
-    /// Tokens from a sign-in in the browser.
+    /// An agent key pasted in the tab. The key is in the keyring; `key`
+    /// holds it only as a file from before had it, until it is moved there.
+    AgentKey {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        key: String,
+    },
+    /// Tokens from a sign-in in the browser. The file keeps those that are
+    /// not secret; the keyring keeps them all.
     #[serde(rename = "oauth")]
     OAuth { tokens: oauth::Tokens },
 }
@@ -217,6 +223,121 @@ impl Credential {
             Credential::OAuth { .. } => "signed in",
         }
     }
+
+    /// Whether the secrets are here: in a new sign-in, or in a file from
+    /// before they went to the keyring.
+    fn has_secret(&self) -> bool {
+        !self.bearer().is_empty()
+    }
+
+    /// This credential as the file keeps it: without the key, the tokens and
+    /// the client secret.
+    fn without_secrets(&self) -> Credential {
+        match self {
+            Credential::AgentKey { .. } => Credential::AgentKey { key: String::new() },
+            Credential::OAuth { tokens } => Credential::OAuth {
+                tokens: oauth::Tokens {
+                    access: String::new(),
+                    refresh: None,
+                    client_secret: None,
+                    ..tokens.clone()
+                },
+            },
+        }
+    }
+}
+
+/// The keyring entry of the session `id`. It holds the whole credential as
+/// JSON, so a renewal replaces the access and refresh tokens together. Not
+/// per test Arakun: the sessions file it goes with is shared too.
+fn secret_account(id: &str) -> String {
+    format!("doop:{id}")
+}
+
+const SECRET_LABEL: &str = "arakun: Doop sign-in";
+
+type Seen = std::collections::HashMap<String, (Session, Credential)>;
+
+/// The credentials read from the keyring this run, each with its session as
+/// the file had it then. Every sign-in and renewal changes the file, so an
+/// entry whose session no longer matches is read again: another Arakun may
+/// have renewed the tokens.
+fn credentials() -> std::sync::MutexGuard<'static, Seen> {
+    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// The whole credential of `saved`, a session as the file has it: the file's
+/// own when it still holds the secrets (moved to the keyring here), else the
+/// keyring's. Not on the UI thread: the keyring may wait for the person to
+/// unlock it.
+fn full_credential(saved: &Session) -> Result<Credential, Error> {
+    // Held while the keyring is asked, so calls that start together wait for
+    // one answer instead of each asking.
+    let mut seen = credentials();
+    if let Some((file, c)) = seen.get(&saved.id)
+        && file == saved
+    {
+        return Ok(c.clone());
+    }
+    if saved.credential.has_secret() {
+        // When the keyring refuses, the file's copy is used, and not moved
+        // again this run.
+        let file = move_to_keyring(saved);
+        seen.insert(saved.id.clone(), (file, saved.credential.clone()));
+        return Ok(saved.credential.clone());
+    }
+    let c = match crate::secret_store::get(&secret_account(&saved.id)) {
+        // The parse error is left out: it may quote the secret.
+        Ok(Some(json)) => serde_json::from_str::<Credential>(&json).map_err(|_| {
+            Error::Failed("The keyring's Doop sign-in could not be read. Sign in again.".into())
+        })?,
+        Ok(None) => {
+            return Err(Error::SignedOut(
+                "The keyring has no key for this Doop sign-in. Sign in again.".into(),
+            ));
+        }
+        Err(e) => {
+            return Err(Error::Failed(format!(
+                "The keyring could not give the Doop sign-in: {e}"
+            )));
+        }
+    };
+    seen.insert(saved.id.clone(), (saved.clone(), c.clone()));
+    Ok(c)
+}
+
+/// Moves the secrets of `saved` from the file to the keyring, and returns the
+/// session as the file has it after. When the keyring can't take them, they
+/// stay in the file and are still used.
+fn move_to_keyring(saved: &Session) -> Session {
+    let _g = store_lock();
+    let file = store_file();
+    let mut store = Store::read_from(&file);
+    // Removed or signed in again since: nothing to move.
+    let Some(s) = store.sessions.iter_mut().find(|o| *o == saved) else {
+        return saved.clone();
+    };
+    let json = match serde_json::to_string(&saved.credential) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("arakun: {e}");
+            return saved.clone();
+        }
+    };
+    if let Err(e) = crate::secret_store::set(&secret_account(&saved.id), SECRET_LABEL, &json) {
+        eprintln!("arakun: could not move the Doop sign-in to the keyring: {e}");
+        return saved.clone();
+    }
+    *s = saved.without_secrets();
+    let moved = s.clone();
+    if let Err(e) = store.write_to(&file) {
+        eprintln!("arakun: {e}");
+        return saved.clone();
+    }
+    moved
 }
 
 /// One sign-in on one instance.
@@ -251,6 +372,13 @@ impl Session {
 
     pub fn self_hosted(&self) -> bool {
         self.host != DEFAULT_HOST
+    }
+
+    fn without_secrets(&self) -> Session {
+        Session {
+            credential: self.credential.without_secrets(),
+            ..self.clone()
+        }
     }
 }
 
@@ -310,18 +438,40 @@ pub fn sessions() -> Vec<Session> {
     Store::read_from(&store_file()).sessions
 }
 
+/// Saves `s`, its key or tokens in the keyring and the rest in the file. Not
+/// on the UI thread: it asks the keyring.
 pub fn save_session(s: Session) -> Result<(), String> {
     let _g = store_lock();
+    if s.credential.has_secret() {
+        let json = serde_json::to_string(&s.credential).map_err(|e| e.to_string())?;
+        crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, &json)
+            .map_err(|e| format!("The keyring could not keep the Doop sign-in: {e}"))?;
+    }
     let mut store = Store::read_from(&store_file());
-    store.upsert(s);
+    store.upsert(s.without_secrets());
     store.write_to(&store_file())
 }
 
+/// Removes the sign-in `id`. Its secrets leave the keyring on a thread of
+/// their own, as the keyring may wait to be unlocked.
 pub fn remove_session(id: &str) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
     store.remove(id);
-    store.write_to(&store_file())
+    store.write_to(&store_file())?;
+    let id = id.to_string();
+    std::thread::spawn(move || {
+        let _g = store_lock();
+        // Signed in again meanwhile: those secrets are the new ones.
+        if !Store::read_from(&store_file())
+            .sessions
+            .iter()
+            .any(|s| s.id == id)
+        {
+            crate::secret_store::forget(&secret_account(&id));
+        }
+    });
+    Ok(())
 }
 
 /// The agent key the environment or `~/.config/arakun/doop_key` holds, to
@@ -555,12 +705,12 @@ enum Plan {
 /// A token is traded for a new one a minute before it runs out, or when the
 /// instance just refused it (`refused`). Without a refresh token there is
 /// nothing to trade: it is used for as long as it lasts.
-fn plan(saved: Option<&Session>, refused: Option<&str>, now: u64) -> Plan {
+fn plan(saved: Option<&Credential>, refused: Option<&str>, now: u64) -> Plan {
     let Some(saved) = saved else {
         return Plan::Gone;
     };
-    let Credential::OAuth { tokens } = &saved.credential else {
-        return Plan::Use(saved.credential.bearer().to_string());
+    let Credential::OAuth { tokens } = saved else {
+        return Plan::Use(saved.bearer().to_string());
     };
     let early = if tokens.refresh.is_some() { 60 } else { 0 };
     let spent = tokens.expires_at <= now + early;
@@ -600,32 +750,50 @@ fn token(s: &Session, refused: Option<&str>) -> Result<String, Error> {
     let lock = renew_lock(&s.id);
     let _renewing = lock.lock().unwrap_or_else(|e| e.into_inner());
     // Another call may have traded the token since `s` was read.
-    let old = match plan(
-        saved_session(&s.id).as_ref(),
-        refused,
-        crate::model::unix_now(),
-    ) {
+    let before = saved_session(&s.id);
+    let credential = before.as_ref().map(full_credential).transpose()?;
+    let old = match plan(credential.as_ref(), refused, crate::model::unix_now()) {
         Plan::Use(token) => return Ok(token),
         Plan::Gone => return Err(gone()),
         Plan::Renew(tokens) => tokens,
     };
-    let fresh = oauth::refresh(&old)?;
-    let access = fresh.access.clone();
-    let _g = store_lock();
+    let before = before.ok_or_else(gone)?.without_secrets();
+    let fresh = Credential::OAuth {
+        tokens: oauth::refresh(&old)?,
+    };
+    let g = store_lock();
     let mut store = Store::read_from(&store_file());
     // Removed, or signed in anew, while the instance answered: the new
     // tokens belong to a sign-in that is no longer there.
     let Some(saved) = store.sessions.iter().find(|o| o.id == s.id).cloned() else {
         return Err(gone());
     };
-    if saved.credential != (Credential::OAuth { tokens: old }) {
-        return Ok(saved.credential.bearer().to_string());
+    // Signed in anew, or renewed by another Arakun: the file shows it even
+    // without the secrets, as both change what it keeps. Moving the secrets
+    // to the keyring does not.
+    if saved.without_secrets() != before {
+        drop(g);
+        return Ok(full_credential(&saved)?.bearer().to_string());
     }
-    store.upsert(Session {
-        credential: Credential::OAuth { tokens: fresh },
+    let json = serde_json::to_string(&fresh).map_err(|e| Error::Failed(e.to_string()))?;
+    let kept = match crate::secret_store::set(&secret_account(&s.id), SECRET_LABEL, &json) {
+        Ok(()) => fresh.without_secrets(),
+        // The old refresh token may be spent, so the new one must not be
+        // lost: the file keeps it until the keyring takes it.
+        Err(e) => {
+            eprintln!("arakun: could not keep the renewed Doop sign-in in the keyring: {e}");
+            fresh.clone()
+        }
+    };
+    let saved = Session {
+        credential: kept,
         ..saved
-    });
+    };
+    store.upsert(saved.clone());
     store.write_to(&store_file()).map_err(Error::Failed)?;
+    drop(g);
+    let access = fresh.bearer().to_string();
+    credentials().insert(s.id.clone(), (saved, fresh));
     Ok(access)
 }
 
@@ -1704,23 +1872,72 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_renewed_only_when_they_can_and_must_be() {
-        let oauth = |refresh: Option<&str>, expires_at: u64| Session {
-            id: "a".into(),
+    fn the_file_keeps_no_secret_once_it_is_in_the_keyring() {
+        let session = |credential: Credential| Session {
+            id: "https://doop.design#u1".into(),
             host: DEFAULT_HOST.into(),
-            email: String::new(),
+            email: "rik@example.com".into(),
             name: String::new(),
-            credential: Credential::OAuth {
-                tokens: oauth::Tokens {
-                    client_id: "c".into(),
-                    client_secret: None,
-                    token_endpoint: "https://doop.design/token".into(),
-                    access: "a1".into(),
-                    refresh: refresh.map(str::to_string),
-                    expires_at,
-                },
+            credential,
+            added_at: 1,
+        };
+        let full = session(Credential::OAuth {
+            tokens: oauth::Tokens {
+                client_id: "c".into(),
+                client_secret: Some("cs_secret".into()),
+                token_endpoint: "https://doop.design/token".into(),
+                access: "at_secret".into(),
+                refresh: Some("rt_secret".into()),
+                expires_at: 2000,
             },
-            added_at: 0,
+        });
+        let json = serde_json::to_string(&full.without_secrets()).unwrap();
+        assert!(!json.contains("secret"), "{json}");
+        assert!(json.contains(r#""client_id":"c""#), "{json}");
+        assert!(json.contains(r#""expires_at":2000"#), "{json}");
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert!(!back.credential.has_secret());
+        assert_eq!(back, full.without_secrets());
+        // A file from before still has them, to be moved.
+        let old: Session = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+        assert!(old.credential.has_secret());
+        assert_eq!(old, full);
+        // The keyring keeps the whole credential as one secret.
+        let kept = serde_json::to_string(&full.credential).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Credential>(&kept).unwrap(),
+            full.credential
+        );
+
+        let key = session(Credential::AgentKey {
+            key: "dk_secret".into(),
+        });
+        let json = serde_json::to_string(&key.without_secrets()).unwrap();
+        assert!(
+            json.contains(r#""credential":{"kind":"agent_key"}"#),
+            "{json}"
+        );
+        let back: Session = serde_json::from_str(&json).unwrap();
+        assert!(!back.credential.has_secret());
+        let old = json.replace(
+            r#"{"kind":"agent_key"}"#,
+            r#"{"kind":"agent_key","key":"dk_secret"}"#,
+        );
+        let old: Session = serde_json::from_str(&old).unwrap();
+        assert_eq!(old, key);
+    }
+
+    #[test]
+    fn tokens_are_renewed_only_when_they_can_and_must_be() {
+        let oauth = |refresh: Option<&str>, expires_at: u64| Credential::OAuth {
+            tokens: oauth::Tokens {
+                client_id: "c".into(),
+                client_secret: None,
+                token_endpoint: "https://doop.design/token".into(),
+                access: "a1".into(),
+                refresh: refresh.map(str::to_string),
+                expires_at,
+            },
         };
         let now = 1000;
         assert_eq!(

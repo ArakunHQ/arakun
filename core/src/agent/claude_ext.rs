@@ -547,35 +547,69 @@ pub fn remove(cwd: &Path, name: &str, scope: &Scope) -> Result<()> {
     .map(|_| ())
 }
 
-/// Puts `config` in place of the server's, putting the old one back if that fails.
-fn replace(cwd: &Path, name: &str, scope: &Scope, old: &Value, config: &Value) -> Result<()> {
-    let bin = claude_bin().ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    let scope = scope_arg(scope)?;
-    run(
-        &bin,
-        cwd,
-        &["mcp", "remove", name, "-s", scope],
-        CLI_TIMEOUT,
-    )?;
-    if let Err(e) = run(
-        &bin,
-        cwd,
-        &["mcp", "add-json", name, &config.to_string(), "-s", scope],
-        CLI_TIMEOUT,
-    ) {
-        let _ = run(
-            &bin,
-            cwd,
-            &["mcp", "add-json", name, &old.to_string(), "-s", scope],
-            CLI_TIMEOUT,
-        );
-        return Err(e);
-    }
-    Ok(())
+/// Where a scope keeps its servers: the file, and whether only this user may
+/// read it. User and local servers are in `~/.claude.json`, project servers in
+/// the repo's `.mcp.json`.
+fn config_file(home: &Path, cwd: &Path, scope: &Scope) -> Result<(PathBuf, bool)> {
+    scope_arg(scope)?;
+    Ok(match scope {
+        Scope::Project => (cwd.join(".mcp.json"), false),
+        _ => (home.join(".claude.json"), true),
+    })
 }
 
-fn current(cwd: &Path, name: &str, scope: &Scope) -> Result<Value> {
-    let state = read_json(&launch::home().join(".claude.json"));
+/// Puts `config` in place of the server's by editing its config file, not
+/// through `claude mcp add-json`: that would put the token in the process's
+/// arguments, where any user of the machine can read it. Its stdin form is no
+/// way out either: the CLI refuses stdin inside a Claude Code session, and
+/// Arakun can be started from one.
+fn write_server(home: &Path, cwd: &Path, name: &str, scope: &Scope, config: &Value) -> Result<()> {
+    let (file, private) = config_file(home, cwd, scope)?;
+    // Write where a symlinked config points, so the link stays a link.
+    let file = std::fs::canonicalize(&file).unwrap_or(file);
+    let bytes =
+        std::fs::read(&file).map_err(|e| anyhow!("could not read {}: {e}", file.display()))?;
+    // A file that doesn't parse is never written over: it would be lost.
+    let mut doc: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("{} is not valid JSON ({e}); fix it first", file.display()))?;
+    let servers = match scope {
+        Scope::Local => {
+            let projects = doc["projects"]
+                .as_object_mut()
+                .ok_or_else(|| anyhow!("{name} is not in its config file anymore"))?;
+            // The same key `project_entry` read the server under.
+            let key = cwd.to_string_lossy().trim_end_matches('/').to_string();
+            let key = if projects.contains_key(&key) {
+                key
+            } else {
+                std::fs::canonicalize(cwd)
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            &mut projects
+                .get_mut(&key)
+                .ok_or_else(|| anyhow!("{name} is not in its config file anymore"))?["mcpServers"]
+        }
+        _ => &mut doc["mcpServers"],
+    };
+    let slot = servers
+        .as_object_mut()
+        .and_then(|s| s.get_mut(name))
+        .ok_or_else(|| anyhow!("{name} is not in its config file anymore"))?;
+    *slot = config.clone();
+    let mut out = serde_json::to_vec_pretty(&doc)?;
+    out.push(b'\n');
+    let written = if private {
+        crate::durable::replace_private(&file, &out)
+    } else {
+        crate::durable::replace(&file, &out)
+    };
+    written.map_err(|e| anyhow!("could not save {}: {e}", file.display()))
+}
+
+fn current(home: &Path, cwd: &Path, name: &str, scope: &Scope) -> Result<Value> {
+    let state = read_json(&home.join(".claude.json"));
     raw_config(&state, project_entry(&state, cwd), cwd, name, scope)
         .ok_or_else(|| anyhow!("{name} is not in its config file anymore"))
 }
@@ -588,12 +622,22 @@ pub fn replace_token(
     header: &str,
     token: &str,
 ) -> Result<()> {
+    replace_token_in(&launch::home(), cwd, name, scope, header, token)
+}
+
+fn replace_token_in(
+    home: &Path,
+    cwd: &Path,
+    name: &str,
+    scope: &Scope,
+    header: &str,
+    token: &str,
+) -> Result<()> {
     let token = token.trim();
     if token.is_empty() {
         return Err(anyhow!("The token is empty"));
     }
-    let old = current(cwd, name, scope)?;
-    let mut config = old.clone();
+    let mut config = current(home, cwd, name, scope)?;
     let before = config["headers"][header]
         .as_str()
         .unwrap_or_default()
@@ -604,20 +648,23 @@ pub fn replace_token(
     } else {
         token.to_string()
     });
-    replace(cwd, name, scope, &old, &config)
+    write_server(home, cwd, name, scope, &config)
 }
 
 /// Drops the token header so Claude signs in with OAuth instead; sign in next.
 pub fn use_sign_in(cwd: &Path, name: &str, scope: &Scope, header: &str) -> Result<()> {
-    let old = current(cwd, name, scope)?;
-    let mut config = old.clone();
+    use_sign_in_in(&launch::home(), cwd, name, scope, header)
+}
+
+fn use_sign_in_in(home: &Path, cwd: &Path, name: &str, scope: &Scope, header: &str) -> Result<()> {
+    let mut config = current(home, cwd, name, scope)?;
     if let Some(h) = config["headers"].as_object_mut() {
         h.remove(header);
         if h.is_empty() {
             config.as_object_mut().map(|o| o.remove("headers"));
         }
     }
-    replace(cwd, name, scope, &old, &config)
+    write_server(home, cwd, name, scope, &config)
 }
 
 /// Adds a remote server for your user (every project).
@@ -1337,6 +1384,8 @@ fn run_with(
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<String> {
+    #[cfg(test)]
+    tests::ARGS.with_borrow_mut(|seen| seen.extend(args.iter().map(|a| a.to_string())));
     let mut cmd: Command = crate::platform::command(bin);
     cmd.args(args)
         .current_dir(cwd)
@@ -1394,6 +1443,120 @@ pub fn redact(s: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    thread_local! {
+        /// Every argument this thread passed to `run_with`.
+        pub(super) static ARGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    const TOKEN: &str = "lin_api_FAKEtoken00000000000000000000000000";
+
+    /// A home with a user and a local server, and a repo with a project server.
+    fn token_fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("arakun-token-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        let server = |token: &str| {
+            json!({"type": "http", "url": "https://mcp.example.com/mcp",
+                   "headers": {"Authorization": format!("Bearer {token}"), "X-Team": "a"}})
+        };
+        let state = json!({
+            "numStartups": 3,
+            "mcpServers": {"user-srv": server("old-user")},
+            "projects": {repo.to_string_lossy(): {"mcpServers": {"local-srv": server("old-local")}}},
+        });
+        std::fs::write(home.join(".claude.json"), state.to_string()).unwrap();
+        let mcp =
+            json!({"mcpServers": {"proj-srv": server("old-project"), "other": {"command": "x"}}});
+        std::fs::write(repo.join(".mcp.json"), mcp.to_string()).unwrap();
+        (root, home, repo)
+    }
+
+    #[test]
+    fn a_new_token_never_reaches_a_command_line() {
+        let (root, home, repo) = token_fixture("args");
+        ARGS.with_borrow_mut(Vec::clear);
+        for (name, scope) in [
+            ("user-srv", Scope::User),
+            ("local-srv", Scope::Local),
+            ("proj-srv", Scope::Project),
+        ] {
+            replace_token_in(&home, &repo, name, &scope, "Authorization", TOKEN).unwrap();
+            let now = current(&home, &repo, name, &scope).unwrap();
+            assert_eq!(now["headers"]["Authorization"], format!("Bearer {TOKEN}"));
+            assert_eq!(now["headers"]["X-Team"], "a");
+        }
+        let args = ARGS.with_borrow(Vec::clone);
+        assert!(
+            args.iter()
+                .all(|a| !a.contains(TOKEN) && !a.contains("lin_api")),
+            "{args:?}"
+        );
+        // The rest of each file is kept.
+        let state = read_json(&home.join(".claude.json"));
+        assert_eq!(state["numStartups"], 3);
+        let mcp = read_json(&repo.join(".mcp.json"));
+        assert_eq!(mcp["mcpServers"]["other"]["command"], "x");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(home.join(".claude.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sign_in_drops_the_token_header_in_place() {
+        let (root, home, repo) = token_fixture("sign-in");
+        use_sign_in_in(&home, &repo, "user-srv", &Scope::User, "Authorization").unwrap();
+        let now = current(&home, &repo, "user-srv", &Scope::User).unwrap();
+        assert!(now["headers"]["Authorization"].is_null());
+        assert_eq!(now["headers"]["X-Team"], "a");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_left_alone() {
+        let (root, home, repo) = token_fixture("broken");
+        let broken = "{\"mcpServers\": {\"proj-srv\": ";
+        std::fs::write(repo.join(".mcp.json"), broken).unwrap();
+        let config = json!({"type": "http", "url": "https://x"});
+        assert!(write_server(&home, &repo, "proj-srv", &Scope::Project, &config).is_err());
+        assert_eq!(
+            std::fs::read_to_string(repo.join(".mcp.json")).unwrap(),
+            broken
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_config_is_written_where_it_points() {
+        let (root, home, repo) = token_fixture("link");
+        let real = root.join("dotfiles-claude.json");
+        std::fs::rename(home.join(".claude.json"), &real).unwrap();
+        std::os::unix::fs::symlink(&real, home.join(".claude.json")).unwrap();
+        replace_token_in(
+            &home,
+            &repo,
+            "user-srv",
+            &Scope::User,
+            "Authorization",
+            TOKEN,
+        )
+        .unwrap();
+        let link = std::fs::symlink_metadata(home.join(".claude.json")).unwrap();
+        assert!(link.file_type().is_symlink());
+        assert!(std::fs::read_to_string(&real).unwrap().contains(TOKEN));
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// A helper that leaves a child running must not hold the call until the child ends.
     #[cfg(unix)]

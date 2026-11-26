@@ -1232,6 +1232,20 @@ impl ExtensionsView {
             buttons = buttons.child(ui::spinner(14., theme::text_faint()));
         }
         let header_name = s.token_header().unwrap_or("Authorization").to_string();
+        // A project server lives in the repo's `.mcp.json`, which is shared and
+        // often committed: say so before the token goes in.
+        let shared = s.scope == Scope::Project;
+        let save_label = if shared { "Save in .mcp.json" } else { "Save" };
+        let token_note = if shared {
+            note(
+                "This server is in the project's .mcp.json, so the token is saved in the repo and a commit can share it. To keep it out, type ${NAME} to read it from an environment variable instead.",
+                Tone::Warning,
+            )
+        } else {
+            div().ty(Type::Caption).text_color(theme::text_subtle()).child(
+                "Stays in Claude's config (~/.claude.json) like the old one; Arakun never shows it.",
+            )
+        };
         Some(
             div()
                 .flex()
@@ -1250,7 +1264,17 @@ impl ExtensionsView {
                         .size(px(28.))
                         .rounded(crate::ui::rad(ui::RADIUS))
                         .bg(tone.color().opacity(0.16))
-                        .child(icon(if tone == Tone::Danger { "alert-circle" } else { "help-circle" }, 15.).text_color(tone.color())),
+                        .child(
+                            icon(
+                                if tone == Tone::Danger {
+                                    "alert-circle"
+                                } else {
+                                    "help-circle"
+                                },
+                                15.,
+                            )
+                            .text_color(tone.color()),
+                        ),
                 )
                 .child(
                     div()
@@ -1279,19 +1303,48 @@ impl ExtensionsView {
                                             .border_color(theme::border_strong())
                                             .bg(theme::background())
                                             .ty(Type::Body)
-                                            .child(icon("square-lock02", 13.).text_color(theme::text_subtle()))
-                                            .child(div().flex_none().ty(Type::Caption).text_color(theme::text_subtle()).child(format!("{header_name}:")))
-                                            .child(div().flex_1().min_w_0().child(self.token.clone())),
+                                            .child(
+                                                icon("square-lock02", 13.)
+                                                    .text_color(theme::text_subtle()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .ty(Type::Caption)
+                                                    .text_color(theme::text_subtle())
+                                                    .child(format!("{header_name}:")),
+                                            )
+                                            .child(
+                                                div().flex_1().min_w_0().child(self.token.clone()),
+                                            ),
                                     )
-                                    .child(ui::button("ext-token-save", "Save", ButtonKind::Primary, !busy).on_click(cx.listener(|this, _, _, cx| this.save_token(cx))))
-                                    .child(ui::button("ext-token-cancel", "Cancel", ButtonKind::Ghost, true).on_click(cx.listener(|this, _, _, cx| {
-                                        this.token_for = None;
-                                        cx.notify();
-                                    }))),
+                                    .child(
+                                        ui::button(
+                                            "ext-token-save",
+                                            save_label,
+                                            ButtonKind::Primary,
+                                            !busy,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.save_token(cx)),
+                                        ),
+                                    )
+                                    .child(
+                                        ui::button(
+                                            "ext-token-cancel",
+                                            "Cancel",
+                                            ButtonKind::Ghost,
+                                            true,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.token_for = None;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    ),
                             )
-                            .child(div().ty(Type::Caption).text_color(theme::text_subtle()).child(
-                                "Stays in Claude's config (~/.claude.json) like the old one; Arakun never shows it.",
-                            ))
+                            .child(token_note)
                         })
                         .when(!fixes.is_empty() && !typing, |d| d.child(buttons)),
                 ),

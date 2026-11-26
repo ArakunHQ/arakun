@@ -679,7 +679,9 @@ after a week).
   hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
   *Talking to the session.* A reply in Linear from the person who delegated goes to
-  the session as a new message. Arakun does not take a reply's text from
+  the session as a new message, and the issue hears at once that it was passed on
+  and what it waits behind (the current turn, a permission or a secret), so Linear
+  does not show the agent as starting. Arakun does not take a reply's text from
   its server: it reads it from Linear with your own key, and if that fails the
   issue asks you to send it again. With the switch off, or without a Linear sign-in for the
   workspace on this computer, a reply is refused and the issue hears why. A reply

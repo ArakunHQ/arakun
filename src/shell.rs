@@ -772,6 +772,8 @@ impl Shell {
                 .update(cx, |ci, cx| ci.set_window_active(active, cx));
             this.github
                 .update(cx, |g, cx| g.set_window_active(active, cx));
+            this.pilot
+                .update(cx, |p, cx| p.set_window_active(active, cx));
             this.sync_teams_shown(window, cx);
             this.sync_polled_shown(window, cx);
         });

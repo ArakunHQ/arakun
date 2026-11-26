@@ -41,6 +41,7 @@ use crate::theme;
 use crate::ui::{hover_icon, icon};
 
 mod anim;
+mod arakun_cmd;
 mod cards;
 mod diffs;
 mod find_bar;
@@ -119,7 +120,13 @@ fn waiting_on(content: &[Entry], cwd: &Path) -> Option<(String, Option<String>)>
             Some(tool_rows::Wait::Sleep(_)) => ("waiting on a timer".to_string(), None),
             _ => {
                 let label = tool_rows::tool_label(t, cwd, true, false);
-                let cmd = label.target.lines().next().unwrap_or("").trim();
+                // `arakun check` and the like say it all in their action.
+                let cmd = if label.target.trim().is_empty() {
+                    label.action.to_lowercase()
+                } else {
+                    label.target.lines().next().unwrap_or("").trim().to_string()
+                };
+                let cmd = cmd.as_str();
                 (
                     "waiting on".to_string(),
                     Some(crate::redact::text(cmd).into_owned()),

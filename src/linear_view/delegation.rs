@@ -44,16 +44,38 @@ pub(super) struct Notes {
     pub help: bool,
     pub blocker: Option<Blocker>,
     pub sync: bool,
+    /// The card that asks before the key of the workspace in view is sent.
+    pub connect: bool,
 }
 
 /// While off, the help always shows: turning the switch on sends the Linear
-/// key, so that must be on screen first, blocker or not.
-pub(super) fn notes(host: &Host, installed: Option<bool>, on: bool) -> Notes {
+/// key, so that must be on screen first, blocker or not. While on, a
+/// workspace the person has not agreed for asks first, unless the server
+/// has a link for it already (`installed` is known): then no key goes.
+pub(super) fn notes(host: &Host, installed: Option<bool>, on: bool, consented: bool) -> Notes {
+    let connect = on && !consented && installed.is_none();
     Notes {
         help: !on,
         blocker: blocker(host, installed),
-        sync: on,
+        sync: on && !connect,
+        connect,
     }
+}
+
+/// Under the page title until sessions really start from Linear.
+const NOT_ACTIVE: &str = "Not active yet: this version only tells Arakun which teams and projects this computer takes. Sessions do not start from Linear until a later version.";
+
+/// Under the switch while it is off. It names the workspace whose key goes.
+fn help_text(workspace: &str) -> String {
+    format!(
+        "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key for {workspace} to Arakun, to prove the Linear user is you. It is not stored there."
+    )
+}
+
+fn connect_text(workspace: &str) -> String {
+    format!(
+        "{workspace} is not connected to Arakun yet. Connecting sends your Linear key for {workspace} to Arakun, to prove the Linear user is you. It is not stored there."
+    )
 }
 
 /// The kind, the Linear name, and the project's name, or None when the
@@ -132,6 +154,13 @@ impl LinearView {
         self.session().map(|s| s.workspace_id.clone())
     }
 
+    /// The name of the workspace in view, as the page shows it.
+    fn workspace_name(&self) -> String {
+        self.session()
+            .map(|s| crate::redact::value(&s.workspace).to_string())
+            .unwrap_or_default()
+    }
+
     /// Reads the teams and projects of the workspace in view, unless they
     /// are here already. An answer for another workspace is dropped.
     pub(super) fn read_places(&mut self, cx: &mut Context<Self>) {
@@ -181,13 +210,37 @@ impl LinearView {
         cx.notify();
     }
 
+    /// Turning it on is the person's consent for the workspace in view,
+    /// whose name the help text gave. Turning it off keeps the consent.
     fn toggle_delegation(&mut self, cx: &mut Context<Self>) {
         let on = self.delegation.enabled;
         // It can always be turned off.
         if !on && !can_turn_on(&self.host) {
             return;
         }
-        self.change_delegation(|d| d.enabled = !on, cx);
+        let workspace = self.workspace_id();
+        self.change_delegation(
+            |d| {
+                d.enabled = !on;
+                if let Some(w) = workspace.filter(|_| !on) {
+                    d.consent(&w);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// The connect card's button: consent for the workspace in view.
+    fn connect_workspace(&mut self, cx: &mut Context<Self>) {
+        let Some(workspace) = self.workspace_id() else {
+            return;
+        };
+        self.change_delegation(
+            |d| {
+                d.consent(&workspace);
+            },
+            cx,
+        );
     }
 
     fn add_mapping(
@@ -232,6 +285,7 @@ impl LinearView {
             .map(|s| s.workspace_id.clone())
             .unwrap_or_default();
         let installed = self.installed.get(&workspace).copied();
+        let name = self.workspace_name();
         let switch = ui::labelled(
             div().id("lin-deleg-switch"),
             Role::Switch,
@@ -245,8 +299,14 @@ impl LinearView {
                 .map(ui::focusable)
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_delegation(cx)))
         });
-        let notes = notes(&self.host, installed, on);
+        let notes = notes(
+            &self.host,
+            installed,
+            on,
+            self.delegation.consents(&workspace),
+        );
         let blocker = notes.blocker.map(|b| self.render_blocker(b, cx));
+        let connect = notes.connect.then(|| self.render_connect(&name, cx));
         let card = div()
             .flex()
             .flex_col()
@@ -275,13 +335,10 @@ impl LinearView {
                     .child(switch),
             )
             .when(notes.help, |d| {
-                d.child(ui::text(
-                    Type::Body,
-                    theme::text_muted(),
-                    "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key to Arakun once, to prove the Linear user is you. It is not stored there.",
-                ))
+                d.child(ui::text(Type::Body, theme::text_muted(), help_text(&name)))
             })
             .children(blocker)
+            .children(connect)
             .when(notes.sync, |d| {
                 let color = match self.sync {
                     Sync::Failed | Sync::Limited => theme::attention().into(),
@@ -344,9 +401,44 @@ impl LinearView {
             .flex()
             .flex_col()
             .gap(crate::ui::sp(20.))
-            .child(ui::heading("Start sessions from Linear"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(6.))
+                    .child(ui::heading("Start sessions from Linear"))
+                    // The next plan, which takes deliveries, removes this line.
+                    .child(ui::text(Type::Body, theme::text_muted(), NOT_ACTIVE)),
+            )
             .child(card)
             .child(list)
+            .into_any_element()
+    }
+
+    /// Asks before the Linear key of `name`, the workspace in view, is sent.
+    fn render_connect(&self, name: &str, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(12.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .border_1()
+            .border_color(theme::border_subtle())
+            .child(
+                ui::text(Type::Body, theme::text_muted(), connect_text(name))
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(
+                ui::button(
+                    "lin-deleg-connect",
+                    format!("Connect {name}"),
+                    ButtonKind::Primary,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.connect_workspace(cx))),
+            )
             .into_any_element()
     }
 
@@ -672,13 +764,43 @@ mod tests {
             (ok.clone(), None),
         ];
         for (host, installed) in states {
-            let off = notes(&host, installed, false);
-            assert!(off.help && !off.sync, "{host:?} {installed:?}");
-            assert_eq!(off.blocker, blocker(&host, installed));
-            let on = notes(&host, installed, true);
-            assert!(!on.help && on.sync, "{host:?} {installed:?}");
-            assert_eq!(on.blocker, blocker(&host, installed));
+            for consented in [false, true] {
+                let off = notes(&host, installed, false, consented);
+                assert!(
+                    off.help && !off.sync && !off.connect,
+                    "{host:?} {installed:?}"
+                );
+                assert_eq!(off.blocker, blocker(&host, installed));
+                let on = notes(&host, installed, true, true);
+                assert!(!on.help && !on.connect, "{host:?} {installed:?}");
+                assert_eq!(on.blocker, blocker(&host, installed));
+            }
         }
+    }
+
+    #[test]
+    fn an_unconsented_workspace_asks_before_its_key_goes() {
+        let ok = ok();
+        let card = |installed, consented| notes(&ok, installed, true, consented).connect;
+        assert!(!card(None, true)); // agreed already
+        assert!(card(None, false));
+        // The server has a link for it: no key goes, so nothing to ask.
+        assert!(!card(Some(true), false));
+        assert!(!card(Some(false), false));
+        // The card stands in place of the sync line.
+        assert!(!notes(&ok, None, true, false).sync);
+    }
+
+    #[test]
+    fn the_texts_name_the_workspace_whose_key_goes() {
+        assert_eq!(
+            help_text("Acme"),
+            "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key for Acme to Arakun, to prove the Linear user is you. It is not stored there."
+        );
+        assert_eq!(
+            connect_text("Acme"),
+            "Acme is not connected to Arakun yet. Connecting sends your Linear key for Acme to Arakun, to prove the Linear user is you. It is not stored there."
+        );
     }
 
     #[test]

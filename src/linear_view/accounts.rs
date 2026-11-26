@@ -135,7 +135,7 @@ impl LinearView {
             .child(ui::text(
                 Type::Body,
                 theme::text_muted(),
-                "Every sign-in stays saved on this computer. The key goes to Linear and nowhere else.",
+                "Every sign-in stays saved on this computer. The key goes to Linear. If you let Linear start sessions on this computer, it also goes to Arakun, to prove the Linear user is you.",
             ));
         for (i, s) in self.sessions.iter().enumerate() {
             let id = s.id.clone();

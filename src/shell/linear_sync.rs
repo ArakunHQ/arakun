@@ -4,7 +4,8 @@
 //! Nothing about Linear goes to the server until the switch is on. With it
 //! off and no link there, a sync only asks for the links, to tell the page
 //! whether Arakun's Linear app is installed. The Linear key goes only to
-//! `linear_link`, only while the switch is on. There is no timer: a failed
+//! `linear_link`, only while the switch is on, and only for a workspace the
+//! person connected. There is no timer: a failed
 //! sync waits for the next change, relay connection or sign-in.
 
 use std::path::PathBuf;
@@ -276,15 +277,19 @@ pub enum Step {
 
 /// The calls that bring the server in line with `d`. `workspaces` holds each
 /// signed-in Linear workspace's organization id and whether the server has a
-/// link for it. Only the switch links, and only when there is something to
-/// send: off never links. A linked workspace always gets its routes, empty
-/// when off, so the server stops sending what this computer no longer takes.
+/// link for it. Only the switch links, only a workspace the person agreed to
+/// send the key of, and only when there is something to send: off never
+/// links. A linked workspace always gets its routes, empty when off, so the
+/// server stops sending what this computer no longer takes; that sends no key.
 pub fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) -> Vec<Step> {
     let mut steps = Vec::new();
     for (workspace, linked) in workspaces {
         let routes = routes(d, workspace, local);
         let sendable = !routes.teams.is_empty() || !routes.projects.is_empty();
-        if !linked && !sendable {
+        // Unlinked and not agreed to: its routes would only be refused. A
+        // consented workspace whose link went (deleted or taken over on the
+        // server) is linked again, since the person agreed for it.
+        if !linked && !(sendable && d.consents(workspace)) {
             continue;
         }
         if !linked {
@@ -329,16 +334,32 @@ mod tests {
     fn project(workspace: &str, target: &str, path: &str) -> Mapping {
         mapping(workspace, Kind::Project, target, path)
     }
+    /// On, with consent for every workspace it maps.
     fn on(mappings: Vec<Mapping>) -> Delegation {
+        let mut d = on_for_only(mappings, &[]);
+        for w in d
+            .mappings
+            .iter()
+            .map(|m| m.workspace.clone())
+            .collect::<Vec<_>>()
+        {
+            d.consent(&w);
+        }
+        d
+    }
+    /// On, with consent for `consented` only.
+    fn on_for_only(mappings: Vec<Mapping>, consented: &[&str]) -> Delegation {
         Delegation {
             enabled: true,
             mappings,
+            consented: consented.iter().map(|w| w.to_string()).collect(),
         }
     }
     fn off(mappings: Vec<Mapping>) -> Delegation {
         Delegation {
             enabled: false,
             mappings,
+            consented: vec![],
         }
     }
     fn p(path: &str) -> PathBuf {
@@ -447,6 +468,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_second_workspace_is_not_linked_until_consented() {
+        // On for w1; then w2 is signed in to and mapped, with no consent.
+        let mut d = on_for_only(
+            vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")],
+            &["w1"],
+        );
+        let ws = [("w1".to_string(), true), ("w2".to_string(), false)];
+        assert_eq!(
+            plan(&d, &ws, &[p("/p/a")]),
+            [Step::Routes {
+                workspace: "w1".into(),
+                routes: teams(&["t1"])
+            }]
+        );
+        // Connect pressed for w2.
+        d.consent("w2");
+        assert_eq!(
+            plan(&d, &ws, &[p("/p/a")])[1..],
+            [
+                Step::Link {
+                    workspace: "w2".into()
+                },
+                Step::Routes {
+                    workspace: "w2".into(),
+                    routes: teams(&["t2"])
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn turning_on_with_two_mapped_workspaces_links_only_the_consented_one() {
+        let d = on_for_only(
+            vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")],
+            &["w2"],
+        );
+        let steps = plan(
+            &d,
+            &[("w1".into(), false), ("w2".into(), false)],
+            &[p("/p/a")],
+        );
+        let links: Vec<&Step> = steps
+            .iter()
+            .filter(|s| matches!(s, Step::Link { .. }))
+            .collect();
+        assert_eq!(
+            links,
+            [&Step::Link {
+                workspace: "w2".into()
+            }]
+        );
+        // w1 is neither linked nor consented: its routes would be refused.
+        assert!(steps.iter().all(|s| matches!(
+            s,
+            Step::Link { workspace } | Step::Routes { workspace, .. } if workspace == "w2"
+        )));
+    }
+
+    #[test]
+    fn a_consented_workspace_whose_link_vanished_is_linked_again() {
+        // The link was deleted or taken over on the server. The person
+        // agreed for this workspace, so it is linked again without asking.
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        assert_eq!(
+            plan(&d, &[("w1".into(), false)], &[p("/p/a")])[0],
+            Step::Link {
+                workspace: "w1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_linked_workspace_gets_its_routes_without_consent() {
+        // No key goes for a linked workspace, so there is nothing to agree to.
+        let d = on_for_only(vec![team("w1", "t1", "/p/a")], &[]);
+        assert_eq!(
+            plan(&d, &[("w1".into(), true)], &[p("/p/a")]),
+            [Step::Routes {
+                workspace: "w1".into(),
+                routes: teams(&["t1"])
+            }]
+        );
+    }
+
     use std::io::{Read as _, Write as _};
 
     /// A server of our own that answers each request with the next of
@@ -524,6 +630,42 @@ mod tests {
         assert!(got[1].starts_with("POST /linear/link ") && got[1].contains("lin_api_w1"));
         assert!(got[2].starts_with("PUT /linear/routes ") && !got[2].contains("lin_api_"));
         assert!(got[2].contains(r#""teams":["t1"]"#), "{}", got[2]);
+    }
+
+    #[test]
+    fn an_unconsented_workspace_key_never_leaves() {
+        let (base, rx) = serve(vec![
+            (200, r#"{"links": []}"#),
+            (
+                200,
+                r#"{"organization_id": "w1", "linear_user_id": "u1", "installed": true}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+            // Room for the calls a wrong run would make for w2.
+            (
+                200,
+                r#"{"organization_id": "w2", "linear_user_id": "u2", "installed": true}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        let d = on_for_only(
+            vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")],
+            &["w1"],
+        );
+        let ran = run(
+            &base,
+            "s",
+            "k1",
+            &d,
+            &[key("w1"), key("w2")],
+            &[p("/p/a")],
+            || true,
+        );
+        assert!(ran.error.is_none());
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 3);
+        assert!(got.iter().all(|r| !r.contains("lin_api_w2")), "{got:?}");
+        assert!(got[1].contains("lin_api_w1"));
     }
 
     /// A switch that reads on `n` times, then off.

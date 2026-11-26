@@ -33,6 +33,11 @@ pub struct Mapping {
 pub struct Delegation {
     pub enabled: bool,
     pub mappings: Vec<Mapping>,
+    /// The Linear organization ids whose key the person agreed to send.
+    /// Turning the switch off keeps them: the person agreed, and the link
+    /// on the server stays.
+    #[serde(default)]
+    pub consented: Vec<String>,
 }
 
 fn file() -> PathBuf {
@@ -58,6 +63,20 @@ impl Delegation {
     pub fn save_to(&self, file: &Path) -> Result<(), String> {
         crate::durable::save_json(file, self)
             .map_err(|e| format!("Couldn't save the Linear settings: {e}"))
+    }
+
+    /// Records that the person agreed to send `workspace`'s Linear key.
+    /// False when they had already.
+    pub fn consent(&mut self, workspace: &str) -> bool {
+        if self.consents(workspace) {
+            return false;
+        }
+        self.consented.push(workspace.to_string());
+        true
+    }
+
+    pub fn consents(&self, workspace: &str) -> bool {
+        self.consented.iter().any(|w| w == workspace)
     }
 
     /// False when the target is already mapped: a target maps to one project.
@@ -152,6 +171,7 @@ mod tests {
         Delegation {
             enabled: true,
             mappings,
+            consented: vec![],
         }
     }
     fn p(path: &str) -> PathBuf {
@@ -163,6 +183,7 @@ mod tests {
         let d = Delegation {
             enabled: false,
             mappings: vec![team("w1", "t1", "/p/a")],
+            consented: vec![],
         };
         assert_eq!(routes(&d, "w1", &[p("/p/a")]), Routes::default());
     }
@@ -210,12 +231,22 @@ mod tests {
         assert!(project_for(&d, "w2", "t1", Some("x1")).is_none());
     }
     #[test]
+    fn consent_is_kept_once_per_workspace() {
+        let mut d = Delegation::default();
+        assert!(!d.consents("w1"));
+        assert!(d.consent("w1"));
+        assert!(!d.consent("w1"));
+        assert!(d.consents("w1") && !d.consents("w2"));
+        assert_eq!(d.consented, ["w1"]);
+    }
+    #[test]
     fn it_survives_the_disk_and_a_missing_or_broken_file() {
         let dir = std::env::temp_dir().join(format!("arakun-delegation-{}", std::process::id()));
         let file = dir.join("linear").join("delegation.json");
         assert_eq!(Delegation::load_from(&file), Delegation::default());
 
-        let d = on(vec![team("w1", "t1", "/p/a"), project("w1", "x1", "/p/b")]);
+        let mut d = on(vec![team("w1", "t1", "/p/a"), project("w1", "x1", "/p/b")]);
+        d.consent("w1");
         d.save_to(&file).unwrap();
         assert_eq!(Delegation::load_from(&file), d);
 

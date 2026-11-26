@@ -43,7 +43,7 @@ pub enum LinearEvent {
     Open(String),
     /// Start an agent session on an issue.
     Ask { title: String, prompt: String },
-    /// The switch or a mapping changed and is saved.
+    /// The switch, a mapping or a consent changed and is saved.
     DelegationChanged,
     /// Open the Phone tab, where the relay is turned on.
     OpenPhoneTab,

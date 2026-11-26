@@ -29,6 +29,9 @@ pub(super) struct LinearSync {
     /// The session of the account last seen with the flag, so a sign-in
     /// syncs once and not on every change of Teams.
     account: Option<String>,
+    /// The session of the Arakun account last seen, flag or not, to tell
+    /// when the installs the page learned belong to another account.
+    seen: Option<String>,
 }
 
 /// What one run learned, and the call that stopped it, if one did.
@@ -36,6 +39,9 @@ pub(super) struct LinearSync {
 pub struct Ran {
     /// Per Linear organization id, whether Arakun's Linear app is installed.
     pub installed: Vec<(String, bool)>,
+    /// The server's links were read. A run that failed before that knows
+    /// nothing, and the page keeps what it had.
+    pub learned: bool,
     pub error: Option<cloud::Error>,
     /// The switch went off during the run, so it stopped before sending
     /// the key or routes. Not a failure: the next run sends the empty routes.
@@ -52,7 +58,11 @@ pub fn keys(sessions: &[Session]) -> Vec<(String, Session)> {
         if keys.iter().any(|(w, _)| *w == s.workspace_id) {
             continue;
         }
-        keys.push((s.workspace_id.clone(), s.clone()));
+        // The same rule as reading a delegated issue, so both act as one person.
+        let Some(first) = linear::session_for(sessions, &s.workspace_id) else {
+            continue;
+        };
+        keys.push((first.workspace_id.clone(), first.clone()));
     }
     keys
 }
@@ -94,6 +104,7 @@ pub fn run(
             return ran;
         }
     };
+    ran.learned = true;
     ran.installed = links
         .iter()
         .map(|l| (l.organization_id.clone(), l.installed))
@@ -105,7 +116,18 @@ pub fn run(
     // A workspace whose call was refused: the rest of its calls are skipped,
     // and the other workspaces still go.
     let mut refused: Option<String> = None;
-    for step in plan(d, &workspaces, local) {
+    let linked: Vec<String> = links.iter().map(|l| l.organization_id.clone()).collect();
+    // The clearing steps are told apart: for them a missing computer or link
+    // means there is nothing to clear.
+    let steps = plan(d, &workspaces, local)
+        .into_iter()
+        .map(|s| (s, false))
+        .chain(
+            clear_signed_out(&workspaces, &linked)
+                .into_iter()
+                .map(|s| (s, true)),
+        );
+    for (step, clearing) in steps {
         if refused.as_deref() == Some(step.workspace()) {
             continue;
         }
@@ -150,6 +172,10 @@ pub fn run(
         };
         match done {
             Ok(()) => {}
+            // No machine row (404) or a link that went since the read (409).
+            Err(cloud::Error::Status {
+                status: 404 | 409, ..
+            }) if clearing => {}
             // A refusal is about this workspace (a bad key, a link taken
             // over). A limit, a sign-out or no network would hit the
             // next one too.
@@ -223,9 +249,19 @@ impl Shell {
     }
 
     /// Teams changed: the page hears of it, and an account that may now use
-    /// Linear (a sign-in, or the flag) is synced once.
+    /// Linear (a sign-in, or the flag) is synced once. What Linear's
+    /// deliveries, runs and reports waited on an account for goes on.
     pub(super) fn linear_account_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.push_linear_host(cx);
+        let teams = self.teams.read(cx);
+        // Another account, or none: what the last one's links said is stale.
+        let seen = teams.account().map(|a| a.session);
+        if seen != self.linear_sync.seen {
+            self.linear_sync.seen = seen;
+            self.views
+                .linear
+                .update(cx, |v, cx| v.set_installed(&[], cx));
+        }
         let teams = self.teams.read(cx);
         let now = teams
             .account()
@@ -235,8 +271,13 @@ impl Shell {
             self.linear_sync.account = now.clone();
             if now.is_some() {
                 self.sync_linear(window, cx);
+                // What waited for an account goes now: the reports not sent
+                // and the runs not started.
+                self.linear_flush(cx);
+                self.linear_start_waiting(window, cx);
             }
         }
+        self.linear_replay_kept(window, cx);
     }
 
     /// Brings the server in line with the switch and the mappings. A call
@@ -315,11 +356,11 @@ impl Shell {
             self.sync_linear(window, cx);
             return;
         }
-        self.views.linear.update(cx, |v, cx| {
-            for (workspace, installed) in &ran.installed {
-                v.set_installed(workspace, Some(*installed), cx);
-            }
-        });
+        if ran.learned {
+            self.views
+                .linear
+                .update(cx, |v, cx| v.set_installed(&ran.installed, cx));
+        }
         if ran.stopped {
             self.linear_sync.owed = true;
         }
@@ -391,6 +432,22 @@ pub fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) ->
     steps
 }
 
+/// Empty routes for each workspace the server has a link for and this
+/// computer has no sign-in to. Without them the server would keep sending
+/// that workspace's issues here after the person signed out of it. Never a
+/// link: there is no key. The server's answer holds nothing about routes, so
+/// this goes on every sync while the link stays, to keep "off" true.
+pub fn clear_signed_out(workspaces: &[(String, bool)], linked: &[String]) -> Vec<Step> {
+    linked
+        .iter()
+        .filter(|l| !workspaces.iter().any(|(w, _)| w == *l))
+        .map(|l| Step::Routes {
+            workspace: l.clone(),
+            routes: Routes::default(),
+        })
+        .collect()
+}
+
 /// How a failed sync reads on the page: a limit passes, a failure waits for
 /// the next reconnect.
 pub fn outcome(e: &cloud::Error) -> Sync {
@@ -401,7 +458,7 @@ pub fn outcome(e: &cloud::Error) -> Sync {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::linear::delegation::{Kind, Mapping};
 
@@ -639,11 +696,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_workspace_signed_out_here_gets_empty_routes_and_never_a_link() {
+        // The server has links for w1 (signed in) and w9 (signed out here).
+        let ws = [("w1".to_string(), true)];
+        let links = ["w1".to_string(), "w9".to_string()];
+        assert_eq!(
+            clear_signed_out(&ws, &links),
+            [Step::Routes {
+                workspace: "w9".into(),
+                routes: Routes::default()
+            }]
+        );
+        // Signed in but not linked is `plan`'s business, not this one's.
+        assert_eq!(clear_signed_out(&[("w2".into(), false)], &[]), []);
+    }
+
     use std::io::{Read as _, Write as _};
 
     /// A server of our own that answers each request with the next of
     /// `answers`, then stops listening. Hands back every request it got.
-    fn serve(answers: Vec<(u16, &'static str)>) -> (String, std::sync::mpsc::Receiver<String>) {
+    /// `linear_run`'s tests use it too.
+    pub(in crate::shell) fn serve(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let (tx, rx) = std::sync::mpsc::channel();
@@ -897,6 +973,92 @@ mod tests {
                 ("w2".to_string(), "w2#b".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn a_workspace_signed_out_here_is_cleared_on_the_server_without_a_key() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w1", "linear_user_id": "u1", "installed": true}, {"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+            (200, r#"{"ok": true}"#),
+        ]);
+        // w1 is signed in, with a key here; w9 has no sign-in.
+        let d = on(vec![team("w1", "t1", "/p/a"), team("w9", "t9", "/p/a")]);
+        let ks = [key("w1")];
+        let ran = run(&base, "s", "k1", &d, &ks, &[p("/p/a")], || true);
+        assert!(ran.error.is_none());
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[0].starts_with("GET /linear/link "));
+        assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
+        assert!(got[1].contains(r#""teams":["t1"]"#), "{}", got[1]);
+        assert!(got[2].starts_with("PUT /linear/routes "), "{}", got[2]);
+        assert!(got[2].contains(r#""teams":[]"#), "{}", got[2]);
+        assert!(got[2].contains(r#""projects":[]"#), "{}", got[2]);
+        assert!(got[2].contains("w9"), "{}", got[2]);
+        assert!(got.iter().all(|r| !r.contains("lin_api_")), "{got:?}");
+        assert_eq!(ks[0].1.reads.get(), 0);
+    }
+
+    #[test]
+    fn a_clear_the_server_cannot_find_is_not_a_failure() {
+        for (status, body) in [
+            (404, r#"{"error": "no such computer"}"#),
+            (409, r#"{"error": "link linear first"}"#),
+        ] {
+            let (base, rx) = serve(vec![
+                (
+                    200,
+                    r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+                ),
+                (status, body),
+            ]);
+            let no_keys: [(String, Fake); 0] = [];
+            let ran = run(&base, "s", "k1", &off(vec![]), &no_keys, &[], || true);
+            assert!(ran.error.is_none(), "{status}: {:?}", ran.error);
+            assert_eq!(rx.try_iter().count(), 2);
+        }
+        // For a workspace signed in here the same 404 is still a failure.
+        let (base, _rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w1", "linear_user_id": "u1", "installed": true}]}"#,
+            ),
+            (404, r#"{"error": "no such computer"}"#),
+        ]);
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], || true);
+        assert!(ran.error.is_some());
+    }
+
+    #[test]
+    fn off_still_clears_a_signed_out_workspace_once() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        let no_keys: [(String, Fake); 0] = [];
+        let ran = run(&base, "s", "k1", &off(vec![]), &no_keys, &[], || false);
+        assert!(ran.error.is_none() && !ran.stopped);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
+    }
+
+    #[test]
+    fn a_run_that_failed_before_the_links_learned_nothing() {
+        let (base, _rx) = serve(vec![(500, r#"{"error": "down"}"#)]);
+        let ran = run(&base, "s", "k1", &off(vec![]), &[key("w1")], &[], || true);
+        assert!(ran.error.is_some() && !ran.learned && ran.installed.is_empty());
+        let (base, _rx) = serve(vec![(200, r#"{"links": []}"#)]);
+        let ran = run(&base, "s", "k1", &off(vec![]), &[key("w1")], &[], || true);
+        assert!(ran.learned);
     }
 
     #[test]

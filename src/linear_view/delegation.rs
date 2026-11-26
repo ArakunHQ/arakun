@@ -69,9 +69,6 @@ pub(super) fn notes(
     }
 }
 
-/// Under the page title until sessions really start from Linear.
-const NOT_ACTIVE: &str = "Not active yet: this version only tells Arakun which teams and projects this computer takes. Sessions do not start from Linear until a later version.";
-
 /// Under the switch while it is off. It names the workspace whose key goes.
 fn help_text(workspace: &str) -> String {
     format!(
@@ -416,9 +413,7 @@ impl LinearView {
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(6.))
-                    .child(ui::heading("Start sessions from Linear"))
-                    // The next plan, which takes deliveries, removes this line.
-                    .child(ui::text(Type::Body, theme::text_muted(), NOT_ACTIVE)),
+                    .child(ui::heading("Start sessions from Linear")),
             )
             .child(card)
             .child(list)

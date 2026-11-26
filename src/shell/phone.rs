@@ -1216,7 +1216,8 @@ impl Shell {
                 self.sync_phone_view(cx);
             }
             Incoming::Relay(status) => {
-                // A Linear sync that failed while the relay was away goes now.
+                // A Linear sync that failed, and reports Linear did not take,
+                // while the relay was away go now.
                 let connected = status == relay::Status::Connected;
                 let mut ended = false;
                 if let Some(link) = &mut self.phone
@@ -1236,9 +1237,14 @@ impl Shell {
                 self.push_linear_host(cx);
                 if connected {
                     self.sync_linear(window, cx);
+                    self.linear_flush(cx);
+                    // The relay label may be what the gate waited for.
+                    self.linear_replay_kept(window, cx);
+                    self.linear_start_waiting(window, cx);
                 }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),
+            Incoming::Linear(delivery) => self.linear_delivery(delivery, window, cx),
         }
     }
 
@@ -1739,7 +1745,7 @@ impl Shell {
         }
     }
 
-    fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
+    pub(super) fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
         let env = self.find_env(env_path)?;
         env.sessions[env.session_index(id)?]
             .live

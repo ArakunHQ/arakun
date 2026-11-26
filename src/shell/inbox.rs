@@ -27,6 +27,7 @@ impl Shell {
                             id: sess.id.clone(),
                             status,
                             title: sess.title.clone(),
+                            linear: sess.linear.clone(),
                             place: format!("{}/{}", p.name, e.name).into(),
                             updated: sess.updated,
                         });
@@ -204,6 +205,7 @@ impl Shell {
             _ => "Running",
         };
         let (pi, ei, id) = (item.project, item.env, item.id.clone());
+        let (issue, title) = super::session_tree::row_title(&item.title, item.linear.as_deref());
         div()
             .id(("inbox-item", i))
             .flex()
@@ -220,8 +222,11 @@ impl Shell {
                     .items_center()
                     .gap(crate::ui::sp(8.))
                     .child(status_dot(item.status))
+                    .children(issue.map(|issue| {
+                        ui::text(Type::Caption, theme::text_faint(), issue).flex_none()
+                    }))
                     .child(
-                        ui::text(Type::Body, theme::text(), item.title)
+                        ui::text(Type::Body, theme::text(), title)
                             .flex_1()
                             .min_w_0()
                             .truncate(),

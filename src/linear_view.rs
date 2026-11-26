@@ -118,6 +118,13 @@ fn page_after_host(page: Page, host: &Host) -> Page {
     }
 }
 
+/// What is known of the installs after a sync learned the server's links:
+/// exactly the answer. A link that went away is forgotten, so the page asks
+/// to connect again instead of saying "Up to date."
+pub(crate) fn installed_from(answer: &[(String, bool)]) -> HashMap<String, bool> {
+    answer.iter().cloned().collect()
+}
+
 /// Whether to read the list now. `read_at` is when the last answer came,
 /// `asked_at` when the last read started, `manual` the refresh button, and
 /// `until` the end of a rate-limit wait.
@@ -313,17 +320,11 @@ impl LinearView {
         cx.notify();
     }
 
-    /// `workspace` is the Linear organization id; None forgets what was known.
-    pub fn set_installed(
-        &mut self,
-        workspace: &str,
-        installed: Option<bool>,
-        cx: &mut Context<Self>,
-    ) {
-        match installed {
-            Some(i) => self.installed.insert(workspace.to_string(), i),
-            None => self.installed.remove(workspace),
-        };
+    /// Takes what a sync learned: per Linear organization id, whether
+    /// Arakun's Linear app is installed there. It replaces what was known;
+    /// an empty answer forgets everything.
+    pub fn set_installed(&mut self, answer: &[(String, bool)], cx: &mut Context<Self>) {
+        self.installed = installed_from(answer);
         cx.notify();
     }
 
@@ -725,6 +726,37 @@ impl Render for LinearView {
 mod tests {
     use super::*;
     use crate::linear::Credential;
+
+    fn map(entries: &[(&str, bool)]) -> HashMap<String, bool> {
+        entries.iter().map(|(w, i)| (w.to_string(), *i)).collect()
+    }
+    fn answer(entries: &[(&str, bool)]) -> Vec<(String, bool)> {
+        entries.iter().map(|(w, i)| (w.to_string(), *i)).collect()
+    }
+
+    #[test]
+    fn a_link_the_server_no_longer_has_is_forgotten() {
+        assert_eq!(
+            installed_from(&answer(&[("w1", true)])),
+            map(&[("w1", true)])
+        );
+        // A change in a kept entry follows the answer.
+        assert_eq!(
+            installed_from(&answer(&[("w1", true), ("w2", true)])),
+            map(&[("w1", true), ("w2", true)])
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_forgets_everything() {
+        assert!(installed_from(&[]).is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_answer_is_unchanged() {
+        let old = map(&[("w1", true), ("w2", false)]);
+        assert_eq!(installed_from(&answer(&[("w2", false), ("w1", true)])), old);
+    }
 
     fn session_with(id: &str) -> Session {
         Session {

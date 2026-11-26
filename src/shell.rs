@@ -45,6 +45,11 @@ mod inbox;
 mod island;
 mod limits;
 mod linear;
+mod linear_env;
+mod linear_events;
+mod linear_follow;
+mod linear_outbox;
+mod linear_run;
 mod linear_sync;
 mod menus;
 mod naming;
@@ -334,6 +339,8 @@ pub struct Shell {
     env_menu_open: bool,
     /// Environments made with one click whose worktree is not there yet.
     pending_envs: Vec<PendingEnv>,
+    /// Environments made for a named branch, still being made (`linear_env`).
+    linear_envs: linear_env::InFlight<linear_env::Waiter>,
     /// Where the environment menu was opened from below (the composer); `None`
     /// anchors it under the panel header.
     env_menu_at: Option<gpui::Point<Pixels>>,
@@ -465,6 +472,20 @@ pub struct Shell {
     #[cfg(feature = "team")]
     _team_view: Subscription,
     linear_sync: linear_sync::LinearSync,
+    /// Sessions started from Linear, and the reports Linear has not taken yet.
+    linear_runs: crate::linear::runs::Runs,
+    linear_outbox: linear_outbox::Outbox,
+    /// Deliveries being worked on, by id, with their agent session: a second
+    /// frame waits for the first, and a stop for the work to land.
+    linear_in_flight: std::collections::HashMap<String, String>,
+    /// Stops that came while other work for their agent session was in flight.
+    linear_held_stops: Vec<crate::phone::linear::Delivery>,
+    /// Deliveries that came before the Arakun account was loaded.
+    linear_kept: Vec<crate::phone::linear::Delivery>,
+    /// New issues being read from Linear now.
+    linear_reads: usize,
+    /// The timer that tells Linear a quiet session still works is on.
+    linear_watching: bool,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -559,6 +580,8 @@ struct InboxItem {
     id: SharedString,
     status: Status,
     title: SharedString,
+    /// The Linear issue it was started for.
+    linear: Option<SharedString>,
     place: SharedString,
     updated: u64,
 }
@@ -849,6 +872,7 @@ impl Shell {
             side_drag: None,
             env_menu_open: false,
             pending_envs: Vec::new(),
+            linear_envs: Default::default(),
             env_menu_at: None,
             tab_scroll: ScrollHandle::new(),
             tab_revealed: Cell::new(None),
@@ -924,6 +948,13 @@ impl Shell {
             #[cfg(feature = "team")]
             _team_view: team_sub,
             linear_sync: Default::default(),
+            linear_runs: crate::linear::runs::Runs::load(),
+            linear_outbox: Default::default(),
+            linear_in_flight: Default::default(),
+            linear_held_stops: Vec::new(),
+            linear_kept: Vec::new(),
+            linear_reads: 0,
+            linear_watching: false,
             github,
             pilot,
             _github: github_subs,
@@ -1016,6 +1047,8 @@ impl Shell {
         this.sync_ci_roots(cx);
         this.push_linear_host(cx);
         this.sync_poll(window, cx);
+        // Before any session is made live: none of them runs yet.
+        this.linear_recover(window, cx);
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);
@@ -1720,7 +1753,7 @@ impl Shell {
             .into_iter()
             .flat_map(|e| e.sessions)
             .collect();
-        self.forget_sessions(sessions, cx);
+        self.forget_sessions(sessions, window, cx);
         if self.active_project >= pi && self.active_project > 0 {
             self.active_project -= 1;
         }
@@ -2539,7 +2572,7 @@ impl Shell {
                         }
                         // A worktree is local: phones call its sessions by id.
                         this.forget_phone_sessions(&own_ids);
-                        this.forget_sessions(moved, cx);
+                        this.forget_sessions(moved, window, cx);
                         sessions::discard_session_files(own_ids.clone(), session_ids.clone(), cx);
                     }
                     this.forget_envs(&[path], window, cx);
@@ -2577,7 +2610,7 @@ impl Shell {
             .filter(|e| paths.contains(&e.path))
             .flat_map(|e| std::mem::take(&mut e.sessions))
             .collect();
-        self.forget_sessions(sessions, cx);
+        self.forget_sessions(sessions, window, cx);
         let before = self.projects.len();
         let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
         if self.projects.len() != before {

@@ -6,6 +6,7 @@
 //! [`find`] says where the secrets are, as byte ranges, and each caller hides
 //! them its own way: dots of the same width, `[redacted]`, `<secret>`.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::path::{Component, Path};
 use std::sync::LazyLock;
@@ -15,6 +16,10 @@ use regex::Regex;
 /// What [`redact`] puts in place of a secret, as @bot's guard uses it. A
 /// value that already says it is a placeholder.
 pub const REDACTED: &str = "[redacted]";
+
+/// What stands for a secret in what Arakun copies out of a chat: a session's
+/// title, a notice, a handoff to another agent, a model's prompt, memory.
+pub const SECRET: &str = "[secret]";
 
 /// How a secret was recognized, which says how much of it is safe to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -101,9 +106,12 @@ pub fn find(text: &str) -> Vec<Secret> {
 /// `text` with every secret in it replaced with `with`. Quotes around a
 /// value stay, so code and JSON keep their shape.
 pub fn redact(text: &str, with: &str) -> String {
-    let found = find(text);
+    replace(text, find(text), with).into_owned()
+}
+
+fn replace<'a>(text: &'a str, found: Vec<Secret>, with: &str) -> Cow<'a, str> {
     if found.is_empty() {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len());
     let mut done = 0;
@@ -113,7 +121,18 @@ pub fn redact(text: &str, with: &str) -> String {
         done = s.range.end;
     }
     out.push_str(&text[done..]);
-    out
+    Cow::Owned(out)
+}
+
+/// `text` with every secret in it replaced with [`SECRET`], before it leaves
+/// the chat it was written in.
+pub fn scrub(text: &str) -> Cow<'_, str> {
+    replace(text, find(text), SECRET)
+}
+
+/// Whether `text` holds a secret.
+pub fn holds(text: &str) -> bool {
+    !find(text).is_empty()
 }
 
 // ---- shapes ------------------------------------------------------------------
@@ -667,6 +686,15 @@ pub fn secret_path(rel: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn scrub_marks_each_secret_and_leaves_clean_text_alone() {
+        let text = "use ghp_abcdefghijklmnopqrstuvwxyz0123456789 here";
+        assert_eq!(scrub(text), "use [secret] here");
+        assert!(holds(text));
+        assert!(matches!(scrub("nothing to hide"), Cow::Borrowed(_)));
+        assert!(!holds("nothing to hide"));
+    }
     use super::*;
 
     fn r(text: &str) -> String {

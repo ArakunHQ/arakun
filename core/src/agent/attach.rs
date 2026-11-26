@@ -197,18 +197,48 @@ pub fn split_pastes(text: &str) -> (String, Vec<String>) {
     (typed.trim().to_string(), pastes)
 }
 
-/// What a session title is made from: the typed words, else the first pasted line.
-pub fn title_text(text: &str) -> String {
-    let (typed, pastes) = split_pastes(text);
+/// What a session title is made from: the typed words, else the first paste.
+fn title_text(text: &str) -> String {
+    let (typed, mut pastes) = split_pastes(text);
     if !typed.is_empty() || pastes.is_empty() {
         return typed;
     }
-    pastes[0]
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+    pastes.swap_remove(0)
+}
+
+/// How much of a prompt a title is looked for in; a title is its first line
+/// with words, and a long paste need not be read whole for it.
+const TITLE_SCAN: usize = 4096;
+
+/// What a session is called when every line of its prompt is a secret.
+pub const UNTITLED: &str = "Untitled session";
+
+/// The title a prompt gives its session: its first line with words in it, cut
+/// to `max` characters. Titles go to notices, the phone's lock screen and
+/// other models, so a secret never reaches one: a secret inside a line is
+/// replaced with [`crate::secrets::SECRET`], and a line that is only a secret
+/// is skipped. A prompt with nothing but secrets gets [`UNTITLED`].
+pub fn title(text: &str, max: usize) -> String {
+    let text = title_text(text);
+    let mut end = text.len().min(TITLE_SCAN);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let text = crate::secrets::scrub(&text[..end]).into_owned();
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.clone().next() else {
+        return String::new();
+    };
+    let has_words = |l: &&str| {
+        l.replace(crate::secrets::SECRET, "")
+            .chars()
+            .any(char::is_alphanumeric)
+    };
+    match lines.find(has_words) {
+        Some(line) => crate::agent::log::head(line, max),
+        None if first.contains(crate::secrets::SECRET) => UNTITLED.to_string(),
+        None => crate::agent::log::head(first, max),
+    }
 }
 
 /// An ACP `image` content block, or why the file can't be sent.
@@ -269,6 +299,38 @@ mod tests {
     }
 
     #[test]
+    fn a_title_never_holds_a_secret() {
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        // In a line with words, the secret is replaced.
+        assert_eq!(
+            title(&format!("deploy with {key} please"), 80),
+            "deploy with [secret] please"
+        );
+        // A line that is only a secret is skipped.
+        assert_eq!(
+            title(&format!("{key}\nset up the deploy"), 80),
+            "set up the deploy"
+        );
+        assert_eq!(
+            title(&format!("TOKEN={key}\nset up the deploy"), 80),
+            "TOKEN=[secret]"
+        );
+        assert_eq!(
+            title(&wrap_paste(&format!("{key}\nthe log")), 80),
+            "the log"
+        );
+        // Nothing but secrets: a generic title.
+        assert_eq!(title(key, 80), UNTITLED);
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
+        assert_eq!(title(pem, 80), UNTITLED);
+        // A secret is replaced before the title is cut, so none of it is left.
+        let long = format!("{} {key}", "x".repeat(70));
+        assert_eq!(title(&long, 80), format!("{} [secret]", "x".repeat(70)));
+        assert_eq!(title("", 80), "");
+        assert_eq!(title("  \n ", 80), "");
+    }
+
+    #[test]
     fn pastes_fold_out_of_the_prompt() {
         let prompt = format!(
             "fix this\n\n{}\n\n{}",
@@ -278,10 +340,7 @@ mod tests {
         let (typed, pastes) = split_pastes(&prompt);
         assert_eq!(typed, "fix this");
         assert_eq!(pastes, ["a\nb", "c"]);
-        assert_eq!(
-            title_text(&wrap_paste("\nfirst line\nsecond")),
-            "first line"
-        );
+        assert_eq!(title(&wrap_paste("\nfirst line\nsecond"), 80), "first line");
         assert_eq!(split_pastes("plain"), ("plain".to_string(), Vec::new()));
     }
 

@@ -140,16 +140,7 @@ impl QueuedPrompt {
 }
 
 pub(super) fn summary(text: &str) -> SharedString {
-    let text = crate::agent::attach::title_text(text);
-    let line = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    match line.char_indices().nth(80) {
-        Some((i, _)) => format!("{}…", &line[..i]).into(),
-        None => line.to_string().into(),
-    }
+    crate::agent::attach::title(text, 80).into()
 }
 
 impl Shell {
@@ -2573,6 +2564,10 @@ pub(super) fn send_notification(
     if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
         return;
     }
+    // The OS keeps a history of notices. A title from before titles were
+    // scrubbed, or an agent's words, may still hold a secret.
+    let title = &crate::secrets::scrub(title);
+    let body = &crate::secrets::scrub(body);
     // osascript's notifications belong to Script Editor, and a click opens it. From
     // Arakun.app they are Arakun's own, and main.rs hears the click.
     #[cfg(target_os = "macos")]

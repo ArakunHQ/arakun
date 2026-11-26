@@ -295,12 +295,27 @@ static ASSIGNED: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// A call or a path through fields: `get_token()`, `self.token`,
-/// `os.environ["KEY"]`. Code, not a value.
+/// `os.environ["KEY"]`, `vec![0u8; 32]`. Code, not a value.
 static CODE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*)*(?:!?\(|(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*|\[.*)$)",
+        r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*)*(?:!?\(|(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*|!?\[.*)$)",
     )
     .expect("code pattern")
+});
+
+/// The words that declare a variable just before its name: `let`, `const`,
+/// `var`, `val`, and `let mut`. What follows `=` there is code; a secret
+/// written into code is quoted.
+static DECLARES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:let|const|var|val|mut)[ \t]+$").expect("declaration pattern")
+});
+
+/// An operator after a bare value, so the value is the start of an
+/// expression: `i + 1`, `a ? b : c`, `n >= 3`. Not `-` or `/`, which prose
+/// puts after a password: `admin / admin`.
+static CONTINUES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[ \t]+(?:\?\??|[+*%^]|&&?|\|\|?|<<|>>|[<>]=?|[=!]==?)[ \t]")
+        .expect("operator pattern")
 });
 
 /// A type after `name:`, as in a struct field or a parameter.
@@ -342,6 +357,14 @@ const PLAIN_KEYS: &[&str] = &[
     "index",
 ];
 
+/// Things whose `.key` field is the key pressed or an entry's key, not a
+/// secret: `event.key`, `keyboard.key`, `entry.key`. Only when `key` is its
+/// own field: `EVENT_KEY` may still be one.
+const KEY_FIELDS: &[&str] = &[
+    "event", "e", "ev", "evt", "keyboard", "item", "entry", "node", "el", "element", "child",
+    "field", "pair", "kv", "s3",
+];
+
 /// Values that are code or a placeholder, never a secret.
 const PLAIN_VALUES: &[&str] = &[
     "null",
@@ -354,6 +377,7 @@ const PLAIN_VALUES: &[&str] = &[
     "new",
     "yield",
     "async",
+    "match",
     "function",
     "lambda",
     "this",
@@ -411,9 +435,10 @@ fn assigned(text: &str, out: &mut Vec<Secret>) {
         };
         let v = &text[value.start()..end];
         let sep = c[2].trim().trim_start_matches(['"', '\'']);
+        let declared = DECLARES.is_match(&text[..name.start()]);
         let keep = v.is_empty()
             || is_placeholder(v)
-            || (bare && is_code(v, name.as_str(), sep, &text[end..]));
+            || (bare && is_code(v, name.as_str(), sep, &text[end..], declared));
         if !keep {
             out.push(Secret {
                 range: value.start()..end,
@@ -452,7 +477,12 @@ pub fn names_secret(name: &str) -> bool {
     match last.as_str() {
         "pass" => true,
         "pwd" => words.len() > 1,
-        "key" => words.len() > 1 && !PLAIN_KEYS.contains(&words[words.len() - 2].as_str()),
+        "key" => {
+            let before = words.len().checked_sub(2).map(|i| words[i].as_str());
+            let field =
+                (name.len() > 4) && name.get(..name.len() - 3).is_some_and(|n| n.ends_with('.'));
+            before.is_some_and(|b| !PLAIN_KEYS.contains(&b) && !(field && KEY_FIELDS.contains(&b)))
+        }
         _ => false,
     }
 }
@@ -525,15 +555,35 @@ fn is_placeholder(v: &str) -> bool {
 /// Whether a bare value is code rather than a secret: a call, a path
 /// through fields, a reference, a keyword, a small number (`max_token =
 /// 100`), the same or another secret's name (`password=password`, `token =
-/// access_token`), or a type after `name:` (`private_key: Ed25519KeyPair,`).
-fn is_code(v: &str, name: &str, sep: &str, after: &str) -> bool {
-    let ident = v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && v.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+/// access_token`), an array, a type after `name:` (`private_key:
+/// Ed25519KeyPair,`), a name that starts an expression (`token: i + 1`), or
+/// a name in a declaration (`let api_key = key;`).
+///
+/// A bare name alone stays a secret elsewhere: `token = tok` reads the same
+/// as a password in a `.env` file.
+fn is_code(v: &str, name: &str, sep: &str, after: &str, declared: bool) -> bool {
+    let is_ident = |v: &str| {
+        v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && v.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+    };
+    let plain = |v: &str| PLAIN_VALUES.contains(&v.to_ascii_lowercase().as_str());
+    let ident = is_ident(v);
+    // `!password.is_empty()`, `*self.next`, `(await res.json())`: an
+    // operator in front of code. Not in front of a bare name, since a
+    // password can start with `!`.
+    let inner = v.trim_start_matches(['!', '*', '(', '-']);
+    let number = v.strip_prefix('-').unwrap_or(v);
     if v.starts_with('&')
         || CODE.is_match(v)
-        || PLAIN_VALUES.contains(&v.to_ascii_lowercase().as_str())
-        || (v.len() < 6 && v.chars().all(|c| c.is_ascii_digit()))
+        // Go's `[]byte(s)`, and Rust's `[u8; 32]`, cut at its `;`.
+        || v.starts_with("[]")
+        || (v.strip_prefix('[').is_some_and(is_ident) && after.starts_with(';'))
+        || plain(v)
+        || (inner.len() < v.len() && (CODE.is_match(inner) || plain(inner)))
+        || (number.len() < 6 && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
         || (ident && (v.eq_ignore_ascii_case(name) || names_secret(v)))
+        || (ident && CONTINUES.is_match(after))
+        || (declared && is_ident(v.trim_end_matches(['?', '!'])))
     {
         return true;
     }
@@ -861,6 +911,21 @@ mod tests {
         for (input, want) in cases {
             assert_eq!(r(input), want, "{input}");
         }
+        // Where code and settings read the same, the value stays hidden.
+        let cases = [
+            ("token = tok", "token = [redacted]"),
+            ("API_TOKEN=abc ok", "API_TOKEN=[redacted] ok"),
+            ("password=!flag", "password=[redacted]"),
+            ("PASSWORD := hunter22", "PASSWORD := [redacted]"),
+            ("const token = \"abc123\";", "const token = \"[redacted]\";"),
+            ("let pin = 1234567;", "let pin = 1234567;"),
+            ("let api_key = 1234567;", "let api_key = [redacted];"),
+            ("EVENT_KEY=abc", "EVENT_KEY=[redacted]"),
+            ("app.secret.key = hunter22", "app.secret.key = [redacted]"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(r(input), want, "{input}");
+        }
         let long = format!("client_secret: \"{}\"", "x".repeat(300));
         assert_eq!(r(&long), "client_secret: \"[redacted]\"");
     }
@@ -979,6 +1044,20 @@ mod tests {
             "const secret = 5 + offset;",
             "let key = crypto_key::generate();",
             "password => password.trim()",
+            "event.key = \"Enter\";",
+            "keyboard.key = KeyCode::Escape",
+            "const secret = offset + 5;",
+            "let api_key = key;",
+            "let mut token = tok?;",
+            "password => !password.is_empty()",
+            "token: i + 1,",
+            "let token = -1;",
+            "secret = a ? b : c",
+            "let token = match x {",
+            "csrf_token: [u8; 32],",
+            "let secret = vec![0u8; 32];",
+            "secret := []byte(s)",
+            "token = (await res.json()).access_token",
         ] {
             assert_eq!(r(text), text, "{text}");
         }
@@ -994,6 +1073,9 @@ mod tests {
             "client_secret",
             "GITHUB_TOKEN",
             "ENCRYPTION_KEY",
+            "EVENT_KEY",
+            "app.secret.key",
+            "self.api_key",
         ] {
             assert!(names_secret(n), "{n}");
         }
@@ -1004,6 +1086,9 @@ mod tests {
             "SSH_KEY_PATH",
             "key",
             "tokenizer",
+            "event.key",
+            "e.key",
+            "keyboard.key",
         ] {
             assert!(!names_secret(n), "{n}");
         }

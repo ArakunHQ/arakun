@@ -36,6 +36,9 @@ pub struct Ran {
     /// Per Linear organization id, whether Arakun's Linear app is installed.
     pub installed: Vec<(String, bool)>,
     pub error: Option<cloud::Error>,
+    /// The switch went off during the run, so it stopped before sending
+    /// the key or routes. Not a failure: the next run sends the empty routes.
+    pub stopped: bool,
 }
 
 /// The signed-in Linear workspaces by organization id, each with its key.
@@ -53,7 +56,9 @@ pub fn keys(sessions: &[Session]) -> Vec<(String, String)> {
 }
 
 /// One sync, call by call. It blocks, so it runs off the UI thread. `keys`
-/// comes from [`keys`]; a key goes only to `linear_link`.
+/// comes from [`keys`]; a key goes only to `linear_link`. `still_on` reads
+/// the switch again before a link or a non-empty route: `d` is from when the
+/// run began, and the person may have turned it off since.
 pub fn run(
     base: &str,
     session: &str,
@@ -61,6 +66,7 @@ pub fn run(
     d: &Delegation,
     keys: &[(String, String)],
     local: &[PathBuf],
+    still_on: impl Fn() -> bool,
 ) -> Ran {
     let mut ran = Ran::default();
     let links = match cloud::linear_links(base, session) {
@@ -79,11 +85,23 @@ pub fn run(
         .map(|(w, _)| (w.clone(), links.iter().any(|l| l.organization_id == *w)))
         .collect();
     for step in plan(d, &workspaces, local) {
+        let sends = match &step {
+            Step::Link { .. } => true,
+            Step::Routes { routes, .. } => !routes.teams.is_empty() || !routes.projects.is_empty(),
+        };
+        if sends && !still_on() {
+            ran.stopped = true;
+            break;
+        }
         let done = match &step {
             Step::Link { workspace } => {
-                // Every planned workspace came from `keys`.
+                // Every planned workspace came from `keys`; without its key
+                // the routes after it would only be refused.
                 let Some((_, key)) = keys.iter().find(|(w, _)| w == workspace) else {
-                    continue;
+                    ran.error = Some(cloud::Error::Refused(
+                        "no Linear sign-in for that workspace".into(),
+                    ));
+                    break;
                 };
                 cloud::linear_link(base, session, key)
                     .map(|l| ran.installed.push((l.organization_id, l.installed)))
@@ -189,7 +207,11 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (base, token) = (account.base, account.session);
             let ran = cx
-                .background_spawn(async move { run(&base, &token, &label, &d, &keys, &local) })
+                .background_spawn(async move {
+                    run(&base, &token, &label, &d, &keys, &local, || {
+                        Delegation::load().enabled
+                    })
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.linear_synced(session, ran, window, cx)
@@ -220,6 +242,9 @@ impl Shell {
                 v.set_installed(workspace, Some(*installed), cx);
             }
         });
+        if ran.stopped {
+            self.linear_sync.owed = true;
+        }
         match ran.error {
             None => {
                 self.linear_view
@@ -471,7 +496,7 @@ mod tests {
     fn off_and_unlinked_asks_once_and_sends_nothing() {
         let (base, rx) = serve(vec![(200, r#"{"links": []}"#)]);
         let d = off(vec![team("w1", "t1", "/p/a")]);
-        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], || true);
         assert!(ran.error.is_none() && ran.installed.is_empty());
         let got: Vec<String> = rx.try_iter().collect();
         assert_eq!(got.len(), 1);
@@ -490,7 +515,7 @@ mod tests {
             (200, r#"{"ok": true}"#),
         ]);
         let d = on(vec![team("w1", "t1", "/p/a")]);
-        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], || true);
         assert!(ran.error.is_none());
         assert_eq!(ran.installed, [("w1".to_string(), false)]);
         let got: Vec<String> = rx.try_iter().collect();
@@ -499,6 +524,47 @@ mod tests {
         assert!(got[1].starts_with("POST /linear/link ") && got[1].contains("lin_api_w1"));
         assert!(got[2].starts_with("PUT /linear/routes ") && !got[2].contains("lin_api_"));
         assert!(got[2].contains(r#""teams":["t1"]"#), "{}", got[2]);
+    }
+
+    /// A switch that reads on `n` times, then off.
+    fn on_for(n: usize) -> impl Fn() -> bool {
+        let left = std::cell::Cell::new(n);
+        move || {
+            let n = left.get();
+            left.set(n.saturating_sub(1));
+            n > 0
+        }
+    }
+
+    #[test]
+    fn turned_off_before_the_link_the_key_stays_here() {
+        let (base, rx) = serve(vec![(200, r#"{"links": []}"#)]);
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], on_for(0));
+        assert!(ran.stopped && ran.error.is_none());
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].starts_with("GET /linear/link "));
+        assert!(got.iter().all(|r| !r.contains("lin_api_")));
+    }
+
+    #[test]
+    fn turned_off_after_the_link_no_routes_go() {
+        let (base, rx) = serve(vec![
+            (200, r#"{"links": []}"#),
+            (
+                200,
+                r#"{"organization_id": "w1", "linear_user_id": "u1", "installed": true}"#,
+            ),
+        ]);
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], on_for(1));
+        assert!(ran.stopped && ran.error.is_none());
+        assert_eq!(ran.installed, [("w1".to_string(), true)]);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(got[1].starts_with("POST /linear/link "));
+        assert!(!got.iter().any(|r| r.starts_with("PUT ")));
     }
 
     #[test]
@@ -511,7 +577,15 @@ mod tests {
             (429, r#"{"error": "too many requests"}"#),
         ]);
         let d = on(vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")]);
-        let ran = run(&base, "s", "k1", &d, &[key("w1"), key("w2")], &[p("/p/a")]);
+        let ran = run(
+            &base,
+            "s",
+            "k1",
+            &d,
+            &[key("w1"), key("w2")],
+            &[p("/p/a")],
+            || true,
+        );
         assert_eq!(ran.installed, [("w1".to_string(), true)]);
         assert_eq!(ran.error.as_ref().map(outcome), Some(Sync::Limited));
         assert_eq!(rx.try_iter().count(), 2);

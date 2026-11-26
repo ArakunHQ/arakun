@@ -170,7 +170,7 @@ pub fn own_branch(identifier: &str) -> String {
 }
 
 /// This computer's name, as the relay knows it.
-fn computer() -> String {
+pub(super) fn computer() -> String {
     crate::phone::host_name()
 }
 
@@ -222,7 +222,8 @@ impl Shell {
                     };
                     self.linear_read(start, sign_in, window, cx);
                 }
-                DeliveryKind::Prompt | DeliveryKind::Stop => self.linear_follow_up(d, window, cx),
+                DeliveryKind::Prompt => self.linear_prompt(d, sign_in, window, cx),
+                DeliveryKind::Stop => self.linear_stop(&d, window, cx),
             },
             (First::RefuseNoSignIn | First::Read, _) => {
                 self.linear_runs.mark_seen(&d.id);
@@ -233,14 +234,6 @@ impl Shell {
                 self.sync_linear(window, cx);
             }
         }
-    }
-
-    /// A prompt or a stop for a run. Taking them is a later change; until
-    /// then they are accepted, so the relay stops sending them.
-    fn linear_follow_up(&mut self, d: Delivery, _window: &mut Window, cx: &mut Context<Self>) {
-        self.linear_runs.mark_seen(&d.id);
-        self.linear_save();
-        self.linear_accept(&d.id, cx);
     }
 
     /// Starts the runs that wait, while there are free slots. Each one's
@@ -595,7 +588,7 @@ impl Shell {
 
     /// Tells the relay this delivery is handled, off the UI thread. A failure
     /// is let go: the relay sends it again, and it is accepted again then.
-    fn linear_accept(&self, delivery: &str, cx: &mut Context<Self>) {
+    pub(super) fn linear_accept(&self, delivery: &str, cx: &mut Context<Self>) {
         let Some(Gate { base, session, .. }) = self.linear_gate(cx) else {
             return;
         };

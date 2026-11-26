@@ -1742,7 +1742,7 @@ impl Shell {
         }
     }
 
-    fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
+    pub(super) fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
         let env = self.find_env(env_path)?;
         env.sessions[env.session_index(id)?]
             .live

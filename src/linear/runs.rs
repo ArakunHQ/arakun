@@ -475,6 +475,25 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_waiting_run_leaves_the_queue_in_order() {
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d", "e", "f"] {
+            r.add(run(id));
+        }
+        // A stop from Linear ends a run that never started.
+        r.by_agent_session("e").unwrap().state = RunState::Done;
+        assert!(r.next_waiting().is_none(), "it freed no slot");
+        assert_eq!(r.add(run("g")), Added::Wait { ahead: 5 });
+        r.by_agent_session("a").unwrap().state = RunState::Done;
+        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
+        r.by_agent_session("b").unwrap().state = RunState::Done;
+        assert_eq!(r.next_waiting().unwrap().agent_session, "f");
+        r.by_agent_session("c").unwrap().state = RunState::Done;
+        assert_eq!(r.next_waiting().unwrap().agent_session, "g");
+        assert_eq!(state(&mut r, "e"), RunState::Done);
+    }
+
+    #[test]
     fn after_a_restart_the_queue_keeps_its_order() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d", "e"] {

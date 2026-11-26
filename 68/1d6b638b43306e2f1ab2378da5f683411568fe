@@ -1,0 +1,61 @@
+phone/public/e2e.js
+  s_5a4ecd8946a928::t_f3fead927e7471 2-9,20-71,120,149-155,162,176,186,198,211-212,225-230,249-259
+phone/src/lib/pair.ts
+  s_5a4ecd8946a928::t_e7b7776ef54a0e 2-4,6-7,23-49
+phone/src/lib/start.ts
+  s_5a4ecd8946a928::t_e7b7776ef54a0e 15-17,19-20,22-25,28,30-31,149,179-180
+phone/src/lib/purecrypto.test.ts
+  s_5a4ecd8946a928::t_4773dd459f4a05 1-3,6-10,13-18,20-51,53-60
+  s_5a4ecd8946a928::t_e3377b2bdfaf63 4-5,11-12,19,52
+phone/src/router.test.tsx
+  s_5a4ecd8946a928::t_717b3832df99eb 10-13,65-67,72,74-75,78-80
+phone/src/lib/sealed.test.ts
+  s_5a4ecd8946a928::t_28280fa3ec86ed 1-131
+phone/src/lib/pair.test.ts
+  s_5a4ecd8946a928::t_717b3832df99eb 1-54
+README.md
+  s_5a4ecd8946a928::t_4a560f0bcc02ed 532-541
+  s_5a4ecd8946a928::t_c45939be6d3818 542-543
+phone/src/lib/sealed.ts
+  s_5a4ecd8946a928::t_3850469bdb4da6 1-207
+phone/src/lib/globals.ts
+  s_5a4ecd8946a928::t_e7b7776ef54a0e 61-65,67-75,77
+  s_5a4ecd8946a928::t_e3377b2bdfaf63 76
+phone/src/lib/purecrypto.ts
+  s_5a4ecd8946a928::t_4773dd459f4a05 1-44
+phone/src/lib/link.test.ts
+  s_5a4ecd8946a928::t_46d203e53e1661 25
+  s_5a4ecd8946a928::t_95a570f475128e 5-11,14-22,24,27,31-34,37-42,46-47,59,63-64,69,75,90,92-93,97-106,114,129-130,132-133,135,137,144,147-163,172,175-180,190,192,195,234,237,362
+SECURITY.md
+  s_5a4ecd8946a928::t_4a560f0bcc02ed 48-57
+phone/src/lib/token.ts
+  s_5a4ecd8946a928::t_e7b7776ef54a0e 4-7,33-45
+phone/package.json
+  s_5a4ecd8946a928::t_787afacc13fd2c 11-13
+phone/dist/assets/app.js
+  s_5a4ecd8946a928::t_d42d744bc8ec32 1-2,4,7,9-10,12-15
+phone/dist/assets/purecrypto.js
+  s_5a4ecd8946a928::t_fb5ee4ec9768b4 1
+phone/dist/e2e.js
+  s_5a4ecd8946a928::t_fb6fe4db712f40 2-9,20-71,120,149-155,162,176,186,198,211-212,225-230,249-259
+phone/package-lock.json
+  s_5a4ecd8946a928::t_8199b25f469134 9-11,168-206
+phone/src/lib/link.ts
+  s_5a4ecd8946a928::t_64977403903877 1-3,20-21,26,31,44,72,139-142,146-194,196,235-237,240,256,269,302
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "681d6b638b43306e2f1ab2378da5f683411568fe",
+  "prompts": {},
+  "sessions": {
+    "s_5a4ecd8946a928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2fdeab1-d2b7-42bc-bd9d-987c030d0aee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

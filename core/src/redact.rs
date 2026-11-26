@@ -51,7 +51,7 @@ pub fn set(on: bool) -> std::io::Result<()> {
 }
 
 fn marker_path() -> std::path::PathBuf {
-    crate::platform::app_dir().join("redacted")
+    crate::paths::store("redacted")
 }
 
 /// `value` as it is, or [`MASK`] while the mode is on. For what is private as

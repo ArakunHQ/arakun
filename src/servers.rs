@@ -232,10 +232,7 @@ pub fn new_id() -> String {
 
 fn file() -> PathBuf {
     // A test instance with its own state file keeps its own servers.
-    if let Some(state) = std::env::var_os("ARAKUN_STATE") {
-        return PathBuf::from(state).with_file_name("servers.json");
-    }
-    crate::state::data_dir().join("servers.json")
+    crate::paths::store("servers.json")
 }
 
 pub fn load() -> Vec<Saved> {

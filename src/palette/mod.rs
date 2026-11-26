@@ -111,15 +111,6 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// A file next to the state file (or in the data dir), the way the other
-/// stores find theirs, so a test instance keeps its own.
-pub fn store_path(name: &str) -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name(name),
-        None => crate::state::data_dir().join(name),
-    }
-}
-
 /// Numbered lines of a file and how many lines it has.
 pub type Snippet = (Vec<(u32, String)>, usize);
 
@@ -2716,12 +2707,6 @@ mod tests {
         assert_eq!(g[0].1, Some(3));
         assert_eq!(g[0].2.len(), 2);
         assert_eq!(g[1].0, "Sessions");
-    }
-
-    #[test]
-    fn store_paths_follow_the_state_file() {
-        // Without ARAKUN_STATE the data dir holds them; the name is kept either way.
-        assert!(store_path("pins.json").ends_with("pins.json"));
     }
 
     #[test]

@@ -125,6 +125,13 @@ With `--service` a server that is not signed in yet stays up and waits for
 
 ## Where things are stored
 
+With `ARAKUN_STATE` set (as `arakun dev` sets it), that Arakun's own files are in the
+folder of that state file instead of `%LOCALAPPDATA%\arakun\`: its settings, transcripts,
+memory, pasted images, history and notices. What every Arakun on the computer shares
+stays in `%LOCALAPPDATA%\arakun\`: caches, installed agents, the update being downloaded,
+`arakun server`'s folder, and the sign-ins whose keys are in the Credential Manager under
+one name (Linear, Doop, PostHog, Claude seats, agent secrets, CLIProxyAPI).
+
 | What | Where |
 |---|---|
 | State, sessions, transcripts | `%LOCALAPPDATA%\arakun\` |
@@ -135,7 +142,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Sessions the startup clean-up has seen listed | `%LOCALAPPDATA%\arakun\state.json.seen`; with `ARAKUN_STATE` set, `<state file>.seen` next to it |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
-| Archive after merge (Settings › Branches), and the merges archived | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
+| Archive after merge (Settings › Branches), and the merges archived | `settle-after-merge`, `settled.json` in `%LOCALAPPDATA%\arakun\` |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Linear sign-ins (who signed in; the personal API keys are in the Credential Manager) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
 | Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
@@ -154,7 +161,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Teams device keys (Teams tab) | Credential Manager, as `arakun:teams-device-<account>-<scope>`; scope identifies the server and profile |
 | Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
-| The PR agent's cards you saw and dealt with (arakun-pilot) | By default `%LOCALAPPDATA%\arakun\pilot.json`; with `ARAKUN_STATE` set, `pilot.json` next to that state file |
+| The PR agent's cards you saw and dealt with (arakun-pilot) | `%LOCALAPPDATA%\arakun\pilot.json` |
 | arakun-pilot's Worker address | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
 | arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |

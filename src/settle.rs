@@ -52,7 +52,7 @@ pub fn set(on: bool) {
 }
 
 fn choice_path() -> PathBuf {
-    crate::platform::app_dir().join("settle-after-merge")
+    crate::paths::store("settle-after-merge")
 }
 
 fn parse_choice(text: &str) -> Option<bool> {
@@ -197,10 +197,7 @@ impl Book {
 
 /// Next to the state, so a test Arakun (`ARAKUN_STATE`) keeps its own.
 fn book_path() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("settled.json"),
-        None => crate::state::data_dir().join("settled.json"),
-    }
+    crate::paths::store("settled.json")
 }
 
 #[cfg(test)]

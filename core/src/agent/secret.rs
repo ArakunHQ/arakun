@@ -664,7 +664,7 @@ struct Keyring;
 #[cfg_attr(test, allow(dead_code))]
 impl Keyring {
     fn index_path() -> PathBuf {
-        crate::platform::app_dir().join("secret-refs.json")
+        crate::paths::shared("secret-refs.json")
     }
 
     fn edit(f: impl FnOnce(&mut std::collections::BTreeMap<String, u64>)) {
@@ -903,7 +903,7 @@ fn files_dir() -> PathBuf {
     }
     #[cfg(not(test))]
     {
-        crate::platform::app_dir().join("secret-files")
+        crate::paths::shared("secret-files")
     }
 }
 

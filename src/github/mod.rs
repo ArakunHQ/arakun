@@ -442,10 +442,7 @@ pub struct Settings {
 }
 
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("github.json"),
-        None => crate::state::data_dir().join("github.json"),
-    }
+    crate::paths::store("github.json")
 }
 
 pub fn load() -> Settings {

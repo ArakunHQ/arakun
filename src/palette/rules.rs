@@ -1211,7 +1211,7 @@ impl Rules {
 }
 
 fn file() -> PathBuf {
-    super::store_path("rules.json")
+    crate::paths::store("rules.json")
 }
 
 #[cfg(test)]

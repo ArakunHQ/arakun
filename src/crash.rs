@@ -25,7 +25,7 @@ const MAX_FRAMES: usize = 40;
 static MAIN: OnceLock<ThreadId> = OnceLock::new();
 
 pub fn log_path() -> PathBuf {
-    crate::platform::app_dir().join("crash.log")
+    crate::paths::store("crash.log")
 }
 
 /// Installs the hook. Call it on the main thread: a panic there is the one
@@ -48,14 +48,10 @@ pub fn install() {
         if let (true, Some(event)) = (fatal, sent)
             && enabled()
         {
-            let _ = write_marker(&app_dir(), Some(&event));
+            let _ = write_marker(&crate::paths::data_dir(), Some(&event));
         }
         previous(info);
     }));
-}
-
-fn app_dir() -> PathBuf {
-    crate::platform::app_dir()
 }
 
 /// The file that exists while Arakun runs. A clean exit deletes it, so one
@@ -109,21 +105,23 @@ static PREVIOUS: OnceLock<Option<Option<String>>> = OnceLock::new();
 /// crash report if one was sent. Read from the marker once, before
 /// `mark_running` replaces it.
 pub fn last_run_ended_badly() -> Option<Option<String>> {
-    PREVIOUS.get_or_init(|| read_marker(&app_dir())).clone()
+    PREVIOUS
+        .get_or_init(|| read_marker(&crate::paths::data_dir()))
+        .clone()
 }
 
 /// Marks this run as started. Call it once at startup.
 pub fn mark_running() {
     let _ = last_run_ended_badly();
     if enabled() {
-        let _ = write_marker(&app_dir(), None);
+        let _ = write_marker(&crate::paths::data_dir(), None);
     }
 }
 
 /// Marks this run as ended on purpose (quit, close, restart).
 pub fn mark_clean_exit() {
     if enabled() {
-        clear_marker(&app_dir());
+        clear_marker(&crate::paths::data_dir());
     }
 }
 

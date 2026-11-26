@@ -26,6 +26,7 @@ pub mod island;
 pub mod linear;
 pub mod mascot;
 pub mod model;
+pub mod paths;
 pub mod phone;
 mod phone_page;
 pub mod platform;

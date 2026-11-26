@@ -412,7 +412,7 @@ impl Store {
 }
 
 fn dir() -> PathBuf {
-    crate::platform::app_dir().join("doop")
+    crate::paths::shared("doop")
 }
 
 fn store_file() -> PathBuf {
@@ -1234,8 +1234,7 @@ pub fn set_pin(host: &str, id: &str, pin: Option<CanvasRef>) -> Result<(), Strin
 fn thumb_dir(s: &Session) -> PathBuf {
     let digest = sha2::Sha256::digest(s.id.as_bytes());
     let mark: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
-    crate::platform::app_dir()
-        .join("cache")
+    crate::paths::shared("cache")
         .join("doop")
         .join(format!("{}-{mark}", file_safe(host_label(&s.host))))
 }

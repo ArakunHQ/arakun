@@ -336,7 +336,7 @@ fn credentials_path() -> PathBuf {
 }
 
 fn seats_path() -> PathBuf {
-    crate::platform::app_dir().join("claude-seats.json")
+    crate::paths::shared("claude-seats.json")
 }
 
 /// The last fetch of both seats, however old.

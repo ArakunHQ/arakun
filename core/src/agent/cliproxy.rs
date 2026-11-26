@@ -217,7 +217,7 @@ fn now() -> u64 {
 /// The proxy the key was saved for. The name is from when the file held the
 /// key too, and stays so a file from before is still found.
 fn key_path() -> PathBuf {
-    crate::platform::app_dir().join("cliproxy-management-key")
+    crate::paths::shared("cliproxy-management-key")
 }
 
 /// The keyring entry of the key. Not per test Arakun: its file is shared too.
@@ -225,11 +225,11 @@ const KEY_ACCOUNT: &str = "cliproxy-management-key";
 const KEY_LABEL: &str = "arakun: CLIProxyAPI management key";
 
 fn cache_path() -> PathBuf {
-    crate::platform::app_dir().join("cliproxy-plan.json")
+    crate::paths::shared("cliproxy-plan.json")
 }
 
 fn address_path() -> PathBuf {
-    crate::platform::app_dir().join("cliproxy-address")
+    crate::paths::shared("cliproxy-address")
 }
 
 /// The management base the key saved from the Usage tab was typed for. The

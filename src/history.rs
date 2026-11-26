@@ -11,10 +11,7 @@ pub struct History {
 }
 
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("history.json"),
-        None => crate::state::data_dir().join("history.json"),
-    }
+    crate::paths::store("history.json")
 }
 
 impl History {

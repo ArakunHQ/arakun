@@ -1415,10 +1415,7 @@ fn settings_file() -> PathBuf {
         return path.clone();
     }
     // A test instance with its own state file keeps its own phone, on its own port.
-    if let Some(state) = std::env::var_os("ARAKUN_STATE") {
-        return PathBuf::from(state).with_file_name("phone.json");
-    }
-    crate::platform::app_dir().join("phone.json")
+    crate::paths::store("phone.json")
 }
 
 impl Settings {

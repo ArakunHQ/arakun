@@ -264,10 +264,7 @@ fn day_label(d: Date, today: Date) -> String {
 
 /// Next to the state file, like `github.json`, so a test instance keeps its own.
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("notices.json"),
-        None => crate::state::data_dir().join("notices.json"),
-    }
+    crate::paths::store("notices.json")
 }
 
 pub fn load() -> History {

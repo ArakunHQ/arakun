@@ -19,10 +19,7 @@ pub struct SavedPrompt {
 }
 
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("prompts.json"),
-        None => crate::state::data_dir().join("prompts.json"),
-    }
+    crate::paths::store("prompts.json")
 }
 
 pub fn load() -> Vec<SavedPrompt> {

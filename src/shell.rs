@@ -1843,8 +1843,9 @@ impl Shell {
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();
         let (why, then) = why.unzip();
+        let servers = self.clone_servers();
         let picker = cx.new(|cx| {
-            let picker = FolderPicker::new(existing, window, cx);
+            let picker = FolderPicker::new(existing, window, cx).servers(servers, cx);
             match why {
                 Some(why) => picker.because(why),
                 None => picker,
@@ -1863,6 +1864,11 @@ impl Shell {
                     {
                         then(this, window, cx);
                     }
+                }
+                PickerEvent::CloneOnServer { server, url } => {
+                    let (server, url) = (server.clone(), url.clone());
+                    this.close_modal(window, cx);
+                    this.servers_clone_from_picker(&server, &url, cx);
                 }
                 PickerEvent::Dismissed => this.close_modal(window, cx),
             },

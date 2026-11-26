@@ -791,6 +791,19 @@ final class AppModel {
         session?.question = nil
     }
 
+    /// Sends what was typed for a secret, or declines it with no `values`.
+    /// Only a private connection carries values; the card offers Save only then.
+    /// Whether it went out: offline the card keeps what was typed.
+    @discardableResult
+    func answerSecret(_ ask: SecretAsk, values: [String]?) -> Bool {
+        guard let s = session, canSend else { return false }
+        var msg: [String: Any] = ["type": "secret", "session": s.id, "id": ask.id]
+        if let values, ask.isPrivate { msg["values"] = values }
+        send(msg)
+        if session?.secret?.id == ask.id { session?.secret = nil }
+        return true
+    }
+
     /// Whether the start went out; the form keeps its prompt when it did not.
     @discardableResult
     func startSession(in place: Place, text: String) -> Bool {
@@ -1075,6 +1088,14 @@ extension AppModel {
          "permission":{"tool_call_id":"p1","title":"cargo test -p arakun relay","options":[{"id":"a","name":"Allow","kind":"allow_once"},{"id":"b","name":"Always allow","kind":"allow_always"},{"id":"c","name":"Deny","kind":"reject_once"}]}}
         """.utf8))!)
         if line?.status == .working { s.permission = nil }
+        // -demoSecret private|clear: the secret card in place of the permission.
+        if let mode = UserDefaults.standard.string(forKey: "demoSecret"), line?.status != .working {
+            s.permission = nil
+            s.secret = SecretAsk(JSON.parse(Data("""
+            {"id":1,"label":"Cloudflare API token","reason":"To deploy the relay with wrangler.","url":"https://dash.cloudflare.com/profile/api-tokens",
+             "fields":[{"name":"token","label":"Token"}],"private":\(mode == "private")}
+            """.utf8))!)
+        }
         return s
     }
 

@@ -174,6 +174,37 @@ public struct QuestionAsk: Equatable, Sendable {
     }
 }
 
+/// A secret the agent asks for (`request_secret`). What is typed goes to the
+/// computer, which keeps it; the agent only gets a handle. `isPrivate` says
+/// whether this connection may carry it; when it is not, only Decline is offered.
+public struct SecretAsk: Equatable, Sendable {
+    public struct Field: Equatable, Sendable {
+        public let name: String
+        public let label: String
+    }
+
+    public let id: UInt64
+    public let label: String
+    public let reason: String
+    /// Only an http(s) link: the computer checks, and so does the app.
+    public let url: URL?
+    public let fields: [Field]
+    public let isPrivate: Bool
+
+    public init?(_ j: JSON) {
+        guard !j.isNull, let id = j["id"].int, id >= 0 else { return nil }
+        self.id = UInt64(id)
+        label = j["label"].str
+        reason = j["reason"].str
+        url = j["url"].string.flatMap { s in
+            guard s.hasPrefix("https://") || s.hasPrefix("http://") else { return nil }
+            return URL(string: s)
+        }
+        fields = j["fields"].array.map { Field(name: $0["name"].str, label: $0["label"].str) }
+        isPrivate = j["private"].bool
+    }
+}
+
 /// A session open on the phone: its loaded entries `from..<from+entries.count`
 /// of `count`, and its state.
 public struct LiveSession: Sendable {
@@ -186,6 +217,7 @@ public struct LiveSession: Sendable {
     public var entries: [Entry]
     public var permission: PermissionAsk?
     public var question: QuestionAsk?
+    public var secret: SecretAsk?
     public var usage: String?
     public var queue: [String]
     public var turnStarted: Date?
@@ -241,6 +273,7 @@ public struct LiveSession: Sendable {
         status = SessionStatus(j["status"])
         permission = PermissionAsk(j["permission"])
         question = QuestionAsk(j["question"])
+        secret = SecretAsk(j["secret"])
         usage = j["usage"]["summary"].string
         queue = j["queue"].array.map(\.str)
         if let t = j["title"].string, !t.isEmpty { title = t }

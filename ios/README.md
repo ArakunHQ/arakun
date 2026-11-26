@@ -35,8 +35,9 @@ keychain.
 Without an account or a computer, launch with `-demo` (Debug builds only): a
 signed-in sample account and sample sessions fill the app. `-demoOpen s1` opens a
 session, `-demoNew YES` the New session sheet, `-demoSignIn YES` the sign-in screen,
-`-demoMachines YES` the list of computers and `-demoMoods YES` every mood of the
-raccoon side by side:
+`-demoMachines YES` the list of computers, `-demoSecret private` (or `clear`, for a
+connection that is not encrypted) the secret card in the open session, and
+`-demoMoods YES` every mood of the raccoon side by side:
 
 ```sh
 xcrun simctl launch booted com.arakun.ios -demo -demoOpen s1

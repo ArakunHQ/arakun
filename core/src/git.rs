@@ -2530,6 +2530,30 @@ test: cover the resize\u{1f}\u{1e}\n";
     }
 
     #[test]
+    fn a_named_branch_is_checked_out_or_made_from_the_base() {
+        let dir = repo();
+        let base = super::read(&dir, &["rev-parse", "HEAD"]).unwrap();
+        // `taken` exists: its worktree is on it, and no other branch is made.
+        let old = dir.with_extension("old");
+        super::add_worktree(&dir, &old, "taken", Some("env/brave-otter"), false).unwrap();
+        assert_eq!(super::current_branch(&old).as_deref(), Some("taken"));
+        // `linear/ara-1` does not: it is made from the base.
+        let new = dir.with_extension("new");
+        super::add_worktree(&dir, &new, "linear/ara-1", Some("env/brave-otter"), false).unwrap();
+        assert_eq!(super::current_branch(&new).as_deref(), Some("linear/ara-1"));
+        assert_eq!(super::read(&new, &["rev-parse", "HEAD"]).unwrap(), base);
+        let on: Vec<_> = super::worktrees(&dir)
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.branch)
+            .collect();
+        assert!(on.contains(&"taken".to_string()) && on.contains(&"linear/ara-1".to_string()));
+        for d in [dir, old, new] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
     fn a_stalled_command_is_stopped_at_the_limit() {
         use std::time::Duration;
         let mut cmd = crate::platform::command("git");

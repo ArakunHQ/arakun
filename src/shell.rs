@@ -45,6 +45,7 @@ mod inbox;
 mod island;
 mod limits;
 mod linear;
+mod linear_env;
 mod linear_run;
 mod linear_sync;
 mod menus;
@@ -335,6 +336,8 @@ pub struct Shell {
     env_menu_open: bool,
     /// Environments made with one click whose worktree is not there yet.
     pending_envs: Vec<PendingEnv>,
+    /// Environments made for a named branch, still being made (`linear_env`).
+    linear_envs: linear_env::InFlight<linear_env::Waiter>,
     /// Where the environment menu was opened from below (the composer); `None`
     /// anchors it under the panel header.
     env_menu_at: Option<gpui::Point<Pixels>>,
@@ -850,6 +853,7 @@ impl Shell {
             side_drag: None,
             env_menu_open: false,
             pending_envs: Vec::new(),
+            linear_envs: Default::default(),
             env_menu_at: None,
             tab_scroll: ScrollHandle::new(),
             tab_revealed: Cell::new(None),

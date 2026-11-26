@@ -29,6 +29,9 @@ pub(super) struct LinearSync {
     /// The session of the account last seen with the flag, so a sign-in
     /// syncs once and not on every change of Teams.
     account: Option<String>,
+    /// The session of the Arakun account last seen, flag or not, to tell
+    /// when the installs the page learned belong to another account.
+    seen: Option<String>,
 }
 
 /// What one run learned, and the call that stopped it, if one did.
@@ -36,6 +39,9 @@ pub(super) struct LinearSync {
 pub struct Ran {
     /// Per Linear organization id, whether Arakun's Linear app is installed.
     pub installed: Vec<(String, bool)>,
+    /// The server's links were read. A run that failed before that knows
+    /// nothing, and the page keeps what it had.
+    pub learned: bool,
     pub error: Option<cloud::Error>,
     /// The switch went off during the run, so it stopped before sending
     /// the key or routes. Not a failure: the next run sends the empty routes.
@@ -98,6 +104,7 @@ pub fn run(
             return ran;
         }
     };
+    ran.learned = true;
     ran.installed = links
         .iter()
         .map(|l| (l.organization_id.clone(), l.installed))
@@ -234,6 +241,15 @@ impl Shell {
     pub(super) fn linear_account_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.push_linear_host(cx);
         let teams = self.teams.read(cx);
+        // Another account, or none: what the last one's links said is stale.
+        let seen = teams.account().map(|a| a.session);
+        if seen != self.linear_sync.seen {
+            self.linear_sync.seen = seen;
+            self.views
+                .linear
+                .update(cx, |v, cx| v.set_installed(&[], true, cx));
+        }
+        let teams = self.teams.read(cx);
         let now = teams
             .account()
             .filter(|_| teams.linear_enabled())
@@ -322,11 +338,11 @@ impl Shell {
             self.sync_linear(window, cx);
             return;
         }
-        self.views.linear.update(cx, |v, cx| {
-            for (workspace, installed) in &ran.installed {
-                v.set_installed(workspace, Some(*installed), cx);
-            }
-        });
+        if ran.learned {
+            self.views
+                .linear
+                .update(cx, |v, cx| v.set_installed(&ran.installed, false, cx));
+        }
         if ran.stopped {
             self.linear_sync.owed = true;
         }
@@ -979,6 +995,16 @@ pub(super) mod tests {
         let got: Vec<String> = rx.try_iter().collect();
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
+    }
+
+    #[test]
+    fn a_run_that_failed_before_the_links_learned_nothing() {
+        let (base, _rx) = serve(vec![(500, r#"{"error": "down"}"#)]);
+        let ran = run(&base, "s", "k1", &off(vec![]), &[key("w1")], &[], || true);
+        assert!(ran.error.is_some() && !ran.learned && ran.installed.is_empty());
+        let (base, _rx) = serve(vec![(200, r#"{"links": []}"#)]);
+        let ran = run(&base, "s", "k1", &off(vec![]), &[key("w1")], &[], || true);
+        assert!(ran.learned);
     }
 
     #[test]

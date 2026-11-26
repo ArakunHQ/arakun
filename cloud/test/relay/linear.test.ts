@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA, pcControl, pcFrame, phoneFrame } from "../../src/relay/frames";
 import * as expire from "../../src/linear_expire";
 import { deliver, dropDelivery, type Delivery } from "../../src/machines";
-import { account, claim, computer, computerAndPhone, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./helpers";
+import { account, claim, computer, computerAndPhone, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./helpers";
 
 const DAY_MS = 24 * 3_600_000;
 
@@ -44,8 +44,19 @@ async function awayComputer() {
   const { me, pc, owner } = await connectedComputer();
   pc.ws.close(1000, "shutting down");
   await pc.inbox.closedWith();
-  await new Promise((r) => setTimeout(r, 50));
+  // The object writes when the computer was last seen once it hears the close.
+  await untilStored<number>(me.label, "last_seen", (v) => v !== undefined);
   return { me, owner };
+}
+
+/// Ages a stored delivery past its week and makes the alarm due, in one step.
+/// A delivery stored already expired would set an alarm for now, which the
+/// runtime may fire on its own before the test runs it.
+async function age(label: string, d: Delivery): Promise<void> {
+  await runInDurableObject(stub(label), async (_i, state) => {
+    await state.storage.put(`linear:${d.id}`, { ...d, created: d.created - 8 * 86_400 });
+    await state.storage.setAlarm(Date.now());
+  });
 }
 
 async function plans(free: object) {
@@ -189,9 +200,9 @@ describe("Linear deliveries in the relay", () => {
     vi.spyOn(expire, "expired").mockRejectedValue(new Error("D1 is down"));
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { me } = await awayComputer();
-    const old = delivery("created", 8 * 86_400);
+    const old = delivery();
     await deliver(env, me.label, old, null);
-    await runInDurableObject(stub(me.label), (_i, state) => state.storage.setAlarm(Date.now()));
+    await age(me.label, old);
     expect(await runDurableObjectAlarm(stub(me.label))).toBe(true);
     expect(await stored(me.label, `linear:${old.id}`)).toBeUndefined();
     // Back on the purge.
@@ -209,8 +220,9 @@ describe("Linear deliveries in the relay", () => {
 
   it("forgets the alarm once the last delivery of a label never claimed expires", async () => {
     const me = await computer();
-    const old = delivery("created", 8 * 86_400);
+    const old = delivery();
     await deliver(env, me.label, old, null);
+    await age(me.label, old);
     expect(await runDurableObjectAlarm(stub(me.label))).toBe(true);
     expect(await stored(me.label, `linear:${old.id}`)).toBeUndefined();
     expect(await runInDurableObject(stub(me.label), (_i, state) => state.storage.getAlarm())).toBeNull();

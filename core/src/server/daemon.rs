@@ -2029,6 +2029,10 @@ impl Daemon {
                         place.pick(agent, *s, value);
                     }
                 }
+                // Before the old one goes: a phone that muted it keeps the new one muted.
+                if this.access.lock().unwrap().rename_muted(&id, &new) {
+                    this.save_devices();
+                }
                 this.drop_session(&id, cx);
                 this.attach(&new, thread.clone(), cx);
                 // Its adapter may have gone missing before anything listened.
@@ -3795,6 +3799,7 @@ impl Daemon {
             .filter(|s| s.place.starts_with(place))
             .map(|s| s.id.clone())
             .collect();
+        let mut muted = false;
         for id in ids {
             if let Some(live) = self.live.remove(&id) {
                 live.thread.update(cx, |t, _| t.shutdown());
@@ -3806,6 +3811,10 @@ impl Daemon {
             self.said_commands.remove(&id);
             self.writer.forget(self.store.transcript_path(&id));
             self.store.remove_session(&id);
+            muted |= self.access.lock().unwrap().forget_session(&id);
+        }
+        if muted {
+            self.save_devices();
         }
         let inside: Vec<PathBuf> = self
             .store
@@ -4573,6 +4582,10 @@ impl Daemon {
         // the file back after it is deleted.
         self.writer.forget(self.store.transcript_path(id));
         self.store.remove_session(id);
+        // A phone's mute of it would outlive it otherwise.
+        if self.access.lock().unwrap().forget_session(id) {
+            self.save_devices();
+        }
     }
 }
 
@@ -5940,6 +5953,7 @@ mod tests {
                 auth: "a".into(),
             }),
             notices: Default::default(),
+            muted: Vec::new(),
         }
     }
 

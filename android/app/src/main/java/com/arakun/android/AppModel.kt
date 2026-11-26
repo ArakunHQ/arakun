@@ -152,6 +152,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** A message worth a moment on screen. */
     var notice by mutableStateOf<String?>(null)
 
+    /** The sessions the computer open sends this phone no notices about. */
+    var muted by mutableStateOf<List<String>>(emptyList())
+        private set
+
+    /** Whether the computer open knows muting; one from before has no `/mute`. */
+    var knowsMuting by mutableStateOf(false)
+        private set
+
     /** Sample data instead of a computer (debug builds, launched with `demo`). */
     var demo: Demo? = null
         private set
@@ -439,6 +447,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         link = null
         retryJob?.cancel()
         machine = null
+        muted = emptyList()
+        knowsMuting = false
         connection = Connection.Idle
         host = ""
         inbox = emptyList()
@@ -705,7 +715,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     session?.let { send("type" to "open", "session" to it.id) }
                 }
-                link?.let { tellPush(it) }
+                link?.let {
+                    tellPush(it)
+                    loadMuted(it)
+                }
             }
             is RelayLink.Event.Message -> parseJson(event.bytes)?.let(::receive)
             is RelayLink.Event.Computer -> {
@@ -928,6 +941,51 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Which sessions the computer behind `l` keeps quiet, from `GET /me`. */
+    private fun loadMuted(l: RelayLink) {
+        if (demo != null) return
+        linkScope.launch {
+            try {
+                val (status, bytes) = l.fetch("/me")
+                if (status != 200 || link !== l) return@launch
+                val me = parseJson(bytes) ?: return@launch
+                muted = WebPush.mutedOf(me)
+                knowsMuting = WebPush.knowsMuting(me)
+            } catch (_: RelayLink.ClosedException) {
+            }
+        }
+    }
+
+    /** Whether the computer sends no notices about the session `id`. */
+    fun isMuted(id: String): Boolean = id in muted
+
+    /**
+     * One session's notices off, or on again; the computer keeps the list and
+     * answers with all of it.
+     */
+    fun mute(id: String, on: Boolean) {
+        if (demo != null) {
+            muted = muted.filter { it != id } + if (on) listOf(id) else emptyList()
+            return
+        }
+        val l = link
+        if (l == null || !l.isReady) {
+            notice = "Could not save that. Try again."
+            return
+        }
+        linkScope.launch {
+            val list = try {
+                val (status, bytes) = l.fetch("/mute", "POST", WebPush.muteBody(id, on))
+                if (status == 200) parseJson(bytes)?.let(WebPush::muteReply) else null
+            } catch (_: RelayLink.ClosedException) {
+                null
+            }
+            // A reply from a computer the person has left says nothing about this one.
+            if (link !== l) return@launch
+            if (list == null) notice = "Could not save that. Try again." else muted = list
+        }
+    }
+
     /** `POST /push` to the computer behind `l`; whether it took it. */
     private suspend fun ask(l: RelayLink, body: String): Boolean = try {
         l.isReady && l.fetch("/push", "POST", body).first == 200
@@ -979,6 +1037,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         machines = Demo.machines(now)
         machinesLoaded = true
         devices = Demo.devices(now)
+        knowsMuting = true
         if (openFirst) pick(machines.first())
     }
 

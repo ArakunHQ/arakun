@@ -122,7 +122,8 @@ impl Notifier {
             let key = (d.id.clone(), door, c.session.clone(), Slot::of(c.kind));
             self.pending.remove(&key);
             let Some(sub) = &d.push else { continue };
-            if !wants(&d.notices, c.kind) || looking.contains(&d.id) {
+            if !wants(&d.notices, c.kind) || looking.contains(&d.id) || d.muted.contains(&c.session)
+            {
                 continue;
             }
             let short = c
@@ -172,7 +173,7 @@ impl Notifier {
                 return false;
             };
             let Some(sub) = &d.push else { return false };
-            if !wants(&d.notices, item.kind) || looking.contains(id) {
+            if !wants(&d.notices, item.kind) || looking.contains(id) || d.muted.contains(session) {
                 return false;
             }
             if !still(session, item.kind) {
@@ -558,6 +559,7 @@ mod tests {
                 auth: "a".into(),
             }),
             notices,
+            muted: Vec::new(),
         }
     }
 
@@ -880,6 +882,54 @@ mod tests {
             assert_eq!(out[0].payload, "newer");
             assert!(!n.has_pending());
         }
+    }
+
+    #[test]
+    fn muted_session_not_offered() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let mut muted = device("m", Notices::default());
+        muted.muted = vec!["s".into()];
+        let devices = [muted, device("q", Notices::default())];
+        let out = n.offer(
+            cand("s", Kind::Done, None),
+            &devices,
+            &nobody(),
+            idle(600),
+            now,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].device, "q");
+        let out = n.offer(
+            cand("t", Kind::Done, None),
+            &devices,
+            &nobody(),
+            idle(600),
+            now,
+        );
+        assert_eq!(out.len(), 2, "other sessions still go");
+    }
+
+    #[test]
+    fn muting_drops_a_waiting_notice() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let mut devices = [phone()];
+        n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        assert!(n.has_pending());
+        devices[0].muted = vec!["s".into()];
+        let later = now + Duration::from_secs(600);
+        assert!(
+            n.tick(&devices, &nobody(), unknown(false), always, later)
+                .is_empty()
+        );
+        assert!(!n.has_pending());
     }
 
     #[test]

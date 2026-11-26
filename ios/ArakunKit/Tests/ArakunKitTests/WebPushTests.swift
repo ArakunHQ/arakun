@@ -138,6 +138,67 @@ struct WebPushTests {
         #expect(choice == NoticeChoice(input: false))
         #expect(!choice[.input] && choice[.done] && choice[.error])
         let sent = try? JSONSerialization.data(withJSONObject: ["notices": NoticeChoice(input: false).json])
-        #expect(JSON.parse(sent ?? Data())?["notices"] == JSON.parse(Data(#"{"done":true,"input":false,"error":true}"#.utf8)))
+        #expect(JSON.parse(sent ?? Data())?["notices"] == JSON.parse(Data(
+            #"{"done":true,"input":false,"error":true,"away_after_secs":120,"min_turn_secs":30}"#.utf8)))
+    }
+
+    /// A computer from before the away time and the shortest turn leaves them
+    /// out: the phone shows the computer's defaults, 2 minutes and 30 seconds.
+    @Test func theAwayTimeAndShortestTurnDefaultWhenLeftOut() throws {
+        let old = NoticeChoice(try #require(JSON.parse(Data(#"{"done":false}"#.utf8))))
+        #expect(old.awayAfterSecs == 120)
+        #expect(old.minTurnSecs == 30)
+        #expect(old == NoticeChoice(done: false))
+        #expect(NoticeChoice(.null) == NoticeChoice())
+        // Not a whole number of seconds, or below zero: the default.
+        let odd = NoticeChoice(try #require(JSON.parse(Data(#"{"away_after_secs":"soon","min_turn_secs":-5}"#.utf8))))
+        #expect(odd.awayAfterSecs == 120)
+        #expect(odd.minTurnSecs == 30)
+        let picked = NoticeChoice(try #require(JSON.parse(Data(#"{"away_after_secs":0,"min_turn_secs":300}"#.utf8))))
+        #expect(picked.awayAfterSecs == 0)
+        #expect(picked.minTurnSecs == 300)
+    }
+
+    @Test func theAwayTimeAndShortestTurnRoundTrip() throws {
+        let choice = NoticeChoice(input: false, awayAfterSecs: 900, minTurnSecs: 0)
+        let sent = try JSONSerialization.data(withJSONObject: choice.json)
+        let back = try #require(JSON.parse(sent))
+        #expect(back["away_after_secs"].int == 900)
+        #expect(back["min_turn_secs"].int == 0)
+        #expect(NoticeChoice(back) == choice)
+    }
+
+    /// The choices the phone page offers, with 0 turning each rule off.
+    @Test func theChoicesMatchThePhonePage() {
+        #expect(NoticeChoice.awayChoices.map(\.secs) == [0, 60, 120, 300, 900])
+        #expect(NoticeChoice.awayChoices.map(\.label) == ["Always", "1 min", "2 min", "5 min", "15 min"])
+        #expect(NoticeChoice.shortestChoices.map(\.secs) == [0, 15, 30, 60, 300])
+        #expect(NoticeChoice.shortestChoices.map(\.label) == ["Off", "15 s", "30 s", "1 min", "5 min"])
+        // A value set elsewhere stays on the list, so the picker never shows nothing.
+        #expect(NoticeChoice.Option.list(NoticeChoice.awayChoices, keeping: 120) == NoticeChoice.awayChoices)
+        #expect(NoticeChoice.Option.list(NoticeChoice.shortestChoices, keeping: 45).last == NoticeChoice.Option(secs: 45, label: "45 s"))
+    }
+
+    @Test func readsTheMutedSessions() throws {
+        let me = try #require(PushState(try #require(JSON.parse(Data(
+            #"{"notifying":true,"notices":{},"muted":["s1","s2",3]}"#.utf8)))))
+        #expect(me.muted == ["s1", "s2"])
+        #expect(me.canMute)
+        // An older computer knows no muting: nothing is muted, and no switch shows.
+        let old = try #require(PushState(try #require(JSON.parse(Data(#"{"notifying":false}"#.utf8)))))
+        #expect(old.muted == [])
+        #expect(!old.canMute)
+        #expect(old == PushState(notifying: false, notices: NoticeChoice()))
+    }
+
+    /// `POST /mute` as core/src/phone takes it, and the list it answers with.
+    @Test func muteSaysWhichSessionAndWhether() throws {
+        let sent = try JSONSerialization.data(withJSONObject: Mute.body(session: "s", muted: true))
+        #expect(JSON.parse(sent) == JSON.parse(Data(#"{"session":"s","muted":true}"#.utf8)))
+        let off = try JSONSerialization.data(withJSONObject: Mute.body(session: "s", muted: false))
+        #expect(JSON.parse(off) == JSON.parse(Data(#"{"session":"s","muted":false}"#.utf8)))
+        #expect(Mute.list(try #require(JSON.parse(Data(#"{"muted":["a","b"]}"#.utf8)))) == ["a", "b"])
+        #expect(Mute.list(try #require(JSON.parse(Data(#"{"muted":[]}"#.utf8)))) == [])
+        #expect(Mute.list(try #require(JSON.parse(Data(#"{"error":"no"}"#.utf8)))) == nil)
     }
 }

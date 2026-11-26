@@ -1925,6 +1925,12 @@ impl Shell {
             return;
         }
         let project = self.projects.remove(pi);
+        let pids: Vec<String> = project
+            .environments
+            .iter()
+            .flat_map(Self::phone_ids_of)
+            .collect();
+        self.forget_phone_sessions(&pids);
         let sessions = project
             .environments
             .into_iter()
@@ -2728,6 +2734,8 @@ impl Shell {
                             env.sessions = kept;
                             moved.extend::<Vec<_>>(gone);
                         }
+                        // A worktree is local: phones call its sessions by id.
+                        this.forget_phone_sessions(&own_ids);
                         this.forget_sessions(moved, cx);
                         sessions::discard_session_files(own_ids.clone(), session_ids.clone(), cx);
                     }
@@ -2751,6 +2759,14 @@ impl Shell {
             return;
         }
         // Their sessions stop, and their transcripts go from disk.
+        let pids: Vec<String> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .filter(|e| paths.contains(&e.path))
+            .flat_map(Self::phone_ids_of)
+            .collect();
+        self.forget_phone_sessions(&pids);
         let sessions = self
             .projects
             .iter_mut()

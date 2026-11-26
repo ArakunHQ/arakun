@@ -22,6 +22,7 @@ import { statusLabel } from "../lib/format";
 import { Icon } from "../lib/icons";
 import { type Link, LinkContext, useLink } from "../lib/link";
 import type { ClientMessage, Session } from "../lib/model";
+import { setMuted, useCanMute, useMuted } from "../lib/mute";
 import { sendShot, type Shot } from "../lib/shots";
 import { mode, openSession } from "../lib/start";
 import { toast } from "../lib/toast";
@@ -79,6 +80,8 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   const alone = useWidth() === "phone";
   const row = useLink((st) => st.inbox.find((r) => r.id === s.id));
   const connected = useLink((st) => st.connected);
+  const muted = useMuted().includes(s.id);
+  const canMute = useCanMute();
   const [draft, setDraftState] = useState(() => loadDraft(s.id));
   const [shots, setShots] = useState<Shot[]>([]);
   const [view, setView] = useState<View>(null);
@@ -214,6 +217,11 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
           <span className="dot" />
           <span>{statusLabel(status)}</span>
         </span>
+        {canMute ? (
+          <button type="button" className="iconbtn" aria-label={muted ? "Unmute" : "Mute"} aria-pressed={muted} onClick={() => void setMuted(link, s.id, !muted)}>
+            <Icon name={muted ? "bell-off" : "bell"} />
+          </button>
+        ) : null}
         <button type="button" className="iconbtn" aria-label="Model and reasoning" onClick={() => openSheet({ kind: "settings" })}>
           <Icon name="tune" />
         </button>

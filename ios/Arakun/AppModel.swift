@@ -87,6 +87,10 @@ final class AppModel {
     private(set) var permission: PushPermission = .ask
     /// Which notices the computer picked sends this phone; nil until it says.
     private(set) var notices: NoticeChoice?
+    /// The sessions the computer picked sends this phone no notices about.
+    private(set) var muted: [String] = []
+    /// Whether the computer knows muting; one from before has no `/mute`.
+    private(set) var canMute = false
     /// APNs's token for this install. It comes again at every launch.
     private var pushToken: Data?
     /// A session a notification tap asked for, until a computer is picked.
@@ -507,6 +511,8 @@ final class AppModel {
         loadingOlder = false
         starting = false
         notices = nil
+        muted = []
+        canMute = false
     }
 
     func connect() {
@@ -888,6 +894,34 @@ final class AppModel {
         }
     }
 
+    /// Whether the computer sends no notices about the session `id`.
+    func isMuted(_ id: String) -> Bool { muted.contains(id) }
+
+    /// One session's notices off, or on again; the computer keeps the list
+    /// and answers with all of it.
+    func mute(session id: String, muted on: Bool) {
+        #if DEBUG
+        if Self.isDemo {
+            muted.removeAll { $0 == id }
+            if on { muted.append(id) }
+            return
+        }
+        #endif
+        guard let l = link, l.isReady, let body = Self.text(Mute.body(session: id, muted: on)) else {
+            notice = "Could not save that. Try again."
+            return
+        }
+        Task {
+            guard let reply = try? await l.fetch("/mute", method: "POST", body: body), reply.status == 200,
+                  let j = JSON.parse(reply.body), let list = Mute.list(j)
+            else {
+                if link === l { notice = "Could not save that. Try again." }
+                return
+            }
+            if link === l { muted = list }
+        }
+    }
+
     /// Whether a notice about `id` would show what is already on screen.
     func isOnScreen(_ id: String?) -> Bool {
         guard let id else { return false }
@@ -921,6 +955,8 @@ final class AppModel {
                   let me = JSON.parse(reply.body), let state = PushState(me), link === l
             else { return }
             notices = state.notices
+            muted = state.muted
+            canMute = state.canMute
             if notifying {
                 if let body = subscriptionBody() { await post(body, on: l) }
             } else if state.notifying, let body = Self.text(["subscription": NSNull()]) {
@@ -1004,6 +1040,8 @@ extension AppModel {
         machine = machines[0]
         connection = .connected
         notices = NoticeChoice(done: false)
+        muted = ["s3"]
+        canMute = true
         let inboxJSON = """
         {"host":"studio","sessions":[
          {"id":"s1","title":"Fix the relay pairing limit","agent":"Opus 5.5","status":"needs_input","updated":\(now - 40),"added":42,"removed":7,"project":"arakun","env":"env/brave-otter","place":"/w/a","pr":"#631","asks":{"kind":"permission","text":"cargo test -p arakun relay"}},

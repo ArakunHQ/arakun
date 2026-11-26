@@ -47,6 +47,9 @@ export function fakeLink(over: Partial<LinkState> = {}): FakeLink {
     reconnectNow() {},
     retryNow() {},
     watchNotice: vi.fn(),
+    setMe(patch: object) {
+      act(() => set({ ...state, me: { ...state.me, ...patch } as never }));
+    },
     close() {},
     set(o: Partial<LinkState>) {
       act(() => set({ ...state, ...o }));

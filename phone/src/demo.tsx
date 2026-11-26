@@ -82,6 +82,7 @@ function demoLink(over: Partial<LinkState>): Link {
     reconnectNow() {},
     retryNow() {},
     watchNotice() {},
+    setMe() {},
     close() {},
   };
 }

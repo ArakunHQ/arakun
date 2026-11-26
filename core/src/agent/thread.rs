@@ -1870,9 +1870,18 @@ impl Thread {
                         super::secret::McpCommand::for_chat(token, sandboxed)
                     })
                 };
+                // Other tools' tokens and keys stay out of an agent outside
+                // the sandbox too; inside, `Session::wrap` drops them.
+                let scrub = |spec: &mut launch::LaunchSpec| {
+                    let set: Vec<String> = spec.env.iter().map(|(k, _)| k.clone()).collect();
+                    spec.unset
+                        .extend(super::sandbox::scrubbed(kind, &cwd, false, &set));
+                };
                 if native {
-                    return launch::resolve_droid_native(Some(&cwd))
-                        .map(|s| (s, None, None, server(false)));
+                    return launch::resolve_droid_native(Some(&cwd)).map(|mut s| {
+                        scrub(&mut s);
+                        (s, None, None, server(false))
+                    });
                 }
                 let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
@@ -1897,6 +1906,7 @@ impl Thread {
                     spec.unset.extend(unset);
                 }
                 if !sandboxed {
+                    scrub(&mut spec);
                     return Ok((spec, seat, None, server));
                 }
                 // Its tools would run in arakun itself, outside any sandbox.

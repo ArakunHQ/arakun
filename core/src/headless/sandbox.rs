@@ -330,6 +330,62 @@ fn secret_name(name: &str) -> bool {
         || crate::secrets::secret_file(name)
 }
 
+/// Words in the name of a variable that holds a secret. `AUTH` is not one:
+/// `SSH_AUTH_SOCK` and `XAUTHORITY` only point at one (see [`secret_var`]).
+const SECRET_WORDS: &[&str] = &[
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "COOKIE",
+    "API_KEY",
+    "APIKEY",
+    "PRIVATE",
+];
+
+/// Variables that point at the host's agents, buses and display.
+const ADDRESS_PREFIXES: &[&str] = &[
+    "SSH_",
+    "GPG_",
+    "GNUPG",
+    "DBUS_",
+    "WAYLAND_",
+    "HYPRLAND_",
+    "KITTY_",
+    "PULSE_",
+    "PIPEWIRE_",
+];
+const ADDRESS_EXACT: &[&str] = &[
+    "XDG_RUNTIME_DIR",
+    "DISPLAY",
+    "XAUTHORITY",
+    "TMUX",
+    "TMUX_PANE",
+    "ZELLIJ",
+];
+
+/// Its name says it holds a secret value: `GH_TOKEN`, `DB_PASS`, `SIGNING_KEY`.
+fn names_secret_value(n: &str) -> bool {
+    SECRET_WORDS.iter().any(|w| n.contains(w))
+        || n.ends_with("KEY")
+        || n.ends_with("_KEYS")
+        // `DB_PASS`, `SMTP_PWD`: the names a value is a secret under.
+        || crate::secrets::names_secret(n)
+}
+
+/// The address of a host socket, bus or display, and no secret itself:
+/// `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`. The sandbox drops
+/// these with the sockets it hides; an agent outside it keeps them, since it
+/// can reach those sockets anyway.
+pub fn host_address(name: &str) -> bool {
+    let n = name.to_uppercase();
+    (n.contains("SOCK")
+        || ADDRESS_PREFIXES.iter().any(|p| n.starts_with(p))
+        || ADDRESS_EXACT.contains(&n.as_str()))
+        && !names_secret_value(&n)
+}
+
 /// Environment variables the sandbox never gets: tokens, keys, and the
 /// addresses of the host's agents, buses and display.
 pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
@@ -337,18 +393,6 @@ pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
     if n.starts_with("MODAL_") && caps.contains(&Cap::Modal) {
         return false;
     }
-    const WORDS: &[&str] = &[
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "AUTH",
-        "COOKIE",
-        "API_KEY",
-        "APIKEY",
-        "PRIVATE",
-    ];
     const PREFIXES: &[&str] = &[
         "CLOUDFLARE_",
         "CF_",
@@ -375,26 +419,12 @@ pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
         "NPM_CONFIG_",
         "DOCKER_",
         "VAULT_",
-        "SSH_",
-        "GPG_",
-        "GNUPG",
-        "DBUS_",
-        "WAYLAND_",
-        "HYPRLAND_",
-        "KITTY_",
-        "PULSE_",
-        "PIPEWIRE_",
         "KRB5",
         "BW_",
         "OP_",
         "TAILSCALE",
     ];
     const EXACT: &[&str] = &[
-        "XDG_RUNTIME_DIR",
-        "DISPLAY",
-        "TMUX",
-        "TMUX_PANE",
-        "ZELLIJ",
         "NETRC",
         "KUBECONFIG",
         "HIMALAYA_CONFIG",
@@ -402,14 +432,13 @@ pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
         "SUDO_ASKPASS",
         "XDG_SESSION_COOKIE",
     ];
-    WORDS.iter().any(|w| n.contains(w))
+    names_secret_value(&n)
+        || n.contains("AUTH")
         || n.contains("SOCK")
-        || n.ends_with("KEY")
-        || n.ends_with("_KEYS")
         || PREFIXES.iter().any(|p| n.starts_with(p))
+        || ADDRESS_PREFIXES.iter().any(|p| n.starts_with(p))
         || EXACT.contains(&n.as_str())
-        // `DB_PASS`, `SMTP_PWD`: the names a value is a secret under.
-        || crate::secrets::names_secret(&n)
+        || ADDRESS_EXACT.contains(&n.as_str())
 }
 
 /// The environment a sandboxed command starts with.

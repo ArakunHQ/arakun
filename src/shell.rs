@@ -719,7 +719,11 @@ impl Shell {
         crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
             std::iter::once(&p.path)
                 .chain(p.environments.iter().map(|e| &e.path))
-                .map(|path| (path.clone(), p.sandbox))
+                .map(|path| crate::agent::sandbox::ProjectFolder {
+                    path: path.clone(),
+                    sandbox: p.sandbox,
+                    pass: p.pass_env.clone(),
+                })
         }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
@@ -1261,7 +1265,11 @@ impl Shell {
         crate::agent::sandbox::set_projects(self.projects.iter().flat_map(|p| {
             std::iter::once(&p.path)
                 .chain(p.environments.iter().map(|e| &e.path))
-                .map(|path| (path.clone(), p.sandbox))
+                .map(|path| crate::agent::sandbox::ProjectFolder {
+                    path: path.clone(),
+                    sandbox: p.sandbox,
+                    pass: p.pass_env.clone(),
+                })
         }));
         let envs: std::collections::HashSet<&std::path::Path> = self
             .projects
@@ -2905,6 +2913,7 @@ impl Shell {
                 check: p.check.clone(),
                 base: p.base.clone(),
                 sandbox: p.sandbox,
+                pass_env: p.pass_env.join(" "),
                 remote: p.is_remote(),
             }
         });
@@ -2995,6 +3004,12 @@ impl Shell {
                 SettingsEvent::ProjectSandbox { project, on } => {
                     if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
                         p.sandbox = *on;
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectPassEnv { project, names } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.pass_env = names.clone();
                         this.save(cx);
                     }
                 }

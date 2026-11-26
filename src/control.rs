@@ -377,6 +377,11 @@ Usage:
                              where the tokens of Workers AI sessions' tool
                              results go: each tool's calls and tokens, bash by
                              the program it runs (cargo, git…), largest first
+  arakun usage where [--days N] [--json]
+                             where the tokens of Claude Code sessions go, from
+                             their transcripts: unused skills, plugins and MCP
+                             servers, long CLAUDE.md files, noisy tools and
+                             full sessions, what to fix first (estimates)
   arakun seat add <name>       save a Claude seat: a token from `claude setup-token`,
                              read from stdin and checked with one small call;
                              each new Claude Code session then runs on the seat
@@ -684,6 +689,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "shrink" {
         return Cli::Exit(crate::shrink::cli(&args[1..]));
+    }
+    if first == "usage" && args.get(1).is_some_and(|a| a == "where") {
+        return Cli::Exit(crate::usage_where::cli(&args[2..]));
     }
     if first == "usage" {
         return Cli::Exit(crate::agent::ledger::cli(&args[1..]));

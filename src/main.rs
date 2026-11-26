@@ -107,6 +107,7 @@ mod update;
 mod update_dialog;
 mod usage_history;
 mod usage_view;
+mod usage_where;
 mod voice;
 mod window_error;
 #[cfg(test)]

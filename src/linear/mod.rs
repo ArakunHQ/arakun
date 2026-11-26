@@ -6,16 +6,18 @@
 //! to Arakun's server only to link the account once the person lets Linear
 //! start sessions here (`shell::linear_sync`).
 
-pub mod delegation;
 pub(crate) mod fixture;
 pub mod issues;
 pub mod places;
-pub mod prompt;
-pub mod runs;
+
+// The rules a delegated issue goes by live in core, so `arakun server` keeps
+// them too.
+pub use arakun_core::linear::{
+    ApiError, answer, delegation, env, events, follow, outbox, prompt, runs, start,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -236,66 +238,6 @@ fn sessions_in_file() -> Vec<Session> {
 // ---------------------------------------------------------------------------
 // Calls.
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum ApiError {
-    /// The key was revoked or is not valid.
-    SignedOut,
-    /// Nothing more until this unix second.
-    Limited {
-        until: u64,
-    },
-    Failed(String),
-}
-
-impl From<crate::guard::Panicked> for ApiError {
-    fn from(panicked: crate::guard::Panicked) -> Self {
-        ApiError::Failed(panicked.to_string())
-    }
-}
-
-impl ApiError {
-    pub fn message(&self) -> String {
-        match self {
-            ApiError::SignedOut => "Linear refused the sign-in. Sign in again.".into(),
-            ApiError::Failed(m) => m.clone(),
-            ApiError::Limited { until } => {
-                format!(
-                    "Linear asked to wait until {}.",
-                    crate::posthog::clock(*until)
-                )
-            }
-        }
-    }
-}
-
-/// Turns a status and body into the `data` object or the error the tab shows.
-/// Linear reports most failures as a 200 (or 400) with an `errors` list.
-fn answer(status: u16, retry: Option<&str>, text: &str, now: u64) -> Result<Value, ApiError> {
-    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-    let first = &v["errors"][0];
-    let code = first["extensions"]["code"].as_str();
-    if status == 401 || code == Some("AUTHENTICATION_ERROR") {
-        return Err(ApiError::SignedOut);
-    }
-    if status == 429 || code == Some("RATELIMITED") {
-        return Err(ApiError::Limited {
-            until: crate::posthog::retry_after(retry, now),
-        });
-    }
-    if let Some(m) = first["message"].as_str() {
-        return Err(ApiError::Failed(m.to_string()));
-    }
-    if !(200..300).contains(&status) {
-        return Err(ApiError::Failed(format!("Linear answered {status}.")));
-    }
-    match v.get("data") {
-        Some(d) if d.is_object() => Ok(d.clone()),
-        _ => Err(ApiError::Failed("Linear sent no data.".into())),
-    }
-}
-
-const ENDPOINT: &str = "https://api.linear.app/graphql";
-
 /// Runs `query` as `s` and returns its `data` object. The key goes in the
 /// header only.
 pub(crate) fn graphql(s: &Session, query: &str, variables: Value) -> Result<Value, ApiError> {
@@ -306,31 +248,12 @@ pub(crate) fn graphql(s: &Session, query: &str, variables: Value) -> Result<Valu
     call(&key_for(s)?, query, variables)
 }
 
-/// Linear takes a personal API key as it is, without `Bearer`.
+/// Runs `query` with `key`, or answers from the fixture in a test Arakun.
 fn call(key: &str, query: &str, variables: Value) -> Result<Value, ApiError> {
-    let now = crate::model::unix_now();
     if let Some((status, text)) = fixture::reply(query) {
-        return answer(status, None, &text, now);
+        return answer(status, None, &text, crate::model::unix_now());
     }
-    let request = ureq::http::Request::builder()
-        .method("POST")
-        .uri(ENDPOINT)
-        .header("Content-Type", "application/json")
-        .header("Authorization", key);
-    let body = json!({ "query": query, "variables": variables }).to_string();
-    let reply = crate::http::run(
-        crate::http::agent(Duration::from_secs(30)),
-        request,
-        Some(body),
-        16 * 1024 * 1024,
-    )
-    .map_err(|e| ApiError::Failed(format!("Couldn't reach Linear: {e}")))?;
-    answer(
-        reply.status,
-        reply.header("retry-after"),
-        &reply.text(),
-        now,
-    )
+    arakun_core::linear::call(key, query, variables)
 }
 
 /// The session for the user behind `data`, a `viewer` answer.
@@ -394,46 +317,6 @@ mod tests {
         assert_eq!(session_for(&s, "w1").unwrap().name, "First");
         assert_eq!(session_for(&s, "w2").unwrap().name, "Other");
         assert!(session_for(&s, "w3").is_none());
-    }
-
-    #[test]
-    fn a_good_reply_gives_its_data() {
-        let v = answer(200, None, r#"{"data":{"viewer":{"id":"u1"}}}"#, 100).unwrap();
-        assert_eq!(v["viewer"]["id"], "u1");
-    }
-
-    #[test]
-    fn a_401_is_signed_out() {
-        assert_eq!(answer(401, None, "{}", 100), Err(ApiError::SignedOut));
-    }
-
-    #[test]
-    fn an_authentication_error_in_a_200_is_signed_out() {
-        let body = r#"{"errors":[{"message":"x","extensions":{"code":"AUTHENTICATION_ERROR"}}]}"#;
-        assert_eq!(answer(200, None, body, 100), Err(ApiError::SignedOut));
-    }
-
-    #[test]
-    fn a_rate_limit_says_when() {
-        assert_eq!(
-            answer(429, Some("30"), "{}", 100),
-            Err(ApiError::Limited { until: 130 })
-        );
-        let body = r#"{"errors":[{"message":"x","extensions":{"code":"RATELIMITED"}}]}"#;
-        // No Retry-After: wait a minute.
-        assert_eq!(
-            answer(400, None, body, 100),
-            Err(ApiError::Limited { until: 160 })
-        );
-    }
-
-    #[test]
-    fn another_error_carries_linears_message() {
-        let body = r#"{"errors":[{"message":"Entity not found"}]}"#;
-        assert_eq!(
-            answer(200, None, body, 100),
-            Err(ApiError::Failed("Entity not found".into()))
-        );
     }
 
     #[test]

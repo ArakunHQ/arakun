@@ -117,7 +117,7 @@ reviews:
       - "core/src/agent/rpc.rs"
       - "src/state.rs"
       - "src/memory.rs"
-      - "src/stored.rs"
+      - "core/src/stored.rs"
       - "core/src/durable.rs"
       - "src/update.rs"
       # The public keys the updater checks releases and nightlies against.

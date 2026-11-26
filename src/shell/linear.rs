@@ -17,6 +17,7 @@ impl Shell {
         } else {
             self.show_alone(Some(super::home::Alone::Linear), cx);
         }
+        self.push_linear_host(cx);
         self.views.linear.update(cx, |v, cx| {
             v.refresh_if_stale(cx);
             v.focus(window, cx);
@@ -63,6 +64,12 @@ impl Shell {
                     cx,
                 );
             }
+            LinearEvent::DelegationChanged | LinearEvent::WorkspacesChanged => {
+                self.push_linear_host(cx);
+                self.sync_linear(window, cx);
+            }
+            LinearEvent::OpenPhoneTab => self.open_phone_tab(window, cx),
+            LinearEvent::SignInToArakun => self.open_account_sign_in(window, cx),
         }
     }
 }

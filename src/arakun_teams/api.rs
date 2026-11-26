@@ -10,6 +10,8 @@ use super::crypto::{Envelope, Sealed, WireMessage};
 pub use crate::cloud::{DEFAULT_URL, URL_ENV, base_url};
 /// The flag the server sets on accounts that may use Teams.
 pub const TEAMS_FLAG: &str = "teams";
+/// The flag the server sets on accounts that may let Linear start sessions.
+pub const LINEAR_FLAG: &str = "linear";
 
 /// Who is signed in, as `GET /me` answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

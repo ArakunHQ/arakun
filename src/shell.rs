@@ -45,6 +45,7 @@ mod inbox;
 mod island;
 mod limits;
 mod linear;
+mod linear_sync;
 mod menus;
 mod naming;
 mod new_dialog;
@@ -463,6 +464,7 @@ pub struct Shell {
     team_view: Entity<TeamView>,
     #[cfg(feature = "team")]
     _team_view: Subscription,
+    linear_sync: linear_sync::LinearSync,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -721,6 +723,7 @@ impl Shell {
             cx.observe_in(&teams, window, |this, _, window, cx| {
                 this.teams_changed(cx);
                 this.account_changed(window, cx);
+                this.linear_account_changed(window, cx);
             }),
             cx.subscribe_in(
                 &teams_view,
@@ -920,6 +923,7 @@ impl Shell {
             team_view,
             #[cfg(feature = "team")]
             _team_view: team_sub,
+            linear_sync: Default::default(),
             github,
             pilot,
             _github: github_subs,
@@ -1010,6 +1014,7 @@ impl Shell {
             this.refresh_project(pi, cx);
         }
         this.sync_ci_roots(cx);
+        this.push_linear_host(cx);
         this.sync_poll(window, cx);
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
@@ -1659,7 +1664,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let index = match self.projects.iter().position(|p| p.path == path) {
+        let known = self.projects.iter().position(|p| p.path == path);
+        let index = match known {
             Some(i) => i,
             None => {
                 let mut project = state::new_project(&path);
@@ -1682,6 +1688,11 @@ impl Shell {
         self.note_active_tab(cx);
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
+        self.push_linear_host(cx);
+        // A mapping broken when the project went can be sent again.
+        if known.is_none() {
+            self.sync_linear(window, cx);
+        }
         self.save(cx);
         self.focus_composer(window, cx);
         self.ensure_terminal(window, cx);
@@ -1722,6 +1733,9 @@ impl Shell {
         // Its Computers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
+        self.push_linear_host(cx);
+        // Its Linear targets must stop coming here.
+        self.sync_linear(window, cx);
         self.save(cx);
         self.sync_poll(window, cx);
         cx.notify();
@@ -2568,6 +2582,9 @@ impl Shell {
         let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
         if self.projects.len() != before {
             self.sync_ci_roots(cx);
+            self.push_linear_host(cx);
+            // The targets of a project that went must stop coming here.
+            self.sync_linear(window, cx);
             self.sync_poll(window, cx);
         }
         self.rail.pick.retain(|p| !paths.contains(p));

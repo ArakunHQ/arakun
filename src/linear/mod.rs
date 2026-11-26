@@ -2,11 +2,14 @@
 //!
 //! Sign-ins (`Session`) are personal API keys. Who signed in is kept in
 //! `app_dir/linear/sessions.json`; the key is kept in the keyring
-//! (`secret_store`) and never printed. The key goes to `api.linear.app` and
-//! nowhere else.
+//! (`secret_store`) and never printed. The key goes to `api.linear.app`, and
+//! to Arakun's server only to link the account once the person lets Linear
+//! start sessions here (`shell::linear_sync`).
 
-mod fixture;
+pub mod delegation;
+pub(crate) mod fixture;
 pub mod issues;
+pub mod places;
 pub mod prompt;
 
 use std::path::{Path, PathBuf};
@@ -56,8 +59,9 @@ const SECRET_LABEL: &str = "arakun: Linear API key";
 
 /// The key `s` signs its calls with, from the keyring. A key still in the
 /// file is moved to the keyring first. Not on the UI thread: the keyring may
-/// wait for the person to unlock it.
-fn key_for(s: &Session) -> Result<String, ApiError> {
+/// wait for the person to unlock it. The sync reads it too, to link a
+/// workspace (`shell::linear_sync`).
+pub(crate) fn key_for(s: &Session) -> Result<String, ApiError> {
     if let Some(key) = s.credential.in_file() {
         move_to_keyring(&s.id, key);
         return Ok(key.to_string());

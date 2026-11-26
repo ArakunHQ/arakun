@@ -23,7 +23,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicSecureTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.KeyboardActionHandler
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.TextObfuscationMode
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -45,9 +50,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
@@ -58,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import com.arakun.android.R
 import com.arakun.kit.PermissionAsk
 import com.arakun.kit.QuestionAsk
+import com.arakun.kit.SecretAsk
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -289,6 +300,103 @@ fun QuestionCard(ask: QuestionAsk, enabled: Boolean, answer: (List<String>) -> U
             },
             containerColor = c.raised,
         )
+    }
+}
+
+/** Said instead of the fields when the connection could carry the secret in the clear. */
+const val SECRET_NOT_PRIVATE =
+    "This connection is not encrypted, so the secret can't be sent over it. Decline, or answer from a device " +
+        "that reaches the computer through your account or Tailscale."
+
+/**
+ * The agent asks for a secret: masked fields it never sees, with Save and
+ * Decline. What is typed goes to the computer, which keeps it and hands the
+ * agent a handle. Over a connection that is not private the card offers only
+ * Decline, so a secret never crosses the network in the clear.
+ */
+@Composable
+fun SecretCard(ask: SecretAsk, enabled: Boolean, save: (List<String>) -> Boolean, decline: () -> Unit) {
+    val c = Palette.current
+    // Not saveable: what is typed stays out of the saved state Android writes
+    // out. The caller keys this card by the ask, so a new ask starts empty.
+    val typed = remember { List(ask.fields.size) { TextFieldState() } }
+    val shown = remember { mutableStateListOf<Boolean>().apply { repeat(ask.fields.size) { add(false) } } }
+    val ready = ask.private && typed.all { it.text.isNotEmpty() }
+    fun send() {
+        if (!enabled || !ready) return
+        if (save(typed.map { it.text.toString() })) typed.forEach { it.clearText() }
+    }
+    AskFrame(R.drawable.ic_square_lock02, "Secret", trailing = "Stays out of the transcript") {
+        Text(ask.label, style = geist(16f, FontWeight.Medium))
+        if (ask.reason.isNotEmpty()) Text(ask.reason, style = Type.small, color = c.textMuted)
+        ask.url?.let { url ->
+            val uris = LocalUriHandler.current
+            Text(
+                url,
+                style = Type.small,
+                color = c.amberInk,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.tap(role = Role.Button) { runCatching { uris.openUri(url) } },
+            )
+        }
+        if (ask.private) {
+            val shape = RoundedCornerShape(Radius.control)
+            ask.fields.forEachIndexed { i, f ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(f.label, style = Type.small, color = c.textMuted)
+                    BasicSecureTextField(
+                        state = typed[i],
+                        enabled = enabled,
+                        textObfuscationMode = if (shown[i]) TextObfuscationMode.Visible else TextObfuscationMode.RevealLastTyped,
+                        textStyle = Type.callout.copy(color = c.text),
+                        cursorBrush = SolidColor(c.amberInk),
+                        keyboardOptions = KeyboardOptions(imeAction = if (i == ask.fields.lastIndex) ImeAction.Send else ImeAction.Next),
+                        onKeyboardAction = if (i == ask.fields.lastIndex) KeyboardActionHandler { send() } else null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 40.dp)
+                            .background(c.raised, shape)
+                            .border(1.dp, c.lineStrong, shape)
+                            .semantics { contentDescription = f.label },
+                        decorator = { inner ->
+                            Row(
+                                Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(Modifier.weight(1f)) { inner() }
+                                TextButton(onClick = { shown[i] = !shown[i] }) {
+                                    Text(
+                                        if (shown[i]) "Hide" else "Show",
+                                        color = c.textMuted,
+                                        style = geist(13f, FontWeight.Medium),
+                                        modifier = Modifier.semantics {
+                                            contentDescription = "${if (shown[i]) "Hide" else "Show"} ${f.label}"
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        } else {
+            Row(
+                Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                BrandIcon(R.drawable.ic_alert_circle, 15.dp, c.failure)
+                Text(SECRET_NOT_PRIVATE, style = Type.small, color = c.textMuted)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlineButton("Decline", decline, enabled = enabled)
+            Spacer(Modifier.weight(1f))
+            if (ask.private) {
+                PrimaryButton(onClick = ::send, enabled = enabled && ready, compact = true) { Text("Save") }
+            }
+        }
     }
 }
 

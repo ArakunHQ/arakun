@@ -26,7 +26,8 @@ ai-idea alert-circle arrow-down01 arrow-left01 arrow-right01 arrow-up01
 cancel01 check-list checkmark-circle02 circle-dashed circle
 computer computer-terminal01 delete02 file-diff file01 folder01
 git-branch globe hand help-circle link01 loading03 mark-cross more-horizontal
-notification01 notification-off01 pencil-edit01 pencil-edit02 refresh01 search01 square user wrench01
+notification01 notification-off01 pencil-edit01 pencil-edit02 refresh01 search01 square square-lock02
+user wrench01
 """.split()
 
 SVG = "{http://www.w3.org/2000/svg}"

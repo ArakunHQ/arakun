@@ -96,6 +96,33 @@ class ModelTest {
     }
 
     @Test
+    fun readsTheSecretCard() {
+        val s = LiveSession("s1", "", "").applyState(
+            json(
+                """
+                {"status":"waiting","secret":{"id":7,"label":"OpenAI key","reason":"To call the API","deliver":"handle",
+                 "url":"https://platform.openai.com/api-keys","fields":[{"name":"key","label":"API key"}],
+                 "timeout_secs":600,"private":true}}
+                """,
+            ),
+        )
+        val r = s.secret
+        assertNotNull(r)
+        assertEquals(7L, r!!.id)
+        assertEquals("OpenAI key", r.label)
+        assertEquals(listOf(SecretAsk.Field("key", "API key")), r.fields)
+        assertEquals("https://platform.openai.com/api-keys", r.url)
+        assertEquals(true, r.private)
+        // Plain http: the card is there, but not private.
+        val clear = SecretAsk.of(json("""{"id":1,"label":"x","fields":[],"url":"javascript:alert(1)"}"""))
+        assertEquals(false, clear?.private)
+        assertNull(clear?.url)
+        // No id, nothing to answer.
+        assertNull(SecretAsk.of(json("""{"label":"x"}""")))
+        assertNull(s.applyState(json("""{"status":"idle","secret":null}""")).secret)
+    }
+
+    @Test
     fun readsTheChangesTurnByTurn() {
         val turns = ChangedTurn.list(
             json(

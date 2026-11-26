@@ -189,6 +189,10 @@ fun SessionScreen(model: AppModel, id: String) {
                     androidx.compose.runtime.key(q.toolCallId) {
                         QuestionCard(q, enabled = linked, answer = model::answer, skip = model::skipQuestion)
                     }
+                } ?: s?.secret?.let { r ->
+                    androidx.compose.runtime.key(r.id) {
+                        SecretCard(r, enabled = linked, save = model::saveSecret, decline = model::declineSecret)
+                    }
                 }
                 Composer(
                     draft = draft,

@@ -792,6 +792,9 @@ pub struct Thread {
     /// What each tool's results used in the turn, when the agent says
     /// (arakun's Workers AI loop), for the usage log.
     turn_tools: BTreeMap<String, ledger::ToolUse>,
+    /// Where the latest turn's entries start, a person's or the agent's own:
+    /// what it left running in the background is read from there.
+    turn_from: usize,
     /// The last cost Claude Code reported in this process; it counts from the
     /// agent's start, or from the saved total when it resumes a session.
     cost_seen: Option<f64>,
@@ -1303,6 +1306,7 @@ impl Thread {
             turn_tokens: 0,
             turn_usage: Usage::default(),
             turn_tools: BTreeMap::new(),
+            turn_from: 0,
             cost_seen: None,
             cost_base: 0.,
             fork_point: None,
@@ -2547,6 +2551,7 @@ impl Thread {
         self.turn_tokens = self.usage.total_tokens();
         self.turn_usage = self.usage.clone();
         self.turn_tools.clear();
+        self.turn_from = self.entries.len();
         self.last_prompt = Some(text.clone());
         self.last_message_id = None;
         self.cancelling = false;
@@ -2707,6 +2712,7 @@ impl Thread {
         self.turn_started = Some(Instant::now());
         self.turn_usage = self.usage.clone();
         self.turn_tools.clear();
+        self.turn_from = self.entries.len();
         self.set_status(ThreadStatus::Working, cx);
     }
 

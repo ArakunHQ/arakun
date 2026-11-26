@@ -108,7 +108,7 @@ pub fn no_env_line(text: &str) -> String {
     )
 }
 
-fn failed_line(text: &str) -> String {
+pub(super) fn failed_line(text: &str) -> String {
     format!("The session failed: {}", said(text))
 }
 
@@ -352,6 +352,7 @@ impl Shell {
             session: None,
             state: RunState::Waiting,
             reported_at: 0,
+            asked: None,
         });
         self.linear_save();
         match added {
@@ -520,6 +521,7 @@ impl Shell {
             run.state = RunState::Running;
         }
         self.linear_save();
+        self.linear_watch(cx);
         let line = started_line(&name, &computer(), &branch);
         self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
         if let Some(id) = &start.delivery {

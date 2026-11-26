@@ -46,6 +46,7 @@ mod island;
 mod limits;
 mod linear;
 mod linear_env;
+mod linear_events;
 mod linear_follow;
 mod linear_outbox;
 mod linear_run;
@@ -476,6 +477,8 @@ pub struct Shell {
     linear_outbox: linear_outbox::Outbox,
     /// Deliveries whose issue is being read: a second frame waits for the first.
     linear_in_flight: std::collections::HashSet<String>,
+    /// The timer that tells Linear a quiet session still works is on.
+    linear_watching: bool,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -941,6 +944,7 @@ impl Shell {
             linear_runs: crate::linear::runs::Runs::load(),
             linear_outbox: Default::default(),
             linear_in_flight: Default::default(),
+            linear_watching: false,
             github,
             pilot,
             _github: github_subs,
@@ -1033,6 +1037,8 @@ impl Shell {
         this.sync_ci_roots(cx);
         this.push_linear_host(cx);
         this.sync_poll(window, cx);
+        // Before any session is made live: none of them runs yet.
+        this.linear_recover(window, cx);
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);

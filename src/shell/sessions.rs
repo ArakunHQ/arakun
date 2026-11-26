@@ -536,6 +536,7 @@ impl Shell {
             if self.check_for_turn(env_path, thread, stop_reason, cx).is_some());
         if !checking {
             self.notify_desktop(env_path, id, thread, ev, window, cx);
+            self.linear_thread_event(id, thread, ev, window, cx);
         }
         match ev {
             ThreadEvent::Forked(meta) => {

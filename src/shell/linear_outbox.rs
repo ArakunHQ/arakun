@@ -156,6 +156,8 @@ impl Shell {
         if std::mem::take(&mut self.linear_outbox.owed) {
             self.linear_flush(cx);
         }
+        // What could not go is tried again by the timer.
+        self.linear_watch(cx);
     }
 }
 

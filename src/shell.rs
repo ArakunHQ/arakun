@@ -468,6 +468,8 @@ pub struct Shell {
     _github: [Subscription; 4],
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
+    /// The phone's keys on their way from the keyring.
+    phone_keys: phone::PhoneKeys,
     /// The account's signed-in devices, for the Phone tab's relay section.
     signed_in: phone::SignedIn,
     beta_card: beta_card::BetaCard,
@@ -924,6 +926,7 @@ impl Shell {
             pilot,
             _github: github_subs,
             phone: None,
+            phone_keys: Default::default(),
             signed_in: Default::default(),
             beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,

@@ -466,7 +466,15 @@ pub fn run(opts: Options) -> i32 {
             return 1;
         }
     };
-    let vapid = Arc::new(settings.vapid());
+    // An error is a keyring that could not say: a new key would orphan every
+    // device's push subscription, so the server does not start.
+    let vapid = match settings.vapid() {
+        Ok(vapid) => Arc::new(vapid),
+        Err(e) => {
+            eprintln!("arakun server: {e}");
+            return 1;
+        }
+    };
     let access = Access::new(settings.devices.clone(), vapid.public_key());
     let (transport, incoming, address) = match settings.reach {
         Reach::Lan | Reach::Tailscale => {
@@ -488,7 +496,14 @@ pub fn run(opts: Options) -> i32 {
             }
         }
         Reach::Relay => {
-            let (client, rx) = start_relay(&mut settings, access.clone(), signed_in.as_ref());
+            let (client, rx) = match start_relay(&mut settings, access.clone(), signed_in.as_ref())
+            {
+                Ok(started) => started,
+                Err(e) => {
+                    eprintln!("arakun server: {e}");
+                    return 1;
+                }
+            };
             let address = match start {
                 // Nothing is dialed without a sign-in.
                 Start::Waiting => relay_address(relay::Status::SignedOut, ""),
@@ -641,12 +656,13 @@ fn relay_account(signed_in: Option<&SignIn>) -> relay::Account {
 }
 
 /// Starts the relay client as the account `signed_in` names, when its session
-/// may go to this relay; else signed out, saying why.
+/// may go to this relay; else signed out, saying why. An error is a relay key
+/// the keyring could not give: a new one would unpair every device.
 fn start_relay(
     settings: &mut phone::Settings,
     access: phone::Shared,
     signed_in: Option<&SignIn>,
-) -> (RelayClient, mpsc::UnboundedReceiver<Incoming>) {
+) -> Result<(RelayClient, mpsc::UnboundedReceiver<Incoming>), String> {
     let usable = sign_in_for(&settings.relay_base, signed_in).unwrap_or_else(|why| {
         eprintln!("arakun server: {why}");
         None
@@ -655,14 +671,14 @@ fn start_relay(
         name: phone::host_name(),
         kind: relay::MachineKind::Server,
     };
-    let identity = settings.identity();
-    RelayClient::start(
+    let identity = settings.identity()?;
+    Ok(RelayClient::start(
         &settings.relay_base,
         identity,
         access,
         machine,
         relay_account(usable),
-    )
+    ))
 }
 
 /// For a server upgraded from before accounts, whose devices came in by link.
@@ -1410,7 +1426,16 @@ impl Daemon {
         };
         let gone: Vec<ClientId> = old.channels().into_keys().map(ClientId::from).collect();
         let signed_in = self.signed_in.clone();
-        let (client, rx) = start_relay(&mut self.settings, self.access.clone(), signed_in.as_ref());
+        // The key was read when the server started and is kept in memory, so
+        // this does not wait on the keyring. If it fails, the old client stays.
+        let (client, rx) =
+            match start_relay(&mut self.settings, self.access.clone(), signed_in.as_ref()) {
+                Ok(started) => started,
+                Err(e) => {
+                    eprintln!("arakun server: {e}");
+                    return;
+                }
+            };
         self.transport = Transport::Relay(client);
         self.listen = Self::listen_to(rx, cx);
         self.relay_signed_out = false;

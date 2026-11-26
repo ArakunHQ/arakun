@@ -28,6 +28,11 @@ fn sendable(agent_session: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
+/// Linear or the server will never take this report.
+fn refused_for_good(status: u16) -> bool {
+    (400..500).contains(&status) && status != 429
+}
+
 /// What one pass over the outbox did.
 #[derive(Debug, Default)]
 pub struct Flushed {
@@ -38,7 +43,9 @@ pub struct Flushed {
 }
 
 /// Sends `reports` in order. It blocks, so it runs off the UI thread. A
-/// limit, no network or a server error stops it and keeps the rest for later.
+/// limit, no network or a server error (5xx) stops it and keeps the rest for
+/// later: a hiccup must not lose the report. Only a refusal (a 4xx other than
+/// 429) drops that one report.
 pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
     let mut out = Flushed::default();
     for r in reports {
@@ -57,7 +64,9 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
         let kind = activity(r.kind);
         match cloud::linear_activity(base, session, &r.agent_session, kind, &r.body, &links) {
             Ok(()) => out.sent.push(r),
-            Err(cloud::Error::Status { status, .. }) if status != 429 => out.dropped.push(r),
+            Err(cloud::Error::Status { status, .. }) if refused_for_good(status) => {
+                out.dropped.push(r)
+            }
             Err(cloud::Error::SignedOut) => {
                 out.signed_out = true;
                 break;
@@ -201,6 +210,21 @@ mod tests {
         assert_eq!(bodies(&out.sent), ["one"]);
         assert!(out.dropped.is_empty() && !out.signed_out);
         assert_eq!(rx.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn a_server_error_stops_the_outbox_and_keeps_the_rest() {
+        for status in [500, 502, 503] {
+            let (base, rx) = serve(vec![(204, ""), (status, r#"{"error": "upstream"}"#)]);
+            let out = flush(
+                &base,
+                "s",
+                vec![report("one"), report("two"), report("three")],
+            );
+            assert_eq!(bodies(&out.sent), ["one"], "{status}");
+            assert!(out.dropped.is_empty() && !out.signed_out, "{status}");
+            assert_eq!(rx.try_iter().count(), 2, "{status}");
+        }
     }
 
     #[test]

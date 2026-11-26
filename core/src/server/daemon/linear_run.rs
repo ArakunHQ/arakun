@@ -21,8 +21,8 @@ use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
-    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, pr_link, removed_line,
-    to_report, turn_reply,
+    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, pr_link, progress_line,
+    removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
@@ -287,6 +287,7 @@ impl Daemon {
             asked: None,
             stopped: false,
             held: None,
+            progress: None,
         });
         self.linear_save_runs();
         match added {
@@ -714,6 +715,7 @@ impl Daemon {
         cx: &mut Context<Self>,
     ) {
         let event = match ev {
+            ThreadEvent::EntriesChanged { .. } => return self.linear_progress(id, thread, cx),
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => Event::Status,
             ThreadEvent::Finished { stop_reason } => Event::Finished(stop_reason),
             _ => return,
@@ -784,6 +786,23 @@ impl Daemon {
         if effect.frees {
             self.linear_start_waiting(cx);
         }
+    }
+
+    /// The step a working delegated session is on, for its issue to show
+    /// while it runs. Most entry changes are text streaming in: they cost one
+    /// lookup, and Linear hears a step at most every `PROGRESS_SECS`.
+    fn linear_progress(&mut self, id: &str, thread: &Entity<Thread>, cx: &mut Context<Self>) {
+        if self.linear_run.runs.by_session(id).is_none() {
+            return;
+        }
+        let t = thread.read(cx);
+        let Some(line) = progress_line(t.entries(), t.cwd()) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_run.runs.progress(id, &line, unix_now()) else {
+            return;
+        };
+        self.linear_report(&agent_session, ReportKind::Progress, line, None, cx);
     }
 
     /// At start: no turn survives a restart, so a run that was at work was

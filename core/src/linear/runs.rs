@@ -18,6 +18,12 @@ pub const HANDLED_KEPT: usize = 500;
 pub const REPORT_KEPT_SECS: u64 = 24 * 3600;
 /// A running session silent this long tells Linear it is still working.
 pub const QUIET_SECS: u64 = 25 * 60;
+/// The least time between two progress reports of one run. Linear's limit
+/// is shared by all of a person's runs and replies.
+pub const PROGRESS_SECS: u64 = 30;
+/// A progress report not sent by then says what the session did long ago:
+/// it is dropped instead.
+pub const PROGRESS_KEPT_SECS: u64 = 5 * 60;
 
 /// How long a run waits on work its session left in the background before
 /// its reply goes to Linear anyway. A server started in the background never
@@ -84,6 +90,10 @@ pub struct Run {
     /// reply, sent once that work is done or `HOLD_SECS` passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<Held>,
+    /// The last progress line queued, and when. Not saved: no turn survives
+    /// a restart.
+    #[serde(skip)]
+    pub progress: Option<(u64, String)>,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -123,6 +133,7 @@ impl std::fmt::Debug for Run {
             .field("asked", &self.asked.is_some())
             .field("stopped", &self.stopped)
             .field("held", &self.held)
+            .field("progress", &self.progress.as_ref().map(|(at, _)| at))
             .finish()
     }
 }
@@ -134,6 +145,9 @@ pub enum ReportKind {
     Elicitation,
     Response,
     Error,
+    /// What a working session does right now. Linear replaces it with the
+    /// next activity, and a newer report makes an unsent one moot.
+    Progress,
 }
 
 /// A report to Linear not sent yet. Debug leaves out the body: it can hold
@@ -430,8 +444,28 @@ impl Runs {
         !self.outbox.is_empty()
     }
 
-    /// Adds a report, dropping the oldest beyond `OUTBOX_KEPT`.
+    /// The agent session to report `line` to as the progress of the run of
+    /// `arakun_session`, when Linear should hear it: the run works, the line
+    /// is new, and the last one is `PROGRESS_SECS` old.
+    pub fn progress(&mut self, arakun_session: &str, line: &str, now: u64) -> Option<String> {
+        let run = self.by_session(arakun_session)?;
+        if run.state != RunState::Running || run.stopped {
+            return None;
+        }
+        if let Some((at, last)) = &run.progress
+            && (last == line || now.saturating_sub(*at) < PROGRESS_SECS)
+        {
+            return None;
+        }
+        run.progress = Some((now, line.to_string()));
+        Some(run.agent_session.clone())
+    }
+
+    /// Adds a report, dropping the oldest beyond `OUTBOX_KEPT`. Any report
+    /// makes the unsent progress of its agent session moot.
     pub fn queue(&mut self, r: Report) {
+        self.outbox
+            .retain(|o| o.kind != ReportKind::Progress || o.agent_session != r.agent_session);
         self.outbox.push(r);
         let extra = self.outbox.len().saturating_sub(OUTBOX_KEPT);
         self.outbox.drain(..extra);
@@ -439,8 +473,13 @@ impl Runs {
 
     /// The reports to send, oldest first. They stay until `sent` or `dropped`.
     pub fn due(&mut self, now: u64) -> Vec<Report> {
-        self.outbox
-            .retain(|r| now.saturating_sub(r.made_at) <= REPORT_KEPT_SECS);
+        self.outbox.retain(|r| {
+            let kept = match r.kind {
+                ReportKind::Progress => PROGRESS_KEPT_SECS,
+                _ => REPORT_KEPT_SECS,
+            };
+            now.saturating_sub(r.made_at) <= kept
+        });
         self.outbox.clone()
     }
 
@@ -488,6 +527,7 @@ mod tests {
             asked: None,
             stopped: false,
             held: None,
+            progress: None,
         }
     }
 
@@ -503,6 +543,57 @@ mod tests {
 
     fn state(r: &mut Runs, id: &str) -> RunState {
         r.by_agent_session(id).unwrap().state
+    }
+
+    #[test]
+    fn progress_goes_only_while_running_and_not_too_often() {
+        let mut r = Runs::default();
+        r.add(Run {
+            session: Some("s1".into()),
+            state: RunState::Running,
+            ..run("a")
+        });
+        assert_eq!(r.progress("s1", "Editing", 100).as_deref(), Some("a"));
+        assert_eq!(r.progress("s1", "Reading", 100 + PROGRESS_SECS - 1), None);
+        assert_eq!(
+            r.progress("s1", "Editing", 100 + PROGRESS_SECS),
+            None,
+            "the same line"
+        );
+        assert_eq!(
+            r.progress("s1", "Reading", 100 + PROGRESS_SECS).as_deref(),
+            Some("a")
+        );
+        assert_eq!(r.progress("other", "Reading", 1_000), None);
+        r.by_session("s1").unwrap().state = RunState::Asked;
+        assert_eq!(r.progress("s1", "Running", 1_000), None);
+        let run = r.by_session("s1").unwrap();
+        run.state = RunState::Running;
+        run.stopped = true;
+        assert_eq!(r.progress("s1", "Running", 1_000), None);
+    }
+
+    #[test]
+    fn a_newer_report_replaces_unsent_progress_of_its_session_only() {
+        let mut r = Runs::default();
+        let progress = |a: &str, body: &str, at| Report {
+            kind: ReportKind::Progress,
+            ..report(a, body, at)
+        };
+        r.queue(progress("a", "Editing", 1));
+        r.queue(progress("b", "Reading", 1));
+        r.queue(progress("a", "Running", 2));
+        r.queue(report("b", "Done.", 3));
+        let due: Vec<String> = r.due(4).into_iter().map(|x| x.body).collect();
+        assert_eq!(due, ["Running", "Done."]);
+        // Stale progress goes; an older report of another kind stays.
+        r.queue(progress("c", "Searching", 4));
+        let left: Vec<String> = r
+            .due(4 + PROGRESS_KEPT_SECS + 1)
+            .into_iter()
+            .map(|x| x.body)
+            .collect();
+        assert_eq!(left, ["Done."]);
     }
 
     #[test]

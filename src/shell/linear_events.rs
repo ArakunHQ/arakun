@@ -44,6 +44,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let event = match ev {
+            ThreadEvent::EntriesChanged { .. } => return self.linear_progress(id, thread, cx),
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => Event::Status,
             ThreadEvent::Finished { stop_reason } => Event::Finished(stop_reason),
             _ => return,
@@ -126,6 +127,23 @@ impl Shell {
         if effect.frees {
             self.linear_start_waiting(window, cx);
         }
+    }
+
+    /// The step a working delegated session is on, for its issue to show
+    /// while it runs. Most entry changes are text streaming in: they cost one
+    /// lookup, and Linear hears a step at most every `PROGRESS_SECS`.
+    fn linear_progress(&mut self, id: &str, thread: &Entity<Thread>, cx: &mut Context<Self>) {
+        if self.linear_runs.by_session(id).is_none() {
+            return;
+        }
+        let t = thread.read(cx);
+        let Some(line) = progress_line(t.entries(), t.cwd()) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_runs.progress(id, &line, unix_now()) else {
+            return;
+        };
+        self.linear_report(&agent_session, ReportKind::Progress, line, None, cx);
     }
 
     /// The pull request of a run's work, when one is known now. Nothing is

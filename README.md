@@ -720,8 +720,12 @@ after a week).
   your phone.` (only the kind of action, never the command or file; a permission
   is never answered from Linear); the result, with the pull request's link when
   one is known; `The session failed: {reason}` on a failure; and `Still working.`
-  after 25 quiet minutes. If you close Arakun while a session runs, the issue
-  hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
+  after 25 quiet minutes. While the session works, the issue also shows the step it
+  is on, such as Editing `src/main.rs`, Reading `README.md`, `Running a command` or
+  `Searching the code`: only the kind of step and, for a file, its path in the
+  project, never a command, a search or a web address. A step shows until the next
+  activity replaces it, and at most one goes every 30 seconds. If you close Arakun
+  while a session runs, the issue hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
   *Talking to the session.* A reply in Linear from the person who delegated goes to
   the session as a new message, and the issue hears at once that it was passed on
@@ -761,7 +765,8 @@ after a week).
   session runs, what the issue hears goes through Arakun's server to the issue:
   the session's last reply (up to 7,500 characters, code included, with secrets
   scrubbed), its questions and their choices, the kind of a permission it waits
-  for (never its arguments), the project name, the branch, this computer's name
+  for (never its arguments), the kind of step it is on and the path of the file
+  it works on, the project name, the branch, this computer's name
   and the reason of a failure. The server stores none of it. Turning it off removes
   this computer's routes on the server and leaves the link, so your other computers
   keep working. Until you turn it on nothing about Linear is sent, except that an

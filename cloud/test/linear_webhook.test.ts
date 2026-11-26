@@ -755,6 +755,14 @@ describe("what the computer sends back", () => {
     expect(await dump(env.DB)).not.toMatch(/Done\.|Working on it/);
   });
 
+  it("passes an ephemeral thought on as one", async () => {
+    const { owner } = await delegatedIssue();
+    expect((await activity(owner.session, { type: "thought", body: "Running a command", ephemeral: true })).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: "Running a command", ephemeral: true });
+    expect((await activity(owner.session, { type: "thought", body: "Still working.", ephemeral: false })).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: "Still working." });
+  });
+
   it("refuses an activity for a session of another account, a bad type, an empty or oversized body, or a link that is not https", async () => {
     const { owner } = await delegatedIssue();
     const other = await stranger();
@@ -770,6 +778,8 @@ describe("what the computer sends back", () => {
       { type: "response", body: "x".repeat(8001) },
       { type: "response", body: "Done.", links: [{ label: "Pull request", url: "http://github.com/a/b/pull/1" }] },
       { type: "response", body: 7 },
+      { type: "response", body: "Done.", ephemeral: true },
+      { type: "thought", body: "Working.", ephemeral: "yes" },
       { type: "response", body: "Done.", links: [{ ...link, url: "https://github.com/a b" }] },
       { type: "response", body: "Done.", links: [{ ...link, url: `https://x.dev/${"a".repeat(2048)}` }] },
       { type: "response", body: "Done.", links: [{ ...link, label: "" }] },

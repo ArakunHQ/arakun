@@ -57,6 +57,39 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     builder.create(dir)
 }
 
+/// Opens `path` to append to, for a log other users of the machine must not
+/// read (an agent prints whatever it reads, keys included). `start_over`
+/// empties it first. On Unix it ends up 0600, even when it was there before,
+/// and a folder it creates is 0700; on Windows only this user may open it.
+pub fn open_private_log(path: &Path, start_over: bool) -> io::Result<File> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        create_private_dir(dir)?;
+    }
+    let mut options = File::options();
+    options.create(true);
+    if start_over {
+        options.write(true).truncate(true);
+    } else {
+        options.append(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    // The mode above only applies to a new file; a log from before is
+    // closed off here.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(windows)]
+    crate::private_socket::owner_only(path)?;
+    Ok(file)
+}
+
 /// What `path` holds, or will once the `write_soon` queued for it lands: a
 /// load right after a save must not see the file from before it.
 pub fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -532,6 +565,26 @@ mod tests {
         assert_eq!(futures::executor::block_on(first_heard), Ok(false));
         assert_eq!(futures::executor::block_on(last_heard), Ok(false));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_log_is_only_for_this_user_even_from_before() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("private-log");
+        let path = dir.join("agents").join("claude.log");
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        super::open_private_log(&path, false).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.join("agents")), 0o700);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(&path, b"old\n").unwrap();
+        super::open_private_log(&path, false).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), b"old\n");
+        super::open_private_log(&path, true).unwrap();
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1077,20 +1077,13 @@ pub fn refresh_login_path_async() {
     }
 }
 
-/// `arakun.log` in arakun's data folder, started over past 5 MB.
+/// `arakun.log` in arakun's data folder, started over past 5 MB. Only this
+/// user may read it: it gets all of stderr, the ACP trace included.
 #[cfg(windows)]
 fn open_log() -> Option<std::fs::File> {
-    let dir = app_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("arakun.log");
+    let path = app_dir().join("arakun.log");
     let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 << 20);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(!too_big)
-        .write(true)
-        .truncate(too_big)
-        .open(path)
-        .ok()
+    crate::durable::open_private_log(&path, too_big).ok()
 }
 
 /// Ends a terminal's shell the way closing its window would: SIGHUP on Unix; on Windows,

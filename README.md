@@ -1461,6 +1461,15 @@ what each turn used goes to `usage.jsonl` in Arakun's data folder (or the file
 the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.<ext>`
 next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
 older copy: each move replaces the previous one.
+Only your user can read these logs (0600 on Linux and macOS; on Windows only your
+account is allowed, and the same goes for `arakun.log`): an agent prints whatever it
+reads, and that can include keys and tokens.
+
+`ARAKUN_ACP_TRACE=1` prints every message between Arakun and its agents to stderr (on
+Windows, `arakun.log` when Arakun was not started from a terminal): your prompts, the
+agent's replies and what its tools read and run. Arakun takes out the keys and tokens it
+recognizes, as it does in crash reports, but the trace can still hold sensitive data, so
+treat it like the files the agent worked on before you share it.
 
 Turns of Workers AI sessions also log what each tool's results added to the context.
 `arakun usage tools [--days N] [--json]` adds them up, largest first, with bash split by

@@ -107,7 +107,8 @@ in a localized form); Rust shows them as a `linker_messages` warning and they ar
 shortcut), Windows creates a console for it; Arakun detaches from it on startup and sends
 its output to `%LOCALAPPDATA%\arakun\arakun.log`, so you see the console for an instant
 and then only the window. If you start it from a terminal, the output stays in that
-terminal.
+terminal. Only your account may open `arakun.log` and the agent logs, since they can
+hold what an agent read, `ARAKUN_ACP_TRACE` included.
 
 The browser's child processes (GPU, renderers, utilities) are started through
 `arakun-helper.exe`, which is built next to `arakun.exe` when the `browser` feature is on

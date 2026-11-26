@@ -5,15 +5,10 @@ use super::*;
 use crate::ui::Typography as _;
 
 impl Shell {
-    pub(super) fn render_home(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let project = self.project().name.clone();
         let face = self.home_face.read(cx);
-        let caret = self
-            .composer
-            .layout
-            .borrow()
-            .as_ref()
-            .and_then(|l| l.position_for_index(self.env().draft.head()));
+        let caret = self.composer.read(cx).caret_position();
         face.caret.set(caret);
         let alpha = face.ui_alpha();
         div().relative().flex().flex_col().size_full().child(
@@ -52,7 +47,7 @@ impl Shell {
                     div()
                         .flex_none()
                         .opacity(alpha)
-                        .child(self.render_composer(true, window, cx)),
+                        .child(self.render_composer(true, cx)),
                 )
                 .when(self.setup_tips, |d| {
                     d.child(self.render_setup_tips(cx).opacity(alpha))

@@ -406,9 +406,10 @@ impl Shell {
     ) {
         self.lifted = None;
         if self.active_session_id().as_ref() == Some(&d.id) {
-            self.composer.flash =
-                Some("That is this session. Drop it on another session's composer.".into());
-            cx.notify();
+            self.flash(
+                "That is this session. Drop it on another session's composer.",
+                cx,
+            );
             return;
         }
         self.drop_menu = Some(DropMenu {
@@ -476,14 +477,16 @@ impl Shell {
                 })
             }
         };
-        self.with_dragged_entries(d, env, cx, work, move |this, env, block, _| {
+        self.with_dragged_entries(d, env, cx, work, move |this, env, block, cx| {
             let Some(block) = block else {
-                this.composer.flash = Some("That session has no messages yet.".into());
+                this.flash("That session has no messages yet.", cx);
                 return;
             };
-            let list = this.attached.entry(env.to_path_buf()).or_default();
-            list.retain(|c| c.title != title);
-            list.push(AttachedContext { title, block });
+            this.composer.update(cx, |c, _| {
+                let list = &mut c.draft_mut(env).attached;
+                list.retain(|c| c.title != title);
+                list.push(AttachedContext { title, block });
+            });
         });
     }
 
@@ -503,7 +506,7 @@ impl Shell {
         };
         self.with_dragged_entries(d, env, cx, work, move |this, env, written, cx| {
             if let Err(e) = written {
-                this.composer.flash = Some(format!("Could not link the session: {e}").into());
+                this.flash(format!("Could not link the session: {e}"), cx);
                 return;
             }
             let title = if title.is_empty() {
@@ -516,11 +519,10 @@ impl Shell {
                 crate::agent::attach::mention(&path.to_string_lossy())
             );
             // The draft it was dropped on, even if another is shown by now.
+            this.edit_draft(env, cx, |d| d.insert_word(&line));
             if this.env().path == env {
-                this.env_mut().draft.insert_word(&line);
                 this.composer_changed(cx);
-            } else if let Some(e) = this.find_env_mut(env) {
-                e.draft.insert_word(&line);
+            } else {
                 this.save(cx);
             }
         });
@@ -610,7 +612,7 @@ impl Shell {
                                         if let Some(m) = this.drop_menu.take() {
                                             this.add_session_context(&m.dragged, cx);
                                         }
-                                        window.focus(&this.composer.focus, cx);
+                                        this.focus_composer(window, cx);
                                         cx.notify();
                                     },
                                 )),
@@ -627,7 +629,7 @@ impl Shell {
                                         if let Some(m) = this.drop_menu.take() {
                                             this.link_session(&m.dragged, cx);
                                         }
-                                        window.focus(&this.composer.focus, cx);
+                                        this.focus_composer(window, cx);
                                         cx.notify();
                                     },
                                 )),
@@ -640,78 +642,6 @@ impl Shell {
             )
             .with_priority(2)
             .into_any_element(),
-        )
-    }
-
-    pub(super) fn render_context_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let list = self
-            .attached
-            .get(&self.env().path)
-            .filter(|v| !v.is_empty())?;
-        Some(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(crate::ui::sp(6.))
-                .px(crate::ui::sp(12.))
-                .pt(crate::ui::sp(10.))
-                .children(list.iter().enumerate().map(|(i, c)| {
-                    div()
-                        .id(("context-chip", i))
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(6.))
-                        .h(px(26.))
-                        .max_w(px(320.))
-                        .pl(crate::ui::sp(8.))
-                        .pr(crate::ui::sp(4.))
-                        .rounded(crate::ui::rad(8.))
-                        .border_1()
-                        .border_color(theme::active().opacity(0.3))
-                        .bg(theme::active().opacity(0.08))
-                        .text_size(px(crate::ui::TEXT_SM))
-                        .child(icon("chatting01", 12.).text_color(theme::active()))
-                        .child(div().text_color(theme::text_subtle()).child("Context"))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(theme::text_muted())
-                                .child(c.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_color(theme::text_subtle())
-                                .child(format!("{:.1}k", c.block.len() as f32 / 1000.)),
-                        )
-                        .child(
-                            div()
-                                .id(("context-remove", i))
-                                .flex_none()
-                                .size(px(18.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(crate::ui::rad(4.))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme::fill_selected()))
-                                .child(icon("cancel01", 11.).text_color(theme::text_subtle()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let env = this.env().path.clone();
-                                    if let Some(v) = this.attached.get_mut(&env) {
-                                        if i < v.len() {
-                                            v.remove(i);
-                                        }
-                                        if v.is_empty() {
-                                            this.attached.remove(&env);
-                                        }
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                }))
-                .into_any_element(),
         )
     }
 }

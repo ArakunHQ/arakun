@@ -282,7 +282,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arakun"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "anyhow",
  "arakun-core",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "arakun-core"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "aes-gcm",
  "alacritty_terminal",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "arakun-server"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "arakun-core",
  "gpui_platform",

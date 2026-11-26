@@ -16,7 +16,7 @@ use super::Shell;
 use crate::arakun_teams::api::DEFAULT_URL;
 use crate::cloud;
 use crate::linear::delegation::{Delegation, Routes, routes};
-use crate::linear::{self, Credential, Session};
+use crate::linear::{self, Session};
 use crate::linear_view::{Host, Sync};
 use crate::phone;
 
@@ -42,22 +42,39 @@ pub struct Ran {
     pub stopped: bool,
 }
 
-/// The signed-in Linear workspaces by organization id, each with its key.
-/// Two sign-ins to one workspace link with the first.
-pub fn keys(sessions: &[Session]) -> Vec<(String, String)> {
-    let mut keys: Vec<(String, String)> = Vec::new();
+/// The signed-in Linear workspaces by organization id, each with the sign-in
+/// that links it. Two sign-ins to one workspace link with the first. No key
+/// is read here: reading the keyring can prompt the person, so a key is read
+/// only for a workspace that gets linked.
+pub fn keys(sessions: &[Session]) -> Vec<(String, Session)> {
+    let mut keys: Vec<(String, Session)> = Vec::new();
     for s in sessions {
         if keys.iter().any(|(w, _)| *w == s.workspace_id) {
             continue;
         }
-        let Credential::ApiKey { key } = &s.credential;
-        keys.push((s.workspace_id.clone(), key.clone()));
+        keys.push((s.workspace_id.clone(), s.clone()));
     }
     keys
 }
 
+/// A sign-in whose Linear key can be read, when a link needs it.
+pub trait Key {
+    /// The key, or why it could not be read. The reason never holds the key.
+    fn read(&self) -> Result<String, String>;
+}
+
+impl Key for Session {
+    fn read(&self) -> Result<String, String> {
+        linear::key_for(self).map_err(|e| match e {
+            linear::ApiError::SignedOut => "no Linear key for that workspace".into(),
+            e => e.message(),
+        })
+    }
+}
+
 /// One sync, call by call. It blocks, so it runs off the UI thread. `keys`
-/// comes from [`keys`]; a key goes only to `linear_link`. `still_on` reads
+/// comes from [`keys`]; a key is read only for a `Link` step and goes only to
+/// `linear_link`. `still_on` reads
 /// the switch again before a link or a non-empty route: `d` is from when the
 /// run began, and the person may have turned it off since.
 pub fn run(
@@ -65,7 +82,7 @@ pub fn run(
     session: &str,
     label: &str,
     d: &Delegation,
-    keys: &[(String, String)],
+    keys: &[(String, impl Key)],
     local: &[PathBuf],
     still_on: impl Fn() -> bool,
 ) -> Ran {
@@ -104,14 +121,23 @@ pub fn run(
             Step::Link { workspace } => {
                 // Every planned workspace came from `keys`; without its key
                 // the routes after it would only be refused.
-                let Some((_, key)) = keys.iter().find(|(w, _)| w == workspace) else {
+                let Some((_, sign_in)) = keys.iter().find(|(w, _)| w == workspace) else {
                     ran.error = Some(cloud::Error::Refused(
                         "no Linear sign-in for that workspace".into(),
                     ));
                     break;
                 };
-                cloud::linear_link(base, session, key)
-                    .map(|l| ran.installed.push((l.organization_id, l.installed)))
+                // A key the keyring won't give fails this workspace only, like
+                // a refused one: the others don't need it.
+                match sign_in.read() {
+                    Ok(key) => cloud::linear_link(base, session, &key)
+                        .map(|l| ran.installed.push((l.organization_id, l.installed))),
+                    Err(reason) => {
+                        refused = Some(workspace.clone());
+                        ran.error = Some(cloud::Error::Refused(reason));
+                        continue;
+                    }
+                }
             }
             Step::Routes { workspace, routes } => cloud::linear_put_routes(
                 base,
@@ -654,8 +680,31 @@ mod tests {
         (base, rx)
     }
 
-    fn key(workspace: &str) -> (String, String) {
-        (workspace.into(), format!("lin_api_{workspace}"))
+    /// A sign-in with a key in a fake keyring, counting the times it is read.
+    struct Fake {
+        key: Result<String, String>,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl Key for Fake {
+        fn read(&self) -> Result<String, String> {
+            self.reads.set(self.reads.get() + 1);
+            self.key.clone()
+        }
+    }
+
+    fn key(workspace: &str) -> (String, Fake) {
+        let key = Ok(format!("lin_api_{workspace}"));
+        let reads = Default::default();
+        (workspace.into(), Fake { key, reads })
+    }
+
+    /// A sign-in whose key the keyring won't give (locked, or the prompt
+    /// was dismissed).
+    fn locked(workspace: &str) -> (String, Fake) {
+        let key = Err("The keyring could not give the Linear key: locked".into());
+        let reads = Default::default();
+        (workspace.into(), Fake { key, reads })
     }
 
     #[test]
@@ -824,24 +873,93 @@ mod tests {
 
     #[test]
     fn the_first_sign_in_to_a_workspace_holds_its_key() {
-        let session = |workspace: &str, key: &str| Session {
-            id: format!("{workspace}#{key}"),
-            user_id: key.into(),
+        let session = |workspace: &str, user: &str| Session {
+            id: format!("{workspace}#{user}"),
+            user_id: user.into(),
             name: String::new(),
             email: String::new(),
             workspace_id: workspace.into(),
             workspace: workspace.into(),
             url_key: String::new(),
-            credential: Credential::ApiKey { key: key.into() },
+            // The key is in the keyring; the file keeps none.
+            credential: linear::Credential::ApiKey { key: String::new() },
             added_at: 0,
         };
+        let picked: Vec<(String, String)> =
+            keys(&[session("w1", "a"), session("w2", "b"), session("w1", "c")])
+                .into_iter()
+                .map(|(w, s)| (w, s.id))
+                .collect();
         assert_eq!(
-            keys(&[session("w1", "a"), session("w2", "b"), session("w1", "c")]),
+            picked,
             [
-                ("w1".to_string(), "a".to_string()),
-                ("w2".to_string(), "b".to_string())
+                ("w1".to_string(), "w1#a".to_string()),
+                ("w2".to_string(), "w2#b".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn a_key_is_read_only_for_a_workspace_that_gets_linked() {
+        let (base, _rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w1", "linear_user_id": "u1", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+            (
+                200,
+                r#"{"organization_id": "w2", "linear_user_id": "u2", "installed": true}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        // w1 is linked, w2 gets linked, w3 is not consented.
+        let d = on_for_only(
+            vec![
+                team("w1", "t1", "/p/a"),
+                team("w2", "t2", "/p/a"),
+                team("w3", "t3", "/p/a"),
+            ],
+            &["w1", "w2"],
+        );
+        let ks = [key("w1"), key("w2"), key("w3")];
+        let ran = run(&base, "s", "k1", &d, &ks, &[p("/p/a")], || true);
+        assert!(ran.error.is_none());
+        let reads: Vec<usize> = ks.iter().map(|(_, k)| k.reads.get()).collect();
+        assert_eq!(reads, [0, 1, 0]);
+        // Off, nothing is linked, so no key is read.
+        let (base, _rx) = serve(vec![(200, r#"{"links": []}"#)]);
+        let ks = [key("w1")];
+        run(&base, "s", "k1", &off(vec![]), &ks, &[], || true);
+        assert_eq!(ks[0].1.reads.get(), 0);
+    }
+
+    #[test]
+    fn a_key_the_keyring_wont_give_fails_that_workspace_only() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w2", "linear_user_id": "u2", "installed": true}]}"#,
+            ),
+            (200, r#"{"ok": true}"#),
+        ]);
+        let d = on(vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")]);
+        let ran = run(
+            &base,
+            "s",
+            "k1",
+            &d,
+            &[locked("w1"), key("w2")],
+            &[p("/p/a")],
+            || true,
+        );
+        assert_eq!(ran.error.as_ref().map(outcome), Some(Sync::Failed));
+        let got: Vec<String> = rx.try_iter().collect();
+        // No link for w1, and none of its routes; w2's still go.
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].starts_with("GET /linear/link "));
+        assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
+        assert!(got[1].contains(r#""teams":["t2"]"#), "{}", got[1]);
     }
 
     #[test]

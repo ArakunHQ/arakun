@@ -45,7 +45,6 @@ export async function verified(text: string, signature: string | null, secret: s
 interface Hook {
   organizationId: string;
   agentSessionId: string;
-  webhookId: string;
   creatorId: string | null;
   issueId: string | null;
 }
@@ -69,12 +68,11 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
   const action = parsed["action"];
   if (request.headers.get("Linear-Event") !== "AgentSessionEvent" || (action !== "created" && action !== "prompted")) return ok();
   const session = parsed["agentSession"];
-  const { organizationId, webhookId } = parsed;
-  if (!isObject(session) || !isUuid(organizationId) || !isUuid(session["id"]) || !isUuid(webhookId)) return error(400, "bad webhook");
+  const { organizationId } = parsed;
+  if (!isObject(session) || !isUuid(organizationId) || !isUuid(session["id"])) return error(400, "bad webhook");
   const hook: Hook = {
     organizationId,
     agentSessionId: session["id"],
-    webhookId,
     creatorId: typeof session["creatorId"] === "string" && session["creatorId"] !== "" ? session["creatorId"] : null,
     issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
   };
@@ -141,25 +139,17 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   if (!mine) return (await say("thought", NOT_DELEGATOR), ok());
 
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const kind = activity["signal"] === "stop" ? "stop" : "prompt";
+  const key = `activity:${activityId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (webhook_id) DO NOTHING`,
-    ).bind(
-      id,
-      hook.webhookId,
-      hook.agentSessionId,
-      hook.organizationId,
-      session.issue_id,
-      activity["signal"] === "stop" ? "stop" : "prompt",
-      activityId,
-      session.github_id,
-      session.label,
-      now(),
-    ),
-    readBack(env, hook.webhookId),
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, session.issue_id, kind, activityId, session.github_id, session.label, now()),
+    readBack(env, key),
   ]);
   const row = read!.results[0]!;
+  if (!belongs(row, hook, kind)) return mismatch();
   if (row.announced_at !== null) return ok();
   const done = () => env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
   // As for a delegation: the relay forgot it, so it would arrive twice.
@@ -186,14 +176,27 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   return ok();
 }
 
-/// The delivery a webhook made, with its computer's name now.
-function readBack(env: Env, webhookId: string): D1PreparedStatement {
+/// The delivery an event made, with its computer's name now.
+function readBack(env: Env, eventKey: string): D1PreparedStatement {
   return env.DB.prepare(
     `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.label, d.created_at, d.announced_at,
        d.accepted_at, d.expired_at, m.name AS machine
      FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
-     WHERE d.webhook_id = ?`,
-  ).bind(webhookId);
+     WHERE d.event_key = ?`,
+  ).bind(eventKey);
+}
+
+/// Whether the row read back was made for this event. The key holds ids from
+/// the signed body, so it always should be; a row that is not must never be
+/// finished for someone else's event.
+function belongs(row: Row, hook: Hook, kind: Row["kind"]): boolean {
+  return row.organization_id === hook.organizationId && row.agent_session_id === hook.agentSessionId && row.kind === kind;
+}
+
+/// A retry finds the same row, so a 500 would not help.
+function mismatch(): Response {
+  console.error("POST /linear/webhook: delivery mismatch");
+  return ok();
 }
 
 interface Row {
@@ -238,18 +241,21 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   const route = await routeFor(env, link.github_id, hook.organizationId, place);
   if (!route) return (await say("error", NO_ROUTE), ok());
 
-  // The row first, keyed by the webhook: a retry finds it and finishes the
-  // same delivery, under the same id, which the relay takes only once while
-  // it still keeps it.
+  // The row first, keyed by the agent session: a retry finds it and finishes
+  // the same delivery, under the same id, which the relay takes only once
+  // while it still keeps it. A second `created` for the same session is the
+  // same event to us.
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const key = `created:${hook.agentSessionId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
-       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (webhook_id) DO NOTHING`,
-    ).bind(id, hook.webhookId, hook.agentSessionId, hook.organizationId, hook.issueId, link.github_id, route.label, now()),
-    readBack(env, hook.webhookId),
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.github_id, route.label, now()),
+    readBack(env, key),
   ]);
   const row = read!.results[0]!;
+  if (!belongs(row, hook, "created")) return mismatch();
   if (row.announced_at !== null) return ok();
   // A retry may find its computer renamed or gone since; it still goes to
   // the label the row holds.

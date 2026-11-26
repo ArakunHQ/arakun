@@ -363,6 +363,9 @@ export async function dump(db: D1Database): Promise<string> {
 
 export const HOOK_ORG = "11111111-1111-4111-8111-111111111111";
 export const HOOK_SESSION = "55555555-5555-4555-8555-555555555555";
+/// The id of the webhook itself. Linear sends it on every event, so it is one
+/// value here too.
+export const HOOK_WEBHOOK = "99999999-9999-4999-8999-999999999999";
 const HOOK_SECRET = "lin-hook";
 
 /// A signed webhook: the exact text sent and its headers. `at` is the
@@ -380,14 +383,14 @@ export async function signedWebhook(
 }
 
 /// The body of a `created` AgentSessionEvent: someone delegated or mentioned
-/// Arakun. Each call has a fresh webhook id unless one is given.
+/// Arakun. Each call has a fresh agent session id unless one is given.
 export function created({
   creatorId,
   issueId,
   promptContext = "<issue identifier=\"ENG-1\"><title>Make it blue</title></issue>",
-  webhookId = crypto.randomUUID(),
+  webhookId = HOOK_WEBHOOK,
   organizationId = HOOK_ORG,
-  agentSessionId = HOOK_SESSION,
+  agentSessionId = crypto.randomUUID(),
 }: {
   creatorId: string | null;
   issueId: string | null;
@@ -417,20 +420,21 @@ export function created({
 
 /// The body of a `prompted` AgentSessionEvent: a follow-up in the session.
 /// Linear's schema has the author twice, as `userId` and `user.id`; a null
-/// `userId` leaves both out.
+/// `userId` leaves both out. Each call has a fresh agent session id and
+/// activity id unless they are given.
 export function prompted({
   userId,
   body,
-  activityId,
+  activityId = crypto.randomUUID(),
   signal = null,
   issueId = null,
-  webhookId = crypto.randomUUID(),
+  webhookId = HOOK_WEBHOOK,
   organizationId = HOOK_ORG,
-  agentSessionId = HOOK_SESSION,
+  agentSessionId = crypto.randomUUID(),
 }: {
   userId: string | null;
   body: string;
-  activityId: string;
+  activityId?: string;
   signal?: string | null;
   issueId?: string | null;
   webhookId?: string;

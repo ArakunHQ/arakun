@@ -21,7 +21,7 @@ const ACCESS = "lin_oauth_ws";
 
 type Hook = { text: string; headers: Record<string, string> };
 
-const body = created({ creatorId: LU, issueId: ISSUE });
+const body = created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION });
 
 function send(hook: Hook | Promise<Hook>): Promise<Response> {
   return Promise.resolve(hook).then((h) => call("POST", "/linear/webhook", h.headers, h.text));
@@ -138,7 +138,7 @@ describe("Linear's webhook", () => {
 
   it("sends a delegated issue to the delegator's computer and says so", async () => {
     const { pc, me, owner } = await linkedComputerWithRoute({ team: TEAM });
-    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "created", agent_session: SESSION, issue: ISSUE, organization: ORG });
     expect(linearFake.activities()).toEqual([{ agentSessionId: SESSION, type: "thought", body: "Sent to Desk. A session starts there now." }]);
     const rows = await deliveries();
@@ -160,14 +160,14 @@ describe("Linear's webhook", () => {
 
   it("takes a project route too", async () => {
     const { pc } = await linkedComputerWithRoute({ project: PROJECT });
-    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ type: "linear", issue: ISSUE });
   });
 
   it("says the computer is offline and keeps the delivery", async () => {
     const { me, pc, owner } = await linkedComputerWithRoute();
     await away(me.label, pc);
-    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
     expect(linearFake.activities()).toEqual([
       { agentSessionId: SESSION, type: "thought", body: "Desk is offline. The session starts when it is back, for up to 7 days." },
     ]);
@@ -176,21 +176,34 @@ describe("Linear's webhook", () => {
     expect(await back.inbox.control()).toMatchObject({ type: "linear", kind: "created", issue: ISSUE });
   });
 
-  it("the same webhook twice is one delivery and one activity", async () => {
+  it("the same delegation twice is one delivery and one activity", async () => {
     const { pc } = await linkedComputerWithRoute();
-    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE }));
-    expect((await send(hook)).status).toBe(200);
-    expect((await send(hook)).status).toBe(200);
+    const b = created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION });
+    expect((await send(signedWebhook(b))).status).toBe(200);
+    // Signed again, as a retry or a second delegation of the same session would be.
+    expect((await send(signedWebhook(b))).status).toBe(200);
     expect(await count("linear_deliveries")).toBe(1);
     expect(linearFake.activities()).toHaveLength(1);
     await pc.inbox.control();
     await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 
+  it("two delegations from the same webhook are two deliveries", async () => {
+    // Linear's webhookId names the webhook, so every event carries the same one.
+    const { pc } = await linkedComputerWithRoute();
+    const [S1, S2] = [crypto.randomUUID(), crypto.randomUUID()];
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: S1 })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: S2 })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", agent_session: S1 });
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", agent_session: S2 });
+    expect(await count("linear_deliveries")).toBe(2);
+    expect(linearFake.activities().map((a) => a.agentSessionId)).toEqual([S1, S2]);
+  });
+
   it("a retry after Linear refused the issue lookup finishes the same delivery", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     await linkedComputerWithRoute();
-    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE }));
+    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION }));
     linearFake.refuse = 500;
     expect((await send(hook)).status).toBe(500);
     linearFake.refuse = null;
@@ -202,7 +215,7 @@ describe("Linear's webhook", () => {
   it("a retry after only the activity failed sends the same delivery once", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { pc } = await linkedComputerWithRoute();
-    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE, promptContext: "SECRET-CONTEXT" }));
+    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE, promptContext: "SECRET-CONTEXT", agentSessionId: SESSION }));
     linearFake.refuse = 500;
     linearFake.refuseOnly = "agentActivityCreate";
     const first = await send(hook);
@@ -232,7 +245,7 @@ describe("Linear's webhook", () => {
   ])("a retry after the computer's delivery was %s does not send it again", async (_n, column, said) => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const { me, pc } = await linkedComputerWithRoute();
-    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE }));
+    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION }));
     linearFake.refuse = 500;
     linearFake.refuseOnly = "agentActivityCreate";
     expect((await send(hook)).status).toBe(500);
@@ -254,16 +267,16 @@ describe("Linear's webhook", () => {
   });
 
   it.each([
-    ["no creator", created({ creatorId: null, issueId: ISSUE }), "Arakun starts work only for a person. Delegate this issue yourself."],
-    ["no issue", created({ creatorId: LU, issueId: null }), "Arakun works on issues. Mention it on an issue instead."],
+    ["no creator", created({ creatorId: null, issueId: ISSUE, agentSessionId: SESSION }), "Arakun starts work only for a person. Delegate this issue yourself."],
+    ["no issue", created({ creatorId: LU, issueId: null, agentSessionId: SESSION }), "Arakun works on issues. Mention it on an issue instead."],
     [
       "an unlinked creator",
-      created({ creatorId: OTHER, issueId: ISSUE }),
+      created({ creatorId: OTHER, issueId: ISSUE, agentSessionId: SESSION }),
       'The person who delegated this has not connected Linear in Arakun. In Arakun, open the Linear tab and turn on "Let Linear start sessions on this computer".',
     ],
     [
       "no route",
-      created({ creatorId: LU, issueId: UNMAPPED }),
+      created({ creatorId: LU, issueId: UNMAPPED, agentSessionId: SESSION }),
       "No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer.",
     ],
   ])("answers %s with an error in the issue and stores nothing", async (_n, b, text) => {
@@ -325,12 +338,20 @@ describe("Linear's webhook", () => {
   it.each([
     ["organizationId", { ...body, organizationId: "org" }],
     ["agentSession.id", { ...body, agentSession: { ...(body["agentSession"] as object), id: "s" } }],
-    ["webhookId", { ...body, webhookId: 7 }],
     ["agentSession", { ...body, agentSession: null }],
   ])("refuses a bad %s", async (_n, b) => {
     const res = await send(signedWebhook(b));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad webhook" });
+  });
+
+  it("does not read webhookId: it names the webhook, not the event", async () => {
+    const { pc } = await linkedComputerWithRoute();
+    const { webhookId: _gone, ...without } = created({ creatorId: LU, issueId: ISSUE });
+    expect((await send(signedWebhook(without))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, webhookId: "7" })))).status).toBe(200);
+    expect((await pc.inbox.control())["kind"]).toBe("created");
+    expect((await pc.inbox.control())["kind"]).toBe("created");
   });
 
   it("refuses a signed body that is not JSON", async () => {
@@ -346,7 +367,7 @@ describe("Linear's webhook", () => {
   it("never delivers to another account's computer", async () => {
     const mine = await linkedComputerWithRoute({ team: TEAM });
     const theirs = await linkedComputerWithRoute({ team: TEAM, linearUser: OTHER });
-    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
     expect(await mine.pc.inbox.control()).toMatchObject({ type: "linear", issue: ISSUE });
     await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
     const [row] = await deliveries();
@@ -361,7 +382,7 @@ const SOMEONE_ELSE = { agentSessionId: SESSION, type: "thought", body: "Only the
 /// A delegated issue the computer has heard of: the created delivery's id with it.
 async function delegatedIssue(opts: Parameters<typeof linkedComputerWithRoute>[0] = {}) {
   const got = await linkedComputerWithRoute(opts);
-  expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, promptContext: "SECRET-CONTEXT" })))).status).toBe(200);
+  expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, promptContext: "SECRET-CONTEXT", agentSessionId: SESSION })))).status).toBe(200);
   const frame = await got.pc.inbox.control();
   return { ...got, id: frame["id"] as string };
 }
@@ -382,7 +403,7 @@ async function stranger() {
 describe("follow-ups from Linear", () => {
   it("sends the delegator's follow-up to the same computer with its text, and stores no text", async () => {
     const { me, pc, owner, id } = await delegatedIssue();
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     const frame = await pc.inbox.control();
     expect(frame).toMatchObject({ type: "linear", kind: "prompt", agent_session: SESSION, issue: ISSUE, organization: ORG, activity: ACT, body: "SECRET-FOLLOW-UP" });
     expect(frame["id"]).not.toBe(id);
@@ -400,7 +421,7 @@ describe("follow-ups from Linear", () => {
 
   it("reads the text where Linear's schema puts it, in the activity's content", async () => {
     const { pc } = await delegatedIssue();
-    const b = prompted({ userId: LU, body: "make it red", activityId: ACT });
+    const b = prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION });
     delete (b["agentActivity"] as Record<string, unknown>)["body"];
     expect((await send(signedWebhook(b))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "make it red" });
@@ -408,15 +429,15 @@ describe("follow-ups from Linear", () => {
 
   it("passes a text over 16,000 characters as null, never cut", async () => {
     const { pc } = await delegatedIssue();
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "x".repeat(16_001), activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "x".repeat(16_001), activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", activity: ACT, body: null });
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "y".repeat(16_000), activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "y".repeat(16_000), agentSessionId: SESSION })))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "y".repeat(16_000) });
   });
 
   it("a stop arrives as a stop with no text", async () => {
     const { pc, me } = await delegatedIssue();
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", activityId: ACT, signal: "stop" })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", activityId: ACT, signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "stop", agent_session: SESSION, activity: ACT, body: null });
     expect(linearFake.activities()).toEqual([SENT]);
     const rows = await env.DB.prepare("SELECT kind, label, activity_id FROM linear_deliveries ORDER BY kind").all();
@@ -432,7 +453,7 @@ describe("follow-ups from Linear", () => {
   ])("someone else's follow-up never reaches the computer (%s)", async (_n, author, linkIt) => {
     const { pc } = await delegatedIssue();
     const theirs = linkIt ? await linkedComputerWithRoute({ linearUser: author }) : null;
-    expect((await send(signedWebhook(prompted({ userId: author, body: "do this instead", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: author, body: "do this instead", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
     await expect(pc.inbox.next(200)).rejects.toThrow();
     if (theirs) await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
@@ -441,8 +462,8 @@ describe("follow-ups from Linear", () => {
 
   it("a follow-up with no readable author is treated as someone else's", async () => {
     const { pc } = await delegatedIssue();
-    expect((await send(signedWebhook(prompted({ userId: null, body: "do this instead", activityId: ACT })))).status).toBe(200);
-    const odd = prompted({ userId: null, body: "do this instead", activityId: ACT });
+    expect((await send(signedWebhook(prompted({ userId: null, body: "do this instead", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
+    const odd = prompted({ userId: null, body: "do this instead", activityId: ACT, agentSessionId: SESSION });
     (odd["agentActivity"] as Record<string, unknown>)["userId"] = 7;
     expect((await send(signedWebhook(odd))).status).toBe(200);
     expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE, SOMEONE_ELSE]);
@@ -459,7 +480,7 @@ describe("follow-ups from Linear", () => {
     expect(linearFake.activities()).toEqual([SENT, { ...unknown, agentSessionId: OTHER_SESSION }]);
     // A delivery that ran out of time is no session either.
     await env.DB.prepare("UPDATE linear_deliveries SET expired_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "hello", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "hello", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     expect(linearFake.activities()).toEqual([SENT, { ...unknown, agentSessionId: OTHER_SESSION }, unknown]);
     await expect(pc.inbox.next(200)).rejects.toThrow();
     expect(await count("linear_deliveries")).toBe(1);
@@ -468,8 +489,8 @@ describe("follow-ups from Linear", () => {
   it("goes to the delegator's computer even before it took the issue", async () => {
     const { me, pc, owner } = await linkedComputerWithRoute();
     await away(me.label, pc);
-    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     expect(await count("linear_deliveries")).toBe(2);
     const back = await connectedComputerAgain(me, owner.session);
     const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
@@ -479,7 +500,7 @@ describe("follow-ups from Linear", () => {
 
   it("the same follow-up twice is one delivery and one frame", async () => {
     const { pc } = await delegatedIssue();
-    const hook = signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT }));
+    const hook = signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION }));
     expect((await send(hook)).status).toBe(200);
     expect((await send(hook)).status).toBe(200);
     expect(await pc.inbox.control()).toMatchObject({ kind: "prompt" });
@@ -488,9 +509,58 @@ describe("follow-ups from Linear", () => {
     expect(linearFake.activities()).toEqual([SENT]);
   });
 
+  it("two follow-ups in one session are two deliveries", async () => {
+    const { pc } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", agentSessionId: SESSION })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "and round", agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "make it red" });
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "and round" });
+    expect(await count("linear_deliveries")).toBe(3);
+  });
+
+  it("a follow-up by another person never finishes or reuses someone else's delivery", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const mine = await linkedComputerWithRoute();
+    const theirs = await linkedComputerWithRoute({ linearUser: OTHER });
+    // My delegation reaches my computer, but the activity fails: the row stays
+    // unannounced, and the relay then loses it.
+    linearFake.refuse = 500;
+    linearFake.refuseOnly = "agentActivityCreate";
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(500);
+    const first = await mine.pc.inbox.control();
+    await dropDelivery(env, mine.me.label, first["id"] as string);
+    linearFake.refuse = null;
+    linearFake.refuseOnly = null;
+    // Someone else delegates and follows up, through the same webhook.
+    const THEIRS = crypto.randomUUID();
+    expect((await send(signedWebhook(created({ creatorId: OTHER, issueId: ISSUE, agentSessionId: THEIRS })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: OTHER, body: "THEIR-WORDS", agentSessionId: THEIRS })))).status).toBe(200);
+    expect(await theirs.pc.inbox.control()).toMatchObject({ kind: "created", agent_session: THEIRS });
+    expect(await theirs.pc.inbox.control()).toMatchObject({ kind: "prompt", agent_session: THEIRS, body: "THEIR-WORDS" });
+    await expect(mine.pc.inbox.next(200)).rejects.toThrow();
+    const row = await env.DB.prepare("SELECT announced_at FROM linear_deliveries WHERE id = ?").bind(first["id"]).first<{ announced_at: number | null }>();
+    expect(row!.announced_at).toBeNull();
+  });
+
+  it("refuses to finish a row the event key finds for another session", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pc, me, owner } = await delegatedIssue();
+    // Unreachable with keys made of the event's own ids: a guard.
+    await env.DB.prepare(
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+       VALUES (?, ?, ?, ?, ?, 'prompt', ?, ?, ?, ?)`,
+    )
+      .bind("e".repeat(32), `activity:${ACT}`, crypto.randomUUID(), ORG, ISSUE, ACT, owner.github_id, me.label, nowSeconds())
+      .run();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(log.mock.calls).toEqual([["POST /linear/webhook: delivery mismatch"]]);
+    expect(linearFake.activities()).toEqual([SENT]);
+  });
+
   it("a retry of a follow-up the computer already took does not send it again", async () => {
     const { me, pc } = await delegatedIssue();
-    const b = prompted({ userId: LU, body: "make it red", activityId: ACT });
+    const b = prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION });
     expect((await send(signedWebhook(b))).status).toBe(200);
     const first = await pc.inbox.control();
     // As if the first try died before it marked the row announced.
@@ -508,14 +578,14 @@ describe("follow-ups from Linear", () => {
     // The created delivery is the first of the 50 the relay keeps.
     const waiting = () => ({ id: crypto.randomUUID().replaceAll("-", ""), kind: "created" as const, agent_session: SESSION, issue: ISSUE, organization: ORG, activity: null, created: nowSeconds() });
     for (let i = 0; i < 49; i++) await deliver(env, me.label, waiting(), null);
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     expect(linearFake.activities()).toEqual([SENT, { agentSessionId: SESSION, type: "error", body: "Too many requests are waiting for Desk. Try again when it has caught up." }]);
     expect(await count("linear_deliveries")).toBe(1);
   });
 
   it("refuses a follow-up without an activity id", async () => {
     await delegatedIssue();
-    const res = await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: "not-a-uuid" })));
+    const res = await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: "not-a-uuid", agentSessionId: SESSION })));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad webhook" });
     expect(await count("linear_deliveries")).toBe(1);
@@ -668,7 +738,7 @@ describe("a delivery dropped after 7 days", () => {
 
   it("says nothing for a follow-up or a delivery the computer took", async () => {
     const { owner, id, pc } = await delegatedIssue();
-    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     const follow = (await pc.inbox.control())["id"] as string;
     await expired(env, follow);
     expect(await expiredAt(follow)).toBeTypeOf("number");
@@ -692,10 +762,10 @@ describe("a delivery dropped after 7 days", () => {
     // A machine that is gone.
     const gone = "f".repeat(32);
     await env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, 'aaaaaaaaaaaaaaaa', ?)`,
     )
-      .bind(gone, crypto.randomUUID(), SESSION, ORG, ISSUE, owner.github_id, nowSeconds())
+      .bind(gone, `created:${crypto.randomUUID()}`, SESSION, ORG, ISSUE, owner.github_id, nowSeconds())
       .run();
     await expect(expired(env, gone)).resolves.toBeUndefined();
     expect(linearFake.activities()).toEqual([SENT, dropped("This computer")]);

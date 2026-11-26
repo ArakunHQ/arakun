@@ -42,12 +42,15 @@ CREATE TABLE linear_routes (
 );
 CREATE INDEX linear_routes_by_target ON linear_routes (organization_id, github_id, target_id);
 
--- One row per webhook that became work for a computer. `webhook_id` makes a
--- redelivery by Linear a no-op. The three times say how far it got: sent to
--- the computer, accepted by it, or given up on.
+-- One row per webhook event that became work for a computer. `event_key`
+-- makes a redelivery by Linear a no-op: `created:<agent session id>` for a
+-- delegation, `activity:<agent activity id>` for a follow-up. Linear's
+-- `webhookId` cannot be the key: it names the webhook, so every event has the
+-- same one. The three times say how far it got: sent to the computer,
+-- accepted by it, or given up on.
 CREATE TABLE linear_deliveries (
   id TEXT PRIMARY KEY,
-  webhook_id TEXT NOT NULL UNIQUE,
+  event_key TEXT NOT NULL UNIQUE,
   agent_session_id TEXT NOT NULL,
   organization_id TEXT NOT NULL,
   issue_id TEXT NOT NULL,

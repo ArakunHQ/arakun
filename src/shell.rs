@@ -805,6 +805,7 @@ impl Shell {
         let runs_subs = [
             cx.observe(&ci, |this, _, cx| {
                 this.branch_pr_read(cx);
+                this.linear_links_from_ci(cx);
                 cx.notify()
             }),
             cx.subscribe_in(&ci, window, |this, _, ev, window, cx| {

@@ -64,6 +64,9 @@ impl Shell {
         };
         let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
         let session_pr = t.meta().pr.clone();
+        if matches!(event, Event::Finished(_)) {
+            self.linear_link(id, session_pr.as_deref(), cx);
+        }
         let Some(run) = self.linear_runs.by_session(id) else {
             return;
         };
@@ -101,24 +104,9 @@ impl Shell {
         };
         let report = seen.filter(|_| effect.report).and_then(to_report);
         let agent_session = run.agent_session.clone();
-        let link = if matches!(effect.step, Step::Finished | Step::Background) {
-            self.linear_pr(id, session_pr.as_deref(), cx)
-        } else {
-            None
-        };
-        if effect.step == Step::Background
-            && let Some(held) = self
-                .linear_runs
-                .by_session(id)
-                .and_then(|r| r.held.as_mut())
-        {
-            // It goes with the reply, once that is sent.
-            held.link = link.clone();
-        }
-        let link = link.filter(|_| effect.step != Step::Background);
         // The new state goes in the same save as the report.
         match report {
-            Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
+            Some((kind, body)) => self.linear_report(&agent_session, kind, body, None, cx),
             None => self.linear_save(),
         }
         if to == RunState::Running {
@@ -146,8 +134,36 @@ impl Shell {
         self.linear_report(&agent_session, ReportKind::Progress, line, None, cx);
     }
 
+    /// The run's pull request, once the session or the CI view knows it: its
+    /// link goes to Linear at once and only once, whatever the run does then.
+    fn linear_link(&mut self, id: &str, session_pr: Option<&str>, cx: &mut Context<Self>) {
+        let Some(url) = self.linear_pr(id, session_pr, cx) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_runs.link(id, &url) else {
+            return;
+        };
+        self.linear_report(
+            &agent_session,
+            ReportKind::Link,
+            String::new(),
+            Some(url),
+            cx,
+        );
+        self.linear_watch(cx);
+    }
+
+    /// The CI view changed: it may know the pull request of a run now. This
+    /// is how a link gets to Linear while the session still works, and after
+    /// its last reply.
+    pub(super) fn linear_links_from_ci(&mut self, cx: &mut Context<Self>) {
+        for (session, _, _) in self.linear_runs.unlinked() {
+            self.linear_link(&session, None, cx);
+        }
+    }
+
     /// The pull request of a run's work, when one is known now. Nothing is
-    /// fetched: the CI view may not know it yet.
+    /// fetched: `linear_links_from_ci` sends it when the CI view learns it.
     fn linear_pr(&mut self, id: &str, session: Option<&str>, cx: &Context<Self>) -> Option<String> {
         let run = self.linear_runs.by_session(id)?;
         let (project, branch) = (run.project.clone(), run.branch.clone());

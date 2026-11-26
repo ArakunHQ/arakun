@@ -477,6 +477,7 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
         }
     }
 

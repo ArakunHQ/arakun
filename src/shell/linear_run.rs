@@ -289,6 +289,7 @@ impl Shell {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
         });
         self.linear_save();
         match added {

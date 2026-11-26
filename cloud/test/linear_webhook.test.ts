@@ -775,6 +775,23 @@ describe("what the computer sends back", () => {
     expect(await dump(env.DB)).not.toMatch(/Done\.|Working on it/);
   });
 
+  it("adds links to a session without an activity, only for its owner and only https", async () => {
+    const { owner } = await delegatedIssue();
+    const links = (session: string, body: unknown) => call("POST", `/linear/sessions/${SESSION}/links`, as(session), JSON.stringify(body));
+    const pr = { label: "Pull request", url: "https://github.com/a/b/pull/1" };
+    expect((await links(owner.session, { links: [pr], extra: "ignored" })).status).toBe(204);
+    expect(linearFake.links()).toEqual([{ agentSessionId: SESSION, ...pr }]);
+    expect(linearFake.activities()).toEqual([SENT]);
+    for (const bad of [{}, { links: [] }, { links: [{ label: "x", url: "http://github.com/a" }] }, { links: [{ label: "", url: pr.url }] }, { links: Array(6).fill(pr) }]) {
+      const res = await links(owner.session, bad);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad links" });
+    }
+    expect((await links((await stranger()).session, { links: [pr] })).status).toBe(404);
+    expect((await call("POST", `/linear/sessions/${SESSION}/links`, {}, JSON.stringify({ links: [pr] }))).status).toBe(401);
+    expect(linearFake.links()).toHaveLength(1);
+  });
+
   it("passes an ephemeral thought on as one", async () => {
     const { owner } = await delegatedIssue();
     expect((await activity(owner.session, { type: "thought", body: "Running a command", ephemeral: true })).status).toBe(204);

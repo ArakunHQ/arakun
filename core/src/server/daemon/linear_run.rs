@@ -288,6 +288,7 @@ impl Daemon {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
         });
         self.linear_save_runs();
         match added {
@@ -735,6 +736,9 @@ impl Daemon {
         };
         let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
         let session_pr = t.meta().pr.clone();
+        if matches!(event, Event::Finished(_)) {
+            self.linear_link(id, session_pr.as_deref(), cx);
+        }
         let Some(run) = self.linear_run.runs.by_session(id) else {
             return;
         };
@@ -772,12 +776,8 @@ impl Daemon {
             Step::Working | Step::Background | Step::Nothing => None,
         };
         let report = seen.filter(|_| effect.report).and_then(to_report);
-        let link = matches!(effect.step, Step::Finished | Step::Background)
-            .then(|| pr_link(session_pr.as_deref(), None))
-            .flatten();
-        let link = self.linear_hold_link(id, effect.step, link);
         match report {
-            Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
+            Some((kind, body)) => self.linear_report(&agent_session, kind, body, None, cx),
             None => self.linear_save_runs(),
         }
         if to == RunState::Running {
@@ -874,7 +874,10 @@ impl Daemon {
             link,
             made_at: now,
         });
-        if let Some(run) = self.linear_run.runs.by_agent_session(agent_session) {
+        // A link is no activity: Linear still needs to hear the run works.
+        if kind != ReportKind::Link
+            && let Some(run) = self.linear_run.runs.by_agent_session(agent_session)
+        {
             run.reported_at = now;
         }
         self.linear_save_runs();
@@ -962,21 +965,24 @@ impl Daemon {
         .detach();
     }
 
-    /// A held turn keeps its pull request with its reply; any other step
-    /// sends the link now.
-    fn linear_hold_link(&mut self, id: &str, step: Step, link: Option<String>) -> Option<String> {
-        if step != Step::Background {
-            return link;
-        }
-        if let Some(held) = self
-            .linear_run
-            .runs
-            .by_session(id)
-            .and_then(|r| r.held.as_mut())
-        {
-            held.link = link;
-        }
-        None
+    /// The run's pull request, once the session knows it: its link goes to
+    /// Linear at once and only once, whatever the run does then. A server
+    /// has no CI view, so the session's own record is all there is.
+    fn linear_link(&mut self, id: &str, session_pr: Option<&str>, cx: &mut Context<Self>) {
+        let Some(url) = pr_link(session_pr, None) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_run.runs.link(id, &url) else {
+            return;
+        };
+        self.linear_report(
+            &agent_session,
+            ReportKind::Link,
+            String::new(),
+            Some(url),
+            cx,
+        );
+        self.linear_watch(cx);
     }
 
     fn linear_needs_watch(&self) -> bool {

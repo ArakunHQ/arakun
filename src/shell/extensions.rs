@@ -31,6 +31,33 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens where a Usage tab finding is fixed: the file beside the chat, or
+    /// the Marketplace tab's list of installed servers, plugins or skills.
+    pub(super) fn open_usage_place(
+        &mut self,
+        place: &crate::usage_where::Place,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::usage_where::Place;
+        match place {
+            Place::Nothing => {}
+            Place::File(path) => {
+                if !self.has_projects() {
+                    return;
+                }
+                let env_path = self.env().path.clone();
+                self.open_file_beside(&env_path, path, None, window, cx);
+            }
+            Place::Servers | Place::Plugins | Place::Skills => {
+                self.open_extensions_tab(window, cx);
+                self.views
+                    .extensions
+                    .update(cx, |v, cx| v.show_claude(place, cx));
+            }
+        }
+    }
+
     pub(super) fn on_extensions_event(
         &mut self,
         ev: &ExtensionsEvent,

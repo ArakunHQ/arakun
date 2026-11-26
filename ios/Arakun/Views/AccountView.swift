@@ -146,11 +146,11 @@ struct AccountView: View {
                 row(icon: "computer", "Which notices", detail: whichNotices)
             } else {
                 divider
-                noticeSwitch(.done, "Turn finished")
+                noticeSwitch(.done, "Turn finished", "When an agent is done and waits for you.")
                 divider
-                noticeSwitch(.input, "Needs permission or answer")
+                noticeSwitch(.input, "Needs permission or answer", "When an agent asks to run a tool or asks you a question.")
                 divider
-                noticeSwitch(.error, "Something went wrong")
+                noticeSwitch(.error, "Something went wrong", "When a turn stops on an error.")
                 divider
                 noticeTime("Only when I'm away for", NoticeChoice.awayChoices, \.awayAfterSecs)
                 divider
@@ -166,16 +166,20 @@ struct AccountView: View {
     }
 
     /// One kind of notice; each computer keeps its own choice.
-    private func noticeSwitch(_ kind: NoticeKind, _ title: String) -> some View {
-        Toggle(title, isOn: Binding(
+    private func noticeSwitch(_ kind: NoticeKind, _ title: String, _ detail: String) -> some View {
+        Toggle(isOn: Binding(
             get: { model.notices?[kind] ?? true },
             set: { on in
                 guard var choice = model.notices else { return }
                 choice[kind] = on
                 model.setNotices(choice)
             }
-        ))
-        .font(.body16)
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body16)
+                Text(detail).font(.small).foregroundStyle(Color.textMuted)
+            }
+        }
         .padding(16)
     }
 

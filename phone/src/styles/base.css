@@ -112,6 +112,8 @@ a.btn { text-decoration: none; }
 .prow .rt { font-size: var(--text-m-sub); font-weight: 500; }
 .prow .rs { font-size: var(--text-md); line-height: 17px; color: var(--color-text-subtle); }
 .prow.danger .rt, .prow.danger .ricon { color: var(--color-error); }
+/* The chevron icon points down; a row that opens a page points it onward. */
+.prow .rgo { display: flex; flex: none; color: var(--color-text-subtle); transform: rotate(-90deg); }
 button.prow:active { background: var(--color-fill-hover); }
 .prow:has(.switch) { cursor: pointer; }
 /* A row with two buttons: the pick takes the room, the action sits at the end. */

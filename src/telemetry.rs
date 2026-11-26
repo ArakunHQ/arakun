@@ -899,8 +899,8 @@ fn in_app(function: &str) -> bool {
 // ---- scrubbing --------------------------------------------------------------
 
 /// `text` without what could identify the user or leak a secret: the home
-/// folder, URLs, paths, emails and values shaped like tokens. The words
-/// around them stay, so the message still says what went wrong.
+/// folder, the secrets [`crate::secrets::find`] finds, URLs, paths, emails and
+/// ids. The words around them stay, so the message still says what went wrong.
 pub fn scrub(text: &str, home: &str) -> String {
     // `/` alone would turn every path into `~`.
     let text = if home.len() >= 2 {
@@ -908,8 +908,8 @@ pub fn scrub(text: &str, home: &str) -> String {
     } else {
         text.to_string()
     };
+    let text = crate::secrets::redact(&text, "<secret>");
     let mut out = String::with_capacity(text.len());
-    let mut after_scheme = false;
     for (i, word) in text.split(' ').enumerate() {
         if i > 0 {
             out.push(' ');
@@ -918,12 +918,7 @@ pub fn scrub(text: &str, home: &str) -> String {
         let body = &word[lead..];
         let core = body.trim_end_matches(|c| ")]}>\"'`,.;:!?".contains(c));
         let tail = &body[core.len()..];
-        let replaced = if after_scheme && !core.is_empty() {
-            Some("<secret>".to_string())
-        } else {
-            redact(core)
-        };
-        after_scheme = matches!(core.to_ascii_lowercase().as_str(), "bearer" | "basic");
+        let replaced = redact(core);
         out.push_str(&word[..lead]);
         out.push_str(replaced.as_deref().unwrap_or(core));
         out.push_str(tail);
@@ -947,7 +942,7 @@ fn redact(word: &str) -> Option<String> {
     if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/') {
         return Some("<path>".into());
     }
-    // `key=value`, `key:value`: the name says what failed, the value may be secret.
+    // `key=value`, `key:value`: the name says what failed, the value may be an id.
     if let Some((name, value)) = word.split_once(['=', ':'])
         && !name.is_empty()
         && !value.is_empty()
@@ -966,33 +961,12 @@ fn redact(word: &str) -> Option<String> {
     if word.contains(['/', '\\']) || word.starts_with('~') {
         return Some("<path>".into());
     }
-    secret_shaped(word).then(|| "<secret>".into())
+    id_shaped(word).then(|| "<secret>".into())
 }
 
-fn secret_shaped(word: &str) -> bool {
-    const PREFIXES: [&str; 18] = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "ghp_",
-        "gho_",
-        "ghu_",
-        "ghs_",
-        "ghr_",
-        "github_pat_",
-        "xox",
-        "phc_",
-        "phx_",
-        "phs_",
-        "AKIA",
-        "AIza",
-        "glpat-",
-        "eyJ",
-    ];
-    if word.len() >= 12 && PREFIXES.iter().any(|p| word.starts_with(p)) {
-        return true;
-    }
+/// A hash, a session id or another long run of letters and digits: not a
+/// key, but it can tie an event to a user or a project.
+fn id_shaped(word: &str) -> bool {
     let tokenish = word
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "-_+=.".contains(c));
@@ -1079,6 +1053,14 @@ mod tests {
         assert_eq!(
             scrub("session 3f2a9c1e4b5d6f708192a3b4c5d6e7f8 gone", HOME),
             "session <secret> gone"
+        );
+        assert_eq!(
+            scrub("login failed for password=hunter22 (403)", HOME),
+            "login failed for password=<secret> (403)"
+        );
+        assert_eq!(
+            scrub("bad key: -----BEGIN PRIVATE KEY----- MIIEvQ", HOME),
+            "bad key: <secret>"
         );
     }
 

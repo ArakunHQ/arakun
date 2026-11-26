@@ -163,21 +163,20 @@ fn host_name() -> Option<String> {
     std::env::var("COMPUTERNAME").ok()
 }
 
-/// Masks, in place, what looks private in `chars`: emails, values shaped like
-/// keys or tokens, the value of a `…KEY=` or `…TOKEN:` pair, the word after
-/// `Bearer`, IPv4 addresses, the user's name in the home folder, and the user
-/// and host names as words (`ann@ann-laptop`). Every hidden character becomes
-/// one [`DOT`], so the text keeps its width: a terminal's columns stay where
-/// they were. Returns whether it masked anything.
+/// Masks, in place, what looks private in `chars`: the secrets
+/// [`crate::secrets::find`] finds, emails, IPv4 addresses, the user's name
+/// in the home folder, and the user and host names as words
+/// (`ann@ann-laptop`). Every hidden character becomes one [`DOT`], so the
+/// text keeps its width: a terminal's columns stay where they were. A key
+/// known by its shape keeps its first four characters, which say what it is.
+/// Returns whether it masked anything.
 pub fn mask(chars: &mut [char], me: &Me) -> bool {
-    let mut changed = mask_home(chars, &me.home);
+    // Secrets first, on the text as it is: dots would break their shapes.
+    let mut changed = mask_secrets(chars);
+    changed |= mask_home(chars, &me.home);
     let mut i = 0;
-    // The word before the current one, upper-cased, and the separator between.
-    let mut prev = String::new();
-    let mut sep = String::new();
     while i < chars.len() {
         if !is_word(chars[i]) {
-            sep.push(chars[i]);
             i += 1;
             continue;
         }
@@ -186,31 +185,12 @@ pub fn mask(chars: &mut [char], me: &Me) -> bool {
             i += 1;
         }
         let word: String = chars[start..i].iter().collect();
-        let between = sep.trim_matches(|c: char| c == ' ' || c == '"' || c == '\'');
-        let keyed = matches!(between, "=" | ":") && names_secret(&prev);
-        let bearer = between.is_empty() && sep.contains(' ') && prev == "BEARER";
-        if keyed || bearer {
-            // The value runs to the next space or quote: a base64 key has `/`
-            // and `=` in it, which end a word.
-            let mut end = i;
-            while end < chars.len()
-                && !matches!(
-                    chars[end],
-                    ' ' | '\t' | '\n' | '\r' | '"' | '\'' | ',' | ';'
-                )
-            {
-                end += 1;
-            }
-            changed |= dot(&mut chars[start..end], 0);
-            i = end;
-        } else if let Some(at) = word.find('@').filter(|_| is_email(&word)) {
+        if let Some(at) = word.find('@').filter(|_| is_email(&word)) {
             // A full stop after the address ends the sentence, not the address.
             let end = i - (word.len() - word.trim_end_matches('.').len());
             let at = start + word[..at].chars().count();
             changed |= dot(&mut chars[start..at], 0);
             changed |= dot(&mut chars[at + 1..end], 0);
-        } else if looks_secret(&word) {
-            changed |= dot(&mut chars[start..i], 4);
         } else if is_public_ipv4(&word) {
             for c in &mut chars[start..i] {
                 if *c != '.' {
@@ -230,8 +210,28 @@ pub fn mask(chars: &mut [char], me: &Me) -> bool {
                 at += len + 1;
             }
         }
-        prev = word.to_ascii_uppercase();
-        sep.clear();
+    }
+    changed
+}
+
+/// Dots over the secrets in `chars`; whether there were any.
+fn mask_secrets(chars: &mut [char]) -> bool {
+    let text: String = chars.iter().collect();
+    let found = crate::secrets::find(&text);
+    if found.is_empty() {
+        return false;
+    }
+    // Where each character starts in `text`, to turn bytes into characters.
+    let starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    let index = |byte: usize| starts.partition_point(|&s| s < byte);
+    let mut changed = false;
+    for s in found {
+        let keep = if s.kind == crate::secrets::Kind::Token {
+            4
+        } else {
+            0
+        };
+        changed |= dot(&mut chars[index(s.range.start)..index(s.range.end)], keep);
     }
     changed
 }
@@ -245,7 +245,8 @@ fn is_word(c: char) -> bool {
 fn dot(chars: &mut [char], keep: usize) -> bool {
     let mut changed = false;
     for c in chars.iter_mut().skip(keep) {
-        if *c != DOT {
+        // A private key spans lines; the lines stay.
+        if *c != DOT && *c != '\n' && *c != '\r' {
             *c = DOT;
             changed = true;
         }
@@ -279,16 +280,6 @@ fn mask_home(chars: &mut [char], home: &str) -> bool {
     changed
 }
 
-/// A name such as `OPENAI_API_KEY`, `token` or `password`, whose value is a secret.
-fn names_secret(upper: &str) -> bool {
-    ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"]
-        .iter()
-        .any(|w| upper.contains(w))
-        && upper != "KEYBOARD"
-        && !upper.ends_with("_PATH")
-        && !upper.ends_with("_FILE")
-}
-
 fn is_email(word: &str) -> bool {
     let Some((user, domain)) = word.split_once('@') else {
         return false;
@@ -301,42 +292,6 @@ fn is_email(word: &str) -> bool {
         && domain.rsplit_once('.').is_some_and(|(name, tld)| {
             !name.is_empty() && tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
         })
-}
-
-/// Known key prefixes, and long mixed-case words with digits that read as random.
-fn looks_secret(word: &str) -> bool {
-    const PREFIXES: [&str; 22] = [
-        "sk-",
-        "sk_",
-        "pk_",
-        "rk_",
-        "ghp_",
-        "gho_",
-        "ghu_",
-        "ghs_",
-        "ghr_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "phc_",
-        "phx_",
-        "phs_",
-        "AKIA",
-        "AIza",
-        "glpat-",
-        "eyJ",
-        "sbp_",
-        "npm_",
-        "hf_",
-    ];
-    if word.len() >= 16 && PREFIXES.iter().any(|p| word.starts_with(p)) {
-        return true;
-    }
-    let letters = word.chars().filter(char::is_ascii_alphabetic).count();
-    let digits = word.chars().filter(char::is_ascii_digit).count();
-    let upper = word.chars().any(|c| c.is_ascii_uppercase());
-    let lower = word.chars().any(|c| c.is_ascii_lowercase());
-    word.len() >= 24 && !word.contains(['.', '@']) && digits >= 3 && letters >= 8 && upper && lower
 }
 
 /// An IPv4 address other than the loopback and `0.0.0.0`, which say nothing
@@ -413,6 +368,26 @@ mod tests {
             masked("Authorization: Bearer abc.def"),
             "Authorization: Bearer •••••••"
         );
+    }
+
+    #[test]
+    fn hides_private_keys_and_passwords_in_urls() {
+        assert_eq!(
+            masked("postgres://app:s3cr3t@db/app"),
+            "postgres://app:••••••@db/app"
+        );
+        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----";
+        let want: String = key
+            .chars()
+            .map(|c| if c == '\n' { c } else { DOT })
+            .collect();
+        assert_eq!(masked(key), want);
+    }
+
+    #[test]
+    fn leaves_comparisons_alone() {
+        let s = "if event.key == \"Enter\" {";
+        assert_eq!(masked(s), s);
     }
 
     #[test]

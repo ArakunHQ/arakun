@@ -6,8 +6,8 @@
 //! model following its prompt:
 //!
 //! - The run never sees the project itself, only a private copy of it
-//!   ([`mirror`]) without secret-looking files ([`is_secret_path`]) and
-//!   without what git ignores. Claude Code reads only inside its working
+//!   ([`mirror`]) without secret-looking files
+//!   ([`crate::secrets::secret_path`]) and without what git ignores. Claude Code reads only inside its working
 //!   folder, so those files are not there to read. The keys and passwords
 //!   in the files it does copy are replaced with `[redacted]` too, so the
 //!   chat cannot have one posted spelled out, reversed or encoded, past the
@@ -17,15 +17,12 @@
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use regex::{Captures, Regex};
 
 use super::bot::Answer;
 
 /// What a secret is replaced with in the answer.
-pub const REDACTED: &str = "[redacted]";
+pub const REDACTED: &str = crate::secrets::REDACTED;
 
 /// How the folders of the run's copies start, in the temp folder.
 pub const COPY_PREFIX: &str = "arakun-bot-";
@@ -37,101 +34,6 @@ const FILE_BYTES: u64 = 1024 * 1024;
 const TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 /// The copy holds at most this many files.
 const FILES: usize = 50_000;
-
-/// Folders whose files are all secrets.
-const SECRET_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws", ".kube", ".azure"];
-/// Folders of secrets that only count under their parent: `gcloud` or
-/// `docker` alone is a common name for code.
-const SECRET_SUBDIRS: &[[&str; 2]] = &[[".config", "gcloud"]];
-/// File names that hold credentials.
-const SECRET_NAMES: &[&str] = &[
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    ".git-credentials",
-    ".pgpass",
-    ".htpasswd",
-    "kubeconfig",
-    "credentials.json",
-];
-/// Files that hold credentials only in their own folder.
-const SECRET_FILES: &[[&str; 2]] = &[[".docker", "config.json"]];
-/// How the JSON key files of cloud accounts start: `service-account.json`,
-/// `service_account-prod.json`, `client_secret_123.json`.
-const SECRET_JSON: &[&str] = &[
-    "service-account",
-    "service_account",
-    "serviceaccount",
-    "client_secret",
-];
-/// What a name ends with when Terraform wrote state or variables there:
-/// state holds every secret of what it manages, in the clear.
-const SECRET_ENDINGS: &[&str] = &[".tfstate.backup", ".tfvars.json"];
-/// SSH key files, as `ssh-keygen` names them. A name that goes on from one
-/// with `_` or `.` (`id_rsa_github`, `id_ed25519.old`) is a key as well.
-const SSH_KEYS: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
-/// Endings of key and certificate store files.
-const SECRET_EXTENSIONS: &[&str] = &[
-    "pem", "key", "p12", "pfx", "jks", "keystore", "ppk", "kdbx", "tfstate", "tfvars",
-];
-
-/// Whether a path in the project looks like it holds secrets: `.env`,
-/// `.env.*`, `.env-*`, `.env_*`, `.envrc*` and `.envs/`, `*.pem`, `*.key`
-/// and other key stores, SSH keys (`id_rsa`, `id_rsa_github`,
-/// `id_ed25519.pub`), credential files (`.netrc`, `.pgpass`, `kubeconfig`,
-/// `credentials.json`, a service account's JSON key, `.dev.vars`),
-/// Terraform state and variables, and anything under `.ssh/`, `.gnupg/`,
-/// `.aws/`, `.kube/`, `.azure/` or `.config/gcloud/`. Case doesn't matter.
-pub fn is_secret_path(rel: &Path) -> bool {
-    let parts: Vec<String> = rel
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s.to_string_lossy().to_lowercase()),
-            _ => None,
-        })
-        .collect();
-    let Some((name, dirs)) = parts.split_last() else {
-        return false;
-    };
-    // Only the names these tools use, and what goes on from them:
-    // `id_token.rs` or `.environment/` is code, and leaving it out would
-    // make @bot say it does not exist.
-    let env = |n: &str| {
-        n == ".env"
-            || n == ".envs"
-            || n.starts_with(".envrc")
-            || [".env.", ".env-", ".env_"].iter().any(|p| n.starts_with(p))
-            // Wrangler's `.env`: `.dev.vars` and `.dev.vars.staging`.
-            || n == ".dev.vars"
-            || n.starts_with(".dev.vars.")
-    };
-    let ssh = |n: &str| {
-        SSH_KEYS.iter().any(|k| {
-            n.strip_prefix(k)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['_', '.']))
-        })
-    };
-    if dirs
-        .iter()
-        .any(|d| SECRET_DIRS.contains(&d.as_str()) || env(d))
-        || dirs
-            .windows(2)
-            .any(|w| SECRET_SUBDIRS.iter().any(|s| w == s))
-    {
-        return true;
-    }
-    let in_dir = |f: &[&str; 2]| dirs.last().is_some_and(|d| d == f[0]) && name == f[1];
-    env(name)
-        || ssh(name)
-        || SECRET_NAMES.contains(&name.as_str())
-        || SECRET_FILES.iter().any(in_dir)
-        || SECRET_ENDINGS.iter().any(|e| name.ends_with(e))
-        || (name.ends_with(".json") && SECRET_JSON.iter().any(|p| name.starts_with(p)))
-        || Path::new(name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| SECRET_EXTENSIONS.contains(&e))
-}
 
 /// The copy of a project the run reads.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -222,7 +124,7 @@ pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, 
         if stop.load(Ordering::Relaxed) {
             return Err("stopped".into());
         }
-        if is_secret_path(&rel) {
+        if crate::secrets::secret_path(&rel) {
             continue;
         }
         let from = root.join(&rel);
@@ -354,7 +256,7 @@ fn walk_files(root: &Path, stop: &AtomicBool) -> (Vec<PathBuf>, usize) {
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
         .filter_map(|e| e.path().strip_prefix(root).ok().map(Path::to_path_buf))
-        .filter(|p| !is_secret_path(p));
+        .filter(|p| !crate::secrets::secret_path(p));
     for rel in walk {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -370,369 +272,10 @@ fn walk_files(root: &Path, stop: &AtomicBool) -> (Vec<PathBuf>, usize) {
 
 // ---- the answer ------------------------------------------------------------------
 
-/// Secrets recognized by their shape alone, replaced whole.
-static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        // A PEM private key, to its end or the end of the text.
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?s:.*?)(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\z)",
-        // OpenAI, Anthropic and other `sk-` keys.
-        r"\bsk-[A-Za-z0-9_-]{20,}",
-        // GitHub tokens.
-        r"\bgh[pousr]_[A-Za-z0-9]{30,}",
-        r"\bgithub_pat_[A-Za-z0-9_]{22,}",
-        // GitLab and npm tokens.
-        r"\bglpat-[A-Za-z0-9_-]{20,}",
-        r"\bnpm_[A-Za-z0-9]{36}\b",
-        // Slack tokens, and a webhook's URL, which posts for whoever has it.
-        r"\b(?:xox[abposr]|xapp)-[A-Za-z0-9-]{10,}",
-        r"\bhttps://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9_/-]+",
-        // AWS access key IDs.
-        r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
-        // Google API keys.
-        r"\bAIza[0-9A-Za-z_-]{35}",
-        // Stripe keys and webhook signing secrets.
-        r"\b[rsp]k_(?:live|test)_[0-9A-Za-z]{16,}",
-        r"\bwhsec_[A-Za-z0-9+/=]{24,}",
-        // Hugging Face, SendGrid, PyPI, DigitalOcean and Shopify tokens.
-        r"\bhf_[A-Za-z0-9]{30,}",
-        r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}",
-        r"\bpypi-[A-Za-z0-9_-]{50,}",
-        r"\bdo[opr]_v1_[a-f0-9]{64}\b",
-        r"\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b",
-        // Google OAuth access tokens.
-        r"\bya29\.[A-Za-z0-9_-]{20,}",
-        // JSON Web Tokens.
-        r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
-    ]
-    .iter()
-    .map(|p| Regex::new(p).expect("secret pattern"))
-    .collect()
-});
-
-/// `user:password@` in a URL: the password is replaced. The user can be
-/// empty (`redis://:pass@host`), and the password runs to the last `@`
-/// before the host, since a password can hold one.
-static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]*:)([^\s/?#]*)@").expect("url pattern")
-});
-
-/// The token after `Bearer`, as in an `Authorization` header.
-static BEARER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([Bb]earer[ \t]+)([A-Za-z0-9._~+/=-]+)").expect("bearer pattern")
-});
-
-/// What follows `Basic` in an `Authorization` header: `user:password` in
-/// base64, which anyone can decode.
-static BASIC: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([Bb]asic[ \t]+)([A-Za-z0-9+/]{12,}={0,2})").expect("basic pattern")
-});
-
-/// Whether what follows `Basic` is base64 and not a word: "Basic
-/// authentication" is prose. Base64 of `user:password` has a digit, padding
-/// or both cases in it.
-fn is_basic_credentials(v: &str) -> bool {
-    v.ends_with('=')
-        || v.chars().any(|c| c.is_ascii_digit())
-        || (v.chars().any(|c| c.is_ascii_uppercase())
-            && v.chars().skip(1).any(|c| c.is_ascii_uppercase())
-            && v.chars().any(|c| c.is_ascii_lowercase())
-            && entropy(v) >= 3.5)
-}
-
-/// `name = value`, `name: value` and `"name": "value"`. Group 1 is the name,
-/// 2 what stands between, and the value is double, single or back quoted
-/// (3, 4, 5) or bare (6). [`names_secret`] decides on the name.
-static ASSIGNED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"\b([A-Za-z0-9_.-]+)(["']?[ \t]*(?::=|=>|:|=)[ \t]*)(?:"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`|(\S+))"#,
-    )
-    .expect("assignment pattern")
-});
-
-/// A call or a path through fields: `get_token()`, `self.token`,
-/// `os.environ["KEY"]`. Code, not a value.
-static CODE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*)*(?:!?\(|(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*|\[.*)$)",
-    )
-    .expect("code pattern")
-});
-
-/// A type after `name:`, as in a struct field or a parameter.
-static TYPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[A-Z][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*(?:<.*)?$").expect("type pattern")
-});
-
-/// Words that, as the last word of a name before `key`, say the key is not
-/// a secret.
-const PLAIN_KEYS: &[&str] = &[
-    "public",
-    "primary",
-    "foreign",
-    "sort",
-    "cache",
-    "partition",
-    "map",
-    "lookup",
-    "row",
-    "group",
-    "idempotency",
-    "hot",
-    "short",
-    "shortcut",
-    "unique",
-    "composite",
-    "dedup",
-    "routing",
-    "react",
-    "list",
-    "dict",
-    "hash",
-    "object",
-    "storage",
-    "registry",
-    "translation",
-    "i18n",
-    "query",
-    "index",
-];
-
-/// Values that are code or a placeholder, never a secret.
-const PLAIN_VALUES: &[&str] = &[
-    "null",
-    "none",
-    "nil",
-    "undefined",
-    "true",
-    "false",
-    "await",
-    "new",
-    "yield",
-    "async",
-    "function",
-    "lambda",
-    "this",
-    "self",
-    "typeof",
-    "str",
-    "string",
-    "number",
-    "bool",
-    "boolean",
-    "bytes",
-    "int",
-    "float",
-    "any",
-    "usize",
-    "u8",
-    "u32",
-    "u64",
-    "i32",
-    "i64",
-];
-
 /// Replaces keys, tokens, passwords and credentials in `text` with
 /// [`REDACTED`]. Code and prose around them stay as they are.
 pub fn redact(text: &str) -> String {
-    let mut out = text.to_string();
-    for re in SHAPES.iter() {
-        if re.is_match(&out) {
-            out = re.replace_all(&out, REDACTED).into_owned();
-        }
-    }
-    out = URL_PASSWORD
-        .replace_all(&out, |c: &Captures| {
-            if c[2].is_empty() || is_placeholder(&c[2]) {
-                c[0].to_string()
-            } else {
-                format!("{}{REDACTED}@", &c[1])
-            }
-        })
-        .into_owned();
-    out = BEARER
-        .replace_all(&out, |c: &Captures| {
-            let v = &c[2];
-            // "Bearer authentication" is prose; a token has digits or is
-            // long and random-looking.
-            if v.chars().any(|c| c.is_ascii_digit()) || (v.len() >= 20 && entropy(v) >= 3.5) {
-                format!("{}{REDACTED}", &c[1])
-            } else {
-                c[0].to_string()
-            }
-        })
-        .into_owned();
-    out = BASIC
-        .replace_all(&out, |c: &Captures| {
-            if is_basic_credentials(&c[2]) {
-                format!("{}{REDACTED}", &c[1])
-            } else {
-                c[0].to_string()
-            }
-        })
-        .into_owned();
-    redact_assigned(&out)
-}
-
-/// Replaces the value of every assignment whose name says secret, whatever
-/// the value looks like, unless it is code or a placeholder.
-fn redact_assigned(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut done = 0;
-    let mut at = 0;
-    while let Some(c) = ASSIGNED.captures_at(text, at) {
-        let (whole, name) = (c.get(0).expect("match"), c.get(1).expect("name"));
-        if !names_secret(name.as_str()) {
-            // The value may hold the next name, as in `a=password=x`.
-            at = name.end();
-            continue;
-        }
-        let value = (3..=6).find_map(|i| c.get(i)).expect("value");
-        let bare = c.get(6).is_some();
-        // A bare value ends at a space; what closes it is kept.
-        let end = if bare {
-            let v = value.as_str();
-            value.start()
-                + v.trim_end_matches([',', ';', ')', ']', '}', '>', '.', '"', '\'', '`'])
-                    .len()
-        } else {
-            value.end()
-        };
-        let v = &text[value.start()..end];
-        let sep = c[2].trim().trim_start_matches(['"', '\'']);
-        let keep = v.is_empty()
-            || is_placeholder(v)
-            || (bare && is_code(v, name.as_str(), sep, &text[end..]));
-        if !keep {
-            // A quoted value loses its quotes with it.
-            let from = if bare {
-                value.start()
-            } else {
-                value.start() - 1
-            };
-            let to = if bare { end } else { whole.end() };
-            out.push_str(&text[done..from]);
-            out.push_str(REDACTED);
-            done = to;
-        }
-        at = whole.end().max(name.end());
-    }
-    out.push_str(&text[done..]);
-    out
-}
-
-/// Whether `name` says its value is a secret: its last word is a password,
-/// secret, token or credential, or a key other than a plain one
-/// (`ENCRYPTION_KEY`, `apiKey`, but not `primary_key`). `PWD` is the shell's
-/// working folder.
-fn names_secret(name: &str) -> bool {
-    let words = words(name);
-    let Some(last) = words.last() else {
-        return false;
-    };
-    const ENDS: &[&str] = &[
-        "password",
-        "passwd",
-        "passphrase",
-        "secret",
-        "token",
-        "credential",
-        "credentials",
-        "apikey",
-        "secretkey",
-        "privatekey",
-        "accesskey",
-    ];
-    if ENDS.iter().any(|e| last.ends_with(e)) {
-        return true;
-    }
-    match last.as_str() {
-        "pass" => true,
-        "pwd" => words.len() > 1,
-        "key" => words.len() > 1 && !PLAIN_KEYS.contains(&words[words.len() - 2].as_str()),
-        _ => false,
-    }
-}
-
-/// The words of a name, in lower case: `DB_PASSWORD`, `db.password` and
-/// `dbPassword` all end in `password`.
-fn words(name: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    for part in name.split(|c: char| !c.is_ascii_alphanumeric()) {
-        let chars: Vec<char> = part.chars().collect();
-        let mut word = String::new();
-        for (i, &c) in chars.iter().enumerate() {
-            let prev = i.checked_sub(1).map(|j| chars[j]);
-            let next = chars.get(i + 1);
-            let starts = c.is_ascii_uppercase()
-                && prev.is_some_and(|p| {
-                    p.is_ascii_lowercase()
-                        || p.is_ascii_digit()
-                        || (p.is_ascii_uppercase() && next.is_some_and(char::is_ascii_lowercase))
-                });
-            if starts && !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
-            word.push(c.to_ascii_lowercase());
-        }
-        if !word.is_empty() {
-            words.push(word);
-        }
-    }
-    words
-}
-
-/// A value that only names where the secret comes from.
-fn is_placeholder(v: &str) -> bool {
-    v.contains(REDACTED)
-        || v.starts_with("${")
-        || v.starts_with("{{")
-        || v.starts_with("%(")
-        || v.starts_with("$(")
-        || (v.starts_with('<') && v.ends_with('>'))
-        || v.chars().all(|c| c == '*')
-        // `$DB_PASSWORD`, but not a password like `$uperS3cret`.
-        || v.strip_prefix('$').is_some_and(|n| {
-            !n.is_empty() && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        })
-}
-
-/// Whether a bare value is code rather than a secret: a call, a path
-/// through fields, a reference, a keyword, the same or another secret's
-/// name (`password=password`, `token = access_token`), or a type after
-/// `name:` (`private_key: Ed25519KeyPair,`).
-fn is_code(v: &str, name: &str, sep: &str, after: &str) -> bool {
-    let ident = v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && v.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
-    if v.starts_with('&')
-        || CODE.is_match(v)
-        || PLAIN_VALUES.contains(&v.to_ascii_lowercase().as_str())
-        || (ident && (v.eq_ignore_ascii_case(name) || names_secret(v)))
-    {
-        return true;
-    }
-    // A type is followed by what ends a field or a parameter, or by the
-    // default value.
-    let closed = after.starts_with([',', ';', ')', '>', '{'])
-        || after
-            .trim_start_matches([' ', '\t'])
-            .starts_with(['=', '{']);
-    sep == ":" && closed && TYPE.is_match(v)
-}
-
-/// Shannon entropy of `s`, in bits per character.
-fn entropy(s: &str) -> f64 {
-    let mut counts = std::collections::HashMap::new();
-    for c in s.chars() {
-        *counts.entry(c).or_insert(0usize) += 1;
-    }
-    let n = s.chars().count() as f64;
-    counts
-        .values()
-        .map(|&k| {
-            let p = k as f64 / n;
-            -p * p.log2()
-        })
-        .sum()
+    crate::secrets::redact(text, REDACTED)
 }
 
 /// Redacts every text in the answer, and takes the copy's folder out of
@@ -766,84 +309,6 @@ pub fn clean_answer(a: &mut Answer, copy: Option<&Path>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn secret_looking_paths_are_left_out() {
-        for p in [
-            ".env",
-            ".env.local",
-            "app/.env.production",
-            ".envrc",
-            ".env/config",
-            "certs/server.pem",
-            "tls/Server.KEY",
-            "keys/store.p12",
-            "id_rsa",
-            "deploy/id_ed25519.pub",
-            "keys/id_ecdsa",
-            "id_rsa_github",
-            "id_rsa.bak",
-            "id_ed25519.old",
-            "id_ed25519_sk",
-            ".env-production",
-            ".env_local",
-            ".envrc.local",
-            ".envs/.production/.django",
-            ".ssh/config",
-            "home/.ssh/known_hosts",
-            ".aws/credentials",
-            ".netrc",
-            "web/.npmrc",
-            "gcp/credentials.json",
-            "service-account.json",
-            "keys/Service_Account-prod.json",
-            "client_secret_1234.apps.json",
-            "infra/terraform.tfstate",
-            "infra/terraform.tfstate.backup",
-            "infra/prod.tfvars",
-            "infra/prod.auto.tfvars.json",
-            "kubeconfig",
-            ".kube/config",
-            "home/.docker/config.json",
-            ".pgpass",
-            "web/.htpasswd",
-            ".dev.vars",
-            ".dev.vars.staging",
-            "putty/deploy.ppk",
-            "vault.kdbx",
-            ".azure/accessTokens.json",
-            ".config/gcloud/application_default_credentials.json",
-        ] {
-            assert!(is_secret_path(Path::new(p)), "{p} should be left out");
-        }
-        for p in [
-            "src/main.rs",
-            "README.md",
-            "docs/environment.md",
-            "src/keyboard.rs",
-            "src/key.rs.bak",
-            "monkey.txt",
-            "src/env.rs",
-            "lib/identity.ts",
-            "ssh/notes.md",
-            "src/id_token.rs",
-            "id_generator.py",
-            "id_map.go",
-            ".environment/setup.md",
-            "docker/config.json",
-            "src/config.json",
-            "gcloud/deploy.sh",
-            ".config/settings.json",
-            "src/credentials.rs",
-            "src/service_account.rs",
-            "infra/main.tf",
-            "infra/variables.tf",
-            "src/dev.vars.md",
-            "src/.envoy.yaml",
-        ] {
-            assert!(!is_secret_path(Path::new(p)), "{p} should stay");
-        }
-    }
 
     fn git(dir: &Path, args: &[&str]) {
         let ok = crate::git::git(dir)
@@ -937,7 +402,7 @@ mod tests {
         assert_eq!(m.nested, [PathBuf::from("vendor/lib")]);
         assert_eq!(
             std::fs::read_to_string(copy.join("settings.py")).unwrap(),
-            "SECRET_KEY = [redacted]\n"
+            "SECRET_KEY = '[redacted]'\n"
         );
 
         let stopped = base.join("stopped");
@@ -968,94 +433,6 @@ mod tests {
             ]
         );
         assert!(Mirror::default().notes().is_empty());
-    }
-
-    #[test]
-    fn redacts_keys_tokens_and_passwords() {
-        let cases = [
-            (
-                "key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123",
-                "key: [redacted]",
-            ),
-            (
-                "use sk-proj-ABCDEFGHIJKLMNOPQRSTUV here",
-                "use [redacted] here",
-            ),
-            ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "[redacted]"),
-            (
-                "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz",
-                "[redacted]",
-            ),
-            ("slack xoxb-1234567890-abcdefghij", "slack [redacted]"),
-            ("AKIAIOSFODNN7EXAMPLE is the id", "[redacted] is the id"),
-            (
-                "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-                "Bearer [redacted]",
-            ),
-            ("password=hunter22", "password=[redacted]"),
-            ("DB_PASSWORD: \"correct horse\"", "DB_PASSWORD: [redacted]"),
-            ("DB_PASSWORD: \"c0rrect-h0rse\"", "DB_PASSWORD: [redacted]"),
-            (r#""api_key": "abcd1234efgh""#, r#""api_key": [redacted]"#),
-            (
-                "export GITHUB_TOKEN=abc123def456",
-                "export GITHUB_TOKEN=[redacted]",
-            ),
-            (
-                "postgres://app:s3cr3t@db.internal:5432/app",
-                "postgres://app:[redacted]@db.internal:5432/app",
-            ),
-            (
-                "client_secret = Zm9vYmFyYmF6cXV4cXV1eHh5eg",
-                "client_secret = [redacted]",
-            ),
-        ];
-        for (input, want) in cases {
-            assert_eq!(redact(input), want, "{input}");
-        }
-    }
-
-    /// Tokens of other services, by their shape. Each is put together here
-    /// so no scanner takes this file for a leak.
-    #[test]
-    fn redacts_tokens_of_more_services() {
-        let hex = |n: usize| "0a1b2c3d4e5f6789".repeat(n / 16 + 1)[..n].to_string();
-        let mixed = |n: usize| "aB3dE5gH7jK9mN1p".repeat(n / 16 + 1)[..n].to_string();
-        let tokens = [
-            format!(
-                "https://hooks.slack.com/services/T{}/B{}/{}",
-                "0A1B2C3D",
-                "4E5F6G7H",
-                mixed(24)
-            ),
-            format!("xapp-1-A{}-{}-{}", "0123ABCD", "1234567890", hex(32)),
-            format!("hf_{}", mixed(34)),
-            format!("SG.{}.{}", mixed(22), mixed(43)),
-            format!("whsec_{}", mixed(32)),
-            format!("pypi-{}", mixed(70)),
-            format!("dop_v1_{}", hex(64)),
-            format!("ya29.{}", mixed(40)),
-            format!("shpat_{}", hex(32)),
-        ];
-        for token in tokens {
-            assert_eq!(
-                redact(&format!("use {token} here")),
-                "use [redacted] here",
-                "{token}"
-            );
-        }
-        let cases = [
-            (
-                "Authorization: Basic dXNlcjpwYXNzd29yZA==",
-                "Authorization: Basic [redacted]",
-            ),
-            (
-                "curl -H 'Authorization: Basic YWRtaW46aHVudGVyMjI'",
-                "curl -H 'Authorization: Basic [redacted]'",
-            ),
-        ];
-        for (input, want) in cases {
-            assert_eq!(redact(input), want, "{input}");
-        }
     }
 
     #[test]
@@ -1093,136 +470,6 @@ mod tests {
             "password=[redacted]\n"
         );
         let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn redacts_any_value_after_a_secret_name() {
-        let cases = [
-            (
-                "POSTGRES_PASSWORD: example",
-                "POSTGRES_PASSWORD: [redacted]",
-            ),
-            ("password=Summer@Time!", "password=[redacted]"),
-            (
-                "DB_PASSWORD=correct-horse-battery-staple",
-                "DB_PASSWORD=[redacted]",
-            ),
-            ("secret=ABCDEFGHIJKLMNOPQRSTUVWX", "secret=[redacted]"),
-            ("password=abc123$xyz789", "password=[redacted]"),
-            ("password=$uperS3cret99", "password=[redacted]"),
-            ("DB_PASSWORD=P@ss,word1x", "DB_PASSWORD=[redacted]"),
-            ("password: \"it's-a-secret1\"", "password: [redacted]"),
-            ("API_TOKEN='ab1'", "API_TOKEN=[redacted]"),
-            ("a=password=hunter22", "a=password=[redacted]"),
-            (
-                "The .env sets API_TOKEN=ab12cd34.",
-                "The .env sets API_TOKEN=[redacted].",
-            ),
-            ("dbPassword = hunter22", "dbPassword = [redacted]"),
-            (
-                "spring.datasource.password=foo",
-                "spring.datasource.password=[redacted]",
-            ),
-        ];
-        for (input, want) in cases {
-            assert_eq!(redact(input), want, "{input}");
-        }
-        let long = format!("client_secret: \"{}\"", "x".repeat(300));
-        assert_eq!(redact(&long), "client_secret: [redacted]");
-    }
-
-    #[test]
-    fn redacts_names_that_slipped_through() {
-        let cases = [
-            ("DB_PASS=hunter22", "DB_PASS=[redacted]"),
-            ("SMTP_PASS=mailpass", "SMTP_PASS=[redacted]"),
-            (
-                "ENCRYPTION_KEY=9f86d081884c7d659a2feaa0c55ad015",
-                "ENCRYPTION_KEY=[redacted]",
-            ),
-            ("apiKey: abcdef", "apiKey: [redacted]"),
-            (
-                "Authorization: Bearer abc123opaque456tokenvalue",
-                "Authorization: Bearer [redacted]",
-            ),
-        ];
-        for (input, want) in cases {
-            assert_eq!(redact(input), want, "{input}");
-        }
-    }
-
-    #[test]
-    fn redacts_a_password_with_no_user_or_with_an_at() {
-        let cases = [
-            (
-                "REDIS_URL=redis://:s3cretpass@cache:6379/0",
-                "REDIS_URL=redis://:[redacted]@cache:6379/0",
-            ),
-            (
-                "postgres://app:p@ss@host/db",
-                "postgres://app:[redacted]@host/db",
-            ),
-        ];
-        for (input, want) in cases {
-            assert_eq!(redact(input), want, "{input}");
-        }
-    }
-
-    #[test]
-    fn redacts_a_whole_private_key() {
-        let text = "Here it is:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAABG5vbmUAAAAEbm9uZQ==\n-----END OPENSSH PRIVATE KEY-----\nDone.";
-        assert_eq!(redact(text), "Here it is:\n[redacted]\nDone.");
-        let cut = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow";
-        assert_eq!(redact(cut), "[redacted]");
-    }
-
-    #[test]
-    fn leaves_code_and_prose_alone() {
-        for text in [
-            "let token = self.next_token();",
-            "password: String,",
-            "fn read_password(prompt: &str) -> String",
-            "token = get_token()",
-            "The API key goes in the settings, never in the repo.",
-            "Set `api_key` to your own key: api_key = ${API_KEY}",
-            "url = \"https://example.com/path?q=1\"",
-            "secret = config.secret_key",
-            "auth = AuthConfig::new()",
-            "TOKEN_BYTES = 32",
-            "git@github.com:ArakunHQ/arakun.git",
-            "https://user@example.com/repo",
-            "Option B: keep the session id in the token store [3] [4]",
-            "postgres://app:${DB_PASSWORD}@db/app",
-            "password: \"<your password>\"",
-            "Use skeleton-loading for the list",
-            "sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
-            "private_key: Ed25519KeyPair,",
-            "token = base64url(bytes)",
-            "token_type: \"Bearer\"",
-            "tokenizer = \"cl100k_base\"",
-            "PWD=/home/ann/project1",
-            "src/password.rs:L120-L140",
-            "password: Option<String>,",
-            "fn connect(password: &str, token: Token) -> Result<()>",
-            "api_key = os.environ[\"API_KEY\"]",
-            "password = password",
-            "token = access_token",
-            "password = None",
-            "const token = await fetchToken();",
-            "export PGPASSWORD=$DB_PASSWORD",
-            "primary_key = id",
-            "Use Bearer authentication for the API.",
-            "https://user@example.com/repo",
-            "Use Basic authentication for the API.",
-            "Basic configuration of the server",
-            "Basic TypeScript setup",
-            "https://hooks.slack.com/ is where webhooks live",
-            "the hf_hub_download helper",
-            "pypi-publish runs on a tag",
-            "SG.fn is the namespace",
-        ] {
-            assert_eq!(redact(text), text, "{text}");
-        }
     }
 
     #[test]

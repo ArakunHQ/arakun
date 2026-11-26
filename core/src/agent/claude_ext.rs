@@ -1372,58 +1372,22 @@ fn run_with(
 // ---------------------------------------------------------------------------
 // Secrets.
 
-const SECRET_PREFIXES: [&str; 14] = [
-    "ghp_",
-    "gho_",
-    "ghu_",
-    "ghs_",
-    "github_pat_",
-    "sk-",
-    "sk_",
-    "phx_",
-    "phc_",
-    "xox",
-    "AKIA",
-    "eyJ",
-    "glpat-",
-    "sbp_",
-];
-
-/// Masks what looks like a token: known prefixes, `user:token@` in URLs and
-/// long random-looking words. Keeps the first characters so it stays recognizable.
+/// Masks the secrets [`crate::secrets::find`] finds. A key known by its
+/// shape keeps its first characters, so it stays recognizable.
 pub fn redact(s: &str) -> String {
+    let found = crate::secrets::find(s);
     let mut out = String::with_capacity(s.len());
-    let mut word = String::new();
-    let flush = |word: &mut String, out: &mut String| {
-        if looks_secret(word) {
-            out.push_str(&word.chars().take(4).collect::<String>());
-            out.push_str("••••");
-        } else {
-            out.push_str(word);
+    let mut done = 0;
+    for secret in found {
+        out.push_str(&s[done..secret.range.start]);
+        if secret.kind == crate::secrets::Kind::Token {
+            out.extend(s[secret.range.clone()].chars().take(4));
         }
-        word.clear();
-    };
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() || "_-.+".contains(c) {
-            word.push(c);
-        } else {
-            flush(&mut word, &mut out);
-            out.push(c);
-        }
+        out.push_str("••••");
+        done = secret.range.end;
     }
-    flush(&mut word, &mut out);
+    out.push_str(&s[done..]);
     out
-}
-
-fn looks_secret(w: &str) -> bool {
-    if w.len() >= 12 && SECRET_PREFIXES.iter().any(|p| w.starts_with(p)) {
-        return true;
-    }
-    let letters = w.chars().filter(|c| c.is_ascii_alphabetic()).count();
-    let digits = w.chars().filter(|c| c.is_ascii_digit()).count();
-    let upper = w.chars().any(|c| c.is_ascii_uppercase());
-    let lower = w.chars().any(|c| c.is_ascii_lowercase());
-    w.len() >= 32 && !w.contains('.') && digits >= 4 && letters >= 8 && upper && lower
 }
 
 #[cfg(test)]

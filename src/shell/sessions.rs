@@ -177,8 +177,18 @@ impl Shell {
             .collect()
     }
 
-    /// What the user has on screen is read: it no longer waits on them.
+    /// The person sees the sessions on screen: their phone notices that
+    /// wait for the person to leave are moot.
+    pub(super) fn phone_seen_on_screen(&mut self) {
+        for (env, id) in self.sessions_on_screen() {
+            self.phone_seen(&env, &id);
+        }
+    }
+
+    /// What the user has on screen is read: it no longer waits on them, and
+    /// its phone notices that wait for the user to leave are moot.
     pub(super) fn mark_on_screen_read(&mut self, cx: &mut Context<Self>) {
+        self.phone_seen_on_screen();
         let mut changed = false;
         for (env, id) in self.sessions_on_screen() {
             if let Some(s) = self.session_mut(&env, &id)
@@ -2180,33 +2190,32 @@ impl Shell {
             .and_then(|e| e.session_index(id).map(|i| e.sessions[i].title.clone()))
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| t.title());
-        // Phones hear when the user is away from this window; the desktop, when
-        // the session is not the one on screen.
+        // Phones hear when the user is away from the computer (the away rule
+        // in `Notifier`); the desktop, when the session is not the one on screen.
+        let pid = self.phone_id(env_path, id);
+        let env = self.find_env(env_path).map(|e| e.name.to_string());
+        let secs = (kind == Kind::Done)
+            .then(|| notify::turn_secs(t.entries()))
+            .flatten();
+        let phone_body = phone_text(
+            kind,
+            matches!(ev, ThreadEvent::NeedsPermission),
+            &body,
+            t.entries(),
+            t.pending_permission(),
+            t.pending_question(),
+        );
+        self.notify_phones(
+            &pid,
+            kind,
+            &title,
+            &phone_body,
+            &env.unwrap_or_default(),
+            secs,
+            window,
+            cx,
+        );
         let at_computer = window.is_window_active();
-        if !at_computer {
-            let pid = self.phone_id(env_path, id);
-            let env = self.find_env(env_path).map(|e| e.name.to_string());
-            let secs = (kind == Kind::Done)
-                .then(|| notify::turn_secs(t.entries()))
-                .flatten();
-            let phone_body = phone_text(
-                kind,
-                matches!(ev, ThreadEvent::NeedsPermission),
-                &body,
-                t.entries(),
-                t.pending_permission(),
-                t.pending_question(),
-            );
-            self.notify_phones(
-                &pid,
-                kind,
-                &title,
-                &phone_body,
-                &env.unwrap_or_default(),
-                secs,
-                cx,
-            );
-        }
         let visible = at_computer
             && self.has_projects()
             && self.env().path == env_path

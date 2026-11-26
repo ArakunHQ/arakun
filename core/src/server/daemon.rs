@@ -190,6 +190,10 @@ pub struct Daemon {
     uploads: phone::Uploads,
     /// The last thing each session notified about, so one turn says it once.
     notified: HashMap<String, notify::Kind>,
+    /// Phone notices waiting for the person to be away.
+    notifier: notify::Notifier,
+    /// Checks the waiting notices while there are any.
+    notice_timer: Option<Task<()>>,
     writer: Writer,
     /// The saved transcript a device read last, for the pages after the first.
     last_read: agent::saved::LastRead,
@@ -919,6 +923,37 @@ fn notice_payload(
     push::notice(kind.as_str(), id, title, body, env, secs)
 }
 
+/// Whether the person is at the computer, as the server can tell: the host's
+/// idle time (none on a server), and no window to have focus.
+fn presence() -> notify::Presence {
+    notify::Presence {
+        idle: (crate::host::get().idle_for)(),
+        focused: false,
+    }
+}
+
+/// The phones that get a session's notice now; the rest wait in `notifier`.
+fn offer_notice(
+    notifier: &mut notify::Notifier,
+    c: notify::Candidate,
+    devices: &[phone::Device],
+    looking: &HashSet<String>,
+    now: Instant,
+) -> Vec<notify::Delivery> {
+    notifier.offer(c, devices, looking, presence(), now)
+}
+
+/// The waiting notices that may go now. A device looking at a session drops
+/// them through `still`, so nobody is `looking` here.
+fn due_notices(
+    notifier: &mut notify::Notifier,
+    devices: &[phone::Device],
+    still: impl Fn(&str, notify::Kind) -> bool,
+    now: Instant,
+) -> Vec<notify::Delivery> {
+    notifier.tick(devices, &HashSet::new(), presence(), still, now)
+}
+
 fn error_text(t: &Thread) -> String {
     match t.status() {
         ThreadStatus::Error(msg) => {
@@ -1091,6 +1126,8 @@ impl Daemon {
             meta: HashMap::new(),
             reading_meta: false,
             notified: HashMap::new(),
+            notifier: notify::Notifier::default(),
+            notice_timer: None,
             writer: parts.writer,
             last_read: Default::default(),
             said_commands: HashMap::new(),
@@ -3803,10 +3840,6 @@ impl Daemon {
         }
     }
 
-    /// Pushes a notice to the devices that asked for them when a session
-    /// finishes a turn, wants an answer or fails, except to the ones looking
-    /// at that very session. Subscriptions the push service says are gone are
-    /// forgotten.
     /// Starts the install of the adapter a session is missing, the first time
     /// it asks. True when it started one.
     fn install_missing_adapter(
@@ -3832,6 +3865,9 @@ impl Daemon {
         true
     }
 
+    /// Offers a notice to the devices that asked for them when a session
+    /// finishes a turn, wants an answer or fails, except to the ones looking
+    /// at that very session. It goes now, or once the person is away.
     fn notify(
         &mut self,
         id: &str,
@@ -3881,30 +3917,88 @@ impl Daemon {
             })
             .filter_map(|(client, _)| self.transport.device_of(*client))
             .collect();
-        let wanted = |d: &phone::Device| match kind {
-            notify::Kind::Done => d.notices.done,
-            notify::Kind::Input => d.notices.input,
-            notify::Kind::Error => d.notices.error,
-        };
-        let targets: Vec<(String, push::Subscription)> = self
-            .access
-            .lock()
-            .unwrap()
-            .devices
-            .iter()
-            .filter(|d| !looking.contains(&d.id) && wanted(d))
-            .filter_map(|d| d.push.clone().map(|s| (d.id.clone(), s)))
-            .collect();
-        if targets.is_empty() {
-            return;
-        }
         let env = self
             .store
             .session(id)
             .and_then(|s| s.place.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let payload = notice_payload(kind, id, &title, &env, &body, t.entries());
+        let secs = (kind == notify::Kind::Done)
+            .then(|| notify::turn_secs(t.entries()))
+            .flatten();
+        let c = notify::Candidate {
+            session: id.to_string(),
+            kind,
+            turn_secs: secs,
+            payload: notice_payload(kind, id, &title, &env, &body, t.entries()),
+        };
+        let now = offer_notice(
+            &mut self.notifier,
+            c,
+            &self.access.lock().unwrap().devices,
+            &looking,
+            Instant::now(),
+        );
+        self.push_notices(now, cx);
+        self.time_notices(cx);
+    }
+
+    /// Checks the waiting notices about every 15 s while there are any.
+    fn time_notices(&mut self, cx: &mut Context<Self>) {
+        if self.notice_timer.is_some() || !self.notifier.has_pending() {
+            return;
+        }
+        self.notice_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(notify::CHECK_EVERY).await;
+                let more = this.update(cx, |this, cx| {
+                    this.tick_notices(Instant::now(), cx);
+                    let more = this.notifier.has_pending();
+                    if !more {
+                        this.notice_timer = None;
+                    }
+                    more
+                });
+                if !matches!(more, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Sends the waiting notices that may go at `now`.
+    fn tick_notices(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let mut notifier = std::mem::take(&mut self.notifier);
+        let due = {
+            let access = self.access.lock().unwrap();
+            let app: &App = cx;
+            let still = |session: &str, kind| self.still_notice(session, kind, app);
+            due_notices(&mut notifier, &access.devices, still, now)
+        };
+        self.notifier = notifier;
+        self.push_notices(due, cx);
+    }
+
+    /// Whether a session is still in the state its notice is about: still
+    /// waiting for an answer, or not at work again. One a device has on
+    /// screen is seen.
+    fn still_notice(&self, id: &str, kind: notify::Kind, cx: &App) -> bool {
+        if self.seen(id) || self.store.session(id).is_none() {
+            return false;
+        }
+        // A retired session is neither working nor asking anything.
+        let Some(live) = self.live.get(id) else {
+            return kind != notify::Kind::Input;
+        };
+        live.thread.read(cx).still(kind)
+    }
+
+    /// Pushes notices in the background. Subscriptions the push service says
+    /// are gone are forgotten.
+    fn push_notices(&self, notices: Vec<notify::Delivery>, cx: &mut Context<Self>) {
+        if notices.is_empty() {
+            return;
+        }
         let (vapid, access) = (self.vapid.clone(), self.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -3912,10 +4006,10 @@ impl Daemon {
                 .spawn(async move {
                     let now = unix_now();
                     let mut gone = Vec::new();
-                    for (device, sub) in targets {
-                        match push::send(&vapid, &sub, payload.as_bytes(), now) {
+                    for n in notices {
+                        match push::send(&vapid, &n.sub, n.payload.as_bytes(), now) {
                             Ok(()) => {}
-                            Err(push::Fail::Gone) => gone.push((device, sub)),
+                            Err(push::Fail::Gone) => gone.push((n.device, n.sub)),
                             Err(e) => eprintln!("arakun server: could not notify a device: {e}"),
                         }
                     }
@@ -6665,6 +6759,44 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         ))
         .unwrap();
         assert!(n.get("secs").is_none());
+    }
+
+    #[test]
+    fn without_idle_time_a_finished_turn_waits_the_away_time() {
+        // The server has no display: the host can't tell idle time.
+        assert_eq!((crate::host::get().idle_for)(), None);
+        let devices = vec![relay_device("p1", true)];
+        let mut notifier = notify::Notifier::default();
+        let made = Instant::now();
+        let finished = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Done,
+            turn_secs: Some(300),
+            payload: "notice".into(),
+        };
+        let nobody = HashSet::new();
+        let now = offer_notice(&mut notifier, finished, &devices, &nobody, made);
+        assert!(now.is_empty(), "no push at once");
+        let still = |_: &str, _: notify::Kind| true;
+        let early = due_notices(
+            &mut notifier,
+            &devices,
+            still,
+            made + Duration::from_secs(60),
+        );
+        assert!(early.is_empty());
+        let sent = due_notices(
+            &mut notifier,
+            &devices,
+            still,
+            made + Duration::from_secs(120),
+        );
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            (sent[0].device.as_str(), sent[0].payload.as_str()),
+            ("p1", "notice")
+        );
+        assert!(!notifier.has_pending());
     }
 
     #[test]

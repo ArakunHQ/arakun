@@ -44,6 +44,7 @@ mod github_view;
 mod headless;
 mod history;
 mod http;
+mod idle;
 mod island_host;
 mod iso;
 mod iso_view;
@@ -155,6 +156,7 @@ fn main() {
         sandbox_socket: control::sandbox_socket_path,
         shim_dir: control::shim_dir,
         github_read_only: github::pr::READ_ONLY,
+        idle_for: idle::idle_for,
     });
     browser::handle_subprocess();
     if control::run_cli() {

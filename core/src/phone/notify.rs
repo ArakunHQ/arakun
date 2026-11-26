@@ -1,7 +1,15 @@
 //! What a notice says: short plain text built from the session, so a phone
-//! shows the answer or the question and not a fixed line.
+//! shows the answer or the question and not a fixed line. And who gets it
+//! when: `Notifier` holds a notice until the person is away from the computer.
+
+use std::collections::{BTreeMap, HashSet};
+use std::time::{Duration, Instant};
 
 use crate::agent::{AskUserRequest, Entry, PermissionRequest, ToolCall};
+use crate::phone::{Device, Door, Notices, push};
+
+/// How often a sender checks the notices waiting in its `Notifier`.
+pub const CHECK_EVERY: Duration = Duration::from_secs(15);
 
 /// What the notice is about. The apps read it as `kind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +26,209 @@ impl Kind {
             Kind::Input => "input",
             Kind::Error => "error",
         }
+    }
+}
+
+/// A notice a session would send, before it is known who gets it and when.
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub session: String,
+    pub kind: Kind,
+    /// How long the turn took; `None` counts as long.
+    pub turn_secs: Option<u64>,
+    /// The finished notice, from `push::notice`.
+    pub payload: String,
+}
+
+/// Whether the person is at the computer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Presence {
+    /// How long since they last used it, when the host can tell.
+    pub idle: Option<Duration>,
+    /// Whether the Arakun window has focus.
+    pub focused: bool,
+}
+
+/// A notice to push to one phone now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delivery {
+    pub device: String,
+    /// Which of the devices with that id: one id can be paired on the
+    /// network and through the relay.
+    pub door: Door,
+    pub sub: push::Subscription,
+    pub payload: String,
+}
+
+struct Pending {
+    kind: Kind,
+    payload: String,
+    made: Instant,
+}
+
+/// What `Notifier` does with a notice for one phone.
+enum Fate {
+    Send,
+    Wait,
+    Drop,
+}
+
+/// Which of a session's waiting notices a newer one replaces. A turn's end
+/// can come while a question or a permission is still open (a subagent's),
+/// so the end must not take the question's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    /// `input`: the session waits for the person.
+    Input,
+    /// `done` or `error`: how the turn ended.
+    End,
+}
+
+impl Slot {
+    fn of(kind: Kind) -> Slot {
+        match kind {
+            Kind::Input => Slot::Input,
+            Kind::Done | Kind::Error => Slot::End,
+        }
+    }
+}
+
+/// Decides which phones get a notice and when: at once, once the person is
+/// away from the computer, or never. Pure: the caller brings the time.
+#[derive(Default)]
+pub struct Notifier {
+    /// At most one per (device id, door, session, slot); a newer one
+    /// replaces it.
+    pending: BTreeMap<(String, Door, String, Slot), Pending>,
+}
+
+impl Notifier {
+    /// A session has news. Returns the notices to send now and queues the
+    /// ones that wait for the person to leave.
+    pub fn offer(
+        &mut self,
+        c: Candidate,
+        devices: &[Device],
+        looking: &HashSet<String>,
+        p: Presence,
+        now: Instant,
+    ) -> Vec<Delivery> {
+        let mut out = Vec::new();
+        for d in devices {
+            // The newest notice of its slot wins, even one that stays quiet:
+            // the older one is about a state the session has left. The other
+            // slot's stays; `tick` drops it once the session moved on.
+            let door = Door::of(d);
+            let key = (d.id.clone(), door, c.session.clone(), Slot::of(c.kind));
+            self.pending.remove(&key);
+            let Some(sub) = &d.push else { continue };
+            if !wants(&d.notices, c.kind) || looking.contains(&d.id) {
+                continue;
+            }
+            let short = c
+                .turn_secs
+                .is_some_and(|t| t < u64::from(d.notices.min_turn_secs));
+            if c.kind == Kind::Done && short {
+                continue;
+            }
+            match fate(&d.notices, c.kind, p, None) {
+                Fate::Send => out.push(Delivery {
+                    device: d.id.clone(),
+                    door,
+                    sub: sub.clone(),
+                    payload: c.payload.clone(),
+                }),
+                Fate::Wait => {
+                    self.pending.insert(
+                        key,
+                        Pending {
+                            kind: c.kind,
+                            payload: c.payload.clone(),
+                            made: now,
+                        },
+                    );
+                }
+                Fate::Drop => {}
+            }
+        }
+        out
+    }
+
+    /// Checks the queue: sends what may go now and drops what no longer
+    /// matters. `still(session, kind)` says whether the session is still in
+    /// the state the notice is about.
+    pub fn tick(
+        &mut self,
+        devices: &[Device],
+        looking: &HashSet<String>,
+        p: Presence,
+        still: impl Fn(&str, Kind) -> bool,
+        now: Instant,
+    ) -> Vec<Delivery> {
+        let mut out = Vec::new();
+        self.pending.retain(|(id, door, session, _), item| {
+            // The phone as it is now: its subscription may have changed.
+            let Some(d) = devices.iter().find(|d| &d.id == id && door.admits(d)) else {
+                return false;
+            };
+            let Some(sub) = &d.push else { return false };
+            if !wants(&d.notices, item.kind) || looking.contains(id) {
+                return false;
+            }
+            if !still(session, item.kind) {
+                return false;
+            }
+            let waited = now.saturating_duration_since(item.made);
+            match fate(&d.notices, item.kind, p, Some(waited)) {
+                Fate::Send => {
+                    out.push(Delivery {
+                        device: id.clone(),
+                        door: *door,
+                        sub: sub.clone(),
+                        payload: item.payload.clone(),
+                    });
+                    false
+                }
+                Fate::Wait => true,
+                Fate::Drop => false,
+            }
+        });
+        out
+    }
+
+    /// The person opened the session on the computer.
+    pub fn seen(&mut self, session: &str) {
+        self.pending.retain(|(_, _, s, _), _| s != session);
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+}
+
+fn wants(n: &Notices, kind: Kind) -> bool {
+    match kind {
+        Kind::Done => n.done,
+        Kind::Input => n.input,
+        Kind::Error => n.error,
+    }
+}
+
+/// The away rule for one phone. At the computer, `input` waits for the
+/// person to leave; `done` and `error` were seen there. When the host can't
+/// tell idle time, the notice waits the away time in an unfocused window
+/// instead; `waited` is `None` for a notice just made.
+fn fate(n: &Notices, kind: Kind, p: Presence, waited: Option<Duration>) -> Fate {
+    let away = Duration::from_secs(n.away_after_secs.into());
+    if away.is_zero() {
+        return Fate::Send;
+    }
+    match p.idle {
+        Some(idle) if idle >= away => Fate::Send,
+        Some(_) if kind == Kind::Input => Fate::Wait,
+        Some(_) => Fate::Drop,
+        None if !p.focused && waited.is_some_and(|w| w >= away) => Fate::Send,
+        None => Fate::Wait,
     }
 }
 
@@ -187,7 +398,7 @@ fn plain(md: &str) -> String {
 mod tests {
     use super::*;
     use crate::agent::{Question, SpecPlan, ToolStatus};
-    use crate::phone::push;
+    use crate::phone::{Door, push};
 
     fn user(elapsed_ms: Option<u64>) -> Entry {
         Entry::User {
@@ -331,5 +542,637 @@ mod tests {
         assert_eq!(input_body(&[], None, None), "Needs your input.");
         let empty = AskUserRequest::for_test(Vec::new());
         assert_eq!(input_body(&[], None, Some(&empty)), "Needs your input.");
+    }
+
+    fn device(id: &str, notices: Notices) -> Device {
+        Device {
+            id: id.into(),
+            name: id.into(),
+            token_hash: String::new(),
+            ticket_hash: String::new(),
+            paired_at: 0,
+            last_seen: 0,
+            push: Some(push::Subscription {
+                endpoint: format!("https://push.example/{id}"),
+                p256dh: "k".into(),
+                auth: "a".into(),
+            }),
+            notices,
+        }
+    }
+
+    fn phone() -> Device {
+        device("p", Notices::default())
+    }
+
+    fn cand(session: &str, kind: Kind, turn_secs: Option<u64>) -> Candidate {
+        Candidate {
+            session: session.into(),
+            kind,
+            turn_secs,
+            payload: format!(
+                "{{\"session\":\"{session}\",\"kind\":\"{}\"}}",
+                kind.as_str()
+            ),
+        }
+    }
+
+    fn idle(secs: u64) -> Presence {
+        Presence {
+            idle: Some(Duration::from_secs(secs)),
+            focused: false,
+        }
+    }
+
+    fn unknown(focused: bool) -> Presence {
+        Presence {
+            idle: None,
+            focused,
+        }
+    }
+
+    fn nobody() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    fn always(_: &str, _: Kind) -> bool {
+        true
+    }
+
+    #[test]
+    fn away_zero_sends_now() {
+        let d = device(
+            "p",
+            Notices {
+                away_after_secs: 0,
+                ..Notices::default()
+            },
+        );
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        for kind in [Kind::Done, Kind::Input, Kind::Error] {
+            for p in [idle(0), unknown(true)] {
+                let out = n.offer(
+                    cand("s", kind, None),
+                    std::slice::from_ref(&d),
+                    &nobody(),
+                    p,
+                    now,
+                );
+                assert_eq!(out.len(), 1, "{kind:?} {p:?}");
+                assert_eq!(out[0].device, "p");
+                assert_eq!(out[0].sub, d.push.clone().unwrap());
+                assert_eq!(out[0].payload, cand("s", kind, None).payload);
+            }
+        }
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn idle_known_away_sends() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        for kind in [Kind::Done, Kind::Input, Kind::Error] {
+            let out = n.offer(cand("s", kind, None), &[phone()], &nobody(), idle(120), now);
+            assert_eq!(out.len(), 1, "{kind:?}");
+        }
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn idle_known_present_drops_done_and_error() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        for kind in [Kind::Done, Kind::Error] {
+            let out = n.offer(cand("s", kind, None), &[phone()], &nobody(), idle(5), now);
+            assert!(out.is_empty(), "{kind:?}");
+        }
+        assert!(!n.has_pending());
+        let later = now + Duration::from_secs(600);
+        assert!(
+            n.tick(&[phone()], &nobody(), idle(600), always, later)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn idle_known_present_queues_input_until_away() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert!(out.is_empty());
+        assert!(n.has_pending());
+        let soon = now + Duration::from_secs(15);
+        assert!(
+            n.tick(&[phone()], &nobody(), idle(20), always, soon)
+                .is_empty()
+        );
+        assert!(n.has_pending(), "still at the computer");
+        let later = now + Duration::from_secs(130);
+        let out = n.tick(&[phone()], &nobody(), idle(120), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, cand("s", Kind::Input, None).payload);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn tick_drops_input_no_longer_waiting() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            idle(5),
+            now,
+        );
+        let answered = |s: &str, k: Kind| !(s == "s" && k == Kind::Input);
+        let later = now + Duration::from_secs(300);
+        assert!(
+            n.tick(&[phone()], &nobody(), idle(300), answered, later)
+                .is_empty()
+        );
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn idle_unknown_waits_then_sends_if_unfocused() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Done, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        assert!(out.is_empty());
+        assert!(n.has_pending());
+        let soon = now + Duration::from_secs(119);
+        assert!(
+            n.tick(&[phone()], &nobody(), unknown(false), always, soon)
+                .is_empty()
+        );
+        let later = now + Duration::from_secs(120);
+        let out = n.tick(&[phone()], &nobody(), unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, cand("s", Kind::Done, None).payload);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn idle_unknown_focused_keeps_waiting() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Error, None),
+            &[phone()],
+            &nobody(),
+            unknown(true),
+            now,
+        );
+        let later = now + Duration::from_secs(600);
+        assert!(
+            n.tick(&[phone()], &nobody(), unknown(true), always, later)
+                .is_empty()
+        );
+        assert!(n.has_pending());
+        let out = n.tick(&[phone()], &nobody(), unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn seen_drops_pending() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        n.offer(
+            cand("t", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        n.seen("s");
+        let later = now + Duration::from_secs(600);
+        let out = n.tick(&[phone()], &nobody(), unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, cand("t", Kind::Input, None).payload);
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        n.seen("s");
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn short_turn_done_dropped_input_kept() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let away = idle(600);
+        let short = n.offer(
+            cand("s", Kind::Done, Some(29)),
+            &[phone()],
+            &nobody(),
+            away,
+            now,
+        );
+        assert!(short.is_empty());
+        let long = n.offer(
+            cand("s", Kind::Done, Some(30)),
+            &[phone()],
+            &nobody(),
+            away,
+            now,
+        );
+        assert_eq!(long.len(), 1);
+        let unknown_len = n.offer(
+            cand("s", Kind::Done, None),
+            &[phone()],
+            &nobody(),
+            away,
+            now,
+        );
+        assert_eq!(unknown_len.len(), 1, "an unknown length counts as long");
+        let input = n.offer(
+            cand("s", Kind::Input, Some(1)),
+            &[phone()],
+            &nobody(),
+            away,
+            now,
+        );
+        assert_eq!(input.len(), 1);
+        let error = n.offer(
+            cand("s", Kind::Error, Some(1)),
+            &[phone()],
+            &nobody(),
+            away,
+            now,
+        );
+        assert_eq!(error.len(), 1);
+        let every = device(
+            "p",
+            Notices {
+                min_turn_secs: 0,
+                ..Notices::default()
+            },
+        );
+        let out = n.offer(
+            cand("s", Kind::Done, Some(0)),
+            &[every],
+            &nobody(),
+            away,
+            now,
+        );
+        assert_eq!(out.len(), 1, "0 turns the rule off");
+    }
+
+    #[test]
+    fn newer_replaces_pending() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        for (older, newer) in [
+            (Kind::Input, Kind::Input),
+            (Kind::Error, Kind::Done),
+            (Kind::Done, Kind::Error),
+        ] {
+            n.offer(
+                cand("s", older, None),
+                &[phone()],
+                &nobody(),
+                unknown(false),
+                now,
+            );
+            let mut c = cand("s", newer, None);
+            c.payload = "newer".into();
+            n.offer(
+                c,
+                &[phone()],
+                &nobody(),
+                unknown(false),
+                now + Duration::from_secs(60),
+            );
+            // The newer one's own wait counts, not the older one's.
+            let at_old = now + Duration::from_secs(120);
+            assert!(
+                n.tick(&[phone()], &nobody(), unknown(false), always, at_old)
+                    .is_empty()
+            );
+            let at_new = now + Duration::from_secs(180);
+            let out = n.tick(&[phone()], &nobody(), unknown(false), always, at_new);
+            assert_eq!(out.len(), 1, "{older:?} then {newer:?}");
+            assert_eq!(out[0].payload, "newer");
+            assert!(!n.has_pending());
+        }
+    }
+
+    #[test]
+    fn looking_device_skipped() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let devices = [phone(), device("q", Notices::default())];
+        let looking: HashSet<String> = ["p".to_string()].into();
+        let out = n.offer(
+            cand("s", Kind::Done, None),
+            &devices,
+            &looking,
+            idle(600),
+            now,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].device, "q");
+        // A pending one goes too once its phone shows the session.
+        n.offer(
+            cand("t", Kind::Input, None),
+            &devices,
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        let later = now + Duration::from_secs(600);
+        let out = n.tick(&devices, &looking, unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].device, "q");
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn skips_kinds_switched_off_and_phones_without_a_subscription() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let mut unsubscribed = device("u", Notices::default());
+        unsubscribed.push = None;
+        let no_done = device(
+            "d",
+            Notices {
+                done: false,
+                ..Notices::default()
+            },
+        );
+        let devices = [unsubscribed, no_done];
+        let out = n.offer(
+            cand("s", Kind::Done, None),
+            &devices,
+            &nobody(),
+            idle(600),
+            now,
+        );
+        assert!(out.is_empty());
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            idle(600),
+            now,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].device, "d");
+    }
+
+    #[test]
+    fn tick_uses_the_current_subscription() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[device("q", Notices::default())],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        let mut moved = phone();
+        moved.push.as_mut().unwrap().endpoint = "https://push.example/new".into();
+        let mut gone = device("q", Notices::default());
+        gone.push = None;
+        let later = now + Duration::from_secs(600);
+        let out = n.tick(&[moved, gone], &nobody(), unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/new");
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn tick_with_idle_now_known_drops_done_at_the_computer() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Done, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        n.offer(
+            cand("t", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        let later = now + Duration::from_secs(600);
+        assert!(
+            n.tick(&[phone()], &nobody(), idle(5), always, later)
+                .is_empty()
+        );
+        assert!(n.has_pending(), "the input waits");
+        let out = n.tick(&[phone()], &nobody(), idle(120), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, cand("t", Kind::Input, None).payload);
+    }
+
+    /// The same id paired on the network (with a token) and through the relay.
+    fn twins(network: Notices, relay: Notices) -> [Device; 2] {
+        let mut lan = device("same", network);
+        lan.token_hash = "hash".into();
+        lan.push.as_mut().unwrap().endpoint = "https://push.example/lan".into();
+        let mut rel = device("same", relay);
+        rel.push.as_mut().unwrap().endpoint = "https://push.example/relay".into();
+        [lan, rel]
+    }
+
+    #[test]
+    fn a_twin_without_a_subscription_does_not_lose_the_other_ones_notice() {
+        let [mut lan, rel] = twins(Notices::default(), Notices::default());
+        lan.push = None;
+        let devices = [lan, rel];
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert!(out.is_empty());
+        let later = now + Duration::from_secs(200);
+        let out = n.tick(&devices, &nobody(), idle(200), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/relay");
+        assert_eq!(out[0].door, Door::Relay);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn twins_each_follow_their_own_away_time() {
+        let at_once = Notices {
+            away_after_secs: 0,
+            ..Notices::default()
+        };
+        let devices = twins(at_once, Notices::default());
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let out = n.offer(
+            cand("s", Kind::Input, None),
+            &devices,
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/lan");
+        assert_eq!(out[0].door, Door::Local);
+        let soon = now + Duration::from_secs(15);
+        assert!(
+            n.tick(&devices, &nobody(), idle(20), always, soon)
+                .is_empty()
+        );
+        let later = now + Duration::from_secs(130);
+        let out = n.tick(&devices, &nobody(), idle(120), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sub.endpoint, "https://push.example/relay");
+        assert_eq!(out[0].door, Door::Relay);
+        let end = now + Duration::from_secs(300);
+        assert!(
+            n.tick(&devices, &nobody(), idle(300), always, end)
+                .is_empty()
+        );
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn away_zero_sends_at_once_in_tick() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Input, None),
+            &[phone()],
+            &nobody(),
+            idle(5),
+            now,
+        );
+        assert!(n.has_pending());
+        let at_once = device(
+            "p",
+            Notices {
+                away_after_secs: 0,
+                ..Notices::default()
+            },
+        );
+        let soon = now + Duration::from_secs(15);
+        let out = n.tick(&[at_once], &nobody(), idle(20), always, soon);
+        assert_eq!(out.len(), 1);
+        assert!(!n.has_pending());
+    }
+
+    #[test]
+    fn a_skipped_newer_notice_still_replaces_the_pending_one() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        n.offer(
+            cand("s", Kind::Done, Some(300)),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        let short = n.offer(
+            cand("s", Kind::Done, Some(1)),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        assert!(short.is_empty());
+        assert!(
+            !n.has_pending(),
+            "the newest notice wins, even one that stays quiet"
+        );
+    }
+
+    #[test]
+    fn a_turns_end_leaves_a_waiting_question() {
+        let mut n = Notifier::default();
+        let now = Instant::now();
+        let asking = || cand("s", Kind::Input, None);
+        // A short turn's end stays quiet but takes nothing away.
+        n.offer(asking(), &[phone()], &nobody(), unknown(false), now);
+        let short = n.offer(
+            cand("s", Kind::Done, Some(1)),
+            &[phone()],
+            &nobody(),
+            unknown(false),
+            now,
+        );
+        assert!(short.is_empty());
+        let later = now + Duration::from_secs(120);
+        let out = n.tick(&[phone()], &nobody(), unknown(false), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, asking().payload);
+
+        // An end that goes at once goes, and the question still waits.
+        n.offer(asking(), &[phone()], &nobody(), idle(10), now);
+        let failed = n.offer(
+            cand("s", Kind::Error, None),
+            &[phone()],
+            &nobody(),
+            idle(600),
+            now,
+        );
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].payload, cand("s", Kind::Error, None).payload);
+        assert!(n.has_pending(), "the question waits");
+        let out = n.tick(&[phone()], &nobody(), idle(600), always, later);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, asking().payload);
+
+        // Once it is answered, it goes without a word.
+        n.offer(asking(), &[phone()], &nobody(), idle(10), now);
+        n.offer(
+            cand("s", Kind::Done, Some(300)),
+            &[phone()],
+            &nobody(),
+            idle(600),
+            now,
+        );
+        let answered = |_: &str, k: Kind| k != Kind::Input;
+        assert!(
+            n.tick(&[phone()], &nobody(), idle(600), answered, later)
+                .is_empty()
+        );
+        assert!(!n.has_pending());
     }
 }

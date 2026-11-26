@@ -456,6 +456,21 @@ pub struct Notices {
     pub input: bool,
     /// A turn failed.
     pub error: bool,
+    /// How long the person is away from the computer before a notice goes
+    /// out. 0 sends at once.
+    #[serde(default = "default_away_after_secs")]
+    pub away_after_secs: u32,
+    /// A `done` for a shorter turn stays quiet. 0 tells of every turn.
+    #[serde(default = "default_min_turn_secs")]
+    pub min_turn_secs: u32,
+}
+
+fn default_away_after_secs() -> u32 {
+    120
+}
+
+fn default_min_turn_secs() -> u32 {
+    30
 }
 
 impl Default for Notices {
@@ -464,6 +479,30 @@ impl Default for Notices {
             done: true,
             input: true,
             error: true,
+            away_after_secs: default_away_after_secs(),
+            min_turn_secs: default_min_turn_secs(),
+        }
+    }
+}
+
+/// What `POST /push` changes in `Notices`: a field it leaves out stays as it was.
+#[derive(Deserialize)]
+struct NoticesChange {
+    done: Option<bool>,
+    input: Option<bool>,
+    error: Option<bool>,
+    away_after_secs: Option<u32>,
+    min_turn_secs: Option<u32>,
+}
+
+impl NoticesChange {
+    fn apply(&self, n: Notices) -> Notices {
+        Notices {
+            done: self.done.unwrap_or(n.done),
+            input: self.input.unwrap_or(n.input),
+            error: self.error.unwrap_or(n.error),
+            away_after_secs: self.away_after_secs.unwrap_or(n.away_after_secs),
+            min_turn_secs: self.min_turn_secs.unwrap_or(n.min_turn_secs),
         }
     }
 }
@@ -881,7 +920,7 @@ impl Access {
 
 /// The way a device came in: through the relay, by its account, or on the
 /// network or Tailscale, with a token.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Door {
     Relay,
     Local,
@@ -891,6 +930,15 @@ impl Door {
     /// Whether `d` came in through this door: the relay's devices have no token.
     pub fn admits(self, d: &Device) -> bool {
         d.token_hash.is_empty() == (self == Door::Relay)
+    }
+
+    /// The door `d` came in through.
+    pub fn of(d: &Device) -> Door {
+        if Door::Relay.admits(d) {
+            Door::Relay
+        } else {
+            Door::Local
+        }
     }
 }
 
@@ -1454,7 +1502,7 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
             };
             let notices = match ask.get("notices") {
                 None => None,
-                Some(v) => match serde_json::from_value::<Notices>(v.clone()) {
+                Some(v) => match serde_json::from_value::<NoticesChange>(v.clone()) {
                     Ok(n) => Some(n),
                     Err(_) => return (Reply::error(400, "bad notices"), Effect::None),
                 },
@@ -1465,8 +1513,15 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
                 if let Some(sub) = sub {
                     a.subscribe(&device.id, door, sub);
                 }
-                if let Some(n) = notices {
-                    a.set_notices(&device.id, door, n);
+                if let Some(change) = notices {
+                    let current = a
+                        .devices
+                        .iter()
+                        .find(|d| d.id == device.id && door.admits(d))
+                        .map(|d| d.notices);
+                    if let Some(n) = current {
+                        a.set_notices(&device.id, door, change.apply(n));
+                    }
                 }
                 let d = a
                     .devices
@@ -2442,6 +2497,17 @@ mod tests {
     }
 
     #[test]
+    fn notices_default_when_missing() {
+        let old: Notices =
+            serde_json::from_str(r#"{"done":true,"input":true,"error":true}"#).unwrap();
+        assert_eq!(old.away_after_secs, 120);
+        assert_eq!(old.min_turn_secs, 30);
+        assert_eq!(old, Notices::default());
+        let d = Notices::default();
+        assert_eq!((d.away_after_secs, d.min_turn_secs), (120, 30));
+    }
+
+    #[test]
     fn a_request_changes_only_a_device_of_its_own_door() {
         // The relay named an id that a device paired on the network has too.
         let mut lan = relay_device("same");
@@ -2452,6 +2518,7 @@ mod tests {
             done: false,
             input: false,
             error: false,
+            ..Notices::default()
         };
         assert!(a.set_notices("same", Door::Relay, quiet));
         assert_eq!(
@@ -2755,7 +2822,13 @@ mod tests {
         // It picks what to hear about; the subscription stays as it was.
         assert_eq!(
             body_of(&me)["notices"],
-            serde_json::json!({ "done": true, "input": true, "error": true })
+            serde_json::json!({
+                "done": true,
+                "input": true,
+                "error": true,
+                "away_after_secs": 120,
+                "min_turn_secs": 30
+            })
         );
         let picked = http(
             &server,
@@ -2771,9 +2844,36 @@ mod tests {
             access.lock().unwrap().devices[0].notices,
             Notices {
                 done: false,
-                input: true,
-                error: true
+                ..Notices::default()
             }
+        );
+        // One setting alone changes only itself.
+        let away = http(
+            &server,
+            "POST",
+            "/push",
+            &auth,
+            r#"{"notices":{"away_after_secs":0}}"#,
+        );
+        assert!(away.starts_with("HTTP/1.1 200"), "{away}");
+        assert_eq!(body_of(&away)["notices"]["away_after_secs"], 0);
+        assert_eq!(
+            access.lock().unwrap().devices[0].notices,
+            Notices {
+                done: false,
+                away_after_secs: 0,
+                ..Notices::default()
+            }
+        );
+        assert!(
+            http(
+                &server,
+                "POST",
+                "/push",
+                &auth,
+                r#"{"notices":{"min_turn_secs":-1}}"#
+            )
+            .starts_with("HTTP/1.1 400")
         );
         assert!(
             http(

@@ -592,9 +592,12 @@ fn about_start(msg: &Value) -> bool {
             && msg["message"] == "that project is gone")
 }
 
-/// A server reached over plain http: what goes to it, its token too, can be read on the way.
+/// A server reached over plain http whose key is not pinned yet: paired
+/// before its socket was sealed, it trusts whatever key answers next, and its
+/// token goes to that machine. Once pinned, every connection is checked and
+/// sealed end to end, http or not.
 fn in_the_clear(s: &Saved) -> bool {
-    s.way == servers::Way::Direct && s.origin.starts_with("http://")
+    s.way == servers::Way::Direct && s.origin.starts_with("http://") && s.key.is_empty()
 }
 
 impl Shell {
@@ -1040,9 +1043,9 @@ impl Shell {
     }
 
     /// At start: the paired servers are connected, and their projects show
-    /// what they listed last until they answer. Not one reached over plain
-    /// http: its token would cross whatever network this is now in the clear.
-    /// It waits for the Computers tab.
+    /// what they listed last until they answer. Not one over plain http with
+    /// no key pinned yet: whatever answers on the network this is now would
+    /// get its token. It waits for the Computers tab.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if servers::load().iter().any(|s| !in_the_clear(s)) {
             self.servers_connect_with(true, window, cx);
@@ -3050,6 +3053,15 @@ impl Shell {
                 }
                 return;
             }
+            Event::KeyPinned(label) => {
+                if let Some(s) = link.saved.iter_mut().find(|s| s.id == id)
+                    && s.key != label
+                {
+                    s.key = label;
+                    servers::save(&link.saved);
+                }
+                return;
+            }
             Event::Status(status) => {
                 let pairing = link.pairing.as_deref() == Some(id);
                 let reach = match status {
@@ -4614,6 +4626,7 @@ mod tests {
             origin: origin.into(),
             way,
             device: "d".into(),
+            key: String::new(),
             token: "t".into(),
             removed: false,
         };
@@ -4630,6 +4643,12 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+        // Its key pinned, a plain http server is sealed end to end.
+        let pinned = Saved {
+            key: "abcdefghij234567".into(),
+            ..saved("http://10.0.0.2:7474", servers::Way::Direct)
+        };
+        assert!(!in_the_clear(&pinned));
     }
 
     #[test]
@@ -4640,6 +4659,7 @@ mod tests {
             origin: origin.into(),
             way: servers::Way::Direct,
             device: "d".into(),
+            key: String::new(),
             token: "t".into(),
             removed: false,
         };

@@ -3,38 +3,44 @@ import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RelayHandlers } from "./globals";
 import { createLink, type Link, LinkContext, type LinkEvent, LOCAL_OPEN_MS, LOCAL_PING_MS, LOCAL_SILENT_MS, useLink } from "./link";
-import { TOKEN_KEY } from "./token";
+import type { SealedHandlers, SealedOptions } from "./sealed";
+import { PIN_KEY, TOKEN_KEY } from "./token";
 
-// A socket that does only what the test says: open, a message, close.
-class FakeSocket extends EventTarget {
-  static OPEN = 1;
-  static all: FakeSocket[] = [];
-  readyState = 0;
+// The sealed socket, doing only what the test says: open, a message, a drop.
+class FakeSealed {
+  static all: FakeSealed[] = [];
   sent: any[] = [];
   closed = false;
-  constructor(readonly url: string) {
-    super();
-    FakeSocket.all.push(this);
+  ready = false;
+  fetch = vi.fn((path: string, init?: object): Promise<Response> => fetchMe(path, init) as Promise<Response>);
+  constructor(
+    readonly opts: SealedOptions,
+    readonly h: SealedHandlers,
+  ) {
+    FakeSealed.all.push(this);
   }
-  send(data: string) {
-    this.sent.push(JSON.parse(data));
+  send(obj: unknown) {
+    if (this.ready && !this.closed) this.sent.push(obj);
   }
+  // The page hanging up hears nothing more, as with the real one.
   close() {
-    if (this.closed) return;
     this.closed = true;
-    this.readyState = 3;
-    this.dispatchEvent(new Event("close"));
   }
-  open() {
-    this.readyState = 1;
-    this.dispatchEvent(new Event("open"));
+  open(label = "abcdefghij234567") {
+    this.ready = true;
+    this.h.onopen({ type: "welcome", id: "p1", host: "mbp" }, label);
   }
   say(msg: object) {
-    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+    this.h.onmessage(msg);
+  }
+  end(kind: "refused" | "untrusted" | "gone", detail = "") {
+    if (this.closed) return;
+    this.closed = true;
+    this.h.onclose({ kind, detail });
   }
 }
 
-const last = () => FakeSocket.all[FakeSocket.all.length - 1];
+const last = () => FakeSealed.all[FakeSealed.all.length - 1];
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
 function setVisibility(v: "visible" | "hidden") {
@@ -42,26 +48,27 @@ function setVisibility(v: "visible" | "hidden") {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-let fetchMe: ReturnType<typeof vi.fn>;
+let fetchMe: (path: string, init?: object) => Promise<Response>;
 let link: Link | null = null;
 
 function local(): Link {
-  link = createLink({ mode: "local", WebSocketImpl: FakeSocket as any, fetchImpl: fetchMe as any });
+  link = createLink({ mode: "local", openSealedImpl: ((opts: SealedOptions, h: SealedHandlers) => new FakeSealed(opts, h)) as any });
   return link;
 }
 
-// Opens a local link up to an open socket.
-async function linkedLocal(): Promise<{ link: Link; ws: FakeSocket }> {
+// Opens a local link up to a sealed socket the computer took.
+async function linkedLocal(): Promise<{ link: Link; ws: FakeSealed }> {
   const l = local();
   await flush();
   const ws = last();
   ws.open();
+  await flush();
   return { link: l, ws };
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
-  FakeSocket.all = [];
+  FakeSealed.all = [];
   localStorage.setItem(TOKEN_KEY, "tok");
   fetchMe = vi.fn(async () => new Response(JSON.stringify({ id: "p1", host: "mbp", push_key: "k" }), { status: 200 }));
   setVisibility("visible");
@@ -76,11 +83,21 @@ afterEach(() => {
 });
 
 describe("local link", () => {
-  it("asks /me with the token, then opens the socket", async () => {
+  it("brings the token inside the sealed socket, then asks /me there", async () => {
     const { link: l, ws } = await linkedLocal();
-    expect(fetchMe).toHaveBeenCalledWith("/me", expect.objectContaining({ headers: { Authorization: "Bearer tok" } }));
-    expect(ws.url).toMatch(/\/ws\?t=tok$/);
+    expect(ws.opts.greeting).toEqual({ auth: { token: "tok" } });
+    expect(ws.fetch).toHaveBeenCalledWith("/me", {});
     expect(l.getState()).toMatchObject({ connected: true, host: "mbp", pushKey: "k" });
+  });
+
+  it("checks the key it was paired with, and keeps the first one it meets", async () => {
+    // Paired before the socket was sealed: no key yet, so the one that answers stays.
+    await linkedLocal();
+    expect(FakeSealed.all[0].opts.label).toBe("");
+    expect(localStorage.getItem(PIN_KEY)).toBe("abcdefghij234567");
+    link?.close();
+    await linkedLocal();
+    expect(last().opts.label).toBe("abcdefghij234567");
   });
 
   it("pings, and with no word for 40 s closes the socket and reconnects", async () => {
@@ -91,7 +108,7 @@ describe("local link", () => {
     expect(ws.closed).toBe(true);
     expect(l.getState().connected).toBe(false);
     await vi.advanceTimersByTimeAsync(500);
-    expect(FakeSocket.all.length).toBe(2);
+    expect(FakeSealed.all.length).toBe(2);
   });
 
   it("a pong keeps it open", async () => {
@@ -109,30 +126,47 @@ describe("local link", () => {
     await vi.advanceTimersByTimeAsync(LOCAL_OPEN_MS);
     expect(last().closed).toBe(true);
     await vi.advanceTimersByTimeAsync(500);
-    expect(FakeSocket.all.length).toBe(2);
+    expect(FakeSealed.all.length).toBe(2);
   });
 
   it("waits longer after each failure", async () => {
-    fetchMe.mockRejectedValue(new Error("offline"));
     local();
     await flush();
-    expect(fetchMe).toHaveBeenCalledTimes(1);
+    last().end("gone");
+    expect(FakeSealed.all.length).toBe(1);
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(2);
+    expect(FakeSealed.all.length).toBe(2);
+    last().end("gone");
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(2);
+    expect(FakeSealed.all.length).toBe(2);
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(3);
+    expect(FakeSealed.all.length).toBe(3);
   });
 
   it("a refused token is forgotten and says so", async () => {
-    fetchMe.mockResolvedValue(new Response("", { status: 403 }));
+    localStorage.setItem(PIN_KEY, "abcdefghij234567");
     const events: LinkEvent[] = [];
     local().subscribeEvents((e) => events.push(e));
     await flush();
+    last().end("refused", "unpaired");
     expect(events).toContainEqual({ type: "unpaired", message: "This phone is no longer paired. Pair it again from Arakun." });
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
-    expect(FakeSocket.all.length).toBe(0);
+    expect(localStorage.getItem(PIN_KEY)).toBeNull();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(FakeSealed.all.length).toBe(1);
+  });
+
+  it("a computer with another key keeps the token from it and says so", async () => {
+    localStorage.setItem(PIN_KEY, "abcdefghij234567");
+    const events: LinkEvent[] = [];
+    local().subscribeEvents((e) => events.push(e));
+    await flush();
+    last().end("untrusted", "bad hello: label");
+    expect(events[0]).toMatchObject({ type: "unpaired" });
+    expect((events[0] as { message: string }).message).toContain("bad hello: label");
+    expect(localStorage.getItem(TOKEN_KEY)).toBe("tok");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(FakeSealed.all.length).toBe(1);
   });
 
   it("with no token it asks to pair", async () => {
@@ -141,13 +175,13 @@ describe("local link", () => {
     local().subscribeEvents((e) => events.push(e));
     await flush();
     expect(events).toContainEqual({ type: "unpaired", message: "" });
-    expect(fetchMe).not.toHaveBeenCalled();
+    expect(FakeSealed.all.length).toBe(0);
   });
 
-  it("fetch carries the token", async () => {
-    const l = local();
+  it("fetch goes inside the sealed socket", async () => {
+    const { link: l, ws } = await linkedLocal();
     await l.fetch("/phone", { method: "POST" });
-    expect(fetchMe).toHaveBeenCalledWith("/phone", { method: "POST", headers: { Authorization: "Bearer tok" } });
+    expect(ws.fetch).toHaveBeenCalledWith("/phone", { method: "POST", body: undefined });
   });
 });
 
@@ -157,13 +191,12 @@ describe("visibility", () => {
     setVisibility("visible");
     expect(ws.sent).toContainEqual({ type: "visible", visible: true });
 
-    fetchMe.mockRejectedValue(new Error("offline"));
-    ws.close();
+    ws.end("gone");
     await flush();
-    const calls = fetchMe.mock.calls.length;
+    const opened = FakeSealed.all.length;
     setVisibility("visible");
     await flush();
-    expect(fetchMe.mock.calls.length).toBe(calls + 1);
+    expect(FakeSealed.all.length).toBe(opened + 1);
   });
 
   it("hidden tells the computer", async () => {
@@ -202,9 +235,10 @@ describe("messages", () => {
     expect(ws.sent).toContainEqual({ type: "open", session: "s1" });
     expect(l.getState().session).toMatchObject({ id: "s1", entries: [] });
     ws.say({ type: "entries", id: "s1", from: 0, count: 1, entries: [{ n: 0 }] });
-    ws.close();
+    ws.end("gone");
     await vi.advanceTimersByTimeAsync(500);
     last().open();
+    await flush();
     expect(last().sent).toContainEqual({ type: "open", session: "s1" });
     expect(l.getState().session!.entries).toEqual([{ n: 0 }]);
   });
@@ -329,6 +363,6 @@ describe("retryNow", () => {
     expect(ws.closed).toBe(true);
     expect(l.getState().connected).toBe(false);
     await flush();
-    expect(FakeSocket.all.length).toBe(2);
+    expect(FakeSealed.all.length).toBe(2);
   });
 });

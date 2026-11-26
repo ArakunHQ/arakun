@@ -8,13 +8,18 @@
 //! one of two ways (`Reach`): over the local network, listening on every
 //! interface; or through Tailscale (`tailscale`), listening on the loopback only
 //! while `tailscale serve` terminates HTTPS at the machine's tailnet name and
-//! hands the bytes over. Only paired phones may connect: pairing starts on the
-//! computer with a short code that lives two minutes and works once (the QR code
-//! carries it), and gives the phone a token of its own, which the computer keeps
-//! hashed and can revoke. Every WebSocket brings that token.
+//! hands the bytes over. Plain HTTP only carries the page itself. Everything
+//! else goes on one WebSocket (`lan`), sealed end to end as through the relay
+//! (`e2e`), so someone on the same Wi-Fi reads nothing of it. Only paired
+//! phones may connect: pairing starts on the computer with a short code that
+//! lives two minutes and works once (the QR code carries it, with the label of
+//! the key the phone then checks), and gives the phone a token of its own,
+//! which the computer keeps hashed and can revoke. Every connection brings that
+//! token inside the sealed channel.
 
 pub mod e2e;
 pub mod identity;
+pub mod lan;
 pub mod linear;
 pub mod notify;
 pub mod push;
@@ -37,10 +42,8 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
-use quiet::Quiet;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
-use tungstenite::{Message, WebSocket};
 
 use crate::phone_page::Page;
 use crate::secret::Secret;
@@ -756,20 +759,16 @@ impl Settings {
         Ok((v, before != self.vapid))
     }
 
-    /// The keys a phone link runs with: the push keys, and the relay identity
-    /// when `relay`. Reads the file and the keyring, so it runs on a
-    /// background thread. Only the key fields are written back, to a fresh
-    /// read of the file, so a save the window made meanwhile is kept.
-    pub fn load_keys(relay: bool) -> Result<Keys, String> {
+    /// The keys a phone link runs with: the push keys, and the identity
+    /// that signs every phone's handshake, on the network as through the
+    /// relay. Reads the file and the keyring, so it runs on a background
+    /// thread. Only the key fields are written back, to a fresh read of the
+    /// file, so a save the window made meanwhile is kept.
+    pub fn load_keys() -> Result<Keys, String> {
         let mut settings = Settings::load();
         let (vapid, mut changed) = settings.vapid_in(&Keyring, &key_account(VAPID))?;
-        let identity = if relay {
-            let (id, c) = settings.identity_in(&Keyring, &key_account(IDENTITY))?;
-            changed |= c;
-            Some(id)
-        } else {
-            None
-        };
+        let (identity, c) = settings.identity_in(&Keyring, &key_account(IDENTITY))?;
+        changed |= c;
         if changed {
             let mut now = Settings::load();
             now.vapid = settings.vapid;
@@ -784,8 +783,8 @@ impl Settings {
 /// The private keys a phone link runs with, as `Settings::load_keys` gives them.
 pub struct Keys {
     pub vapid: push::Vapid,
-    /// The relay identity, when it was asked for.
-    pub identity: Option<identity::Identity>,
+    /// The key phones check the handshake against, here or through the relay.
+    pub identity: identity::Identity,
 }
 
 /// The keyring names of the private keys, before `key_account` scopes them.
@@ -1158,14 +1157,14 @@ impl Access {
         Some(d.clone())
     }
 
-    /// The device the relay brought in with this id, noting it was seen now.
-    /// Only devices without a token: one paired on the network is never
-    /// found through the relay's door, whatever id the relay names.
-    pub fn seen(&mut self, id: &str, now: u64) -> Option<Device> {
+    /// The device with this id that came in through `door`, noting it was
+    /// seen now. One paired on the network is never found through the
+    /// relay's door, whatever id the relay names, nor the other way round.
+    pub fn seen(&mut self, id: &str, door: Door, now: u64) -> Option<Device> {
         let d = self
             .devices
             .iter_mut()
-            .find(|d| d.token_hash.is_empty() && d.id == id)?;
+            .find(|d| door.admits(d) && d.id == id)?;
         d.last_seen = now;
         Some(d.clone())
     }
@@ -1525,10 +1524,13 @@ pub struct Server {
 
 impl Server {
     /// Listens at `bind:port`; messages from phones come out of the receiver.
+    /// `identity` signs each phone's handshake, so the phone knows it reached
+    /// this computer and not someone else on the network.
     pub fn start(
         bind: Ipv4Addr,
         port: u16,
         access: Shared,
+        identity: Arc<identity::Identity>,
     ) -> std::io::Result<(Server, mpsc::UnboundedReceiver<Incoming>)> {
         let listener = TcpListener::bind(SocketAddr::from((bind, port)))?;
         let port = listener.local_addr()?.port();
@@ -1548,8 +1550,14 @@ impl Server {
                     || stopped.load(Ordering::Relaxed),
                     |stream| {
                         let id = ids.next().unwrap_or_default();
-                        let (tx, c, s, access) = (tx.clone(), c.clone(), s.clone(), access.clone());
-                        move || answer(stream, id, tx, c, s, &access)
+                        let (tx, c, s, access, identity) = (
+                            tx.clone(),
+                            c.clone(),
+                            s.clone(),
+                            access.clone(),
+                            identity.clone(),
+                        );
+                        move || answer(stream, id, tx, c, s, &access, &identity)
                     },
                 );
             })?;
@@ -1641,7 +1649,8 @@ impl Drop for Server {
     }
 }
 
-/// Serves one connection: the page over HTTP, or a phone over WebSocket.
+/// Serves one connection: the page over HTTP, or a phone over its sealed
+/// WebSocket. Nothing but the page goes in the clear.
 fn answer(
     mut stream: TcpStream,
     id: ClientId,
@@ -1649,6 +1658,7 @@ fn answer(
     clients: Clients,
     stop: Arc<AtomicBool>,
     access: &Shared,
+    identity: &identity::Identity,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_nodelay(true);
@@ -1666,57 +1676,45 @@ fn answer(
         let _ = respond(&mut stream, 400, "text/plain", b"bad request");
         return;
     };
-    let now = crate::model::unix_now();
     if req.upgrade {
-        let device = req
-            .query("t")
-            .and_then(|t| access.lock().unwrap().device_for(t, now));
-        let Some(device) = device.filter(|_| req.path == "/ws" && same_origin(&req)) else {
+        if req.path != lan::PATH || !same_origin(&req) {
             consume(&mut stream);
             let _ = respond(&mut stream, 403, "text/plain", b"forbidden");
             return;
-        };
-        let (out_tx, out_rx) = std_mpsc::sync_channel(PHONE_QUEUE);
-        let gone = Arc::new(AtomicBool::new(false));
-        clients.lock().unwrap().insert(
-            id,
-            Client {
-                device: device.id.clone(),
-                out: out_tx,
-                gone: gone.clone(),
-            },
-        );
-        let ended = || stop.load(Ordering::Relaxed) || gone.load(Ordering::Relaxed);
-        talk(stream, id, device.id, out_rx, &tx, ended);
-        clients.lock().unwrap().remove(&id);
-        let _ = tx.unbounded_send(Incoming::Disconnected(id));
+        }
+        let ended = || stop.load(Ordering::Relaxed);
+        lan::serve(stream, id, identity, access, &clients, &tx, ended);
         return;
     }
     consume(&mut stream);
     // Read before answering: a body left unread resets the connection.
-    let body = if req.method == "POST" {
+    if req.content_length > 0 {
         read_body(
             &mut stream,
             req.content_length,
             Instant::now() + BODY_DEADLINE,
-        )
-    } else {
-        None
+        );
+    }
+    let reply = match req.method.as_str() {
+        "GET" => page_file(&req.path),
+        _ => Reply::not_found(),
     };
-    let (reply, effect) = route(&req, body, access, now);
     let _ = respond(&mut stream, reply.status, reply.content_type, &reply.body);
-    match effect {
-        Effect::None => {}
-        Effect::Paired => {
-            let _ = tx.unbounded_send(Incoming::Paired);
-        }
-        Effect::Subscribed => {
-            let _ = tx.unbounded_send(Incoming::Subscribed);
-        }
-        Effect::Unpaired(device) => {
-            clients.lock().unwrap().retain(|_, c| c.device != device);
-            let _ = tx.unbounded_send(Incoming::Unpaired);
-        }
+}
+
+/// A file of the page, by its path.
+fn page_file(path: &str) -> Reply {
+    let file = match path.trim_start_matches('/') {
+        "" => "index.html",
+        p => p,
+    };
+    match Page::get(file) {
+        Some(f) => Reply {
+            status: 200,
+            content_type: content_type(file),
+            body: f.data.into_owned(),
+        },
+        None => Reply::not_found(),
     }
 }
 
@@ -1758,27 +1756,14 @@ pub enum Effect {
     Unpaired(String),
 }
 
-/// Answers one request about the phone's account with this computer: pairing,
-/// who it is, notifications, unpairing, the images prompts mention, and the
-/// page itself. The same whether the request came over TCP or inside an
-/// encrypted channel through the relay, except that pairing is the network's:
-/// the relay brings in devices by account.
+/// Answers one request about the phone's account with this computer: who it
+/// is, notifications, unpairing, the images prompts mention, and the page
+/// itself. It only ever comes inside a sealed channel, from the device that
+/// channel belongs to: through the relay, or on this computer's own server
+/// (`lan`). Pairing is not one of them: on the network it is the channel's
+/// first message, and the relay brings in devices by account.
 pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (Reply, Effect) {
     match (req.method.as_str(), req.path.as_str()) {
-        ("POST", "/pair") if req.relay_device.is_none() => {
-            let Some(ask) = body.and_then(|b| serde_json::from_slice::<PairRequest>(&b).ok())
-            else {
-                return (Reply::error(400, "bad request"), Effect::None);
-            };
-            let paired = access.lock().unwrap().pair(&ask.code, &ask.name, now);
-            match paired {
-                Some((device, token)) => {
-                    let body = serde_json::json!({ "token": token, "id": device.id, "name": device.name, "host": host_name() });
-                    (Reply::json(200, &body), Effect::Paired)
-                }
-                None => (Reply::error(403, "wrong or expired code"), Effect::None),
-            }
-        }
         ("GET", "/me") => {
             let found = {
                 let mut a = access.lock().unwrap();
@@ -1920,32 +1905,30 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
                 None => (Reply::not_found(), Effect::None),
             }
         }
-        ("GET", path) => {
-            let file = match path.trim_start_matches('/') {
-                "" => "index.html",
-                p => p,
-            };
-            match Page::get(file) {
-                Some(f) => (
-                    Reply {
-                        status: 200,
-                        content_type: content_type(file),
-                        body: f.data.into_owned(),
-                    },
-                    Effect::None,
-                ),
-                None => (Reply::not_found(), Effect::None),
-            }
-        }
+        ("GET", path) => (page_file(path), Effect::None),
         _ => (Reply::not_found(), Effect::None),
     }
 }
 
-#[derive(Deserialize)]
-struct PairRequest {
-    code: String,
-    #[serde(default)]
-    name: String,
+/// A `{req: {method, path, body}}` from inside the sealed channel of
+/// `device`, which came in through `door`, answered as the HTTP it stands for.
+pub fn sealed_request(
+    req: &serde_json::Value,
+    device: &str,
+    door: Door,
+    access: &Shared,
+    now: u64,
+) -> (Reply, Effect) {
+    let method = req["method"].as_str().unwrap_or("GET");
+    let path = req["path"].as_str().unwrap_or("/");
+    let body = req["body"]
+        .as_str()
+        .map(|b| b.as_bytes().to_vec())
+        .filter(|b| b.len() <= MAX_BODY);
+    match Head::sealed(method, path, device, door) {
+        Some(head) => route(&head, body, access, now),
+        None => (Reply::error(400, "bad request"), Effect::None),
+    }
 }
 
 /// The body that follows the head, when it is small enough and comes in time.
@@ -1971,132 +1954,6 @@ fn read_body(stream: &mut TcpStream, len: usize, deadline: Instant) -> Option<Ve
         }
     }
     Some(body)
-}
-
-/// Reads and writes one WebSocket until the phone leaves or the server stops.
-/// Reads time out often so writes queued by the shell go out in between.
-fn talk(
-    stream: TcpStream,
-    id: ClientId,
-    device: String,
-    out: std_mpsc::Receiver<String>,
-    tx: &mpsc::UnboundedSender<Incoming>,
-    ended: impl Fn() -> bool,
-) {
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
-    let _ = stream.set_write_timeout(Some(PHONE_WRITE_TIMEOUT));
-    // The client learns here that what it numbers is acknowledged. The
-    // callback's error type is tungstenite's to choose.
-    #[allow(clippy::result_large_err)]
-    let announce = |_: &tungstenite::handshake::server::Request,
-                    mut res: tungstenite::handshake::server::Response| {
-        res.headers_mut().insert(
-            wire::ACKS_HEADER,
-            tungstenite::http::HeaderValue::from_static("1"),
-        );
-        Ok(res)
-    };
-    let mut ws: WebSocket<TcpStream> = match tungstenite::accept_hdr(stream, announce) {
-        Ok(ws) => ws,
-        Err(e) => {
-            eprintln!("arakun: phone handshake: {e}");
-            return;
-        }
-    };
-    if tx.unbounded_send(Incoming::Connected(id, device)).is_err() {
-        return;
-    }
-    let mut last_heard = Quiet::now();
-    let mut last_ping = Quiet::now();
-    loop {
-        if ended() {
-            let _ = ws.close(None);
-            let _ = ws.flush();
-            return;
-        }
-        // Judged before reading: input buffered while the computer slept
-        // would otherwise pass for a phone that is still there.
-        // Browsers answer pings themselves, even for a page in the background.
-        if last_heard.elapsed() > PHONE_SILENCE_MAX {
-            return;
-        }
-        let read = ws.read();
-        if read.is_ok() {
-            // Judged again: the computer can sleep while `read` waits, and
-            // what it returns on waking may have sat in a buffer all along.
-            if last_heard.elapsed() > PHONE_SILENCE_MAX {
-                return;
-            }
-            last_heard = Quiet::now();
-        }
-        match read {
-            Ok(Message::Text(text)) => {
-                let msg = serde_json::from_str::<serde_json::Value>(text.as_str());
-                let seq = msg.as_ref().ok().and_then(wire::seq);
-                match msg.and_then(serde_json::from_value::<ClientMsg>) {
-                    // The page's own ping: it cannot see ours, so it hears it is still here.
-                    Ok(ClientMsg::Ping) => {
-                        if ws.send(Message::text(wire::pong())).is_err() {
-                            return;
-                        }
-                    }
-                    Ok(msg) => {
-                        if tx.unbounded_send(Incoming::Message(id, msg)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = ws.send(Message::text(wire::error(&format!("bad message: {e}"))));
-                    }
-                }
-                // A bad message was read all the same: sending it again would not help.
-                if let Some(seq) = seq
-                    && ws.send(Message::text(wire::ack(seq))).is_err()
-                {
-                    return;
-                }
-            }
-            Ok(Message::Close(_)) => {
-                // tungstenite queued the answering close frame.
-                let _ = ws.flush();
-                return;
-            }
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => return,
-        }
-        if last_ping.elapsed() > PHONE_PING_EVERY {
-            last_ping = Quiet::now();
-            if ws.send(Message::Ping(Vec::new().into())).is_err() {
-                return;
-            }
-        }
-        let pass_ends = Instant::now() + PHONE_SEND_PASS;
-        loop {
-            if ended() || Instant::now() > pass_ends {
-                break;
-            }
-            match out.try_recv() {
-                Ok(text) => {
-                    if ws.send(Message::text(text)).is_err() {
-                        return;
-                    }
-                }
-                Err(std_mpsc::TryRecvError::Empty) => break,
-                Err(std_mpsc::TryRecvError::Disconnected) => {
-                    let _ = ws.close(None);
-                    let _ = ws.flush();
-                    return;
-                }
-            }
-        }
-        // Pongs tungstenite queued while reading.
-        let _ = ws.flush();
-    }
 }
 
 /// The request head, without consuming it; `None` when it does not arrive whole.
@@ -2126,17 +1983,22 @@ pub struct Head {
     upgrade: bool,
     host: Option<String>,
     origin: Option<String>,
-    authorization: Option<String>,
     content_length: usize,
-    /// The device that asked, when the request came through the relay: the
-    /// relay vouched for it, so it brings no token.
-    relay_device: Option<String>,
+    /// The device that asked, and the door its sealed channel came through.
+    /// A request in the clear has none: it gets only the page.
+    device: Option<(String, Door)>,
 }
 
 impl Head {
     /// A request that came through an encrypted channel, from the device the
     /// relay brought in with this id: `target` is the path with its query.
     pub fn relayed(method: &str, target: &str, device: &str) -> Option<Head> {
+        Head::sealed(method, target, device, Door::Relay)
+    }
+
+    /// A request that came inside the sealed channel of the device with this
+    /// id, which came in through `door`.
+    pub fn sealed(method: &str, target: &str, device: &str, door: Door) -> Option<Head> {
         if method != "GET" && method != "POST" {
             return None;
         }
@@ -2148,9 +2010,8 @@ impl Head {
             upgrade: false,
             host: None,
             origin: None,
-            authorization: None,
             content_length: 0,
-            relay_device: Some(device.to_string()),
+            device: Some((device.to_string(), door)),
         })
     }
 
@@ -2170,9 +2031,8 @@ impl Head {
             upgrade: false,
             host: None,
             origin: None,
-            authorization: None,
             content_length: 0,
-            relay_device: None,
+            device: None,
         };
         for line in lines {
             let Some((name, value)) = line.split_once(':') else {
@@ -2183,7 +2043,6 @@ impl Head {
                 "upgrade" if value.eq_ignore_ascii_case("websocket") => h.upgrade = true,
                 "host" => h.host = Some(value.to_string()),
                 "origin" => h.origin = Some(value.to_string()),
-                "authorization" => h.authorization = Some(value.to_string()),
                 "content-length" => h.content_length = value.parse().ok()?,
                 _ => {}
             }
@@ -2201,28 +2060,14 @@ impl Head {
 
     /// The door this request came through.
     fn door(&self) -> Door {
-        if self.relay_device.is_some() {
-            Door::Relay
-        } else {
-            Door::Local
-        }
+        self.device.as_ref().map_or(Door::Local, |(_, door)| *door)
     }
 
-    /// The device asking: the one the relay brought in, or the one whose
-    /// token comes as `Authorization: Bearer <token>`. Never both: a relayed
-    /// request carries no token.
+    /// The device asking, noting it was seen now: the one whose sealed
+    /// channel the request came in, of that channel's door.
     fn device(&self, access: &mut Access, now: u64) -> Option<Device> {
-        match &self.relay_device {
-            Some(id) => access.seen(id, now),
-            None => access.device_for(self.bearer()?, now),
-        }
-    }
-
-    /// The token of `Authorization: Bearer <token>`.
-    fn bearer(&self) -> Option<&str> {
-        let auth = self.authorization.as_deref()?;
-        let (scheme, token) = auth.split_once(' ')?;
-        scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
+        let (id, door) = self.device.as_ref()?;
+        access.seen(id, *door, now)
     }
 }
 
@@ -2318,9 +2163,14 @@ pub fn lan_address(ip: Ipv4Addr, port: u16) -> String {
     format!("http://{ip}:{port}/")
 }
 
-/// The link the QR code carries while pairing: the page, with the code to bring.
-pub fn link(address: &str, code: &str) -> String {
-    format!("{address}?p={code}")
+/// The link the QR code carries while pairing: the page, with the code to
+/// bring and, on this computer's own server, the label of the key that must
+/// sign the handshake (`lan`). Through the relay the account names the key.
+pub fn link(address: &str, code: &str, label: Option<&str>) -> String {
+    match label {
+        Some(label) => format!("{address}?p={code}&k={label}"),
+        None => format!("{address}?p={code}"),
+    }
 }
 
 /// The longest machine name the account takes; it answers 400 to more.
@@ -2380,6 +2230,7 @@ fn system_host_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
 
     #[test]
     fn a_body_has_one_deadline_not_one_per_read() {
@@ -2434,7 +2285,8 @@ mod tests {
     #[test]
     fn only_a_loopback_server_or_the_relay_is_private() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (tailnet, _rx) = Server::start(Reach::Tailscale.bind(), 0, access).unwrap();
+        let identity = Arc::new(identity::Identity::generate());
+        let (tailnet, _rx) = Server::start(Reach::Tailscale.bind(), 0, access, identity).unwrap();
         assert!(Transport::Local(tailnet).private());
         // Not bound for real: a test should not listen on every interface.
         let lan = Server {
@@ -3034,16 +2886,12 @@ mod tests {
                 "{token:?}"
             );
         }
-        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        for auth in [
-            "Authorization: Bearer \r\n",
-            "Authorization: Bearer sess1\r\n",
-            "",
-        ] {
-            let me = http(&server, "GET", "/me", auth, "");
-            assert!(me.starts_with("HTTP/1.1 403"), "{auth:?}: {me}");
-            let unpair = http(&server, "POST", "/unpair", auth, "");
-            assert!(unpair.starts_with("HTTP/1.1 403"), "{auth:?}: {unpair}");
+        let (server, _rx, label) = start(&access);
+        for token in ["", " ", "sess1"] {
+            let refused = greet(&server, &label, json!({ "auth": { "token": token } }))
+                .unwrap()
+                .1;
+            assert_eq!(refused, json!({ "type": "refused", "reason": "unpaired" }));
         }
         for t in ["/ws?t=", "/ws?t=sess1", "/ws"] {
             let refused = http(
@@ -3066,13 +2914,16 @@ mod tests {
         lan.token_hash = hash("token");
         let access = Access::new(vec![lan.clone()], "pk".into());
         let mut a = access.lock().unwrap();
-        assert!(a.seen("sess1", 5).is_none());
+        assert!(a.seen("sess1", Door::Relay, 5).is_none());
 
         let (made, seen) = a.relay_device("sess1", "Rik's iPhone", 5);
         assert_eq!(seen, Seen::New);
         assert!(made.token_hash.is_empty());
         assert_eq!(a.devices[0], lan, "the network's device is left alone");
-        assert_eq!(a.seen("sess1", 6).unwrap().name, "Rik's iPhone");
+        assert_eq!(
+            a.seen("sess1", Door::Relay, 6).unwrap().name,
+            "Rik's iPhone"
+        );
 
         let (_, seen) = a.relay_device("sess1", "Rik's iPhone", 7);
         assert_eq!(seen, Seen::Known);
@@ -3093,58 +2944,25 @@ mod tests {
     fn post_mute_toggles_one_session() {
         let access = Access::new(Vec::new(), "pk".into());
         let (_, token) = access.lock().unwrap().admit("iPhone", 1);
-        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let auth = format!("Authorization: Bearer {token}\r\n");
-        let one = http(
-            &server,
-            "POST",
-            "/mute",
-            &auth,
-            r#"{"session":"a","muted":true}"#,
-        );
-        assert!(one.starts_with("HTTP/1.1 200"), "{one}");
-        let two = http(
-            &server,
-            "POST",
-            "/mute",
-            &auth,
-            r#"{"session":"b","muted":true}"#,
-        );
-        assert_eq!(body_of(&two)["muted"], serde_json::json!(["a", "b"]));
-        let again = http(
-            &server,
-            "POST",
-            "/mute",
-            &auth,
-            r#"{"session":"b","muted":true}"#,
-        );
-        assert_eq!(body_of(&again)["muted"], serde_json::json!(["a", "b"]));
-        let me = http(&server, "GET", "/me", &auth, "");
-        assert_eq!(body_of(&me)["muted"], serde_json::json!(["a", "b"]));
-        let off = http(
-            &server,
-            "POST",
-            "/mute",
-            &auth,
-            r#"{"session":"a","muted":false}"#,
-        );
-        assert_eq!(body_of(&off)["muted"], serde_json::json!(["b"]));
+        let (server, _rx, label) = start(&access);
+        let mut phone = signed_in(&server, &label, &token);
+        let mute = |session: &str, muted: bool| json!({ "session": session, "muted": muted });
+        let (status, _) = phone.req("POST", "/mute", &mute("a", true));
+        assert_eq!(status, 200);
+        let (_, two) = phone.req("POST", "/mute", &mute("b", true));
+        assert_eq!(two["muted"], json!(["a", "b"]));
+        let (_, again) = phone.req("POST", "/mute", &mute("b", true));
+        assert_eq!(again["muted"], json!(["a", "b"]));
+        let (_, me) = phone.req("GET", "/me", &Value::Null);
+        assert_eq!(me["muted"], json!(["a", "b"]));
+        let (_, off) = phone.req("POST", "/mute", &mute("a", false));
+        assert_eq!(off["muted"], json!(["b"]));
         assert_eq!(
             access.lock().unwrap().devices[0].muted,
             vec!["b".to_string()]
         );
-        let bad = http(&server, "POST", "/mute", &auth, r#"{"session":"a"}"#);
-        assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
-        assert!(
-            http(
-                &server,
-                "POST",
-                "/mute",
-                "",
-                r#"{"session":"a","muted":true}"#
-            )
-            .starts_with("HTTP/1.1 403")
-        );
+        let (bad, _) = phone.req("POST", "/mute", &json!({ "session": "a" }));
+        assert_eq!(bad, 400);
     }
 
     #[test]
@@ -3345,12 +3163,135 @@ mod tests {
         out
     }
 
-    fn body_of(response: &str) -> serde_json::Value {
-        serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap_or("null")).unwrap()
+    /// A server on the loopback with a key of its own, and that key's label.
+    fn start(access: &Shared) -> (Server, mpsc::UnboundedReceiver<Incoming>, String) {
+        let identity = identity::Identity::generate();
+        let label = identity.label();
+        let (server, rx) =
+            Server::start(Ipv4Addr::LOCALHOST, 0, access.clone(), Arc::new(identity)).unwrap();
+        (server, rx, label)
+    }
+
+    type Ws = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>;
+
+    /// A phone on the sealed socket, past its greeting.
+    struct Phone {
+        ws: Ws,
+        session: e2e::Session,
+        next: u64,
+    }
+
+    impl Phone {
+        fn send(&mut self, msg: serde_json::Value) {
+            let sealed = self.session.seal(msg.to_string().as_bytes());
+            self.ws
+                .send(tungstenite::Message::Binary(
+                    lan::frame(relay::DATA, &sealed).into(),
+                ))
+                .unwrap();
+        }
+
+        /// The next sealed message, skipping pings.
+        fn hear(&mut self) -> serde_json::Value {
+            loop {
+                match self.ws.read().unwrap() {
+                    tungstenite::Message::Binary(b) => {
+                        assert_eq!(b[0], relay::DATA);
+                        let plain = self.session.open(&b[1..]).unwrap();
+                        return serde_json::from_slice(&plain).unwrap();
+                    }
+                    tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {}
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        }
+
+        /// What would be an HTTP request: its status and its JSON body.
+        fn req(
+            &mut self,
+            method: &str,
+            path: &str,
+            body: &serde_json::Value,
+        ) -> (u16, serde_json::Value) {
+            let (status, _, bytes) = self.req_raw(method, path, body);
+            (status, serde_json::from_slice(&bytes).unwrap_or_default())
+        }
+
+        fn req_raw(
+            &mut self,
+            method: &str,
+            path: &str,
+            body: &serde_json::Value,
+        ) -> (u16, String, Vec<u8>) {
+            use base64::Engine as _;
+            self.next += 1;
+            let id = self.next;
+            let body = match body {
+                serde_json::Value::Null => serde_json::Value::Null,
+                other => other.to_string().into(),
+            };
+            self.send(json!({ "req": { "id": id, "method": method, "path": path, "body": body } }));
+            loop {
+                let msg = self.hear();
+                let Some(res) = msg.get("res") else { continue };
+                assert_eq!(res["id"], id);
+                assert_eq!(res["more"], false);
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(res["body"].as_str().unwrap())
+                    .unwrap();
+                return (
+                    res["status"].as_u64().unwrap() as u16,
+                    res["type"].as_str().unwrap().to_string(),
+                    bytes,
+                );
+            }
+        }
+    }
+
+    fn dial(server: &Server) -> Ws {
+        let url = format!("ws://127.0.0.1:{}{}", server.port(), lan::PATH);
+        tungstenite::connect(url).unwrap().0
+    }
+
+    /// The handshake checked against `label`, then `greeting`: the phone and
+    /// the computer's answer.
+    fn greet(
+        server: &Server,
+        label: &str,
+        greeting: serde_json::Value,
+    ) -> Result<(Phone, serde_json::Value), lan::GreetError> {
+        let mut ws = dial(server);
+        let greeted = lan::greet(&mut ws, Some(label), &greeting, Duration::from_secs(5))?;
+        let phone = Phone {
+            ws,
+            session: greeted.session,
+            next: 0,
+        };
+        Ok((phone, greeted.answer))
+    }
+
+    /// A phone paired through the server, its token, and the phone.
+    fn pair(server: &Server, access: &Shared, label: &str, name: &str) -> (String, Phone) {
+        let code = access.lock().unwrap().begin_pairing();
+        let (phone, answer) = greet(
+            server,
+            label,
+            json!({ "pair": { "code": code, "name": name } }),
+        )
+        .unwrap();
+        assert_eq!(answer["type"], "paired", "{answer}");
+        (answer["token"].as_str().unwrap().to_string(), phone)
+    }
+
+    /// A phone let in with its token.
+    fn signed_in(server: &Server, label: &str, token: &str) -> Phone {
+        let (phone, answer) = greet(server, label, json!({ "auth": { "token": token } })).unwrap();
+        assert_eq!(answer["type"], "welcome", "{answer}");
+        phone
     }
 
     /// The body a browser would send to `/push`: a fresh P-256 key and auth secret.
-    fn browser_subscription(endpoint: &str) -> String {
+    fn browser_subscription(endpoint: &str) -> serde_json::Value {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let rng = ring::rand::SystemRandom::new();
@@ -3360,30 +3301,16 @@ mod tests {
         let public = private.compute_public_key().unwrap();
         let mut auth = [0u8; 16];
         ring::rand::SecureRandom::fill(&rng, &mut auth).unwrap();
-        serde_json::json!({
+        json!({
             "subscription": { "endpoint": endpoint, "keys": { "p256dh": b64.encode(public.as_ref()), "auth": b64.encode(auth) } }
         })
-        .to_string()
-    }
-
-    /// A device paired through the server, and its token.
-    fn pair(server: &Server, access: &Shared, name: &str) -> String {
-        let code = access.lock().unwrap().begin_pairing();
-        let res = http(
-            server,
-            "POST",
-            "/pair",
-            "",
-            &format!(r#"{{"code":"{code}","name":"{name}"}}"#),
-        );
-        assert!(res.starts_with("HTTP/1.1 200"), "{res}");
-        body_of(&res)["token"].as_str().unwrap().to_string()
     }
 
     #[test]
-    fn serves_the_page_and_refuses_sockets_without_a_token() {
+    fn serves_the_page_and_nothing_else_in_the_clear() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access).unwrap();
+        let (_, token) = access.lock().unwrap().admit("iPhone", 1);
+        let (server, _rx, _) = start(&access);
         let index = http(&server, "GET", "/", "", "");
         assert!(index.starts_with("HTTP/1.1 200"), "{index}");
         assert!(index.contains("text/html"));
@@ -3404,18 +3331,85 @@ mod tests {
         assert!(bundle.starts_with("HTTP/1.1 200"), "{bundle}");
         assert!(bundle.contains("text/javascript"));
         assert!(http(&server, "GET", "/nope.txt", "", "").starts_with("HTTP/1.1 404"));
-        let refused = http(
-            &server,
-            "GET",
-            "/ws?t=wrong",
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n",
-            "",
-        );
+        // The old doors in the clear are gone, even with a good token.
+        let bearer = format!("Authorization: Bearer {token}\r\n");
+        for (method, path) in [
+            ("GET", "/me"),
+            ("POST", "/push"),
+            ("POST", "/mute"),
+            ("POST", "/unpair"),
+            ("POST", "/pair"),
+            ("GET", "/image?p=x&s=y"),
+        ] {
+            let res = http(&server, method, path, &bearer, "{}");
+            assert!(res.starts_with("HTTP/1.1 404"), "{method} {path}: {res}");
+        }
+        let upgrade = "Upgrade: websocket\r\nConnection: Upgrade\r\n";
+        let old = http(&server, "GET", &format!("/ws?t={token}"), upgrade, "");
+        assert!(old.starts_with("HTTP/1.1 403"), "{old}");
+        // A page from elsewhere may not open the sealed socket either.
+        let other = format!("{upgrade}Origin: http://evil.example\r\n");
+        let refused = http(&server, "GET", lan::PATH, &other, "");
         assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
-        assert!(
-            http(&server, "GET", "/me", "Authorization: Bearer nope\r\n", "")
-                .starts_with("HTTP/1.1 403")
+    }
+
+    #[test]
+    fn a_phone_refuses_a_computer_with_another_key() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, _rx, _) = start(&access);
+        let other = identity::Identity::generate().label();
+        let code = access.lock().unwrap().begin_pairing();
+        let mut ws = dial(&server);
+        let pair = json!({ "pair": { "code": code, "name": "p" } });
+        let refused = lan::greet(&mut ws, Some(&other), &pair, Duration::from_secs(5));
+        assert_eq!(
+            refused.err(),
+            Some(lan::GreetError::Untrusted("bad hello: label".into()))
         );
+        // Nothing was sent, so the code still stands.
+        assert!(access.lock().unwrap().pairing().is_some());
+        assert!(access.lock().unwrap().devices.is_empty());
+    }
+
+    #[test]
+    fn a_typed_code_trusts_the_key_it_meets_and_names_it() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, _rx, label) = start(&access);
+        let code = access.lock().unwrap().begin_pairing();
+        let mut ws = dial(&server);
+        let pair = json!({ "pair": { "code": code, "name": "p" } });
+        let greeted = lan::greet(&mut ws, None, &pair, Duration::from_secs(5)).unwrap();
+        assert_eq!(greeted.label, label);
+        assert_eq!(greeted.answer["type"], "paired");
+    }
+
+    #[test]
+    fn a_frame_that_does_not_open_ends_the_connection() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, mut rx, label) = start(&access);
+        let (_, mut phone) = pair(&server, &access, &label, "p");
+        let id = loop {
+            if let Incoming::Connected(id, _) = next(&mut rx) {
+                break id;
+            }
+        };
+        let mut sealed = phone.session.seal(br#"{"type":"ping"}"#);
+        sealed[10] ^= 1;
+        phone
+            .ws
+            .send(tungstenite::Message::Binary(
+                lan::frame(relay::DATA, &sealed).into(),
+            ))
+            .unwrap();
+        disconnected(&mut rx, id, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_greeting_that_is_neither_pair_nor_auth_is_refused() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, _rx, label) = start(&access);
+        let (_, answer) = greet(&server, &label, json!({ "hello": 1 })).unwrap();
+        assert_eq!(answer, json!({ "type": "refused", "reason": "bad" }));
     }
 
     #[test]
@@ -3426,67 +3420,68 @@ mod tests {
         std::fs::write(&shot, b"PNG-ish bytes").unwrap();
         std::fs::write(dir.join("notes.txt"), b"text").unwrap();
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (_, token) = access.lock().unwrap().admit("iPhone", 1);
+        let (server, _rx, label) = start(&access);
         let key = access.lock().unwrap().image_key.clone();
+        let mut phone = signed_in(&server, &label, &token);
+        let mut get = |link: &str| phone.req_raw("GET", link, &Value::Null);
 
-        let ok = http(&server, "GET", &image_link(&key, &shot), "", "");
-        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
-        assert!(ok.contains("Content-Type: image/png"));
-        assert!(ok.ends_with("PNG-ish bytes"));
+        let (status, kind, bytes) = get(&image_link(&key, &shot));
+        assert_eq!((status, kind.as_str()), (200, "image/png"));
+        assert_eq!(bytes, b"PNG-ish bytes");
 
         // A wrong key, a changed path, or a file that is not an image: nothing.
         let forged = image_link("other-key", &shot);
-        assert!(http(&server, "GET", &forged, "", "").starts_with("HTTP/1.1 404"));
+        assert_eq!(get(&forged).0, 404);
         let moved = image_link(&key, &shot).replace("my%20shot", "my%20shot2");
-        assert!(http(&server, "GET", &moved, "", "").starts_with("HTTP/1.1 404"));
+        assert_eq!(get(&moved).0, 404);
         let text = image_link(&key, &dir.join("notes.txt"));
-        assert!(http(&server, "GET", &text, "", "").starts_with("HTTP/1.1 404"));
-        assert!(http(&server, "GET", "/image?p=x", "", "").starts_with("HTTP/1.1 404"));
+        assert_eq!(get(&text).0, 404);
+        assert_eq!(get("/image?p=x").0, 404);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn next(rx: &mut mpsc::UnboundedReceiver<Incoming>) -> Incoming {
+        futures::executor::block_on(futures::StreamExt::next(rx)).expect("the server stopped")
     }
 
     #[test]
     fn pairing_takes_the_code_once_and_gives_up_after_wrong_tries() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (server, mut rx, label) = start(&access);
         // No code yet: nothing to bring.
-        assert!(
-            http(&server, "POST", "/pair", "", r#"{"code":"000000"}"#).starts_with("HTTP/1.1 403")
-        );
+        let (_, refused) = greet(
+            &server,
+            &label,
+            json!({ "pair": { "code": "000000", "name": "x" } }),
+        )
+        .unwrap();
+        assert_eq!(refused, json!({ "type": "refused", "reason": "code" }));
 
-        let token = pair(&server, &access, "Bob's phone");
+        let (token, mut phone) = pair(&server, &access, &label, "Bob's phone");
         assert_eq!(token.len(), 64);
-        assert!(matches!(
-            futures::executor::block_on(futures::StreamExt::next(&mut rx)),
-            Some(Incoming::Paired)
-        ));
+        assert!(matches!(next(&mut rx), Incoming::Paired));
         let device = access.lock().unwrap().devices[0].clone();
         assert_eq!(device.name, "Bob's phone");
         assert_ne!(device.token_hash, token, "the token is kept hashed");
         // The code was spent.
         assert!(access.lock().unwrap().pairing().is_none());
 
-        let me = http(
-            &server,
-            "GET",
-            "/me",
-            &format!("Authorization: Bearer {token}\r\n"),
-            "",
-        );
-        assert!(me.starts_with("HTTP/1.1 200"), "{me}");
-        assert_eq!(body_of(&me)["id"], device.id);
-        assert_eq!(body_of(&me)["push_key"], "pk");
-        assert_eq!(body_of(&me)["notifying"], false);
+        let (status, me) = phone.req("GET", "/me", &Value::Null);
+        assert_eq!(status, 200, "{me}");
+        assert_eq!(me["id"], device.id);
+        assert_eq!(me["push_key"], "pk");
+        assert_eq!(me["notifying"], false);
 
         // The phone turns notifications on with its subscription, and off with null.
-        let auth = format!("Authorization: Bearer {token}\r\n");
         let sub = browser_subscription("https://push.example/x");
-        let on = http(&server, "POST", "/push", &auth, &sub);
-        assert!(on.starts_with("HTTP/1.1 200"), "{on}");
-        assert!(matches!(
-            futures::executor::block_on(futures::StreamExt::next(&mut rx)),
-            Some(Incoming::Subscribed)
-        ));
+        let (on, _) = phone.req("POST", "/push", &sub);
+        assert_eq!(on, 200);
+        loop {
+            if let Incoming::Subscribed = next(&mut rx) {
+                break;
+            }
+        }
         assert_eq!(
             access.lock().unwrap().devices[0]
                 .push
@@ -3494,26 +3489,14 @@ mod tests {
                 .map(|s| s.endpoint.as_str()),
             Some("https://push.example/x")
         );
-        assert_eq!(
-            body_of(&http(&server, "GET", "/me", &auth, ""))["notifying"],
-            true
-        );
-        assert!(
-            http(
-                &server,
-                "POST",
-                "/push",
-                &auth,
-                r#"{"subscription":{"endpoint":"https://x/","keys":{}}}"#
-            )
-            .starts_with("HTTP/1.1 400")
-        );
-        assert!(http(&server, "POST", "/push", "", &sub).starts_with("HTTP/1.1 403"));
+        assert_eq!(phone.req("GET", "/me", &Value::Null).1["notifying"], true);
+        let broken = json!({"subscription":{"endpoint":"https://x/","keys":{}}});
+        assert_eq!(phone.req("POST", "/push", &broken).0, 400);
 
         // It picks what to hear about; the subscription stays as it was.
         assert_eq!(
-            body_of(&me)["notices"],
-            serde_json::json!({
+            me["notices"],
+            json!({
                 "done": true,
                 "input": true,
                 "error": true,
@@ -3521,16 +3504,14 @@ mod tests {
                 "min_turn_secs": 30
             })
         );
-        let picked = http(
-            &server,
+        let (status, picked) = phone.req(
             "POST",
             "/push",
-            &auth,
-            r#"{"notices":{"done":false,"input":true,"error":true}}"#,
+            &json!({"notices":{"done":false,"input":true,"error":true}}),
         );
-        assert!(picked.starts_with("HTTP/1.1 200"), "{picked}");
-        assert_eq!(body_of(&picked)["notifying"], true);
-        assert_eq!(body_of(&picked)["notices"]["done"], false);
+        assert_eq!(status, 200);
+        assert_eq!(picked["notifying"], true);
+        assert_eq!(picked["notices"]["done"], false);
         assert_eq!(
             access.lock().unwrap().devices[0].notices,
             Notices {
@@ -3539,15 +3520,9 @@ mod tests {
             }
         );
         // One setting alone changes only itself.
-        let away = http(
-            &server,
-            "POST",
-            "/push",
-            &auth,
-            r#"{"notices":{"away_after_secs":0}}"#,
-        );
-        assert!(away.starts_with("HTTP/1.1 200"), "{away}");
-        assert_eq!(body_of(&away)["notices"]["away_after_secs"], 0);
+        let (status, away) = phone.req("POST", "/push", &json!({"notices":{"away_after_secs":0}}));
+        assert_eq!(status, 200);
+        assert_eq!(away["notices"]["away_after_secs"], 0);
         assert_eq!(
             access.lock().unwrap().devices[0].notices,
             Notices {
@@ -3556,29 +3531,13 @@ mod tests {
                 ..Notices::default()
             }
         );
-        assert!(
-            http(
-                &server,
-                "POST",
-                "/push",
-                &auth,
-                r#"{"notices":{"min_turn_secs":-1}}"#
-            )
-            .starts_with("HTTP/1.1 400")
-        );
-        assert!(
-            http(
-                &server,
-                "POST",
-                "/push",
-                &auth,
-                r#"{"notices":{"done":"yes"}}"#
-            )
-            .starts_with("HTTP/1.1 400")
-        );
+        let bad = json!({"notices":{"min_turn_secs":-1}});
+        assert_eq!(phone.req("POST", "/push", &bad).0, 400);
+        let bad = json!({"notices":{"done":"yes"}});
+        assert_eq!(phone.req("POST", "/push", &bad).0, 400);
 
-        let off = http(&server, "POST", "/push", &auth, r#"{"subscription":null}"#);
-        assert!(off.starts_with("HTTP/1.1 200"), "{off}");
+        let (off, _) = phone.req("POST", "/push", &json!({"subscription":null}));
+        assert_eq!(off, 200);
         assert!(access.lock().unwrap().devices[0].push.is_none());
         assert!(
             !access.lock().unwrap().devices[0].notices.done,
@@ -3588,48 +3547,33 @@ mod tests {
         // A wrong code, enough times, throws the current one away.
         let code = access.lock().unwrap().begin_pairing();
         let wrong = if code == "111111" { "222222" } else { "111111" };
-        for _ in 0..PAIR_TRIES {
-            assert!(
-                http(
-                    &server,
-                    "POST",
-                    "/pair",
-                    "",
-                    &format!(r#"{{"code":"{wrong}"}}"#)
-                )
-                .starts_with("HTTP/1.1 403")
-            );
-        }
-        assert!(
-            http(
+        let bring = |code: &str| {
+            greet(
                 &server,
-                "POST",
-                "/pair",
-                "",
-                &format!(r#"{{"code":"{code}"}}"#)
+                &label,
+                json!({ "pair": { "code": code, "name": "x" } }),
             )
-            .starts_with("HTTP/1.1 403")
-        );
+            .unwrap()
+            .1
+        };
+        for _ in 0..PAIR_TRIES {
+            assert_eq!(bring(wrong)["reason"], "code");
+        }
+        assert_eq!(bring(&code)["reason"], "code");
         assert_eq!(access.lock().unwrap().devices.len(), 1);
     }
 
-    /// A connected phone's socket and its id on the server.
+    /// A connected phone and its id on the server.
     fn connect_phone(
         server: &Server,
         access: &Shared,
+        label: &str,
         rx: &mut mpsc::UnboundedReceiver<Incoming>,
-    ) -> (
-        WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>,
-        ClientId,
-    ) {
-        let token = pair(server, access, "p");
-        let url = format!("ws://127.0.0.1:{}/ws?t={token}", server.port());
-        let (ws, _) = tungstenite::connect(url).unwrap();
+    ) -> (Phone, ClientId) {
+        let (_, phone) = pair(server, access, label, "p");
         loop {
-            match futures::executor::block_on(futures::StreamExt::next(rx)) {
-                Some(Incoming::Connected(id, _)) => return (ws, id),
-                Some(_) => {}
-                None => panic!("the server stopped"),
+            if let Incoming::Connected(id, _) = next(rx) {
+                return (phone, id);
             }
         }
     }
@@ -3650,28 +3594,19 @@ mod tests {
     #[test]
     fn a_page_that_pings_hears_a_pong() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let (mut ws, _) = connect_phone(&server, &access, &mut rx);
-        ws.send(Message::text(r#"{"type":"ping"}"#)).unwrap();
-        loop {
-            match ws.read().unwrap() {
-                Message::Text(t) => {
-                    assert_eq!(t.as_str(), wire::pong());
-                    break;
-                }
-                Message::Ping(_) | Message::Pong(_) => {}
-                other => panic!("unexpected {other:?}"),
-            }
-        }
+        let (server, mut rx, label) = start(&access);
+        let (mut phone, _) = connect_phone(&server, &access, &label, &mut rx);
+        phone.send(json!({ "type": "ping" }));
+        assert_eq!(phone.hear().to_string(), wire::pong());
     }
 
     #[test]
     fn a_phone_that_answers_pings_stays() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let (mut ws, id) = connect_phone(&server, &access, &mut rx);
+        let (server, mut rx, label) = start(&access);
+        let (mut phone, id) = connect_phone(&server, &access, &label, &mut rx);
         // Reading answers the server's pings; nothing else is said.
-        let tungstenite::stream::MaybeTlsStream::Plain(tcp) = ws.get_ref() else {
+        let tungstenite::stream::MaybeTlsStream::Plain(tcp) = phone.ws.get_ref() else {
             unreachable!("a plain socket");
         };
         tcp.set_read_timeout(Some(Duration::from_millis(50)))
@@ -3679,8 +3614,8 @@ mod tests {
         let until = Instant::now() + PHONE_SILENCE_MAX * 2;
         let mut pinged = false;
         while Instant::now() < until {
-            match ws.read() {
-                Ok(Message::Ping(_)) => pinged = true,
+            match phone.ws.read() {
+                Ok(tungstenite::Message::Ping(_)) => pinged = true,
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e))
                     if matches!(
@@ -3697,9 +3632,9 @@ mod tests {
     #[test]
     fn a_phone_that_stops_answering_is_dropped() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (server, mut rx, label) = start(&access);
         // Never read again, so the server's pings go unanswered.
-        let (_ws, id) = connect_phone(&server, &access, &mut rx);
+        let (_phone, id) = connect_phone(&server, &access, &label, &mut rx);
         disconnected(&mut rx, id, PHONE_SILENCE_MAX * 5);
         assert_eq!(server.device_of(id), None);
     }
@@ -3749,73 +3684,76 @@ mod tests {
     #[test]
     fn a_phone_talks_both_ways_and_unpairing_cuts_it_off() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let token = pair(&server, &access, "p");
-        let url = format!("ws://127.0.0.1:{}/ws?t={token}", server.port());
-        let (mut ws, _) = tungstenite::connect(url).unwrap();
-        ws.send(Message::text(r#"{"type":"open","session":"s1"}"#))
-            .unwrap();
-        ws.send(Message::text(r#"{"type":"visible","visible":false}"#))
-            .unwrap();
+        let (server, mut rx, label) = start(&access);
+        let (token, mut phone) = pair(&server, &access, &label, "p");
+        phone.send(json!({"type":"open","session":"s1","seq":1}));
+        phone.send(json!({"type":"visible","visible":false}));
         let mut got = Vec::new();
         let device = access.lock().unwrap().devices[0].id.clone();
         while got.len() < 4 {
-            match futures::executor::block_on(futures::StreamExt::next(&mut rx)) {
-                Some(Incoming::Paired) => got.push("paired"),
-                Some(Incoming::Connected(id, dev)) => {
+            match next(&mut rx) {
+                Incoming::Paired => got.push("paired"),
+                Incoming::Connected(id, dev) => {
                     assert_eq!(dev, device);
-                    server.send(id, "hello".into());
+                    server.send(id, r#"{"type":"hello"}"#.into());
                     got.push("connected");
                 }
-                Some(Incoming::Message(_, ClientMsg::Open { session, .. })) => {
+                Incoming::Message(_, ClientMsg::Open { session, .. }) => {
                     assert_eq!(session, "s1");
                     got.push("open");
                 }
-                Some(Incoming::Message(_, ClientMsg::Visible { visible: false })) => {
-                    got.push("hidden")
-                }
-                other => panic!("unexpected {}", other.is_some()),
+                Incoming::Message(_, ClientMsg::Visible { visible: false }) => got.push("hidden"),
+                _ => panic!("unexpected"),
             }
         }
-        assert_eq!(ws.read().unwrap(), Message::text("hello"));
-        server.broadcast("all");
-        assert_eq!(ws.read().unwrap(), Message::text("all"));
+        // What it numbered is acknowledged, sealed like the rest.
+        let mut heard = vec![phone.hear(), phone.hear()];
+        heard.sort_by_key(|m| m.to_string());
+        assert_eq!(
+            heard,
+            vec![json!({"type":"ack","seq":1}), json!({"type":"hello"})]
+        );
+        server.broadcast(r#"{"type":"all"}"#);
+        assert_eq!(phone.hear(), json!({"type":"all"}));
         assert_eq!(server.connected_devices(), vec![device.clone()]);
 
         access.lock().unwrap().unpair(&device);
         server.disconnect_device(&device);
-        assert!(matches!(ws.read(), Ok(Message::Close(_)) | Err(_)));
-        let refused = http(
-            &server,
-            "GET",
-            &format!("/ws?t={token}"),
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n",
-            "",
-        );
-        assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+        loop {
+            match phone.ws.read() {
+                Ok(tungstenite::Message::Close(_)) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        let (_, refused) = greet(&server, &label, json!({ "auth": { "token": token } })).unwrap();
+        assert_eq!(refused["reason"], "unpaired");
     }
 
     #[test]
     fn a_phone_unpairs_itself() {
         let access = Access::new(Vec::new(), "pk".into());
-        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
-        let token = pair(&server, &access, "p");
-        let (mut ws, _) =
-            tungstenite::connect(format!("ws://127.0.0.1:{}/ws?t={token}", server.port())).unwrap();
-        let auth = format!("Authorization: Bearer {token}\r\n");
+        let (server, mut rx, label) = start(&access);
+        let (token, mut phone) = pair(&server, &access, &label, "p");
+        let mut other = signed_in(&server, &label, &token);
 
-        assert!(http(&server, "POST", "/unpair", "", "").starts_with("HTTP/1.1 403"));
-        let gone = http(&server, "POST", "/unpair", &auth, "");
-        assert!(gone.starts_with("HTTP/1.1 200"), "{gone}");
+        let (status, _) = phone.req("POST", "/unpair", &Value::Null);
+        assert_eq!(status, 200);
         assert!(access.lock().unwrap().devices.is_empty());
-        // Its socket closes, its token stops working, and the desktop hears that someone left.
-        assert!(matches!(ws.read(), Ok(Message::Close(_)) | Err(_)));
-        assert!(http(&server, "GET", "/me", &auth, "").starts_with("HTTP/1.1 403"));
+        // Both its sockets close, its token stops working, and the desktop
+        // hears that someone left.
+        for ws in [&mut phone.ws, &mut other.ws] {
+            loop {
+                match ws.read() {
+                    Ok(tungstenite::Message::Close(_)) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+        let (_, refused) = greet(&server, &label, json!({ "auth": { "token": token } })).unwrap();
+        assert_eq!(refused["reason"], "unpaired");
         let mut heard = false;
-        for _ in 0..4 {
-            if let Some(Incoming::Unpaired) =
-                futures::executor::block_on(futures::StreamExt::next(&mut rx))
-            {
+        for _ in 0..8 {
+            if let Incoming::Unpaired = next(&mut rx) {
                 heard = true;
                 break;
             }

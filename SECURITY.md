@@ -45,6 +45,32 @@ Of particular interest:
   and the relay in `cloud/src/relay/` (including the hosted relay at `arakun.dev`). Pairing without
   the code, reading or injecting traffic, impersonating a computer or phone, or one
   computer reaching another's sessions.
+
+## What the phone's ways in protect
+
+A phone (or the app reaching an `arakun-server`) talks to the computer one of three
+ways. All three use the same end-to-end encryption (`core/src/phone/e2e.rs`,
+`phone/public/e2e.js`): an ephemeral P-256 key exchange signed by the computer's
+identity key, then AES-256-GCM with a counter per direction, so a frame that is
+replayed, dropped or changed ends the connection.
+
+| Way | The page comes over | The phone checks the computer by | What crosses the network in the clear |
+| --- | --- | --- | --- |
+| Local network | Plain HTTP | The key label in the pairing link (`k=`), or the key it met when the code was typed | The page's files |
+| Tailscale | HTTPS from `tailscale serve` | The same, and Tailscale's certificate | Nothing |
+| Relay | HTTPS from the account host | The key the account lists for that computer | Nothing; the relay sees sealed frames only |
+
+On the local network and over Tailscale, the pairing code, the device token, the
+sessions, notification settings and images all go inside the sealed socket at `/e2e`.
+The computer answers nothing else over plain HTTP. Someone who only listens on the
+same network learns nothing from it. Someone who can change traffic on the local
+network can change the page itself, since it comes over plain HTTP, and so take what
+the page holds. Use Tailscale or the relay where that matters.
+
+The page keeps the device token in `localStorage`, and over HTTPS in a cookie that
+script can read, for the iOS home-screen app. The page has to read the token to send it
+inside the sealed channel, so an HttpOnly cookie would not work. The page's content
+policy allows scripts from the computer only, so a transcript cannot run script in it.
 - **Agent permissions.** Tool calls running without the permission the user chose,
   permission prompts that misrepresent what will run, or project files or web content
   that make Arakun itself (not the agent's model) run commands.

@@ -1,7 +1,10 @@
 // Pairing on the computer's own server: a six-digit code, from the QR link or
-// typed, traded for a token that stays on this phone.
+// typed, traded for a token that stays on this phone. The trade happens inside
+// the sealed socket (sealed.ts), checked against the key the QR link names;
+// a typed code trusts the key that answers, and keeps it from then on.
 
-import { keepToken } from "./token";
+import { openSealed, type SealedOptions } from "./sealed";
+import { keepPin, keepToken } from "./token";
 
 /** What the computer will call this phone. */
 export function deviceName(ua: string = navigator.userAgent, touches: number = navigator.maxTouchPoints): string {
@@ -17,22 +20,42 @@ export function deviceName(ua: string = navigator.userAgent, touches: number = n
 
 export type Paired = { ok: true; host: string } | { ok: false; error: string };
 
-/** Trades `code` for a token and keeps it. */
-export async function pair(code: string): Promise<Paired> {
-  try {
-    const res = await fetch("/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name: deviceName() }),
-    });
-    if (!res.ok) {
-      return { ok: false, error: res.status === 403 ? "That code is wrong or has expired. Make a new one in Arakun." : `Could not pair (${res.status}).` };
-    }
-    const data = (await res.json()) as { token: string; host?: string };
-    keepToken(data.token);
-    return { ok: true, host: data.host || "" };
-  } catch {
+/** How long the computer may take to answer, handshake and all. */
+const PAIR_MS = 15_000;
+
+/**
+ * Trades `code` for a token and keeps it, with the label of the key that
+ * signed the handshake. `label` is the one the QR link named, or "".
+ */
+export function pair(code: string, label = "", WebSocketImpl?: typeof WebSocket): Promise<Paired> {
+  const unreachable = () => {
     const why = location.protocol === "https:" ? "Is Tailscale on, on the phone and on the computer?" : "Is the phone on the same network?";
-    return { ok: false, error: `Could not reach Arakun. ${why}` };
-  }
+    return { ok: false as const, error: `Could not reach Arakun. ${why}` };
+  };
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (p: Paired) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      link.close();
+      resolve(p);
+    };
+    const timer = setTimeout(() => finish(unreachable()), PAIR_MS);
+    const opts: SealedOptions = { label, greeting: { pair: { code, name: deviceName() } }, WebSocketImpl };
+    const link = openSealed(opts, {
+      onopen(answer, pinned) {
+        if (answer.type !== "paired" || !answer.token) return finish({ ok: false, error: "Could not pair." });
+        keepToken(answer.token);
+        keepPin(pinned);
+        finish({ ok: true, host: answer.host || "" });
+      },
+      onmessage() {},
+      onclose({ kind, detail }) {
+        if (kind === "refused" && detail === "code") return finish({ ok: false, error: "That code is wrong or has expired. Make a new one in Arakun." });
+        if (kind === "untrusted") return finish({ ok: false, error: "The computer that answered is not the one that made this code. Make a new one in Arakun and scan it." });
+        finish(unreachable());
+      },
+    });
+  });
 }

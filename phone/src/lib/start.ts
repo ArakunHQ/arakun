@@ -12,17 +12,20 @@ import { loadToken } from "./token";
 
 export type Way = "account" | "update" | "unreachable" | "local";
 
-// The pairing code arrives in the QR link (?p=). It works once, so it is
-// never kept, and the address bar drops it at once.
-let pairCode: string | null = null;
-export function takePairCode(): string {
+// The pairing code arrives in the QR link (?p=), with the label of the key
+// the computer signs its handshake with (&k=). The code works once, so it is
+// never kept, and the address bar drops both at once.
+let pairCode: { code: string; key: string } | null = null;
+export function takePairCode(): { code: string; key: string } {
   if (pairCode === null) {
-    pairCode = new URLSearchParams(location.search).get("p") || "";
-    if (pairCode) history.replaceState(null, "", location.pathname + location.hash);
+    const q = new URLSearchParams(location.search);
+    const key = q.get("k") || "";
+    pairCode = { code: q.get("p") || "", key: /^[a-z2-7]{16}$/.test(key) ? key : "" };
+    if (pairCode.code) history.replaceState(null, "", location.pathname + location.hash);
   }
-  const code = pairCode;
-  pairCode = "";
-  return code;
+  const taken = pairCode;
+  pairCode = { code: "", key: "" };
+  return taken;
 }
 
 // GitHub's sign-in comes back to `/?sign_in=failed` when it did not work.
@@ -169,8 +172,8 @@ export async function whereTo(path: string, qc: QueryClient): Promise<string | n
 
 async function localWhere(path: string, go: (to: string) => string | null): Promise<string | null> {
   if (!localStart) {
-    const code = takePairCode();
-    localStart = code ? pair(code).then((done) => (done.ok ? "" : done.error)) : Promise.resolve("");
+    const { code, key } = takePairCode();
+    localStart = code ? pair(code, key).then((done) => (done.ok ? "" : done.error)) : Promise.resolve("");
   }
   const failed = await localStart;
   // A code that did not work sends to pairing once, with why.

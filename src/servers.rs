@@ -41,6 +41,13 @@ pub struct Saved {
     /// This app as the server knows it. Empty through the account.
     #[serde(default)]
     pub device: String,
+    /// Reached directly: the label of the key that signs the server's
+    /// handshake, which every connection is checked against. Empty through
+    /// the account, where the account names the key, and for a server paired
+    /// before the direct socket was sealed, until it next connects.
+    // Not a secret: the label of a public key.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
     /// What the server lets this app in with. Empty through the account.
     /// It is kept in the keyring (`servers::token`): here it is only while a file
     /// from before holds it, until it is moved, or when the keyring refused
@@ -154,10 +161,14 @@ pub struct Invite {
     pub origin: String,
     /// What the server's door takes.
     pub code: String,
+    /// The label of the server's key (`k=`), which its handshake must be
+    /// signed with. A link without one trusts the key that answers.
+    // Not a secret: the label of a public key.
+    pub key: Option<String>,
 }
 
 /// Reads the link `arakun server pair` prints for a server reached directly:
-/// `https://host/?p=<code>`. One of the old relay,
+/// `https://host/?p=<code>&k=<label>`. One of the old relay,
 /// `https://<label>.<relay>/#p=<code>&s=<secret>`, says what to do instead.
 pub fn parse_link(link: &str) -> Result<Invite, String> {
     const HELP: &str = "That is not a pairing link. `arakun-server pair` prints one.";
@@ -185,7 +196,11 @@ pub fn parse_link(link: &str) -> Result<Invite, String> {
         return Err(RELAY_LINK.into());
     }
     match value(query, "p") {
-        Some(code) => Ok(Invite { origin, code }),
+        Some(code) => Ok(Invite {
+            origin,
+            code,
+            key: value(query, "k").filter(|k| crate::phone::identity::is_label(k)),
+        }),
         None => Err("That link carries no pairing code. Ask the server for a new one.".into()),
     }
 }
@@ -450,6 +465,7 @@ mod tests {
             Ok(Invite {
                 origin: "http://10.0.0.2:7474".into(),
                 code: "123456".into(),
+                key: None,
             })
         );
         // The page's address alone pairs nothing.
@@ -495,6 +511,7 @@ mod tests {
                     label: "abcdefghij234567".into(),
                 },
                 device: String::new(),
+                key: String::new(),
                 token: Secret::default(),
                 removed: false,
             },
@@ -504,6 +521,7 @@ mod tests {
                 origin: "http://10.0.0.2:7474".into(),
                 way: Way::Direct,
                 device: "d2".into(),
+                key: String::new(),
                 token: "k2".into(),
                 removed: false,
             },
@@ -581,6 +599,7 @@ mod tests {
             origin: "http://10.0.0.2:7474".into(),
             way: Way::Direct,
             device: "d2".into(),
+            key: String::new(),
             token: "k2".into(),
             removed: false,
         }

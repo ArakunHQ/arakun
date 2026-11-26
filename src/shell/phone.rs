@@ -674,13 +674,14 @@ impl Shell {
         self.phone.is_some() || self.phone_keys.starting.is_some()
     }
 
-    /// Makes the relay identity the first time the relay is chosen, on a
-    /// background thread: the keyring may wait for the person to unlock it.
+    /// Makes the identity the first time the relay is chosen, on a background
+    /// thread: the keyring may wait for the person to unlock it. Starting
+    /// the phone link makes it too, as phones check every handshake with it.
     fn make_identity(&mut self, cx: &mut Context<Self>) {
         if self.phone_keys.making.is_some() {
             return;
         }
-        let make = cx.background_spawn(async { phone::Settings::load_keys(true).map(drop) });
+        let make = cx.background_spawn(async { phone::Settings::load_keys().map(drop) });
         self.phone_keys.making = Some(cx.spawn(async move |this, cx| {
             let made = make.await;
             let _ = this.update(cx, |this, cx| {
@@ -1026,8 +1027,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let mut settings = settings.clone();
-        let relay = settings.reach == Reach::Relay;
-        let keys = cx.background_spawn(async move { phone::Settings::load_keys(relay) });
+        let keys = cx.background_spawn(async move { phone::Settings::load_keys() });
         self.phone_keys.starting = Some(cx.spawn_in(window, async move |this, cx| {
             let keys = keys.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -1035,7 +1035,14 @@ impl Shell {
                 match keys {
                     Ok(keys) => {
                         // Devices may have come or gone while the keys were read.
-                        settings.devices = phone::Settings::load().devices;
+                        let now = phone::Settings::load();
+                        // The keys may have made the identity just now.
+                        let label = now.relay_label();
+                        settings.devices = now.devices;
+                        if this.signed_in.own_label != label {
+                            this.signed_in.own_label = label;
+                            this.servers_own_label_changed();
+                        }
                         this.start_phone_with(&settings, keys, window, cx);
                         if let (Some(waiting), Some(link)) = (waiting, &mut this.phone) {
                             link.notifier = waiting;
@@ -1068,9 +1075,16 @@ impl Shell {
             teams_account.as_ref(),
             crate::arakun_teams::fixture().is_some(),
         );
+        let identity = keys.identity;
         let (server, mut incoming) = match settings.reach {
             Reach::Lan | Reach::Tailscale => {
-                match Server::start(settings.reach.bind(), settings.port, access.clone()) {
+                let identity = Arc::new(identity);
+                match Server::start(
+                    settings.reach.bind(),
+                    settings.port,
+                    access.clone(),
+                    identity,
+                ) {
                     Ok((s, rx)) => (Transport::Local(s), rx),
                     Err(e) => {
                         self.views.phone.update(cx, |v, cx| {
@@ -1084,10 +1098,6 @@ impl Shell {
                 }
             }
             Reach::Relay => {
-                // Read with the keys when the relay is the way in.
-                let Some(identity) = keys.identity else {
-                    return;
-                };
                 // The window's sign-in; without one the client waits signed
                 // out, and a sign-in starts a new one (`account_changed`).
                 let machine = relay::Machine {
@@ -1238,8 +1248,14 @@ impl Shell {
                 };
                 let connected = link.server.connected_devices();
                 let mut access = link.access.lock().unwrap();
+                // On a server of our own the phone checks the handshake
+                // against the key the link names.
+                let label = match &link.server {
+                    Transport::Local(_) => settings.relay_label(),
+                    Transport::Relay(_) => None,
+                };
                 let pairing = access.pairing().map(|(code, left)| PairingInfo {
-                    url: phone::link(&base, &code),
+                    url: phone::link(&base, &code, label.as_deref()),
                     code,
                     seconds_left: left.as_secs(),
                 });

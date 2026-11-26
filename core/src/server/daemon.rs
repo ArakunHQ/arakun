@@ -492,7 +492,21 @@ pub fn run(opts: Options) -> i32 {
     let access = Access::new(settings.devices.clone(), vapid.public_key());
     let (transport, incoming, address) = match settings.reach {
         Reach::Lan | Reach::Tailscale => {
-            match Server::start(settings.reach.bind(), settings.port, access.clone()) {
+            // Each device's handshake is signed with it, here as through the
+            // relay. Like the push keys, never made anew on a keyring error.
+            let identity = match settings.identity() {
+                Ok(identity) => Arc::new(identity),
+                Err(e) => {
+                    eprintln!("arakun server: {e}");
+                    return 1;
+                }
+            };
+            match Server::start(
+                settings.reach.bind(),
+                settings.port,
+                access.clone(),
+                identity,
+            ) {
                 Ok((server, rx)) => {
                     let address = match settings.reach {
                         Reach::Lan => lan_address(server.port()),
@@ -4468,7 +4482,8 @@ impl Daemon {
             }
         };
         let code = self.access.lock().unwrap().begin_pairing();
-        let url = phone::link(&base, &code);
+        let label = self.settings.relay_label();
+        let url = phone::link(&base, &code, label.as_deref());
         let waiting = match &self.address {
             Address::Ready(_) => String::new(),
             other => other.line(),

@@ -716,7 +716,6 @@ pub(super) mod tests {
 
     /// A server of our own that answers each request with the next of
     /// `answers`, then stops listening. Hands back every request it got.
-    /// `linear_run`'s tests use it too.
     pub(in crate::shell) fn serve(
         answers: Vec<(u16, &'static str)>,
     ) -> (String, std::sync::mpsc::Receiver<String>) {

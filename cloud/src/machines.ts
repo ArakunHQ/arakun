@@ -177,10 +177,19 @@ export interface Delivery {
   created: number;
 }
 
+/// The computer already has as many deliveries waiting as the relay keeps.
+/// Its own class, so a caller can tell the person why instead of failing.
+export class QueueFull extends Error {
+  constructor(label: string) {
+    super(`the queue of ${label} is full`);
+    this.name = "QueueFull";
+  }
+}
+
 /// Hands a delivery to the label's relay, which keeps it and sends it to the
 /// computer now if it is connected. `body` (a follow-up's text) goes only in
-/// that live frame; the relay never stores it. Throws when the relay refuses,
-/// a full queue (429) included.
+/// that live frame; the relay never stores it. Throws `QueueFull` when the
+/// computer's queue is full, and an `Error` for any other refusal.
 export async function deliver(env: Env, label: string, d: Delivery, body: string | null): Promise<{ online: boolean }> {
   const res = await relayStub(env, label).fetch("https://relay/_linear", {
     method: "POST",
@@ -189,6 +198,7 @@ export async function deliver(env: Env, label: string, d: Delivery, body: string
   });
   if (!res.ok) {
     await discard(res);
+    if (res.status === 429) throw new QueueFull(label);
     throw new Error(`delivery to ${label} answered ${res.status}`);
   }
   return { online: ((await res.json()) as { online?: unknown }).online === true };

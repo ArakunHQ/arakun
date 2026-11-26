@@ -2,7 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA, pcControl, pcFrame, phoneFrame } from "../../src/relay/frames";
 import * as expire from "../../src/linear_expire";
-import { deliver, dropDelivery, type Delivery } from "../../src/machines";
+import { QueueFull, deliver, dropDelivery, type Delivery } from "../../src/machines";
 import { account, claim, computer, computerAndPhone, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./helpers";
 
 const DAY_MS = 24 * 3_600_000;
@@ -214,7 +214,7 @@ describe("Linear deliveries in the relay", () => {
     const { me } = await awayComputer();
     for (let i = 0; i < 50; i++) expect(await deliver(env, me.label, delivery(), null)).toEqual({ online: false });
     const extra = delivery();
-    await expect(deliver(env, me.label, extra, null)).rejects.toThrow(/429/);
+    await expect(deliver(env, me.label, extra, null)).rejects.toBeInstanceOf(QueueFull);
     expect(await stored(me.label, `linear:${extra.id}`)).toBeUndefined();
   });
 

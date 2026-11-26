@@ -321,17 +321,86 @@ pub fn discard(id: &str) {
     }
 }
 
-/// Every headless session, newest first.
+/// Every headless session, newest first. The app and the island call this
+/// every second while a session runs, and finished sessions stay listed (the
+/// sidebar reopens them), so a meta file is parsed again only when it changed.
 pub fn list() -> Vec<Meta> {
-    let mut all: Vec<Meta> = std::fs::read_dir(root())
+    let root = root();
+    let mut seen = std::collections::HashSet::new();
+    let mut all: Vec<Meta> = std::fs::read_dir(&root)
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| read_meta(&e.file_name().to_string_lossy()))
+        .filter_map(|e| {
+            let path = e.path().join("meta.json");
+            let m = cached_meta(&path);
+            seen.insert(path);
+            m
+        })
         .filter(|m| !discarding(&m.id))
         .collect();
+    // Deleted sessions leave the cache. Only this root's: tests list other roots.
+    metas().retain(|path, _| !path.starts_with(&root) || seen.contains(path));
     all.sort_by_key(|m| std::cmp::Reverse(m.updated));
     all
+}
+
+/// One version of a meta file. Every save writes a new file and renames it
+/// over the old one, so a save changes the inode as well as the time, even
+/// where the file system keeps coarse times.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    ino: u64,
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Stamp> {
+        let md = std::fs::metadata(path).ok()?;
+        #[cfg(unix)]
+        let ino = std::os::unix::fs::MetadataExt::ino(&md);
+        #[cfg(not(unix))]
+        let ino = 0;
+        Some(Stamp {
+            modified: md.modified().ok(),
+            len: md.len(),
+            ino,
+        })
+    }
+}
+
+/// Meta files as last parsed, by path, with the version parsed. `None`: that
+/// version did not parse, and is not read again until it changes.
+type Metas = std::collections::BTreeMap<PathBuf, (Stamp, Option<Meta>)>;
+
+static METAS: std::sync::Mutex<Metas> = std::sync::Mutex::new(Metas::new());
+
+fn metas() -> std::sync::MutexGuard<'static, Metas> {
+    // Only a cache: what a panic left in it is still a parse of some version.
+    METAS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The meta at `path`, parsed again only when the file changed.
+fn cached_meta(path: &Path) -> Option<Meta> {
+    // The stamp before the read: a save in between leaves the old stamp with
+    // the new meta, and the next scan reads it again. The other way round
+    // would keep the old meta under the new stamp.
+    let Some(stamp) = Stamp::of(path) else {
+        metas().remove(path);
+        return None;
+    };
+    if let Some((s, m)) = metas().get(path)
+        && *s == stamp
+    {
+        return m.clone();
+    }
+    let bytes = crate::durable::read(path).ok()?;
+    let m: Option<Meta> = serde_json::from_slice(&bytes).ok();
+    metas().insert(path.to_path_buf(), (stamp, m.clone()));
+    m
 }
 
 /// The session `id` names, by its id or the start of one.
@@ -2131,6 +2200,67 @@ mod tests {
         assert!(!dir(&id).exists());
         assert!(save_json(&transcript_path(&id), &1).is_err());
         assert!(!dir(&id).exists());
+        TEST_ROOT.with(|r| *r.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_scan_parses_only_the_metas_that_changed() {
+        let tmp = std::env::temp_dir().join(format!("arakun-headless-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        TEST_ROOT.with(|r| *r.borrow_mut() = Some(tmp.clone()));
+        let mut m = Meta {
+            id: "h-test-scan-1".into(),
+            agent: AgentKind::WorkersAi,
+            model: String::new(),
+            effort: String::new(),
+            policy: Policy::ReadOnly,
+            cwd: "/tmp/x".into(),
+            title: "aaaa".into(),
+            created: 1,
+            updated: 2,
+            status: Status::Idle,
+            pid: None,
+            last: String::new(),
+            cost: 0.,
+            error: None,
+            session_id: None,
+            caps: Vec::new(),
+            reads: Vec::new(),
+            no_sandbox: false,
+            unsandboxed: false,
+            unattended: false,
+            declined: 0,
+            stop_reason: None,
+        };
+        let path = meta_path(&m.id);
+        create_meta(&m);
+        let titles = || list().into_iter().map(|m| m.title).collect::<Vec<_>>();
+        assert_eq!(titles(), ["aaaa"]);
+
+        // Other bytes, but the same file, length and time: not parsed again.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let other = String::from_utf8(bytes).unwrap().replace("aaaa", "bbbb");
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        std::io::Write::write_all(&mut &file, other.as_bytes()).unwrap();
+        file.set_modified(before).unwrap();
+        drop(file);
+        assert_eq!(titles(), ["aaaa"]);
+
+        // A save, even one of the same length: read again.
+        m.title = "cccc".into();
+        write_meta(&m);
+        assert_eq!(titles(), ["cccc"]);
+        m.title = "a longer title".into();
+        write_meta(&m);
+        assert_eq!(titles(), ["a longer title"]);
+
+        // A deleted session is gone from the list and from the cache.
+        std::fs::remove_dir_all(dir(&m.id)).unwrap();
+        assert!(titles().is_empty());
+        assert!(!metas().contains_key(&path));
+
         TEST_ROOT.with(|r| *r.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -192,11 +192,12 @@ fn try_lock_store(file: &Path) -> std::io::Result<Option<std::fs::File>> {
 }
 
 fn open_lock(file: &Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(file.with_extension("lock"))
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).truncate(false).write(true);
+    // Empty, but it sits with the memory: private like the rest.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(file.with_extension("lock"))
 }
 
 /// `load` for a caller that already holds the store's lock.
@@ -219,7 +220,7 @@ pub fn update<T>(
     f: impl FnOnce(&mut Store) -> (bool, T),
 ) -> std::io::Result<T> {
     if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
+        crate::durable::create_private_dir(dir)?;
     }
     let _lock = lock_store(file)?;
     let mut store = load_locked(file);

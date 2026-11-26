@@ -1442,9 +1442,7 @@ impl Shell {
             let linked = state::linked_path(&old_id);
             let markdown =
                 crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
-            if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked"))
-                .and_then(|_| std::fs::write(&linked, markdown))
-            {
+            if let Err(e) = state::write_linked(&linked, &markdown) {
                 eprintln!("arakun: could not write {}: {e}", linked.display());
             }
             let handoff = crate::agent::notes::handoff(
@@ -2674,14 +2672,20 @@ pub(super) fn discard_session_files(own: Vec<String>, ids: Vec<String>, cx: &mut
     .detach();
 }
 
-/// Deletes the transcripts and linked notes of `ids`, and keeps later saves
-/// from writing them back. Blocking.
+/// Deletes the transcripts and linked notes of `ids`, and the images pasted
+/// into them, and keeps later saves from writing them back. Blocking.
 fn delete_session_files(ids: Vec<String>) {
     let mut removed = REMOVED.lock().unwrap_or_else(PoisonError::into_inner);
     for id in ids {
-        for path in state::session_files(&id) {
+        let files = state::session_files(&id);
+        // A headless session's chat is in its own folder, deleted after this.
+        let mut read = files.to_vec();
+        read.push(crate::headless::transcript_path(&id));
+        let pastes = state::pastes_in(&read);
+        for path in files {
             let _ = std::fs::remove_file(path);
         }
+        state::remove_pastes(&state::pastes_dir(), &pastes);
         removed.insert(id);
     }
 }

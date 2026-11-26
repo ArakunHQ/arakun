@@ -69,7 +69,7 @@ pub fn write(bytes: &[u8]) {
     write_to(&file(), bytes);
 }
 
-fn write_to(path: &Path, bytes: &[u8]) {
+pub(crate) fn write_to(path: &Path, bytes: &[u8]) {
     if let Err(e) = crate::stored::write(path, bytes) {
         eprintln!("arakun: could not save {}: {e}", path.display());
     }

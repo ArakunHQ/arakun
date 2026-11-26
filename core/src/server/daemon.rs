@@ -2039,9 +2039,7 @@ impl Daemon {
             let written = cx
                 .background_spawn(crate::guard::task(async move {
                     if let Some(markdown) = markdown {
-                        l.parent()
-                            .map_or(Ok(()), std::fs::create_dir_all)
-                            .and_then(|_| std::fs::write(&l, markdown))
+                        crate::durable::write_private(&l, markdown.as_bytes())
                             .map_err(|e| format!("could not write {}: {e}", l.display()))?;
                     }
                     write_transcript(&p, &transcript)

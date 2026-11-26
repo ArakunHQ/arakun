@@ -587,6 +587,162 @@ pub fn session_files(id: &str) -> [PathBuf; 2] {
     [transcript_path(id), linked_path(id)]
 }
 
+/// Where images pasted into the composer, or sent from the phone, are kept.
+pub fn pastes_dir() -> PathBuf {
+    data_dir().join("pastes")
+}
+
+/// Saves a pasted image in `dir` as `paste-<millis>.<ext>`, the name
+/// `pastes_in` looks for. Private, like the chat that mentions it.
+pub fn save_paste(dir: &Path, bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let mut path = dir.join(format!("paste-{stamp}.{ext}"));
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("paste-{stamp}-{n}.{ext}"));
+        n += 1;
+    }
+    crate::durable::write_private(&path, bytes)?;
+    Ok(path)
+}
+
+/// Writes a session out as markdown at `path` (a `linked_path`), private
+/// since it is the whole chat.
+pub fn write_linked(path: &Path, markdown: &str) -> std::io::Result<()> {
+    crate::durable::write_private(path, markdown.as_bytes())
+}
+
+/// The pasted images the files at `paths` mention, by file name. A missing
+/// or unreadable file mentions none.
+pub fn pastes_in(paths: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = paths
+        .iter()
+        .filter_map(|p| std::fs::read(p).ok())
+        .flat_map(|bytes| paste_names(&String::from_utf8_lossy(&bytes)))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Deletes the pasted images `names` from `dir`.
+pub fn remove_pastes(dir: &Path, names: &[String]) {
+    for name in names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+}
+
+/// The names of pasted images in `text`: `paste-<millis>.<ext>` or
+/// `paste-<millis>-<n>.<ext>` right after a path separator, as
+/// `composer::save_image` names them. A name that shape is only ever one of
+/// ours, so matching on it alone can't delete a file the user put there.
+fn paste_names(text: &str) -> Vec<String> {
+    const STEM: &str = "paste-";
+    let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+    let mut names = Vec::new();
+    for (at, _) in text.match_indices(STEM) {
+        let after_separator = text[..at].ends_with(['/', '\\']);
+        if !after_separator {
+            continue;
+        }
+        let rest = &text[at + STEM.len()..];
+        let mut len = digits(rest);
+        if len == 0 {
+            continue;
+        }
+        if let Some(more) = rest[len..].strip_prefix('-') {
+            let n = digits(more);
+            if n == 0 {
+                continue;
+            }
+            len += 1 + n;
+        }
+        let Some(ext) = rest[len..].strip_prefix('.') else {
+            continue;
+        };
+        let ext_len = ext.bytes().take_while(u8::is_ascii_alphanumeric).count();
+        if !(1..=5).contains(&ext_len) {
+            continue;
+        }
+        names.push(format!("{STEM}{}", &rest[..len + 1 + ext_len]));
+    }
+    names
+}
+
+/// What in the data dir holds the user's text, by name: chats, prompts,
+/// drafts, notes and pasted images. Folders count with all they hold. The
+/// state file is private too, wherever `ARAKUN_STATE` puts it.
+pub const CHAT_FILES: &[&str] = &[
+    "sessions",
+    "linked",
+    "headless",
+    "pastes",
+    "memory",
+    "history.json",
+    "prompts.json",
+    "sidebar.json",
+    "pins.json",
+    "todos.json",
+    "rules.json",
+];
+
+/// Makes the data dir and what `CHAT_FILES` names private to the user, for
+/// files an older Arakun wrote readable by others. New ones are written that
+/// way. Slow on a big data dir: call it off the UI thread.
+pub fn make_chat_files_private() {
+    make_private_in(&data_dir(), &file());
+}
+
+fn make_private_in(dir: &Path, state: &Path) {
+    // Made 0700 when it is new, so nothing in it is ever readable by others.
+    if let Err(e) = crate::durable::create_private_dir(dir) {
+        eprintln!("arakun: could not create {}: {e}", dir.display());
+        return;
+    }
+    // The folder first: once it is closed to others, nobody else can swap a
+    // file inside it for a link while the rest is changed.
+    make_private(dir, false);
+    for name in CHAT_FILES {
+        make_private(&dir.join(name), true);
+    }
+    make_private(state, false);
+}
+
+/// Takes group and other access away from `path`, and with `deep` from all
+/// it holds. A symlink is left alone: changing it would change where it
+/// points, which may be anyone's file.
+#[cfg(unix)]
+fn make_private(path: &Path, deep: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.file_type().is_symlink() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o077 != 0
+        && let Err(e) =
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & !0o077))
+    {
+        eprintln!("arakun: could not make {} private: {e}", path.display());
+    }
+    if deep
+        && meta.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for entry in entries.flatten() {
+            make_private(&entry.path(), true);
+        }
+    }
+}
+
+/// Windows has no modes to fix: ARAKUN-145 makes these folders private there.
+#[cfg(not(unix))]
+fn make_private(_: &Path, _: bool) {}
+
 /// How long the files of a session its state stopped listing are kept,
 /// counted from the first startup that found it gone. Removing the session
 /// deletes them at once; the sweep is for the few that missed it, such as a
@@ -634,18 +790,26 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
         (data_dir().join("sessions"), "json"),
         (data_dir().join("linked"), "md"),
     ];
-    let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
+    let seen = sweep(
+        &dirs,
+        &pastes_dir(),
+        seen,
+        &listed,
+        crate::model::unix_now(),
+    );
     if let Err(e) = crate::durable::save_json(&seen_path, &seen) {
         eprintln!("arakun: could not save the sessions seen listed: {e}");
     }
 }
 
 /// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions `seen` holds
-/// that `listed` has not held for `ORPHAN_AGE`, and returns the seen list for
-/// next time. A session whose files can't be checked or deleted, or whose
-/// headless folder may still be there, stays for the next startup to retry.
+/// that `listed` has not held for `ORPHAN_AGE`, and the images in `pastes`
+/// they mention, and returns the seen list for next time. A session whose
+/// files can't be checked or deleted, or whose headless folder may still be
+/// there, stays for the next startup to retry.
 fn sweep(
     dirs: &[(PathBuf, &str)],
+    pastes: &Path,
     mut seen: Seen,
     listed: &std::collections::HashSet<String>,
     now: u64,
@@ -665,12 +829,20 @@ fn sweep(
         if !matches!(crate::headless::dir(id).try_exists(), Ok(false)) {
             return true;
         }
+        let files: Vec<PathBuf> = dirs
+            .iter()
+            .map(|(dir, ext)| dir.join(format!("{id}.{ext}")))
+            .collect();
+        let images = pastes_in(&files);
         let mut kept = false;
-        for (dir, ext) in dirs {
-            match std::fs::remove_file(dir.join(format!("{id}.{ext}"))) {
+        for file in files {
+            match std::fs::remove_file(file) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => kept = true,
                 _ => {}
             }
+        }
+        if !kept {
+            remove_pastes(pastes, &images);
         }
         kept
     });
@@ -1471,6 +1643,14 @@ mod tests {
         ] {
             std::fs::write(sessions.join(name), "{}").unwrap();
         }
+        let pastes = dir.join("pastes");
+        std::fs::create_dir_all(&pastes).unwrap();
+        for name in ["paste-1.png", "paste-2.png"] {
+            std::fs::write(pastes.join(name), "img").unwrap();
+        }
+        let mention = |name: &str| format!(r#"{{"text":"{}"}}"#, pastes.join(name).display());
+        std::fs::write(sessions.join("removed.json"), mention("paste-1.png")).unwrap();
+        std::fs::write(sessions.join("listed.json"), mention("paste-2.png")).unwrap();
         std::fs::write(linked.join("removed.md"), "").unwrap();
         let headless = dir.join("headless");
         std::fs::create_dir_all(headless.join("headless-run")).unwrap();
@@ -1488,7 +1668,7 @@ mod tests {
         ]);
         let listed = ["listed", "new"].map(String::from).into();
         let dirs = [(sessions.clone(), "json"), (linked.clone(), "md")];
-        let kept = sweep(&dirs, seen, &listed, now);
+        let kept = sweep(&dirs, &pastes, seen, &listed, now);
         crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = None);
 
         assert_eq!(
@@ -1517,7 +1697,132 @@ mod tests {
                 "theirs.json"
             ]
         );
+        // The removed session's image went with it; the listed one's stays.
+        assert!(!pastes.join("paste-1.png").exists());
+        assert!(pastes.join("paste-2.png").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes each file in the data dir that holds the user's text through
+    /// the code that writes it, then checks the whole tree: nothing in it is
+    /// readable by others, and `CHAT_FILES` names all of it, so the start-up
+    /// fix covers what an older Arakun left.
+    #[cfg(unix)]
+    #[test]
+    fn every_file_that_holds_chat_text_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("arakun-chat-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("state.json");
+        make_private_in(&dir, &state);
+
+        crate::stored::write(&state, br#"{"draft":"a private draft"}"#).unwrap();
+        crate::history::write_to(&dir.join("history.json"), br#"["a private prompt"]"#);
+        crate::prompts::store_to(&dir.join("prompts.json"), &[]);
+        crate::memory::update(&dir.join("memory").join("global.json"), "", |_| (true, ())).unwrap();
+        for name in ["sidebar.json", "pins.json", "todos.json", "rules.json"] {
+            crate::stored::write_soon(&dir.join(name), b"{}".to_vec(), "test");
+        }
+        crate::durable::flush();
+        // How `sessions::write_transcript` writes a session.
+        crate::durable::write_private(&dir.join("sessions").join("s1.json"), b"{}").unwrap();
+        write_linked(&dir.join("linked").join("s1.md"), "# a private chat").unwrap();
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = Some(dir.join("headless")));
+        crate::headless::write_every_file("h-test-modes");
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+        save_paste(&dir.join("pastes"), b"img", "png").unwrap();
+
+        fn walk(path: &Path, found: &mut Vec<(PathBuf, u32)>) {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            found.push((path.to_path_buf(), meta.permissions().mode() & 0o777));
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path).unwrap() {
+                    walk(&entry.unwrap().path(), found);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&dir, &mut found);
+        let headless = dir.join("headless").join("h-test-modes");
+        for want in [
+            headless.join("meta.json"),
+            headless.join("pending.json"),
+            headless.join("transcript.json"),
+            headless.join("inbox"),
+        ] {
+            assert!(found.iter().any(|(p, _)| *p == want), "{}", want.display());
+        }
+        for (path, mode) in &found {
+            let want = if path.is_dir() { 0o700 } else { 0o600 };
+            assert_eq!(*mode, want, "{} is {mode:o}", path.display());
+        }
+        let mut top: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "state.json")
+            .collect();
+        top.sort();
+        let mut listed: Vec<String> = CHAT_FILES.iter().map(|n| n.to_string()).collect();
+        listed.sort();
+        assert_eq!(top, listed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_the_pasted_images_a_chat_mentions() {
+        let text = r#"see /home/me/.local/share/arakun/pastes/paste-1732.png and
+            C:\\Users\\me\\arakun\\pastes\\paste-1733-2.jpeg, again /x/paste-1732.png;
+            not copy-paste-9.png, /x/paste-.png, /x/paste-5, /x/paste-5-.png"#;
+        assert_eq!(
+            paste_names(text),
+            ["paste-1732.png", "paste-1733-2.jpeg", "paste-1732.png"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_chat_files_are_made_private_and_links_left_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let set = |p: &Path, m: u32| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+        };
+        let root = std::env::temp_dir().join(format!("arakun-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("arakun");
+        let other = root.join("someone-else.txt");
+        std::fs::create_dir_all(dir.join("linked")).unwrap();
+        std::fs::write(&other, "theirs").unwrap();
+        set(&other, 0o644);
+        let (history, note, state, cache) = (
+            dir.join("history.json"),
+            dir.join("linked").join("s1.md"),
+            dir.join("state.json"),
+            dir.join("cache"),
+        );
+        for f in [&history, &note, &state, &cache] {
+            std::fs::write(f, "x").unwrap();
+            set(f, 0o644);
+        }
+        set(&dir.join("linked"), 0o755);
+        set(&dir, 0o755);
+        std::os::unix::fs::symlink(&other, dir.join("linked").join("s2.md")).unwrap();
+
+        make_private_in(&dir, &state);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("linked")), 0o700);
+        for f in [&history, &note, &state] {
+            assert_eq!(mode(f), 0o600, "{}", f.display());
+        }
+        // Not chat text, and inside a closed folder anyway.
+        assert_eq!(mode(&cache), 0o644);
+        assert_eq!(mode(&other), 0o644);
+
+        // A data dir that is not there yet starts out private.
+        let fresh = root.join("fresh");
+        make_private_in(&fresh, &fresh.join("state.json"));
+        assert_eq!(mode(&fresh), 0o700);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

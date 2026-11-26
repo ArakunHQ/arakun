@@ -192,7 +192,9 @@ Manager (Windows Credentials, Generic Credentials).
   that separates them from the bar; on Linux and macOS they are 28 px squares with
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
-- **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
+- **Private files:** on Linux and macOS, the data folder is 0700, and the files that
+  hold chat text (transcripts, `linked\`, `headless\`, `pastes\`, memory, the prompt
+  history, saved prompts and the state), `notices.json` (it can hold agent replies),
   `cliproxy-plan.json` and the Claude seats' files in
   `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
   Windows has no such modes, so there they get the default access rules of

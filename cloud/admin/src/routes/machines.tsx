@@ -60,8 +60,8 @@ function Machines() {
             <li key={m.label} className="row" aria-label={m.label}>
               <span className="reason">{m.name}</span>
               <span className="chip">{m.kind}</span>
-              <Link className="request-login" to="/users/$githubId" params={{ githubId: String(m.github_id) }}>
-                {m.login || `GitHub ID ${m.github_id}`}
+              <Link className="request-login" to="/users/$accountId" params={{ accountId: String(m.account_id) }}>
+                {m.login || `Account ${m.account_id}`}
               </Link>
               <span className="muted row-meta">
                 {m.label} · registered <Time at={m.created_at} /> · seen <Time at={m.last_seen_at} />

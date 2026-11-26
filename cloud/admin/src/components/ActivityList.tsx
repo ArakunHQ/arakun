@@ -58,11 +58,12 @@ function Entry({ entry }: { entry: LogEntry }) {
       <Time at={entry.at} />
       <span className="log-who">{entry.operator_login ?? "the secret"}</span>
       <span className="log-what">{words(entry)}</span>
-      {entry.github_id === null ? (
-        <span className="muted">everyone</span>
+      {entry.account_id === null ? (
+        // An operator's own change names no account when they have none.
+        !entry.action.startsWith("operator.") && <span className="muted">everyone</span>
       ) : (
-        <Link className="log-account" to="/users/$githubId" params={{ githubId: String(entry.github_id) }}>
-          {entry.login ? entry.login : `GitHub ID ${entry.github_id}`}
+        <Link className="log-account" to="/users/$accountId" params={{ accountId: String(entry.account_id) }}>
+          {entry.login ? entry.login : `Account ${entry.account_id}`}
         </Link>
       )}
     </li>
@@ -70,8 +71,8 @@ function Entry({ entry }: { entry: LogEntry }) {
 }
 
 /// One page of the log. Only the last page offers the next one.
-function Page({ githubId, before, last, onMore }: { githubId?: number; before?: number; last: boolean; onMore: (next: number) => void }) {
-  const log = useQuery(logQuery({ githubId, before }));
+function Page({ accountId, before, last, onMore }: { accountId?: number; before?: number; last: boolean; onMore: (next: number) => void }) {
+  const log = useQuery(logQuery({ accountId, before }));
   if (log.isPending) return <p className="muted">Loading the log…</p>;
   if (log.isError) {
     return (
@@ -101,7 +102,7 @@ function Page({ githubId, before, last, onMore }: { githubId?: number; before?: 
 }
 
 /// The log, newest first: all of it, or the changes to one account.
-export function ActivityList({ githubId }: { githubId?: number }) {
+export function ActivityList({ accountId }: { accountId?: number }) {
   // The `before` of every page loaded so far; the first has none.
   const [cursors, setCursors] = useState<(number | undefined)[]>([undefined]);
   return (
@@ -109,7 +110,7 @@ export function ActivityList({ githubId }: { githubId?: number }) {
       {cursors.map((before, i) => (
         <Page
           key={before ?? "first"}
-          githubId={githubId}
+          accountId={accountId}
           before={before}
           last={i === cursors.length - 1}
           onMore={(next) => setCursors((c) => [...c, next])}

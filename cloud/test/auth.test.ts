@@ -1,29 +1,42 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { session, signIn as signInHandler } from "../src/auth";
+import { MIN_NEW_ACCOUNT_ID, session, signIn as signInHandler } from "../src/auth";
 import { ADMIN, as, call, freshIp, github, nowSeconds, roomInWindow, signIn, signInRequest } from "./helpers";
 
 const DAY = 24 * 60 * 60;
+
+/// A session as a Worker from before sessions had ids made it.
+async function oldSession(token: string, accountId: number): Promise<void> {
+  const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const t = nowSeconds();
+  await env.DB.prepare("INSERT INTO sessions (token_hash, account_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(hash, accountId, t, t + 90 * DAY, t)
+    .run();
+}
 
 describe("sign-in with GitHub", () => {
   it("creates the user and a session from a valid token", async () => {
     const before = nowSeconds();
     const got = await signIn(1001, "octocat");
-    expect(got.github_id).toBe(1001);
+    expect(got.account_id).toBeGreaterThanOrEqual(MIN_NEW_ACCOUNT_ID);
+    // Kept for clients of before: the account ID under its old name.
+    expect(got.github_id).toBe(got.account_id);
     expect(got.login).toBe("octocat");
     expect(got.flags).toEqual([]);
     expect(got.session).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(got.expires_at).toBeGreaterThanOrEqual(before + 90 * DAY);
     expect(got.expires_at).toBeLessThanOrEqual(nowSeconds() + 90 * DAY);
 
-    const user = await env.DB.prepare("SELECT * FROM users WHERE github_id = 1001").first();
-    expect(user).toMatchObject({ github_id: 1001, login: "octocat" });
+    const user = await env.DB.prepare("SELECT * FROM accounts WHERE id = ?").bind(got.account_id).first();
+    expect(user).toMatchObject({ id: got.account_id, login: "octocat" });
     // Nothing else GitHub said is kept, but the primary verified address.
     expect(Object.keys(user!).sort()).toEqual(
-      ["blocked_at", "blocked_reason", "created_at", "email", "github_id", "last_seen_at", "login", "plan"],
+      ["blocked_at", "blocked_reason", "created_at", "email", "id", "last_seen_at", "login", "plan"],
     );
     expect(user).toMatchObject({ plan: "free", blocked_at: null, email: null });
-    const sessions = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE github_id = 1001").first<{ n: number }>();
+    const sessions = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE account_id = ?")
+      .bind(got.account_id)
+      .first<{ n: number }>();
     expect(sessions?.n).toBe(1);
   });
 
@@ -67,15 +80,64 @@ describe("sign-in with GitHub", () => {
     const first = await signIn(1001, "octocat");
     const second = await signIn(1001, "octo-renamed");
     expect(second.session).not.toBe(first.session);
+    expect(second.account_id).toBe(first.account_id);
     const me = await (await call("GET", "/me", as(first.session))).json();
-    expect(me).toEqual({ github_id: 1001, login: "octo-renamed", flags: [], plan: "free", notices: [] });
+    expect(me).toEqual({
+      account_id: first.account_id,
+      github_id: first.account_id,
+      login: "octo-renamed",
+      flags: [],
+      plan: "free",
+      notices: [],
+    });
+  });
+
+  it("gives a new account an ID of its own, linked to the GitHub user, and finds it again under a new login", async () => {
+    const first = await signIn(1001, "octocat");
+    expect(first.account_id).toBeGreaterThanOrEqual(MIN_NEW_ACCOUNT_ID);
+    expect(first.account_id).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+    expect(first.account_id).not.toBe(1001);
+    const identities = await env.DB.prepare("SELECT provider, subject, account_id FROM identities").all();
+    expect(identities.results).toEqual([{ provider: "github", subject: "1001", account_id: first.account_id }]);
+
+    const again = await signIn(1001, "octo-renamed");
+    expect(again.account_id).toBe(first.account_id);
+    expect(again.login).toBe("octo-renamed");
+    const accounts = await env.DB.prepare("SELECT id, login FROM accounts").all();
+    expect(accounts.results).toEqual([{ id: first.account_id, login: "octo-renamed" }]);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM identities").first<{ n: number }>())?.n).toBe(1);
+
+    // Another GitHub user gets another account.
+    const other = await signIn(2002, "other");
+    expect(other.account_id).not.toBe(first.account_id);
+  });
+
+  it("signs an account from before accounts had IDs of their own in to it, and keeps its sessions working", async () => {
+    const t = nowSeconds();
+    // As the migration left it: the GitHub ID is the account ID.
+    await env.DB.prepare("INSERT INTO accounts (id, login, created_at, last_seen_at) VALUES (1001, 'octocat', ?1, ?1)").bind(t).run();
+    await env.DB.prepare(
+      "INSERT INTO identities (provider, subject, account_id, linked_at) SELECT 'github', CAST(id AS TEXT), id, created_at FROM accounts",
+    ).run();
+    const token = "d".repeat(43);
+    await oldSession(token, 1001);
+
+    const got = await signIn(1001, "octo-renamed");
+    expect(got.account_id).toBe(1001);
+    expect(got.github_id).toBe(1001);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>())?.n).toBe(1);
+    expect((await env.DB.prepare("SELECT COUNT(*) AS n FROM identities").first<{ n: number }>())?.n).toBe(1);
+
+    const res = await call("GET", "/me", as(token));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ account_id: 1001, github_id: 1001, login: "octo-renamed", flags: [], plan: "free", notices: [] });
   });
 
   it("answers 401 when GitHub rejects the token", async () => {
     const res = await signInRequest("gho_unknown");
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: expect.any(String) });
-    const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
+    const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM accounts").first<{ n: number }>();
     expect(users?.n).toBe(0);
   });
 
@@ -228,7 +290,7 @@ describe("sign-in with GitHub", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
     ).all<{ name: string }>();
     const names = tables.results.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["users", "sessions", "user_flags"]));
+    expect(names).toEqual(expect.arrayContaining(["accounts", "identities", "sessions", "user_flags"]));
     for (const name of names) {
       const rows = await env.DB.prepare(`SELECT * FROM "${name}"`).all();
       for (const row of rows.results) {
@@ -244,11 +306,18 @@ describe("sign-in with GitHub", () => {
 describe("sessions", () => {
   it("lets /me answer with the user's flags", async () => {
     const got = await signIn(1001, "octocat");
-    await call("PUT", "/admin/users/1001/flags/teams", ADMIN);
-    await call("PUT", "/admin/users/1001/flags/beta_chat", ADMIN);
+    await call("PUT", `/admin/users/${got.account_id}/flags/teams`, ADMIN);
+    await call("PUT", `/admin/users/${got.account_id}/flags/beta_chat`, ADMIN);
     const res = await call("GET", "/me", as(got.session));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ github_id: 1001, login: "octocat", flags: ["beta_chat", "teams"], plan: "free", notices: [] });
+    expect(await res.json()).toEqual({
+      account_id: got.account_id,
+      github_id: got.account_id,
+      login: "octocat",
+      flags: ["beta_chat", "teams"],
+      plan: "free",
+      notices: [],
+    });
   });
 
   it("answers 401 without a valid session", async () => {
@@ -410,25 +479,22 @@ describe("named sessions", () => {
     expect((await call("DELETE", `/sessions/${theirs.session_id}`)).status).toBe(401);
   });
 
-  /// A session as a Worker from before sessions had ids made it.
-  async function oldSession(token: string, githubId: number): Promise<void> {
-    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-    const t = nowSeconds();
-    await env.DB.prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(hash, githubId, t, t + 90 * DAY, t)
-      .run();
-  }
-
   it("the migration gives old sessions without an id one and their login for a name, and ids stay unique", async () => {
     const kept = await signIn(1001, "octocat");
-    await oldSession("a".repeat(43), 1001);
-    await oldSession("b".repeat(43), 1001);
+    await oldSession("a".repeat(43), kept.account_id);
+    await oldSession("b".repeat(43), kept.account_id);
     // The migration's own statements, run again over rows as it found them.
     await env.DB.prepare("UPDATE sessions SET name = '' WHERE id IS NULL").run();
     const migration = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0008"))!;
     const updates = migration.queries.filter((q) => q.includes("UPDATE sessions"));
     expect(updates).toHaveLength(2);
-    for (const q of updates) await env.DB.prepare(q).run();
+    // Under the names 0016 gave the table and columns since.
+    const renamed = (q: string) =>
+      q
+        .replace(/users\.github_id/g, "accounts.id")
+        .replace(/\busers\b/g, "accounts")
+        .replace(/sessions\.github_id/g, "sessions.account_id");
+    for (const q of updates) await env.DB.prepare(renamed(q)).run();
     const rows = await env.DB.prepare("SELECT id, name FROM sessions").all<{ id: string | null; name: string }>();
     expect(rows.results).toHaveLength(3);
     for (const r of rows.results) {
@@ -441,9 +507,9 @@ describe("named sessions", () => {
   });
 
   it("gives a session made after the migration by the Worker of before an id on its first use", async () => {
-    await signIn(1001, "octocat");
+    const got = await signIn(1001, "octocat");
     const token = "c".repeat(43);
-    await oldSession(token, 1001);
+    await oldSession(token, got.account_id);
     const list = (await (await call("GET", "/sessions", as(token))).json()) as { id: string; name: string; current: boolean }[];
     expect(list).toHaveLength(2);
     const mine = list.filter((s) => s.current);
@@ -557,13 +623,13 @@ describe("email and config", () => {
       { email: "unverified@example.com", primary: true, verified: false },
     ];
     await signIn(1001, "octocat");
-    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBeNull();
+    expect((await env.DB.prepare("SELECT email FROM accounts").first<{ email: string | null }>())?.email).toBeNull();
     github.emails = [
       { email: "old@example.com", primary: false, verified: true },
       { email: "rik@example.com", primary: true, verified: true },
     ];
     await signIn(1001, "octocat", "gho_two");
-    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBe("rik@example.com");
+    expect((await env.DB.prepare("SELECT email FROM accounts").first<{ email: string | null }>())?.email).toBe("rik@example.com");
     expect(github.emailCalls[0]!.headers.get("Authorization")).toBe("Bearer gho_1001_octocat");
   });
 
@@ -573,11 +639,11 @@ describe("email and config", () => {
       const got = await signIn(1001, "octocat", `gho_${outage}`);
       expect(got.session).toMatch(/^[A-Za-z0-9_-]{43}$/);
     }
-    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBeNull();
+    expect((await env.DB.prepare("SELECT email FROM accounts").first<{ email: string | null }>())?.email).toBeNull();
   });
 
   it("keeps the stored email when the emails call fails, and clears it when there is no primary verified one", async () => {
-    const email = async () => (await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email;
+    const email = async () => (await env.DB.prepare("SELECT email FROM accounts").first<{ email: string | null }>())?.email;
     github.emails = [{ email: "rik@example.com", primary: true, verified: true }];
     await signIn(1001, "octocat", "gho_one");
     for (const outage of ["throw", 403, 500] as const) {

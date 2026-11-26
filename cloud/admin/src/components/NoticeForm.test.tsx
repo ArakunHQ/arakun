@@ -23,10 +23,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function show(githubId?: number) {
+function show(accountId?: number) {
   render(
     <QueryClientProvider client={new QueryClient()}>
-      <NoticeForm githubId={githubId} />
+      <NoticeForm accountId={accountId} />
     </QueryClientProvider>,
   );
 }
@@ -40,7 +40,7 @@ describe("NoticeForm", () => {
     await userEvent.type(screen.getByLabelText("Ends on (optional)"), "2030-03-05");
     await userEvent.click(send());
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]).toEqual({ github_id: 1002, text: "Hi", expires_at: new Date(2030, 2, 5, 23, 59, 59).getTime() / 1000 });
+    expect(posts[0]).toEqual({ account_id: 1002, text: "Hi", expires_at: new Date(2030, 2, 5, 23, 59, 59).getTime() / 1000 });
   });
 
   it("checks the link and the text before calling", async () => {
@@ -76,13 +76,13 @@ describe("NoticeForm", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Text" }), "Hello");
     await userEvent.click(screen.getByRole("radio", { name: "One account" }));
     expect(send().disabled).toBe(true);
-    const id = screen.getByRole("textbox", { name: "GitHub ID" });
+    const id = screen.getByRole("textbox", { name: "Account ID" });
     await userEvent.type(id, "10x");
     expect(send().disabled).toBe(true);
     await userEvent.clear(id);
     await userEvent.type(id, "1005");
     await userEvent.click(send());
-    await waitFor(() => expect(posts).toEqual([{ github_id: 1005, text: "Hello" }]));
+    await waitFor(() => expect(posts).toEqual([{ account_id: 1005, text: "Hello" }]));
   });
 
   it("refuses a link with no host and a day that has passed", async () => {

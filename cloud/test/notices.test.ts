@@ -40,7 +40,7 @@ describe("notices", () => {
   it("one for account A is not in B's, and B cannot read it", async () => {
     const a = await signIn(1001, "alice");
     const b = await signIn(1002, "bob");
-    const id = await make({ github_id: 1001, text: "your plan changed" });
+    const id = await make({ account_id: a.account_id, text: "your plan changed" });
     expect(await notices(a.session)).toEqual([{ id, text: "your plan changed", url: null }]);
     expect(await notices(b.session)).toEqual([]);
     expect((await call("POST", `/notices/${id}/read`, as(b.session))).status).toBe(404);
@@ -50,7 +50,7 @@ describe("notices", () => {
   it("an expired one is gone, and a read of it or of an unknown one is 404", async () => {
     const a = await signIn(1001, "alice");
     const t = nowSeconds();
-    await env.DB.prepare("INSERT INTO notices (id, github_id, text, created_at, expires_at) VALUES ('old', NULL, 'past', ?1, ?2)")
+    await env.DB.prepare("INSERT INTO notices (id, account_id, text, created_at, expires_at) VALUES ('old', NULL, 'past', ?1, ?2)")
       .bind(t - 100, t - 1)
       .run();
     const soon = await make({ text: "soon", expires_at: t + 1000 });
@@ -96,13 +96,13 @@ describe("notices", () => {
       { text: "hi", url: 5 },
       { text: "hi", expires_at: nowSeconds() - 5 },
       { text: "hi", expires_at: "tomorrow" },
-      { text: "hi", github_id: "1001" },
-      { text: "hi", github_id: -1 },
+      { text: "hi", account_id: "1001" },
+      { text: "hi", account_id: -1 },
       "text",
     ];
     for (const body of bad) expect((await post(body)).status, JSON.stringify(body)).toBe(400);
     expect((await post({ text: "x".repeat(500) })).status).toBe(200);
-    expect((await post({ text: "hi", github_id: 9999 })).status).toBe(404);
+    expect((await post({ text: "hi", account_id: 9999 })).status).toBe(404);
     expect((await call("POST", "/admin/notices", { "Content-Type": "application/json" }, "{}")).status).toBe(401);
     const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM notices").first<{ n: number }>();
     expect(n?.n).toBe(1);

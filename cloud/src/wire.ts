@@ -52,8 +52,8 @@ export async function verify(key: CryptoKey, sig: string, text: string): Promise
   return crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, raw as BufferSource, utf8(text) as BufferSource);
 }
 
-export function deviceSigned(githubId: number, sigPub: string, encPub: string): string {
-  return `arakun-teams/v1/device|${githubId}|${sigPub}|${encPub}`;
+export function deviceSigned(accountId: number, sigPub: string, encPub: string): string {
+  return `arakun-teams/v1/device|${accountId}|${sigPub}|${encPub}`;
 }
 
 function bytesOf(v: unknown, min: number, max: number): boolean {

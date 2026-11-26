@@ -6,8 +6,8 @@ import type { MachineRow } from "../types";
 
 const NOW = Math.floor(Date.now() / 1000);
 
-function machine(label: string, github_id: number, login: string, name: string): MachineRow {
-  return { label, github_id, login, name, kind: "app", created_at: NOW - 86400, last_seen_at: NOW - 60 };
+function machine(label: string, account_id: number, login: string, name: string): MachineRow {
+  return { label, account_id, github_id: null, login, name, kind: "app", created_at: NOW - 86400, last_seen_at: NOW - 60 };
 }
 
 const rows = [
@@ -45,7 +45,7 @@ describe("Machines", () => {
     const first = within(await screen.findByRole("listitem", { name: "lbl-aaa" }));
     expect(first.getByRole("link", { name: "octocat" }).getAttribute("href")).toBe("/users/1002");
     const unnamed = within(screen.getByRole("listitem", { name: "lbl-bbb" }));
-    expect(unnamed.getByRole("link", { name: "GitHub ID 1003" }).getAttribute("href")).toBe("/users/1003");
+    expect(unnamed.getByRole("link", { name: "Account 1003" }).getAttribute("href")).toBe("/users/1003");
   });
 
   it("filters machines by login, name and label", async () => {

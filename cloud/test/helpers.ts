@@ -163,9 +163,14 @@ export interface SignedIn {
   session_id: string;
   plan: string;
   expires_at: number;
+  account_id: number;
+  /// The account ID too, under the name older clients read.
   github_id: number;
   login: string;
   flags: string[];
+  /// Not the Worker's: the GitHub ID the test signed in with, to sign in as
+  /// the same GitHub user again.
+  githubId: number;
 }
 
 /// Signs in as a user GitHub knows, and returns the Worker's answer.
@@ -179,7 +184,7 @@ export async function signIn(
   onGitHub(id, login);
   const res = await signInRequest(accessToken, freshIp(), extra);
   if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  return { ...(await res.json<Omit<SignedIn, "githubId">>()), githubId: id };
 }
 
 export function call(method: string, path: string, headers: Record<string, string> = {}, body?: BodyInit): Promise<Response> {
@@ -204,10 +209,11 @@ export async function roomInWindow(periodSeconds: 10 | 60, roomMs = 3_000): Prom
 }
 
 /// Signs in and gives the user the `linear` flag, as `user()` does for `teams`.
-export async function flagged(id: number, login: string): Promise<{ id: number; login: string; session: string }> {
-  const got = await signIn(id, login);
-  await call("PUT", `/admin/users/${id}/flags/linear`, ADMIN);
-  return { id, login, session: got.session };
+/// `id` is the account's, not the GitHub ID signed in with.
+export async function flagged(githubId: number, login: string): Promise<{ id: number; login: string; session: string }> {
+  const got = await signIn(githubId, login);
+  await call("PUT", `/admin/users/${got.account_id}/flags/linear`, ADMIN);
+  return { id: got.account_id, login, session: got.session };
 }
 
 // A fake Linear: its token endpoint and GraphQL API. It issues the tokens it

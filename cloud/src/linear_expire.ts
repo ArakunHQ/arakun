@@ -16,7 +16,7 @@ export async function expired(env: Env, id: string): Promise<void> {
   try {
     const row = await env.DB.prepare(
       `SELECT d.kind, d.agent_session_id, d.organization_id, d.accepted_at, d.expired_at, m.name AS machine
-       FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
+       FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.account_id = d.account_id
        WHERE d.id = ?`,
     )
       .bind(id)

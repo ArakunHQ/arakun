@@ -10,13 +10,13 @@ async function hashOf(token: string): Promise<string> {
 }
 
 /// A computer socket opened on the object directly, with the headers the
-/// Worker would set for `githubId`: the object's own checks, behind the Worker's.
+/// Worker would set for `who`: the object's own checks, behind the Worker's.
 async function pcOnObject(label: string, who: SignedIn, plan = "free"): Promise<PcSocket> {
   const res = await env.RELAY.get(env.RELAY.idFromName(label)).fetch("https://relay/pc", {
     headers: {
       Upgrade: "websocket",
       "x-arakun-label": label,
-      "x-arakun-account": String(who.github_id),
+      "x-arakun-account": String(who.account_id),
       "x-arakun-plan": plan,
       "x-arakun-session": await hashOf(who.session),
       "x-arakun-machine-name": "Desk",
@@ -31,7 +31,7 @@ async function pcOnObject(label: string, who: SignedIn, plan = "free"): Promise<
 }
 
 async function machineRow(label: string) {
-  return env.DB.prepare("SELECT github_id, name, kind FROM machines WHERE label = ?").bind(label).first();
+  return env.DB.prepare("SELECT account_id, name, kind FROM machines WHERE label = ?").bind(label).first();
 }
 
 describe("the computer's claim", () => {
@@ -132,7 +132,7 @@ describe("the computer's claim", () => {
 
   it("registers the machine in D1 under the account, with its name and kind", async () => {
     const { me, owner } = await connectedComputer();
-    expect(await machineRow(me.label)).toEqual({ github_id: owner.github_id, name: "Desk", kind: "app" });
+    expect(await machineRow(me.label)).toEqual({ account_id: owner.account_id, name: "Desk", kind: "app" });
   });
 
   it("is checked against D1 by the object too: another account's claim is label_taken", async () => {
@@ -141,7 +141,7 @@ describe("the computer's claim", () => {
     const pc = await pcOnObject(me.label, intruder);
     expect(await claim(pc, me)).toEqual({ type: "bye", reason: "label_taken" });
     expect((await pc.inbox.closedWith()).code).toBe(4403);
-    expect(await machineRow(me.label)).toEqual({ github_id: owner.github_id, name: "Desk", kind: "app" });
+    expect(await machineRow(me.label)).toEqual({ account_id: owner.account_id, name: "Desk", kind: "app" });
   });
 
   it("is checked against the plan's machines by the object too", async () => {
@@ -168,7 +168,7 @@ describe("the computer's claim", () => {
     const owner = await account();
     const me = await computer();
     const pc = await openPc(me.label, owner.session);
-    await env.DB.prepare("UPDATE users SET blocked_at = 1 WHERE github_id = ?").bind(owner.github_id).run();
+    await env.DB.prepare("UPDATE accounts SET blocked_at = 1 WHERE id = ?").bind(owner.account_id).run();
     expect(await claim(pc, me)).toEqual({ type: "bye", reason: "blocked" });
     expect((await pc.inbox.closedWith()).code).toBe(4403);
     expect(await machineRow(me.label)).toBeNull();

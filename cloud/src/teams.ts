@@ -10,7 +10,7 @@
 
 import { githubAccount, session, type Session } from "./auth";
 import { TRUSTED, epochAllowed, epochRefused } from "./channel";
-import { DAY, GITHUB_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
+import { ACCOUNT_OF_GITHUB, DAY, GITHUB_ID_OF, NUMERIC_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
 import {
   DEVICE_ID,
   deviceIdOf,
@@ -129,8 +129,8 @@ function teamQuery(c: Ctx, teamId: string): D1PreparedStatement {
   return c.env.DB.prepare(
     `SELECT t.team_id, t.name, t.epoch, t.keyed_epoch, m.role
      FROM members m JOIN teams t ON t.team_id = m.team_id
-     WHERE m.team_id = ? AND m.github_id = ?`,
-  ).bind(teamId, c.me.githubId);
+     WHERE m.team_id = ? AND m.account_id = ?`,
+  ).bind(teamId, c.me.accountId);
 }
 
 /// The team, if the caller is a member of it.
@@ -144,7 +144,7 @@ async function callerDevice(c: Ctx): Promise<Device | Response> {
   const id = c.request.headers.get(DEVICE_HEADER);
   if (!id) return error(400, `${DEVICE_HEADER} is required`);
   const row = DEVICE_ID.test(id)
-    ? await c.env.DB.prepare("SELECT device_id, sig_pub FROM devices WHERE device_id = ? AND github_id = ?").bind(id, c.me.githubId).first<Device>()
+    ? await c.env.DB.prepare("SELECT device_id, sig_pub FROM devices WHERE device_id = ? AND account_id = ?").bind(id, c.me.accountId).first<Device>()
     : null;
   return row ?? error(403, `${DEVICE_HEADER} is not one of your devices`);
 }
@@ -167,13 +167,13 @@ async function registerDevice(c: Ctx): Promise<Response> {
   if (name === null) return error(400, `name is 1 to ${MAX_NAME} characters`);
   if (typeof sigPub !== "string" || !(await sigKey(sigPub))) return error(400, "sig_pub is not a P-256 public key");
   if (typeof encPub !== "string" || !(await isEncKey(encPub))) return error(400, "enc_pub is not a P-256 public key");
-  const me = c.me.githubId;
+  const me = c.me.accountId;
   const deviceId = await deviceIdOf(fromB64url(sigPub)!);
   const db = c.env.DB;
 
-  const known = () => db.prepare("SELECT github_id, enc_pub FROM devices WHERE device_id = ?").bind(deviceId).first<{ github_id: number; enc_pub: string }>();
-  const same = (row: { github_id: number; enc_pub: string }) =>
-    row.github_id === me && row.enc_pub === encPub ? Response.json({ device_id: deviceId }) : error(409, "this key is registered already");
+  const known = () => db.prepare("SELECT account_id, enc_pub FROM devices WHERE device_id = ?").bind(deviceId).first<{ account_id: number; enc_pub: string }>();
+  const same = (row: { account_id: number; enc_pub: string }) =>
+    row.account_id === me && row.enc_pub === encPub ? Response.json({ device_id: deviceId }) : error(409, "this key is registered already");
   const existing = await known();
   if (existing) return same(existing);
 
@@ -184,7 +184,7 @@ async function registerDevice(c: Ctx): Promise<Response> {
       return error(400, 'endorsement is null or {"by", "sig"}');
     }
     const by = await db
-      .prepare("SELECT sig_pub FROM devices WHERE device_id = ? AND github_id = ?")
+      .prepare("SELECT sig_pub FROM devices WHERE device_id = ? AND account_id = ?")
       .bind(endorsement["by"], me)
       .first<{ sig_pub: string }>();
     if (!by) return error(400, "the endorsing device is not one of yours");
@@ -200,11 +200,11 @@ async function registerDevice(c: Ctx): Promise<Response> {
   // both be a first device, or both be the 21st.
   const condition =
     endorsedBy === null
-      ? "NOT EXISTS (SELECT 1 FROM devices WHERE github_id = ?2)"
-      : `(SELECT COUNT(*) FROM devices WHERE github_id = ?2) < ${MAX_DEVICES}`;
+      ? "NOT EXISTS (SELECT 1 FROM devices WHERE account_id = ?2)"
+      : `(SELECT COUNT(*) FROM devices WHERE account_id = ?2) < ${MAX_DEVICES}`;
   const result = await db
     .prepare(
-      `INSERT INTO devices (device_id, github_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig)
+      `INSERT INTO devices (device_id, account_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 WHERE ${condition} ON CONFLICT DO NOTHING`,
     )
     .bind(deviceId, me, sigPub, encPub, name, now(), endorsedBy, endorsementSig)
@@ -218,20 +218,20 @@ async function registerDevice(c: Ctx): Promise<Response> {
 }
 
 async function listDevices(c: Ctx, id: string): Promise<Response> {
-  if (!GITHUB_ID.test(id)) return notFound();
-  const githubId = Number(id);
-  if (githubId !== c.me.githubId) {
+  if (!NUMERIC_ID.test(id)) return notFound();
+  const accountId = Number(id);
+  if (accountId !== c.me.accountId) {
     const shared = await c.env.DB.prepare(
-      "SELECT 1 FROM members a JOIN members b ON b.team_id = a.team_id AND b.github_id = ? WHERE a.github_id = ? LIMIT 1",
+      "SELECT 1 FROM members a JOIN members b ON b.team_id = a.team_id AND b.account_id = ? WHERE a.account_id = ? LIMIT 1",
     )
-      .bind(githubId, c.me.githubId)
+      .bind(accountId, c.me.accountId)
       .first();
     if (!shared) return notFound();
   }
   const { results } = await c.env.DB.prepare(
-    "SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig FROM devices WHERE github_id = ? ORDER BY created_at, device_id",
+    "SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig FROM devices WHERE account_id = ? ORDER BY created_at, device_id",
   )
-    .bind(githubId)
+    .bind(accountId)
     .all();
   return Response.json(results);
 }
@@ -245,25 +245,26 @@ async function listPeopleDevices(c: Ctx): Promise<Response> {
   let wanted: string | null = null;
   if (raw !== null) {
     const ids = raw === "" ? [] : raw.split(",");
-    if (ids.length > MAX_USERS || !ids.every((id) => GITHUB_ID.test(id)))
-      return error(400, `users is a comma-separated list of at most ${MAX_USERS} GitHub IDs`);
+    if (ids.length > MAX_USERS || !ids.every((id) => NUMERIC_ID.test(id)))
+      return error(400, `users is a comma-separated list of at most ${MAX_USERS} account IDs`);
     wanted = JSON.stringify(ids.map(Number));
   }
   const { results } = await c.env.DB.prepare(
-    `WITH people(github_id) AS (
-       SELECT ?1 UNION SELECT b.github_id FROM members a JOIN members b ON b.team_id = a.team_id WHERE a.github_id = ?1)
-     SELECT p.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
-     FROM people p LEFT JOIN devices d ON d.github_id = p.github_id
-     WHERE ?2 IS NULL OR p.github_id IN (SELECT value FROM json_each(?2))
-     ORDER BY p.github_id, d.created_at, d.device_id`,
+    `WITH people(account_id) AS (
+       SELECT ?1 UNION SELECT b.account_id FROM members a JOIN members b ON b.team_id = a.team_id WHERE a.account_id = ?1)
+     SELECT p.account_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
+     FROM people p LEFT JOIN devices d ON d.account_id = p.account_id
+     WHERE ?2 IS NULL OR p.account_id IN (SELECT value FROM json_each(?2))
+     ORDER BY p.account_id, d.created_at, d.device_id`,
   )
-    .bind(c.me.githubId, wanted)
-    .all<{ github_id: number; device_id: string | null } & Record<string, unknown>>();
+    .bind(c.me.accountId, wanted)
+    .all<{ account_id: number; device_id: string | null } & Record<string, unknown>>();
   // Each user once, one with no device too, so a client can tell "no
   // devices" from "left out".
+  // `github_id` is the account ID, under the name clients read.
   const people: { github_id: number; devices: unknown[] }[] = [];
-  for (const { github_id, device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig } of results) {
-    if (people.at(-1)?.github_id !== github_id) people.push({ github_id, devices: [] });
+  for (const { account_id, device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig } of results) {
+    if (people.at(-1)?.github_id !== account_id) people.push({ github_id: account_id, devices: [] });
     if (device_id !== null) people.at(-1)!.devices.push({ device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig });
   }
   return Response.json(people);
@@ -283,12 +284,12 @@ async function createTeam(c: Ctx): Promise<Response> {
     db
       .prepare(
         `INSERT INTO teams (team_id, name, epoch, keyed_epoch, created_by, created_at)
-         SELECT ?1, ?2, 1, 0, ?3, ?4 WHERE (SELECT COUNT(*) FROM members WHERE github_id = ?3) < ${MAX_TEAMS}`,
+         SELECT ?1, ?2, 1, 0, ?3, ?4 WHERE (SELECT COUNT(*) FROM members WHERE account_id = ?3) < ${MAX_TEAMS}`,
       )
-      .bind(teamId, name, c.me.githubId, t),
+      .bind(teamId, name, c.me.accountId, t),
     db
-      .prepare("INSERT INTO members (team_id, github_id, role, joined_at) SELECT ?1, ?2, 'owner', ?3 WHERE EXISTS (SELECT 1 FROM teams WHERE team_id = ?1)")
-      .bind(teamId, c.me.githubId, t),
+      .prepare("INSERT INTO members (team_id, account_id, role, joined_at) SELECT ?1, ?2, 'owner', ?3 WHERE EXISTS (SELECT 1 FROM teams WHERE team_id = ?1)")
+      .bind(teamId, c.me.accountId, t),
   ]);
   if (made!.meta.changes !== 1) return error(409, `at most ${MAX_TEAMS} teams per account`);
   return Response.json({ team_id: teamId, epoch: 1 }, { status: 201 });
@@ -298,9 +299,9 @@ async function listTeams(c: Ctx): Promise<Response> {
   const { results } = await c.env.DB.prepare(
     `SELECT t.team_id, t.name, m.role, t.epoch, t.keyed_epoch
      FROM members m JOIN teams t ON t.team_id = m.team_id
-     WHERE m.github_id = ? ORDER BY t.created_at, t.team_id`,
+     WHERE m.account_id = ? ORDER BY t.created_at, t.team_id`,
   )
-    .bind(c.me.githubId)
+    .bind(c.me.accountId)
     .all<Team>();
   return Response.json(results.map((t) => ({ team_id: t.team_id, name: t.name, role: t.role, epoch: t.epoch, rotation_pending: t.keyed_epoch < t.epoch })));
 }
@@ -314,9 +315,9 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
     teamQuery(c, teamId),
     db
       .prepare(
-        `SELECT m.github_id, u.login, m.role, m.joined_at,
+        `SELECT m.account_id AS github_id, u.login, m.role, m.joined_at,
          (SELECT MIN(e.epoch) FROM devices d JOIN envelopes e ON e.device_id = d.device_id AND e.team_id = m.team_id
-          WHERE d.github_id = m.github_id) AS first_key_epoch FROM members m JOIN users u ON u.github_id = m.github_id
+          WHERE d.account_id = m.account_id) AS first_key_epoch FROM members m JOIN accounts u ON u.id = m.account_id
          WHERE m.team_id = ? ORDER BY m.joined_at, m.rowid`,
       )
       .bind(teamId),
@@ -345,17 +346,18 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
 /// Whether the invitee of an invite can see it yet, for the admin who sent it.
 /// `GET /invites` answers only a signed-in account with the flag, so an invite
 /// to anyone else waits unseen until it expires.
-///   no_account:  never signed in to Arakun. An operator's flag, block or plan
-///                makes a users row first, with last_seen_at 0 until sign-in.
+///   no_account:  never signed in to Arakun. An operator can make the account
+///                first, with last_seen_at 0 until sign-in.
 ///   not_enabled: signed in, but without the flag, or blocked. A block reads
 ///                as not_enabled so the team does not learn of it.
 ///   ready:       it shows in their Team tab.
 /// `id` is the SQL for the invitee's GitHub ID: a column or a parameter.
 function inviteeState(id: string): string {
+  const account = ACCOUNT_OF_GITHUB(id);
   return `CASE
-    WHEN NOT EXISTS (SELECT 1 FROM users v WHERE v.github_id = ${id} AND v.last_seen_at > 0) THEN 'no_account'
-    WHEN EXISTS (SELECT 1 FROM users v JOIN user_flags f ON f.github_id = v.github_id AND f.flag = '${FLAG}'
-                 WHERE v.github_id = ${id} AND v.blocked_at IS NULL) THEN 'ready'
+    WHEN NOT EXISTS (SELECT 1 FROM accounts v WHERE v.id = ${account} AND v.last_seen_at > 0) THEN 'no_account'
+    WHEN EXISTS (SELECT 1 FROM accounts v JOIN user_flags f ON f.account_id = v.id AND f.flag = '${FLAG}'
+                 WHERE v.id = ${account} AND v.blocked_at IS NULL) THEN 'ready'
     ELSE 'not_enabled' END`;
 }
 
@@ -368,15 +370,16 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   if (typeof given !== "string" || !GITHUB_LOGIN.test(given)) return error(400, 'expected {"github_login": "..."}');
   let limited: boolean;
   try {
-    limited = !(await c.env.INVITE_LIMIT.limit({ key: String(c.me.githubId) })).success;
+    limited = !(await c.env.INVITE_LIMIT.limit({ key: String(c.me.accountId) })).success;
   } catch (e) {
     console.error("invite limit failed:", e);
     return error(503, "the server could not check the invite: try again");
   }
   if (limited) return error(429, "too many invites, try again in a minute");
-  // The invite names the account that has the login now, by its ID. The
-  // login we hold for a user is only as new as their last sign-in, so a user
-  // who gave up this login could otherwise see and accept the invite.
+  // The invite names the GitHub user who has the login now, by their GitHub
+  // ID, and goes to the account linked to them. The login we hold for an
+  // account is only as new as its last sign-in, so one that gave up this login
+  // could otherwise see and accept the invite.
   const account = await githubAccount(given, c.env);
   if (account === "missing") return error(404, `no GitHub user has the login ${given}`);
   if (account === "unreachable") return error(502, "could not reach GitHub");
@@ -384,8 +387,8 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   const db = c.env.DB;
   const already = await db
     .prepare(
-      `SELECT 1 WHERE EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)
-         OR EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)`,
+      `SELECT 1 WHERE EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ${ACCOUNT_OF_GITHUB("?2")})
+         OR EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND account_id = ${ACCOUNT_OF_GITHUB("?2")})`,
     )
     .bind(teamId, account.id)
     .first();
@@ -404,11 +407,12 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
          ON CONFLICT (team_id, login) DO UPDATE SET invite_id = excluded.invite_id, github_id = excluded.github_id,
            invited_by = excluded.invited_by, created_at = excluded.created_at, expires_at = excluded.expires_at`,
       )
-      .bind(inviteId, teamId, login, account.id, c.me.githubId, t, expiresAt),
+      .bind(inviteId, teamId, login, account.id, c.me.accountId, t, expiresAt),
     db.prepare(`SELECT ${inviteeState("?1")} AS invitee_state`).bind(account.id),
   ]);
   const state = (results[3]!.results[0] as { invitee_state: string }).invitee_state;
   return Response.json(
+    // Here `github_id` is the GitHub user's: they may have no account yet.
     { invite_id: inviteId, expires_at: expiresAt, github_id: account.id, login: account.login, invitee_state: state },
     { status: 201 },
   );
@@ -421,7 +425,7 @@ async function teamInvites(c: Ctx, teamId: string): Promise<Response> {
   const { results } = await c.env.DB.prepare(
     `SELECT i.invite_id, i.login, u.login AS invited_by_login, i.created_at, i.expires_at,
        ${inviteeState("i.github_id")} AS invitee_state
-     FROM invites i LEFT JOIN users u ON u.github_id = i.invited_by
+     FROM invites i LEFT JOIN accounts u ON u.id = i.invited_by
      WHERE i.team_id = ? AND i.expires_at > ? ORDER BY i.created_at DESC, i.invite_id DESC`,
   )
     .bind(teamId, now())
@@ -446,10 +450,10 @@ async function listInvites(c: Ctx): Promise<Response> {
   const { results } = await c.env.DB.prepare(
     `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at,
        (SELECT COUNT(*) FROM members m WHERE m.team_id = i.team_id) AS member_count
-     FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN users u ON u.github_id = i.invited_by
-     WHERE i.github_id = ? AND i.expires_at > ? ORDER BY i.created_at, i.invite_id`,
+     FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN accounts u ON u.id = i.invited_by
+     WHERE i.github_id = ${GITHUB_ID_OF("?1")} AND i.expires_at > ?2 ORDER BY i.created_at, i.invite_id`,
   )
-    .bind(c.me.githubId, now())
+    .bind(c.me.accountId, now())
     .all();
   return Response.json(results);
 }
@@ -457,8 +461,8 @@ async function listInvites(c: Ctx): Promise<Response> {
 async function decline(c: Ctx, inviteId: string): Promise<Response> {
   // Someone else's invite is answered like one that does not exist, as in accept.
   const result = ULID.test(inviteId)
-    ? await c.env.DB.prepare("DELETE FROM invites WHERE invite_id = ? AND github_id = ? AND expires_at > ?")
-        .bind(inviteId, c.me.githubId, now())
+    ? await c.env.DB.prepare(`DELETE FROM invites WHERE invite_id = ?1 AND github_id = ${GITHUB_ID_OF("?2")} AND expires_at > ?3`)
+        .bind(inviteId, c.me.accountId, now())
         .run()
     : null;
   if (!result?.meta.changes) return error(404, "no such invite");
@@ -471,29 +475,29 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   if (!ULID.test(inviteId)) return notFound();
   const db = c.env.DB;
   const inv = await db
-    .prepare("SELECT team_id, github_id, invited_by, expires_at FROM invites WHERE invite_id = ?")
-    .bind(inviteId)
-    .first<{ team_id: string; github_id: number; invited_by: number; expires_at: number }>();
+    .prepare(`SELECT team_id, github_id = ${GITHUB_ID_OF("?2")} AS mine, invited_by, expires_at FROM invites WHERE invite_id = ?1`)
+    .bind(inviteId, c.me.accountId)
+    .first<{ team_id: string; mine: number | null; invited_by: number; expires_at: number }>();
   // Someone else's invite is answered like one that does not exist.
-  if (!inv || inv.github_id !== c.me.githubId || inv.expires_at <= now()) return error(404, "no such invite");
-  const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(inv.team_id, c.me.githubId).first();
+  if (!inv || inv.mine !== 1 || inv.expires_at <= now()) return error(404, "no such invite");
+  const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND account_id = ?").bind(inv.team_id, c.me.accountId).first();
   if (member) return error(409, "already a member of this team");
   // The invite and the membership are checked again in the batch: a replaced
   // or expired invite makes no pending row, and an approval that landed since
   // the read above must not leave the user in members and pending at once.
   // The insert's outcome, not the invite's deletion, says it was accepted.
   const t = now();
-  const valid = "FROM invites WHERE invite_id = ?1 AND github_id = ?2 AND expires_at > ?3";
+  const valid = `FROM invites WHERE invite_id = ?1 AND github_id = ${GITHUB_ID_OF("?2")} AND expires_at > ?3`;
   const results = await db.batch([
     db
       .prepare(
-        `INSERT INTO pending (team_id, github_id, invited_by, requested_at, request_id, invited_login)
+        `INSERT INTO pending (team_id, account_id, invited_by, requested_at, request_id, invited_login)
          SELECT team_id, ?2, invited_by, ?3, invite_id, login ${valid}
-           AND NOT EXISTS (SELECT 1 FROM members m WHERE m.team_id = invites.team_id AND m.github_id = ?2)
+           AND NOT EXISTS (SELECT 1 FROM members m WHERE m.team_id = invites.team_id AND m.account_id = ?2)
          ON CONFLICT DO NOTHING`,
       )
-      .bind(inviteId, c.me.githubId, t),
-    db.prepare(`DELETE ${valid}`).bind(inviteId, c.me.githubId, t),
+      .bind(inviteId, c.me.accountId, t),
+    db.prepare(`DELETE ${valid}`).bind(inviteId, c.me.accountId, t),
   ]);
   if (results[1]!.meta.changes !== 1) return error(404, "no such invite");
   if (results[0]!.meta.changes !== 1) return error(409, "already a member of this team");
@@ -508,26 +512,28 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
   const [people, devices] = await db.batch([
     db
       .prepare(
-        `SELECT p.github_id, u.login, p.invited_login, p.request_id, p.requested_at, p.reminded_at FROM pending p JOIN users u ON u.github_id = p.github_id
-         WHERE p.team_id = ? ORDER BY p.requested_at, p.github_id`,
+        `SELECT p.account_id, u.login, p.invited_login, p.request_id, p.requested_at, p.reminded_at FROM pending p JOIN accounts u ON u.id = p.account_id
+         WHERE p.team_id = ? ORDER BY p.requested_at, p.account_id`,
       )
       .bind(teamId),
     db
       .prepare(
-        `SELECT d.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
-         FROM devices d JOIN pending p ON p.github_id = d.github_id
+        `SELECT d.account_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
+         FROM devices d JOIN pending p ON p.account_id = d.account_id
          WHERE p.team_id = ? ORDER BY d.created_at, d.device_id`,
       )
       .bind(teamId),
   ]);
   const byUser = new Map<number, unknown[]>();
-  for (const { github_id, ...device } of devices!.results as { github_id: number }[]) {
-    byUser.set(github_id, [...(byUser.get(github_id) ?? []), device]);
+  for (const { account_id, ...device } of devices!.results as { account_id: number }[]) {
+    byUser.set(account_id, [...(byUser.get(account_id) ?? []), device]);
   }
+  // `github_id` is the account ID, under the name clients read.
   return Response.json(
-    (people!.results as { github_id: number }[]).map((p) => ({
+    (people!.results as { account_id: number }[]).map(({ account_id, ...p }) => ({
+      github_id: account_id,
       ...p,
-      devices: byUser.get(p.github_id) ?? [],
+      devices: byUser.get(account_id) ?? [],
     })),
   );
 }
@@ -537,10 +543,10 @@ async function listPending(c: Ctx, teamId: string): Promise<Response> {
 async function myRequests(c: Ctx): Promise<Response> {
   const { results } = await c.env.DB.prepare(
     `SELECT p.team_id, t.name AS team_name, p.requested_at, u.login AS invited_by_login, p.invited_by AS invited_by_id, p.reminded_at
-     FROM pending p JOIN teams t ON t.team_id = p.team_id LEFT JOIN users u ON u.github_id = p.invited_by
-     WHERE p.github_id = ? ORDER BY p.requested_at, p.team_id`,
+     FROM pending p JOIN teams t ON t.team_id = p.team_id LEFT JOIN accounts u ON u.id = p.invited_by
+     WHERE p.account_id = ? ORDER BY p.requested_at, p.team_id`,
   )
-    .bind(c.me.githubId)
+    .bind(c.me.accountId)
     .all();
   return Response.json(results);
 }
@@ -559,17 +565,17 @@ async function remind(c: Ctx, teamId: string): Promise<Response> {
   const [result, read] = await db.batch([
     db
       .prepare(
-        `UPDATE pending SET reminded_at = ?3 WHERE team_id = ?1 AND github_id = ?2
+        `UPDATE pending SET reminded_at = ?3 WHERE team_id = ?1 AND account_id = ?2
            AND (reminded_at IS NULL OR reminded_at <= ?3 - ${REMIND_EVERY})
-           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ?2)`,
       )
-      .bind(teamId, c.me.githubId, t),
+      .bind(teamId, c.me.accountId, t),
     db
       .prepare(
-        `SELECT reminded_at FROM pending WHERE team_id = ?1 AND github_id = ?2
-           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)`,
+        `SELECT reminded_at FROM pending WHERE team_id = ?1 AND account_id = ?2
+           AND NOT EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ?2)`,
       )
-      .bind(teamId, c.me.githubId),
+      .bind(teamId, c.me.accountId),
   ]);
   if (result!.meta.changes === 1) return new Response(null, { status: 204 });
   const row = read!.results[0] as { reminded_at: number | null } | undefined;
@@ -588,9 +594,9 @@ async function remind(c: Ctx, teamId: string): Promise<Response> {
 /// any of them while it ran.
 function stillAdmin(team: string, session: string, t: string, roles = "'owner', 'admin'"): string {
   return `EXISTS (SELECT 1 FROM sessions s
-    JOIN members a ON a.github_id = s.github_id AND a.team_id = ${team} AND a.role IN (${roles})
-    JOIN user_flags f ON f.github_id = s.github_id AND f.flag = '${FLAG}'
-    JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
+    JOIN members a ON a.account_id = s.account_id AND a.team_id = ${team} AND a.role IN (${roles})
+    JOIN user_flags f ON f.account_id = s.account_id AND f.flag = '${FLAG}'
+    JOIN accounts u ON u.id = s.account_id AND u.blocked_at IS NULL
     WHERE s.token_hash = ${session} AND s.expires_at > ${t})`;
 }
 
@@ -600,10 +606,10 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
   if (!isAdmin(team.role)) return notAdmin();
   const device = await callerDevice(c);
   if (device instanceof Response) return device;
-  if (!GITHUB_ID.test(id)) return error(404, "no such request");
-  const githubId = Number(id);
+  if (!NUMERIC_ID.test(id)) return error(404, "no such request");
+  const accountId = Number(id);
   const db = c.env.DB;
-  const pending = await db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId).first<{ request_id: string }>();
+  const pending = await db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND account_id = ?").bind(teamId, accountId).first<{ request_id: string }>();
   if (!pending) return error(404, "no such request");
   const body = await jsonBody(c.request, MAX_BODY);
   // The request the admin reviewed. A reject and a new accept in between make
@@ -618,7 +624,7 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
 
   const envelopes = await signedEnvelopes(body, teamId, device);
   if (envelopes instanceof Response) return envelopes;
-  const { results } = await db.prepare("SELECT device_id FROM devices WHERE github_id = ?").bind(githubId).all<{ device_id: string }>();
+  const { results } = await db.prepare("SELECT device_id FROM devices WHERE account_id = ?").bind(accountId).all<{ device_id: string }>();
   const theirs = new Set(results.map((d) => d.device_id));
   // What the admin reviewed: their devices and the team's keyed_epoch. An
   // applicant who added a device, or a rotation that ended, since then is a
@@ -657,16 +663,16 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
   const done = await db.batch([
     db
       .prepare(
-        `INSERT INTO members (team_id, github_id, role, joined_at)
+        `INSERT INTO members (team_id, account_id, role, joined_at)
          SELECT ?1, ?2, 'member', ?3
-         WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?6)
+         WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND account_id = ?2 AND request_id = ?6)
            AND ${stillAdmin("?1", "?7", "?3")}
            AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4
-           AND (SELECT COUNT(*) FROM devices WHERE github_id = ?2) = ?5
+           AND (SELECT COUNT(*) FROM devices WHERE account_id = ?2) = ?5
            AND (SELECT COUNT(*) FROM members WHERE team_id = ?1) < ${MAX_MEMBERS}
          ON CONFLICT DO NOTHING`,
       )
-      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size, requestId, c.me.hash),
+      .bind(teamId, accountId, t, team.keyed_epoch, theirs.size, requestId, c.me.hash),
     // Before the pending row goes: it still being there, with the member
     // added (insertEnvelope checks that), means this batch added them. An
     // approval that lost to another one, or whose request changed, writes
@@ -674,20 +680,20 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
     ...envelopes.map((e) =>
       db
         .prepare(
-          insertEnvelope("AND EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?6 AND request_id = ?7)"),
+          insertEnvelope("AND EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND account_id = ?6 AND request_id = ?7)"),
         )
-        .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, githubId, requestId),
+        .bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, accountId, requestId),
     ),
     db
       .prepare(
-        "DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?3 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)",
+        "DELETE FROM pending WHERE team_id = ?1 AND account_id = ?2 AND request_id = ?3 AND EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ?2)",
       )
-      .bind(teamId, githubId, requestId),
+      .bind(teamId, accountId, requestId),
   ]);
-  if (done[0]!.meta.changes === 1) return Response.json({ github_id: githubId, role: "member" });
+  if (done[0]!.meta.changes === 1) return Response.json({ github_id: accountId, role: "member" });
   const [allowed, still, count] = await db.batch([
     db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "?3")}`).bind(teamId, c.me.hash, now()),
-    db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
+    db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND account_id = ?").bind(teamId, accountId),
     db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ?").bind(teamId),
   ]);
   if (allowed!.results.length === 0) return notAdmin();
@@ -715,7 +721,7 @@ async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
   if (!isAdmin(team.role)) return notAdmin();
-  if (!GITHUB_ID.test(id)) return error(404, "no such request");
+  if (!NUMERIC_ID.test(id)) return error(404, "no such request");
   const body = await jsonBody(c.request, MAX_BODY);
   // As in approve: a reject and a new accept in between make a new request,
   // which a late reject of the old one must leave alone.
@@ -725,10 +731,10 @@ async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
   }
   const db = c.env.DB;
   const [result, allowed, still] = await db.batch([
-    db.prepare(`DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?3 AND ${stillAdmin("?1", "?4", "unixepoch()")}`)
+    db.prepare(`DELETE FROM pending WHERE team_id = ?1 AND account_id = ?2 AND request_id = ?3 AND ${stillAdmin("?1", "?4", "unixepoch()")}`)
       .bind(teamId, Number(id), requestId, c.me.hash),
     db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "unixepoch()")}`).bind(teamId, c.me.hash),
-    db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, Number(id)),
+    db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND account_id = ?").bind(teamId, Number(id)),
   ]);
   if (result!.meta.changes) return new Response(null, { status: 204 });
   if (allowed!.results.length === 0) return notAdmin();
@@ -781,7 +787,7 @@ function storeEnvelope(db: D1Database, e: Envelope, t: number, roster: number, s
 function insertEnvelope(extra: string): string {
   return `INSERT INTO envelopes (team_id, device_id, epoch, body, created_at)
     SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (
-      SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?1 WHERE d.device_id = ?2) ${extra}
+      SELECT 1 FROM devices d JOIN members m ON m.account_id = d.account_id AND m.team_id = ?1 WHERE d.device_id = ?2) ${extra}
     ON CONFLICT DO UPDATE SET body = excluded.body
     WHERE json_extract(envelopes.body, '$.from') = json_extract(excluded.body, '$.from') OR NOT ${senderIsAdmin("envelopes")}`;
 }
@@ -791,7 +797,7 @@ function insertEnvelope(extra: string): string {
 /// upload may replace it and `GET .../envelopes/stale` lists it. Both use this
 /// one test, so every envelope listed there can be replaced.
 function senderIsAdmin(row: string): string {
-  return `EXISTS (SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ${row}.team_id
+  return `EXISTS (SELECT 1 FROM devices d JOIN members m ON m.account_id = d.account_id AND m.team_id = ${row}.team_id
     WHERE d.device_id = json_extract(${row}.body, '$.from') AND m.role IN ('owner', 'admin'))`;
 }
 
@@ -831,7 +837,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
 
   const db = c.env.DB;
   const { results } = await db
-    .prepare("SELECT d.device_id FROM devices d JOIN members m ON m.github_id = d.github_id WHERE m.team_id = ?")
+    .prepare("SELECT d.device_id FROM devices d JOIN members m ON m.account_id = d.account_id WHERE m.team_id = ?")
     .bind(teamId)
     .all<{ device_id: string }>();
   const memberDevices = new Set(results.map((d) => d.device_id));
@@ -875,7 +881,7 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
           db
             .prepare(
               `UPDATE teams SET keyed_epoch = ?1, key_upload = ?4 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND ${stillAdmin("?2", "?5", "unixepoch()")} AND NOT EXISTS (
-                 SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?2
+                 SELECT 1 FROM devices d JOIN members m ON m.account_id = d.account_id AND m.team_id = ?2
                  WHERE d.device_id NOT IN (SELECT value FROM json_each(?3)))`,
             )
             .bind(team.epoch, teamId, JSON.stringify([...covered]), upload, c.me.hash),
@@ -928,7 +934,7 @@ async function staleEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   const { results } = await c.env.DB.prepare(
     `SELECT e.device_id, e.epoch FROM envelopes e
      JOIN devices r ON r.device_id = e.device_id
-     JOIN members rm ON rm.team_id = e.team_id AND rm.github_id = r.github_id
+     JOIN members rm ON rm.team_id = e.team_id AND rm.account_id = r.account_id
      WHERE e.team_id = ? AND NOT ${senderIsAdmin("e")}
      ORDER BY e.epoch DESC, e.device_id LIMIT ${MAX_ENVELOPES}`,
   )
@@ -947,7 +953,7 @@ async function setRole(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
   if (team.role !== "owner") return notOwner();
-  if (!GITHUB_ID.test(id)) return error(404, "no such member");
+  if (!NUMERIC_ID.test(id)) return error(404, "no such member");
   const body = await jsonBody(c.request, 4096);
   const role = isObject(body) ? body["role"] : null;
   if (typeof role !== "string" || !ROLES.includes(role)) return error(400, 'expected {"role": "..."}: owner, admin or member');
@@ -961,13 +967,13 @@ async function setRole(c: Ctx, teamId: string, id: string): Promise<Response> {
   const [result, allowed, row] = await db.batch([
     db
       .prepare(
-        `UPDATE members SET role = ?3 WHERE team_id = ?1 AND github_id = ?2
+        `UPDATE members SET role = ?3 WHERE team_id = ?1 AND account_id = ?2
            AND ${stillAdmin("?1", "?4", "unixepoch()", "'owner'")}
            AND (?3 = 'owner' OR role <> 'owner' OR (SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner') > 1)`,
       )
       .bind(teamId, target, role, c.me.hash),
     db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "unixepoch()", "'owner'")}`).bind(teamId, c.me.hash),
-    db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
+    db.prepare("SELECT 1 FROM members WHERE team_id = ? AND account_id = ?").bind(teamId, target),
   ]);
   if (result!.meta.changes === 1) return Response.json({ github_id: target, role });
   if (allowed!.results.length === 0) return notOwner();
@@ -978,12 +984,12 @@ async function setRole(c: Ctx, teamId: string, id: string): Promise<Response> {
 async function removeMember(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
-  if (!GITHUB_ID.test(id)) return notFound();
+  if (!NUMERIC_ID.test(id)) return notFound();
   const target = Number(id);
-  const self = target === c.me.githubId;
+  const self = target === c.me.accountId;
   if (!self && !isAdmin(team.role)) return notAdmin();
   const db = c.env.DB;
-  const row = await db.prepare("SELECT role FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target).first<{ role: Role }>();
+  const row = await db.prepare("SELECT role FROM members WHERE team_id = ? AND account_id = ?").bind(teamId, target).first<{ role: Role }>();
   if (!row) return notFound();
   if (row.role === "owner" && !self && team.role !== "owner") return error(403, "only an owner can remove an owner");
 
@@ -992,19 +998,19 @@ async function removeMember(c: Ctx, teamId: string, id: string): Promise<Respons
   // two owners who leave at once cannot both pass and leave the team with
   // none. The member row goes last, so the conditions read the same rows in
   // each statement.
-  const removable = `EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2 AND (role <> 'owner'
+  const removable = `EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ?2 AND (role <> 'owner'
     OR (SELECT COUNT(*) FROM members WHERE team_id = ?1 AND role = 'owner') > 1))`;
   const results = await db.batch([
     // The removed member holds every key so far; the next one must be new.
     // Only once, so two removals of the same member at once bump it once.
     db.prepare(`UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?1 AND ${removable}`).bind(teamId, target),
     db
-      .prepare(`DELETE FROM envelopes WHERE team_id = ?1 AND device_id IN (SELECT device_id FROM devices WHERE github_id = ?2) AND ${removable}`)
+      .prepare(`DELETE FROM envelopes WHERE team_id = ?1 AND device_id IN (SELECT device_id FROM devices WHERE account_id = ?2) AND ${removable}`)
       .bind(teamId, target),
-    db.prepare(`DELETE FROM members WHERE team_id = ?1 AND github_id = ?2 AND ${removable}`).bind(teamId, target),
+    db.prepare(`DELETE FROM members WHERE team_id = ?1 AND account_id = ?2 AND ${removable}`).bind(teamId, target),
     db.prepare("SELECT epoch FROM teams WHERE team_id = ?").bind(teamId),
     db.prepare("SELECT channel_id FROM channels WHERE team_id = ?").bind(teamId),
-    db.prepare("SELECT role FROM members WHERE team_id = ? AND github_id = ?").bind(teamId, target),
+    db.prepare("SELECT role FROM members WHERE team_id = ? AND account_id = ?").bind(teamId, target),
   ]);
   if (results[0]!.meta.changes !== 1) {
     // Still there means the batch found them to be the last owner.
@@ -1049,7 +1055,7 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
          AND (SELECT epoch FROM teams WHERE team_id = ?1) = ?6
        ON CONFLICT DO NOTHING`,
     )
-    .bind(teamId, channelId, JSON.stringify(name), c.me.githubId, now(), name.epoch)
+    .bind(teamId, channelId, JSON.stringify(name), c.me.accountId, now(), name.epoch)
     .run();
   if (result.meta.changes === 1) return Response.json({ channel_id: channelId }, { status: 201 });
   const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
@@ -1110,7 +1116,7 @@ async function openSocket(c: Ctx, teamId: string, channelId: string): Promise<Re
   // object, so a client cannot send its own copies of the trusted ones.
   const headers = new Headers({
     Upgrade: "websocket",
-    [TRUSTED.githubId]: String(c.me.githubId),
+    [TRUSTED.accountId]: String(c.me.accountId),
     [TRUSTED.deviceId]: access.device.device_id,
     [TRUSTED.sigPub]: access.device.sig_pub,
     [TRUSTED.teamId]: teamId,
@@ -1139,10 +1145,10 @@ async function history(c: Ctx, teamId: string, channelId: string): Promise<Respo
   // Only release the captured page to a device that still has access.
   const grant = await c.env.DB.prepare(
     `SELECT s.expires_at FROM sessions s
-     JOIN members m ON m.github_id = s.github_id AND m.team_id = ?2
-     JOIN devices d ON d.github_id = s.github_id AND d.device_id = ?3
-     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?4
-     JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
+     JOIN members m ON m.account_id = s.account_id AND m.team_id = ?2
+     JOIN devices d ON d.account_id = s.account_id AND d.device_id = ?3
+     JOIN user_flags f ON f.account_id = s.account_id AND f.flag = ?4
+     JOIN accounts u ON u.id = s.account_id AND u.blocked_at IS NULL
      WHERE s.token_hash = ?1`,
   ).bind(c.me.hash, teamId, access.device.device_id, FLAG).first<{ expires_at: number }>();
   if (!grant || grant.expires_at <= now()) return notFound();
@@ -1161,15 +1167,15 @@ async function sender(c: Ctx, teamId: string, channelId: string, deviceId: strin
   if (!(await channelStub(c.env, teamId, channelId).sent(deviceId))) return notFound();
   const db = c.env.DB;
   const [user, devices] = await db.batch([
-    db.prepare("SELECT u.github_id, u.login FROM devices d JOIN users u ON u.github_id = d.github_id WHERE d.device_id = ?").bind(deviceId),
+    db.prepare("SELECT u.id AS account_id, u.login FROM devices d JOIN accounts u ON u.id = d.account_id WHERE d.device_id = ?").bind(deviceId),
     db
       .prepare(
         `SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig FROM devices
-         WHERE github_id = (SELECT github_id FROM devices WHERE device_id = ?) ORDER BY created_at, device_id`,
+         WHERE account_id = (SELECT account_id FROM devices WHERE device_id = ?) ORDER BY created_at, device_id`,
       )
       .bind(deviceId),
   ]);
-  const row = user!.results[0] as { github_id: number; login: string } | undefined;
+  const row = user!.results[0] as { account_id: number; login: string } | undefined;
   if (!row) return notFound();
-  return Response.json({ github_id: row.github_id, login: row.login, devices: devices!.results });
+  return Response.json({ github_id: row.account_id, login: row.login, devices: devices!.results });
 }

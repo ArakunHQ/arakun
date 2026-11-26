@@ -6,14 +6,18 @@
 
 /// GET /api/me
 export interface Me {
+  /// The operator's GitHub user ID: operators sign in to the panel with GitHub
+  /// and need no account.
   github_id: number;
   login: string;
 }
 
-/// A row of GET /admin/users. `login` is empty for an account that got a
-/// flag, a plan or a block before it first signed in.
+/// A row of GET /admin/users. `login` is empty for an account the operator
+/// set up before it first signed in.
 export interface UserRow {
-  github_id: number;
+  account_id: number;
+  /// The GitHub user linked to it, for the avatar; null without one.
+  github_id: number | null;
   login: string;
   plan: string;
   blocked_at: number | null;
@@ -47,7 +51,8 @@ export interface SessionRow {
 /// A row of GET /admin/machines.
 export interface MachineRow {
   label: string;
-  github_id: number;
+  account_id: number;
+  github_id: number | null;
   login: string;
   name: string;
   kind: "app" | "server";
@@ -59,7 +64,7 @@ export interface MachineRow {
 export interface UserDetail {
   user: UserRow & { email: string | null };
   sessions: SessionRow[];
-  machines: Omit<MachineRow, "github_id" | "login">[];
+  machines: Omit<MachineRow, "account_id" | "github_id" | "login">[];
   cloud_request: CloudRequest | null;
   notices: NoticeRow[];
 }
@@ -67,7 +72,8 @@ export interface UserDetail {
 /// A row of GET /admin/cloud/requests, and the answer of a grant or a decline:
 /// `requestJson` in cloud/src/cloud_access.ts.
 export interface CloudRequest {
-  github_id: number;
+  account_id: number;
+  github_id: number | null;
   login: string;
   status: "pending" | "granted" | "declined";
   reason: string | null;
@@ -94,7 +100,8 @@ export type BetaPlatform = "ios" | "android";
 /// A row of GET /admin/beta/signups, and the answer of an admit or a decline:
 /// `signupJson` in cloud/src/beta.ts.
 export interface BetaSignup {
-  github_id: number;
+  account_id: number;
+  github_id: number | null;
   login: string;
   platform: BetaPlatform;
   /// The address to add as a tester: an Apple ID or a Google account.
@@ -121,7 +128,7 @@ export interface BetaSignup {
 export interface NoticeRow {
   id: string;
   /// Null for a notice to everyone.
-  github_id: number | null;
+  account_id: number | null;
   login: string | null;
   text: string;
   url: string | null;
@@ -132,6 +139,7 @@ export interface NoticeRow {
 }
 
 export type LogAction =
+  | "account.create"
   | "flag.grant"
   | "flag.revoke"
   | "sessions.close"
@@ -156,12 +164,12 @@ export interface LogEntry {
   operator_id: number | null;
   operator_login: string | null;
   action: LogAction;
-  github_id: number | null;
+  account_id: number | null;
   login: string | null;
   detail: Record<string, string | number | null> | null;
 }
 
-/// GET /admin/log?github_id=&before=&limit=
+/// GET /admin/log?account_id=&before=&limit=
 export interface LogPage {
   entries: LogEntry[];
   /// The `before` of the next page, or null on the last.
@@ -175,14 +183,21 @@ export interface Plans {
 
 /// PUT and DELETE /admin/users/<id>/flags/<flag>: the flags after the change.
 export interface FlagsAnswer {
-  github_id: number;
+  account_id: number;
   flags: string[];
 }
 
 /// DELETE /admin/users/<id>/sessions
 export interface ClosedAnswer {
-  github_id: number;
+  account_id: number;
   closed: number;
+}
+
+/// PUT /admin/github/<github_id>: the account of a GitHub user, made if it had none.
+export interface GitHubAccount {
+  account_id: number;
+  github_id: number;
+  created: boolean;
 }
 
 /// POST /admin/notices
@@ -191,7 +206,7 @@ export interface NoticeCreated {
 }
 
 export interface NewNotice {
-  github_id?: number;
+  account_id?: number;
   text: string;
   url?: string;
   expires_at?: number;

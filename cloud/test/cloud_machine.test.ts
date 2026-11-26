@@ -30,7 +30,7 @@ let nextId = 70_000;
 async function owner(flag = true): Promise<SignedIn> {
   const id = nextId++;
   const me = await signIn(id, `cloud${id}`);
-  if (flag) expect((await call("PUT", `/admin/users/${id}/flags/${CLOUD_FLAG}`, ADMIN)).status).toBe(200);
+  if (flag) expect((await call("PUT", `/admin/users/${me.account_id}/flags/${CLOUD_FLAG}`, ADMIN)).status).toBe(200);
   return me;
 }
 
@@ -41,7 +41,7 @@ function post(path: string, session: string, body?: unknown): Promise<Response> 
 /// A machine record for `who`, with a fresh key.
 async function machineOf(who: SignedIn, name = "Cloud"): Promise<MachineRecord> {
   const key = await newMachineKey();
-  return { ...key, githubId: who.github_id, name, base: "https://app.arakun.dev" };
+  return { ...key, githubId: who.account_id, name, base: "https://app.arakun.dev" };
 }
 
 /// The machine's key as the relay tests' computer, to claim with.
@@ -151,7 +151,7 @@ describe("the cloud machine routes", () => {
 
   it("refuse a blocked account, flag or not", async () => {
     const me = await owner();
-    expect((await call("PUT", `/admin/users/${me.github_id}/block`, ADMIN)).status).toBe(204);
+    expect((await call("PUT", `/admin/users/${me.account_id}/block`, ADMIN)).status).toBe(204);
     expect((await post("/cloud/machines", me.session)).status).toBe(403);
   });
 
@@ -176,8 +176,8 @@ describe("the cloud machine routes", () => {
     const made = await res.json<{ label: string; name: string; running: boolean; snapshot: boolean }>();
     expect(made).toMatchObject({ name: "Builder", running: false, snapshot: false });
     expect(made.label).toMatch(/^[a-z2-7]{16}$/);
-    const row = await env.DB.prepare("SELECT github_id, name FROM cloud_machines WHERE label = ?").bind(made.label).first();
-    expect(row).toEqual({ github_id: me.github_id, name: "Builder" });
+    const row = await env.DB.prepare("SELECT account_id, name FROM cloud_machines WHERE label = ?").bind(made.label).first();
+    expect(row).toEqual({ account_id: me.account_id, name: "Builder" });
 
     expect((await post("/cloud/machines", me.session)).status).toBe(409);
     const list = await (await call("GET", "/cloud/machines", as(me.session))).json<{ label: string }[]>();
@@ -210,8 +210,8 @@ describe("the cloud machine routes", () => {
   it("remove a machine with its key, its registration and its session", async () => {
     const me = await owner();
     const made = await (await post("/cloud/machines", me.session)).json<{ label: string }>();
-    await env.DB.prepare("INSERT INTO machines (label, github_id, pub, name, kind, created_at, last_seen_at) VALUES (?, ?, 'p', 'Cloud', 'server', 1, 1)")
-      .bind(made.label, me.github_id)
+    await env.DB.prepare("INSERT INTO machines (label, account_id, pub, name, kind, created_at, last_seen_at) VALUES (?, ?, 'p', 'Cloud', 'server', 1, 1)")
+      .bind(made.label, me.account_id)
       .run();
     expect((await call("DELETE", `/cloud/machines/${made.label}`, as(me.session))).status).toBe(204);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM cloud_machines").first<number>("n")).toBe(0);
@@ -224,8 +224,8 @@ describe("the cloud machine routes", () => {
   it("count against the plan's machines", async () => {
     const me = await owner();
     await env.CONFIG.put("plans", JSON.stringify({ free: { machines: 1 } }));
-    await env.DB.prepare("INSERT INTO machines (label, github_id, pub, name, kind, created_at, last_seen_at) VALUES ('deskdeskdeskdesk', ?, 'p', 'Desk', 'app', 1, 1)")
-      .bind(me.github_id)
+    await env.DB.prepare("INSERT INTO machines (label, account_id, pub, name, kind, created_at, last_seen_at) VALUES ('deskdeskdeskdesk', ?, 'p', 'Desk', 'app', 1, 1)")
+      .bind(me.account_id)
       .run();
     expect((await post("/cloud/machines", me.session)).status).toBe(409);
   });
@@ -240,10 +240,10 @@ describe("the operator's cloud machine routes", () => {
     const me = await owner();
     const made = await (await post("/cloud/machines", me.session)).json<{ label: string }>();
     const list = await (await call("GET", "/admin/cloud/machines", ADMIN)).json<Record<string, unknown>[]>();
-    expect(list).toEqual([expect.objectContaining({ label: made.label, github_id: me.github_id, login: me.login, running: false, snapshot: false })]);
+    expect(list).toEqual([expect.objectContaining({ label: made.label, account_id: me.account_id, login: me.login, running: false, snapshot: false })]);
     expect((await call("POST", `/admin/cloud/machines/${made.label}/sleep`, ADMIN)).status).toBe(204);
-    const log = await env.DB.prepare("SELECT action, github_id, detail FROM admin_log WHERE action = 'cloud.machine.sleep'").first();
-    expect(log).toEqual({ action: "cloud.machine.sleep", github_id: me.github_id, detail: JSON.stringify({ label: made.label }) });
+    const log = await env.DB.prepare("SELECT action, account_id, detail FROM admin_log WHERE action = 'cloud.machine.sleep'").first();
+    expect(log).toEqual({ action: "cloud.machine.sleep", account_id: me.account_id, detail: JSON.stringify({ label: made.label }) });
     expect((await call("POST", "/admin/cloud/machines/aaaaaaaaaaaaaaaa/sleep", ADMIN)).status).toBe(404);
   });
 });
@@ -274,15 +274,15 @@ describe("the environment a machine starts with", () => {
     expect(vars).toMatchObject({
       ARAKUN_CLOUD_NAME: "Builder",
       ARAKUN_CLOUD_BASE: "https://app.arakun.dev",
-      ARAKUN_CLOUD_GITHUB_ID: String(me.github_id),
+      ARAKUN_CLOUD_GITHUB_ID: String(me.account_id),
       ARAKUN_CLOUD_LOGIN: me.login,
       ARAKUN_CLOUD_IDENTITY: m.identity,
       ARAKUN_CLOUD_IDENTITY_PUBLIC: m.identityPublic,
     });
     const pc = await openPc(m.label, vars["ARAKUN_CLOUD_SESSION"]!, "name=Builder&kind=server");
     expect(await claim(pc, await computerOf(m))).toEqual({ type: "claimed" });
-    const row = await env.DB.prepare("SELECT github_id, kind, name FROM machines WHERE label = ?").bind(m.label).first();
-    expect(row).toEqual({ github_id: me.github_id, kind: "server", name: "Builder" });
+    const row = await env.DB.prepare("SELECT account_id, kind, name FROM machines WHERE label = ?").bind(m.label).first();
+    expect(row).toEqual({ account_id: me.account_id, kind: "server", name: "Builder" });
   });
 
   it("leaves the key out when the disk has it", async () => {
@@ -307,7 +307,7 @@ describe("the environment a machine starts with", () => {
     const plain = await owner(false);
     expect(await startEnv(env, await machineOf(plain), true)).toBeNull();
     const blocked = await owner();
-    await call("PUT", `/admin/users/${blocked.github_id}/block`, ADMIN);
+    await call("PUT", `/admin/users/${blocked.account_id}/block`, ADMIN);
     expect(await startEnv(env, await machineOf(blocked), true)).toBeNull();
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE kind = 'cloud'").first<number>("n")).toBe(0);
   });
@@ -413,7 +413,7 @@ describe("a machine's lifecycle", () => {
   it("does not start for an account that lost the flag", async () => {
     const me = await owner();
     const box = new FakeBox();
-    await call("DELETE", `/admin/users/${me.github_id}/flags/${CLOUD_FLAG}`, ADMIN);
+    await call("DELETE", `/admin/users/${me.account_id}/flags/${CLOUD_FLAG}`, ADMIN);
     await withLife(await machineOf(me), box, async (life) => {
       expect(await life.wake()).toBe("not_allowed");
       expect(box.starts).toHaveLength(0);
@@ -462,7 +462,7 @@ describe("a machine's lifecycle", () => {
     await withLife(await machineOf(me), box, async (life) => {
       await life.wake();
       box.status = statusText(1, 1, 1);
-      await call("PUT", `/admin/users/${me.github_id}/block`, ADMIN);
+      await call("PUT", `/admin/users/${me.account_id}/block`, ADMIN);
       await life.check();
       expect(box.running).toBe(false);
     });

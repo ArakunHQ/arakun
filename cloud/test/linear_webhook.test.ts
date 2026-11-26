@@ -68,10 +68,10 @@ async function linkedComputerWithRoute({
   linearUser = LU,
 }: { team?: string; project?: string; linearUser?: string } = {}) {
   const owner = await account();
-  await call("PUT", `/admin/users/${owner.github_id}/flags/linear`, ADMIN);
-  if ((await count("linear_workspaces")) === 0) await workspace(owner.github_id);
-  await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?, ?, ?, ?)")
-    .bind(ORG, linearUser, owner.github_id, nowSeconds())
+  await call("PUT", `/admin/users/${owner.account_id}/flags/linear`, ADMIN);
+  if ((await count("linear_workspaces")) === 0) await workspace(owner.account_id);
+  await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?, ?, ?, ?)")
+    .bind(ORG, linearUser, owner.account_id, nowSeconds())
     .run();
   const { me, pc } = await connectedComputer(owner);
   const routes = { label: me.label, organization_id: ORG, teams: project ? [] : [team], projects: project ? [project] : [] };
@@ -143,7 +143,7 @@ describe("Linear's webhook", () => {
       issue_id: ISSUE,
       kind: "created",
       activity_id: null,
-      github_id: owner.github_id,
+      account_id: owner.account_id,
       label: me.label,
       accepted_at: null,
       expired_at: null,
@@ -354,11 +354,11 @@ describe("Linear's webhook", () => {
   });
 
   it.each([
-    ["blocked", "UPDATE users SET blocked_at = 1 WHERE github_id = ?"],
-    ["without the flag", "DELETE FROM user_flags WHERE github_id = ?"],
+    ["blocked", "UPDATE accounts SET blocked_at = 1 WHERE id = ?"],
+    ["without the flag", "DELETE FROM user_flags WHERE account_id = ?"],
   ])("treats a creator whose account is %s as not linked", async (_n, sql) => {
     const { owner } = await linkedComputerWithRoute();
-    await env.DB.prepare(sql).bind(owner.github_id).run();
+    await env.DB.prepare(sql).bind(owner.account_id).run();
     expect((await send(signedWebhook(body))).status).toBe(200);
     expect(linearFake.activities()).toEqual([
       {
@@ -428,7 +428,7 @@ describe("Linear's webhook", () => {
     expect(await mine.pc.inbox.control()).toMatchObject({ type: "linear", issue: ISSUE });
     await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
     const [row] = await deliveries();
-    expect(row).toMatchObject({ github_id: mine.owner.github_id, label: mine.me.label });
+    expect(row).toMatchObject({ account_id: mine.owner.account_id, label: mine.me.label });
   });
 });
 
@@ -453,7 +453,7 @@ async function storedAll(label: string): Promise<string> {
 /// Another account with the flag: a stranger to the delegated issue.
 async function stranger() {
   const s = await account();
-  await call("PUT", `/admin/users/${s.github_id}/flags/linear`, ADMIN);
+  await call("PUT", `/admin/users/${s.account_id}/flags/linear`, ADMIN);
   return s;
 }
 
@@ -468,7 +468,7 @@ describe("follow-ups from Linear", () => {
     expect(linearFake.activities()).toEqual([SENT]);
     const rows = await env.DB.prepare("SELECT * FROM linear_deliveries WHERE kind = 'prompt'").all<Record<string, unknown>>();
     expect(rows.results).toEqual([
-      expect.objectContaining({ id: frame["id"], agent_session_id: SESSION, organization_id: ORG, issue_id: ISSUE, activity_id: ACT, github_id: owner.github_id, label: me.label, accepted_at: null, expired_at: null }),
+      expect.objectContaining({ id: frame["id"], agent_session_id: SESSION, organization_id: ORG, issue_id: ISSUE, activity_id: ACT, account_id: owner.account_id, label: me.label, accepted_at: null, expired_at: null }),
     ]);
     expect(rows.results[0]!["announced_at"]).toBeTypeOf("number");
     const everything = (await dump(env.DB)) + (await storedAll(me.label));
@@ -529,8 +529,8 @@ describe("follow-ups from Linear", () => {
   it("a Linear user linked to the delegator's account in another workspace cannot steer", async () => {
     const { pc, owner } = await delegatedIssue();
     // OTHER is the delegator's account too, but only in another workspace.
-    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?, ?, ?, ?)")
-      .bind(ORG2, OTHER, owner.github_id, nowSeconds())
+    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?, ?, ?, ?)")
+      .bind(ORG2, OTHER, owner.account_id, nowSeconds())
       .run();
     expect((await send(signedWebhook(prompted({ userId: OTHER, body: "do this instead", agentSessionId: SESSION })))).status).toBe(200);
     expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
@@ -542,9 +542,9 @@ describe("follow-ups from Linear", () => {
     const { pc, owner } = await delegatedIssue();
     // The other workspace has the app too, so the answer can be said there.
     linearFake.tokens.set("lin_oauth_ws2", { userId: "app-user", organizationId: ORG2, organizationName: "Other" });
-    await saveWorkspace(env, { organizationId: ORG2, name: "Other", appUserId: "app-user", access: "lin_oauth_ws2", refresh: "lin_refresh_ws2", expiresAt: nowSeconds() + 86_400, installedBy: owner.github_id });
-    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?, ?, ?, ?)")
-      .bind(ORG2, LU, owner.github_id, nowSeconds())
+    await saveWorkspace(env, { organizationId: ORG2, name: "Other", appUserId: "app-user", access: "lin_oauth_ws2", refresh: "lin_refresh_ws2", expiresAt: nowSeconds() + 86_400, installedBy: owner.account_id });
+    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?, ?, ?, ?)")
+      .bind(ORG2, LU, owner.account_id, nowSeconds())
       .run();
     const res = await send(signedWebhook(prompted({ userId: LU, body: "do this instead", organizationId: ORG2, agentSessionId: SESSION })));
     expect(res.status).toBe(200);
@@ -641,10 +641,10 @@ describe("follow-ups from Linear", () => {
     const { pc, me, owner } = await delegatedIssue();
     // Unreachable with keys made of the event's own ids: a guard.
     await env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, 'prompt', ?, ?, ?, ?)`,
     )
-      .bind("e".repeat(32), `activity:${ACT}`, crypto.randomUUID(), ORG, ISSUE, ACT, owner.github_id, me.label, nowSeconds())
+      .bind("e".repeat(32), `activity:${ACT}`, crypto.randomUUID(), ORG, ISSUE, ACT, owner.account_id, me.label, nowSeconds())
       .run();
     expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
     await expect(pc.inbox.next(200)).rejects.toThrow();
@@ -867,10 +867,10 @@ describe("a delivery dropped after 7 days", () => {
     // A machine that is gone.
     const gone = "f".repeat(32);
     await env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, 'aaaaaaaaaaaaaaaa', ?)`,
     )
-      .bind(gone, `created:${crypto.randomUUID()}`, SESSION, ORG, ISSUE, owner.github_id, nowSeconds())
+      .bind(gone, `created:${crypto.randomUUID()}`, SESSION, ORG, ISSUE, owner.account_id, nowSeconds())
       .run();
     await expect(expired(env, gone)).resolves.toBeUndefined();
     expect(linearFake.activities()).toEqual([SENT, dropped("This computer")]);

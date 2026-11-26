@@ -8,7 +8,7 @@ const NOW = Math.floor(Date.now() / 1000);
 const calls: { method: string; url: string; body?: unknown }[] = [];
 
 function notice(id: string, text: string, over: Partial<NoticeRow> = {}): NoticeRow {
-  return { id, github_id: null, login: null, text, url: null, created_at: NOW - 3600, expires_at: null, reads: 0, ...over };
+  return { id, account_id: null, login: null, text, url: null, created_at: NOW - 3600, expires_at: null, reads: 0, ...over };
 }
 
 let rows: NoticeRow[] = [];
@@ -22,8 +22,8 @@ beforeEach(() => {
   calls.length = 0;
   rows = [
     notice("n1", "Maintenance on Friday", { reads: 7, expires_at: NOW + 86400 }),
-    notice("n2", "Your plan changed", { github_id: 1002, login: "octocat", url: "https://example.com/plan" }),
-    notice("n3", "Old news", { github_id: 1003, login: "", url: "javascript:alert(1)", expires_at: NOW - 3600, reads: 2 }),
+    notice("n2", "Your plan changed", { account_id: 1002, login: "octocat", url: "https://example.com/plan" }),
+    notice("n3", "Old news", { account_id: 1003, login: "", url: "javascript:alert(1)", expires_at: NOW - 3600, reads: 2 }),
   ];
   vi.stubGlobal(
     "fetch",
@@ -63,7 +63,7 @@ describe("Notices", () => {
     expect(link.getAttribute("rel")).toBe("noreferrer");
     // A link that is not https is not a link; an ended notice stays listed.
     const old = within(screen.getByRole("listitem", { name: "Old news" }));
-    expect(old.getByRole("link", { name: "GitHub ID 1003" }).getAttribute("href")).toBe("/users/1003");
+    expect(old.getByRole("link", { name: "Account 1003" }).getAttribute("href")).toBe("/users/1003");
     expect(old.getByText(/ended/)).toBeTruthy();
     expect(old.queryByText(/javascript/)).toBeNull();
   });
@@ -80,11 +80,11 @@ describe("Notices", () => {
     expect(posts()[0]?.body).toEqual({ text: "Hello all" });
 
     await userEvent.click(screen.getByRole("radio", { name: "One account" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "GitHub ID" }), "1002");
+    await userEvent.type(screen.getByRole("textbox", { name: "Account ID" }), "1002");
     await userEvent.type(screen.getByRole("textbox", { name: "Text" }), "Just you");
     await userEvent.click(screen.getByRole("button", { name: "Send notice" }));
     await waitFor(() => expect(posts()).toHaveLength(2));
-    expect(posts()[1]?.body).toEqual({ github_id: 1002, text: "Just you" });
+    expect(posts()[1]?.body).toEqual({ account_id: 1002, text: "Just you" });
   });
 
   it("refuses a link that is not https before calling", async () => {

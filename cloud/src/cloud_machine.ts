@@ -55,6 +55,9 @@ const STATUS_TIMEOUT_MS = 10_000;
 /// What the object keeps about its machine.
 export interface MachineRecord {
   label: string;
+  /// The owner's account ID. Stored under its old name, so records written
+  /// before accounts had their own IDs read the same; for those it was the
+  /// GitHub ID, which is the account's ID now.
   githubId: number;
   name: string;
   /// The account host the server signs in to and dials, such as
@@ -148,12 +151,12 @@ export function nextStep(now: number, lastActive: number, status: ServerStatus |
 
 /// Whether the account may run a cloud machine now: it has the `cloud` flag
 /// and is not blocked. Its login, for the server's sign-in file, or null.
-export async function allowedOwner(env: Env, githubId: number): Promise<string | null> {
+export async function allowedOwner(env: Env, accountId: number): Promise<string | null> {
   const row = await env.DB.prepare(
-    `SELECT u.login FROM users u JOIN user_flags f ON f.github_id = u.github_id AND f.flag = ?2
-     WHERE u.github_id = ?1 AND u.blocked_at IS NULL`,
+    `SELECT u.login FROM accounts u JOIN user_flags f ON f.account_id = u.id AND f.flag = ?2
+     WHERE u.id = ?1 AND u.blocked_at IS NULL`,
   )
-    .bind(githubId, CLOUD_FLAG)
+    .bind(accountId, CLOUD_FLAG)
     .first<{ login: string }>();
   return row?.login ?? null;
 }
@@ -178,6 +181,8 @@ export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean
     ARAKUN_CLOUD_BASE: m.base,
     ARAKUN_CLOUD_SESSION: made.session,
     ARAKUN_CLOUD_SESSION_ID: made.session_id,
+    // The account ID, under the name the image reads: it writes it as the
+    // login's `github_id`, the name clients still use for the account ID.
     ARAKUN_CLOUD_GITHUB_ID: String(m.githubId),
     ARAKUN_CLOUD_LOGIN: login,
   };

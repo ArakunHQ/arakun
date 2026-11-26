@@ -10,7 +10,7 @@ interface Entry {
   operator_id: number | null;
   operator_login: string | null;
   action: string;
-  github_id: number | null;
+  account_id: number | null;
   login: string | null;
   detail: Record<string, unknown> | null;
 }
@@ -25,11 +25,18 @@ async function log(query = ""): Promise<Page> {
   return res.json();
 }
 
+/// The account of GitHub user 2002, made before it signs in, as an operator would.
+async function account(headers: Record<string, string> = ADMIN): Promise<number> {
+  const res = await call("PUT", "/admin/github/2002", headers);
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { account_id: number }).account_id;
+}
+
 async function ask(id: number, status = "pending"): Promise<void> {
-  await env.DB.prepare("INSERT OR IGNORE INTO users (github_id, login, created_at, last_seen_at) VALUES (?1, 'two', 1, 0)").bind(id).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO accounts (id, login, created_at, last_seen_at) VALUES (?1, 'two', 1, 0)").bind(id).run();
   await env.DB.prepare(
-    `INSERT INTO cloud_access_requests (github_id, status, requested_at, decided_at, gh_login) VALUES (?1, ?2, 1, ?3, 'two')
-     ON CONFLICT (github_id) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at`,
+    `INSERT INTO cloud_access_requests (account_id, status, requested_at, decided_at, gh_login) VALUES (?1, ?2, 1, ?3, 'two')
+     ON CONFLICT (account_id) DO UPDATE SET status = excluded.status, decided_at = excluded.decided_at`,
   )
     .bind(id, status, status === "pending" ? null : 2)
     .run();
@@ -37,20 +44,21 @@ async function ask(id: number, status = "pending"): Promise<void> {
 
 describe("the admin log", () => {
   it("records each change with the operator", async () => {
-    const base = "/admin/users/2002";
+    const id = await account(OP);
+    const base = `/admin/users/${id}`;
     expect((await call("PUT", `${base}/flags/teams`, OP)).status).toBe(200);
     expect((await call("DELETE", `${base}/flags/teams`, OP)).status).toBe(200);
     expect((await call("DELETE", `${base}/sessions`, OP)).status).toBe(200);
     expect((await call("PUT", `${base}/block`, OP, JSON.stringify({ reason: "spam" }))).status).toBe(204);
     expect((await call("DELETE", `${base}/block`, OP)).status).toBe(204);
     expect((await call("PUT", `${base}/plan`, OP, JSON.stringify({ plan: "pro" }))).status).toBe(204);
-    const made = await call("POST", "/admin/notices", OP, JSON.stringify({ github_id: 2002, text: "hello" }));
+    const made = await call("POST", "/admin/notices", OP, JSON.stringify({ account_id: id, text: "hello" }));
     const { id: noticeId } = (await made.json()) as { id: string };
     expect((await call("DELETE", `/admin/notices/${noticeId}`, OP)).status).toBe(204);
-    await ask(2002);
-    expect((await call("PUT", "/admin/cloud/requests/2002/grant", OP)).status).toBe(200);
-    await ask(2002);
-    expect((await call("PUT", "/admin/cloud/requests/2002/decline", OP)).status).toBe(200);
+    await ask(id);
+    expect((await call("PUT", `/admin/cloud/requests/${id}/grant`, OP)).status).toBe(200);
+    await ask(id);
+    expect((await call("PUT", `/admin/cloud/requests/${id}/decline`, OP)).status).toBe(200);
 
     const { entries, next } = await log();
     expect(next).toBeNull();
@@ -65,17 +73,19 @@ describe("the admin log", () => {
       "sessions.close",
       "flag.revoke",
       "flag.grant",
+      "account.create",
     ]);
     for (const e of entries) {
       expect(e.operator_id).toBe(1001);
       expect(e.operator_login).toBe("octocat");
-      expect(e.github_id).toBe(2002);
-      // The flag route made the account before it signed in, so it has no login yet.
+      expect(e.account_id).toBe(id);
+      // PUT /admin/github made the account before it signed in, so it has no login yet.
       expect(e.login).toBe("");
       expect(e.at).toBeGreaterThan(0);
     }
     const detail = Object.fromEntries(entries.map((e) => [e.action, e.detail]));
     expect(detail).toEqual({
+      "account.create": { github_id: 2002 },
       "flag.grant": { flag: "teams" },
       "flag.revoke": { flag: "teams" },
       "sessions.close": { closed: 0 },
@@ -90,10 +100,12 @@ describe("the admin log", () => {
   });
 
   it("records a call without operator headers with a null operator", async () => {
-    await call("PUT", "/admin/users/2002/flags/teams", ADMIN);
+    const id = await account();
+    await call("PUT", `/admin/users/${id}/flags/teams`, ADMIN);
     const { entries } = await log();
-    expect(entries).toHaveLength(1);
+    expect(entries).toHaveLength(2);
     expect(entries[0]).toMatchObject({ operator_id: null, operator_login: null, action: "flag.grant" });
+    expect(entries[1]).toMatchObject({ operator_id: null, operator_login: null, action: "account.create" });
   });
 
   it("does not take one operator header without the other", async () => {
@@ -102,9 +114,10 @@ describe("the admin log", () => {
       { ...ADMIN, "X-Arakun-Operator-Login": "octocat" },
       { ...ADMIN, "X-Arakun-Operator-Id": "abc", "X-Arakun-Operator-Login": "octocat" },
     ];
-    for (const headers of cases) await call("PUT", "/admin/users/2002/flags/teams", headers);
+    const id = await account();
+    for (const headers of cases) await call("PUT", `/admin/users/${id}/flags/teams`, headers);
     const { entries } = await log();
-    expect(entries).toHaveLength(3);
+    expect(entries).toHaveLength(4);
     for (const e of entries) expect([e.operator_id, e.operator_login]).toEqual([null, null]);
   });
 
@@ -133,15 +146,15 @@ describe("the admin log", () => {
 
   it("records a notice for everyone with no account", async () => {
     await call("POST", "/admin/notices", OP, JSON.stringify({ text: "hello" }));
-    expect((await log()).entries[0]).toMatchObject({ action: "notice.create", github_id: null });
+    expect((await log()).entries[0]).toMatchObject({ action: "notice.create", account_id: null });
   });
 
   it("counts the sessions it closed", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare("INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (2002, 'two', 1, 0)").run();
+    await env.DB.prepare("INSERT INTO accounts (id, login, created_at, last_seen_at) VALUES (2002, 'two', 1, 0)").run();
     await env.DB.batch(
       ["a", "b"].map((id) =>
-        env.DB.prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, 2002, ?, ?, ?)").bind(id, now, now + 1000, now),
+        env.DB.prepare("INSERT INTO sessions (token_hash, account_id, created_at, expires_at, last_used_at) VALUES (?, 2002, ?, ?, ?)").bind(id, now, now + 1000, now),
       ),
     );
     await call("DELETE", "/admin/users/2002/sessions", OP);
@@ -149,7 +162,7 @@ describe("the admin log", () => {
   });
 
   it("filters by account and pages", async () => {
-    const rows = Array.from({ length: 60 }, (_, i) => env.DB.prepare("INSERT INTO admin_log (at, action, github_id) VALUES (?, 'plan.set', ?)").bind(i + 1, i < 5 ? 2002 : 3003));
+    const rows = Array.from({ length: 60 }, (_, i) => env.DB.prepare("INSERT INTO admin_log (at, action, account_id) VALUES (?, 'plan.set', ?)").bind(i + 1, i < 5 ? 2002 : 3003));
     await env.DB.batch(rows);
     const first = await log();
     expect(first.entries).toHaveLength(50);
@@ -157,13 +170,30 @@ describe("the admin log", () => {
     const rest = await log(`?before=${first.next}`);
     expect(rest.entries).toHaveLength(10);
     expect(rest.next).toBeNull();
-    const mine = await log("?github_id=2002");
+    const mine = await log("?account_id=2002");
     expect(mine.entries).toHaveLength(5);
-    expect(mine.entries.every((e) => e.github_id === 2002)).toBe(true);
+    expect(mine.entries.every((e) => e.account_id === 2002)).toBe(true);
     expect((await log("?limit=10")).entries).toHaveLength(10);
     expect((await call("GET", "/admin/log?limit=101", ADMIN)).status).toBe(400);
     expect((await call("GET", "/admin/log?before=x", ADMIN)).status).toBe(400);
-    expect((await call("GET", "/admin/log?github_id=x", ADMIN)).status).toBe(400);
+    expect((await call("GET", "/admin/log?account_id=x", ADMIN)).status).toBe(400);
+  });
+
+  it("records account.create once, when PUT /admin/github makes the account", async () => {
+    const first = await call("PUT", "/admin/github/2002", OP);
+    const made = (await first.json()) as { account_id: number; github_id: number; created: boolean };
+    expect(made).toMatchObject({ github_id: 2002, created: true });
+    const second = await call("PUT", "/admin/github/2002", OP);
+    expect(await second.json()).toEqual({ account_id: made.account_id, github_id: 2002, created: false });
+    const { entries } = await log();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      operator_id: 1001,
+      operator_login: "octocat",
+      action: "account.create",
+      account_id: made.account_id,
+      detail: { github_id: 2002 },
+    });
   });
 
   it("needs the secret", async () => {

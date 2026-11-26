@@ -1,18 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ApiError } from "../api";
 import { ActivityList } from "../components/ActivityList";
+import { Avatar } from "../components/Avatar";
 import { Confirm } from "../components/Confirm";
 import { NoticeForm } from "../components/NoticeForm";
 import { Block, Failure, Flags, Plan, SignOut } from "../components/UserControls";
 import { Time } from "../components/Time";
-import { githubUrl, parseGithubId } from "../format";
+import { githubUrl, parseId } from "../format";
 import {
   plansQuery,
   useAddFlag,
   useBlock,
   useCloseSessions,
+  useGitHubAccount,
   useRemoveFlag,
   useSetPlan,
   useUnblock,
@@ -20,19 +22,19 @@ import {
 } from "../queries";
 import type { NoticeRow, UserDetail } from "../types";
 
-export const Route = createFileRoute("/users/$githubId")({
+export const Route = createFileRoute("/users/$accountId")({
   component: UserRoute,
 });
 
 function UserRoute() {
-  const { githubId } = Route.useParams();
-  const id = parseGithubId(githubId);
+  const { accountId } = Route.useParams();
+  const id = parseId(accountId);
   if (id === null) {
     return (
       <>
         <h1>User</h1>
         <p className="message" data-tone="error" role="alert">
-          This is not a GitHub ID.
+          This is not an account ID.
         </p>
       </>
     );
@@ -49,7 +51,7 @@ function Name({ id, login }: { id: number; login: string }) {
       {login}
     </a>
   ) : (
-    <>GitHub ID {id}</>
+    <>Account {id}</>
   );
 }
 
@@ -68,15 +70,30 @@ function User({ id }: { id: number }) {
   return <Known id={id} detail={user.data} />;
 }
 
+/// No account has this ID. The operator may have typed a GitHub ID: the
+/// account of that GitHub user can be set up here before its first sign-in,
+/// and what is set on it is kept for when it does.
 function Unknown({ id }: { id: number }) {
+  const setUp = useGitHubAccount();
+  const navigate = useNavigate();
   return (
     <>
-      <h1>GitHub ID {id}</h1>
-      <p className="muted">This account has not signed in yet.</p>
-      <p className="muted">What you set here is kept for when it does.</p>
-      <Flags id={id} flags={[]} />
-      <Plan id={id} plan={null} />
-      <Block id={id} blockedAt={null} reason={null} />
+      <h1>Account {id}</h1>
+      <p className="muted">No account has this ID.</p>
+      <p className="muted">If {id} is a GitHub ID, you can set up that person's account before they first sign in.</p>
+      <button
+        className="button"
+        type="button"
+        disabled={setUp.isPending}
+        onClick={() =>
+          setUp.mutate(id, {
+            onSuccess: (got) => void navigate({ to: "/users/$accountId", params: { accountId: String(got.account_id) } }),
+          })
+        }
+      >
+        Set up the account of GitHub ID {id}
+      </button>
+      {setUp.isError && <Failure error={setUp.error} />}
     </>
   );
 }
@@ -86,7 +103,7 @@ function Known({ id, detail }: { id: number; detail: UserDetail }) {
   return (
     <>
       <div className="page-head">
-        <img className="avatar" src={`https://avatars.githubusercontent.com/u/${id}?s=64`} alt="" />
+        <Avatar githubId={user.github_id} size={64} />
         <h1>
           <Name id={id} login={user.login} />
         </h1>
@@ -98,8 +115,12 @@ function Known({ id, detail }: { id: number; detail: UserDetail }) {
       </div>
       <dl className="signals">
         <div className="signal">
-          <dt>GitHub ID</dt>
+          <dt>Account ID</dt>
           <dd>{id}</dd>
+        </div>
+        <div className="signal">
+          <dt>GitHub ID</dt>
+          <dd>{user.github_id ?? <span className="muted">none</span>}</dd>
         </div>
         <div className="signal">
           <dt>Email</dt>
@@ -178,12 +199,12 @@ function Known({ id, detail }: { id: number; detail: UserDetail }) {
             ))}
           </ul>
         )}
-        <NoticeForm githubId={id} />
+        <NoticeForm accountId={id} />
       </section>
 
       <section className="section">
         <h2>Activity</h2>
-        <ActivityList githubId={id} />
+        <ActivityList accountId={id} />
       </section>
     </>
   );

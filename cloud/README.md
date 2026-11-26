@@ -37,19 +37,20 @@ cloud/
   src/relay/label.ts    label = base32 of the first 80 bits of SHA-256(public key)
   src/teams-router.ts   the teams routes; every error is JSON: { "error": "..." }
   src/auth.ts           POST /auth/github, GET /me, POST /auth/logout, sessions
-  src/admin.ts          PUT|DELETE /admin/users/<github_id>/flags/<flag>,
-                        DELETE /admin/users/<github_id>/sessions,
-                        PUT|DELETE /admin/users/<github_id>/block,
-                        PUT /admin/users/<github_id>/plan, GET /admin/machines,
+  src/admin.ts          PUT /admin/github/<github_id>,
+                        PUT|DELETE /admin/users/<account_id>/flags/<flag>,
+                        DELETE /admin/users/<account_id>/sessions,
+                        PUT|DELETE /admin/users/<account_id>/block,
+                        PUT /admin/users/<account_id>/plan, GET /admin/machines,
                         POST /admin/notices, DELETE /admin/notices/<id>,
                         GET /admin/cloud/requests,
-                        PUT /admin/cloud/requests/<github_id>/grant|decline,
+                        PUT /admin/cloud/requests/<account_id>/grant|decline,
                         GET /admin/cloud/machines,
                         POST /admin/cloud/machines/<label>/sleep,
                         GET /admin/beta/signups,
-                        PUT /admin/beta/signups/<github_id>/<platform>/admit|decline,
+                        PUT /admin/beta/signups/<account_id>/<platform>/admit|decline,
                         GET /admin/log
-  src/admin_lists.ts    GET /admin/users, GET /admin/users/<github_id>,
+  src/admin_lists.ts    GET /admin/users, GET /admin/users/<account_id>,
                         GET /admin/notices, GET /admin/plans
   src/admin_log.ts      the admin log: record() and GET /admin/log
   src/beta.ts           sign-ups for the phone app betas: GET /beta, POST /beta/<platform>,
@@ -149,7 +150,13 @@ and a sign-in never ends one to make room. They expire and renew like any sessio
 `GET /sessions` lists them with kind `cloud`, and `DELETE /sessions/<id>`, a block
 and signing out everywhere end them.
 
-Users are keyed by their numeric GitHub ID, which stays when they rename their account.
+An account has an ID of its own, a number. GitHub is one identity linked to it, by the
+numeric GitHub ID, which stays when the person renames their GitHub account: a sign-in
+finds the account of that GitHub user, or makes one. Accounts made before accounts had
+their own IDs kept their GitHub ID as their account ID; a new account gets a random ID
+from 2^32 to 2^53, so it is never also a GitHub ID. The app, the phone and the teams
+API still call the account ID `github_id`, the name it had before; `/auth/github` and
+`/me` answer it as `account_id` too.
 Flags are set per user on the server, and every team endpoint checks the `teams`
 flag there. Anyone can sign in. If the `flags` that `/me` answers do not include
 `teams` (there may be other flags), every team endpoint answers `403`.
@@ -491,34 +498,34 @@ the list of processes):
 ```sh
 read -rs ADMIN_SECRET
 auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
-# every machine: label, owner's GitHub ID and login, name, kind, created and last seen
+# every machine: label, owner's account ID, GitHub ID and login, name, kind, created and last seen
 auth | curl -fsS -H @- "https://<host>/admin/machines"
 # block an account: its computers and devices are closed now, new sockets are refused
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"reason":"abuse report 12"}' \
-  "https://<host>/admin/users/<github_id>/block"
-auth | curl -fsS -X DELETE -H @- "https://<host>/admin/users/<github_id>/block"
+  "https://<host>/admin/users/<account_id>/block"
+auth | curl -fsS -X DELETE -H @- "https://<host>/admin/users/<account_id>/block"
 # put an account on a plan from `plans`; open sockets follow at once
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"plan":"pro"}' \
-  "https://<host>/admin/users/<github_id>/plan"
-# a notice for one account (leave out github_id for everyone). text is 1 to 500 characters,
+  "https://<host>/admin/users/<account_id>/plan"
+# a notice for one account (leave out account_id for everyone). text is 1 to 500 characters,
 # url must be https://, expires_at is Unix seconds in the future. Answers {"id": "..."}
 auth | curl -fsS -X POST -H @- -H "Content-Type: application/json" \
-  -d '{"github_id":1001,"text":"Your plan is now Pro.","url":"https://arakun.dev/pricing","expires_at":1893456000}' \
+  -d '{"account_id":1001,"text":"Your plan is now Pro.","url":"https://arakun.dev/pricing","expires_at":1893456000}' \
   "https://<host>/admin/notices"
 # take a notice back, with the reads of it
 auth | curl -fsS -X DELETE -H @- "https://<host>/admin/notices/<id>"
 # accounts, last seen first: {"users": [...], "next": "<cursor>" or null}.
-# q is a login prefix or a GitHub ID, limit is 1 to 100 (default 50), after is the last next
+# q is a login prefix, an account ID or a GitHub ID, limit is 1 to 100 (default 50), after is the last next
 auth | curl -fsS -H @- "https://<host>/admin/users?q=octo&limit=20"
 # one account: user, sessions (no token hashes), machines, cloud_request and notices
-auth | curl -fsS -H @- "https://<host>/admin/users/<github_id>"
+auth | curl -fsS -H @- "https://<host>/admin/users/<account_id>"
 # every notice, newest first, at most 500, each with how many accounts read it
 auth | curl -fsS -H @- "https://<host>/admin/notices"
 # the built-in plans and those in the KV `plans`, `free` first: {"plans": ["free", "internal", "pro"]}
 auth | curl -fsS -H @- "https://<host>/admin/plans"
 # what was changed and by whom, newest first: {"entries": [...], "next": "<cursor>" or null}.
-# github_id narrows it to one account, limit is 1 to 100, before is the last next
-auth | curl -fsS -H @- "https://<host>/admin/log?github_id=<github_id>&limit=20"
+# account_id narrows it to one account, limit is 1 to 100, before is the last next
+auth | curl -fsS -H @- "https://<host>/admin/log?account_id=<account_id>&limit=20"
 ```
 
 Every admin route that changes something adds one row to the `admin_log` table:
@@ -534,13 +541,13 @@ recorded with no operator. Add them to a call to name yourself:
 ```sh
 printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X PUT -H @- \
   -H "X-Arakun-Operator-Id: <your GitHub ID>" -H "X-Arakun-Operator-Login: <your login>" \
-  "https://<host>/admin/users/<github_id>/flags/teams"
+  "https://<host>/admin/users/<account_id>/flags/teams"
 ```
 
 `GET /me` lists an account's unread notices, oldest first, at most 5, as
 `notices: [{ id, text, url }]`. `POST /notices/<id>/read` with a session dismisses
 one: `204`, also on a second read; `404` for one that is not the caller's, has expired
-or does not exist. A `github_id` with no account answers `404`.
+or does not exist.
 
 A blocked account can still sign in and read `/me`; `GET /machines` answers it
 `403 { "error": "blocked", "reason": … }` with the reason given. The teams API
@@ -575,16 +582,16 @@ cookie.
 
 ## Granting flags
 
-Flags are granted by numeric GitHub ID. Keep the list of pilot users out of this
-repository: type the IDs on the command line when you grant them. A user's ID is
-public:
+Flags are granted to an account, by its account ID. Keep the list of pilot users out
+of this repository: type the IDs on the command line when you grant them. To grant
+one to a person by GitHub user, look up their GitHub ID, which is public, and ask for
+their account: `PUT /admin/github/<github_id>` answers `{account_id, github_id,
+created}`, and makes the account first if they never signed in. Its login is then
+empty until they do.
 
 ```sh
 gh api users/<login> --jq .id
 ```
-
-A flag can be granted before the user signs in for the first time. The user row then
-has an empty login until they do.
 
 With the admin endpoint, in a shell where `ADMIN_SECRET` holds the value you saved
 in step 3 (paste it; the variable is not set anywhere else). Run this in Bash or zsh:
@@ -594,20 +601,22 @@ the list of running processes:
 
 ```sh
 read -rs ADMIN_SECRET
-for id in <id> <id> <id>; do
+for github_id in <id> <id> <id>; do
+  id=$(printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
+    curl -fsS -X PUT -H @- "https://<host>/admin/github/$github_id" | jq .account_id)
   printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
     curl -fsS -X PUT -H @- "https://<host>/admin/users/$id/flags/teams"
 done
 ```
 
-Or straight in the database:
+Or straight in the database, for an account that exists (the admin route is the way
+to make one):
 
 ```sh
 npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
-  INSERT INTO users (github_id, login, created_at, last_seen_at)
-    VALUES (<id>, '', unixepoch(), 0) ON CONFLICT DO NOTHING;
-  INSERT INTO user_flags (github_id, flag, granted_at)
-    VALUES (<id>, 'teams', unixepoch()) ON CONFLICT DO NOTHING;"
+  INSERT INTO user_flags (account_id, flag, granted_at)
+    SELECT account_id, 'teams', unixepoch() FROM identities
+    WHERE provider = 'github' AND subject = '<github_id>' ON CONFLICT DO NOTHING;"
 ```
 
 To sign a user out everywhere, as when a session token may have leaked (they can
@@ -801,10 +810,10 @@ auth() { printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET"; }
 auth | curl -fsS -H @- "https://<host>/admin/cloud/requests"
 # grant one: the request and the `cloud` flag. "by" is optional, at most 100 characters
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
-  "https://<host>/admin/cloud/requests/<github_id>/grant"
+  "https://<host>/admin/cloud/requests/<account_id>/grant"
 # decline a pending one
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
-  "https://<host>/admin/cloud/requests/<github_id>/decline"
+  "https://<host>/admin/cloud/requests/<account_id>/decline"
 ```
 
 ## Cloud machines
@@ -892,17 +901,17 @@ auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pe
 auth | curl -fsS -H @- "https://<host>/admin/beta/signups?platform=ios&status=pending" | jq -r '.[].email'
 # admit one after adding the email in the store. "by" is optional, at most 100 characters
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
-  "https://<host>/admin/beta/signups/<github_id>/ios/admit"
+  "https://<host>/admin/beta/signups/<account_id>/ios/admit"
 # decline one, pending or admitted
 auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"by":"<you>"}' \
-  "https://<host>/admin/beta/signups/<github_id>/android/decline"
+  "https://<host>/admin/beta/signups/<account_id>/android/decline"
 ```
 
 To see who has which flag:
 
 ```sh
 npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
-  SELECT u.github_id, u.login, f.flag FROM user_flags f JOIN users u USING (github_id)"
+  SELECT u.id, u.login, f.flag FROM user_flags f JOIN accounts u ON u.id = f.account_id"
 ```
 
 ## Push to the apps
@@ -1145,7 +1154,7 @@ flag route (see Granting flags):
 
 ```sh
 printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
-  curl -fsS -X PUT -H @- "https://app.arakun.dev/admin/users/<github_id>/flags/linear"
+  curl -fsS -X PUT -H @- "https://app.arakun.dev/admin/users/<account_id>/flags/linear"
 ```
 
 ## API
@@ -1155,14 +1164,15 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 
 | Request | Answer |
 | --- | --- |
-| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, github_id, login, flags}`. `400` without a token, `401` if GitHub rejects it, another app issued it or it was already used to sign in, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached, fails or does not revoke the token, `503` without `GITHUB_CLIENT_SECRET`. |
+| `POST /auth/github` with `{"access_token": "..."}` | `200 {session, expires_at, account_id, github_id, login, flags}`, `github_id` being the account ID under its old name. `400` without a token, `401` if GitHub rejects it, another app issued it or it was already used to sign in, `413` for a body over 4 KiB, `429` after about 10 tries a minute from one IP (see the rate limit above), `502` if GitHub cannot be reached, fails or does not revoke the token, `503` without `GITHUB_CLIENT_SECRET`. |
 | `GET /auth/github/start` | The page's sign-in: `302` to GitHub, with the `state` in the cookie `__Host-arakun_oauth`. `302` to `/?sign_in=failed` without `GITHUB_CLIENT_SECRET`. |
 | `GET /auth/github/callback?code&state` | `302` to `/` with the session in the cookie `__Host-arakun_session`. `302` to `/?sign_in=failed` for a `state` that is not the cookie's, a refusal by GitHub, the sign-in rate limit or any other failure. Clears the state cookie either way. |
-| `GET /me` with the session | `200 {github_id, login, flags}`, or `401`. |
+| `GET /me` with the session | `200 {account_id, github_id, login, flags}`, or `401`. |
 | `POST /auth/logout` with the session | `204`, and the session is gone. `401` if it was not valid. |
-| `PUT /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {github_id, flags}`. |
-| `DELETE /admin/users/<github_id>/flags/<flag>` with `ADMIN_SECRET` | Takes it away: `200 {github_id, flags}`. |
-| `DELETE /admin/users/<github_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {github_id, closed}`, with how many ended. |
+| `PUT /admin/github/<github_id>` with `ADMIN_SECRET` | The account of a GitHub user, made if it has none: `200 {account_id, github_id, created}`. |
+| `PUT /admin/users/<account_id>/flags/<flag>` with `ADMIN_SECRET` | Grants the flag: `200 {account_id, flags}`. `404` without such an account, as for block and plan. |
+| `DELETE /admin/users/<account_id>/flags/<flag>` with `ADMIN_SECRET` | Takes it away: `200 {account_id, flags}`. |
+| `DELETE /admin/users/<account_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {account_id, closed}`, with how many ended. |
 | `GET /cloud/access` with the session | `200 {status, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `granted` or `declined`; a time is `null` where it does not apply, and `retry_at` is set only for `declined`: when the account may ask again. `401` without a session. |
 | `POST /cloud/access` with the session, `{"reason"?: "..."}` | Asks for cloud access: `201` with the same shape, `pending`. `400` for a reason over 500 characters, `401` without a session, `403 {error: "blocked"}` for a blocked account, `409 {error, status, requested_at, decided_at, retry_at}` when the account has asked already (`already pending`), has access (`already granted`) or was declined less than 30 days ago (`declined recently`), `429` after 5 a minute. |
 | `GET /cloud/machines` with a session of an account with the `cloud` flag | `200 [{label, name, running, snapshot, last_active}]`. `401` without a session, `403` for a blocked account or one without the flag, `503` where cloud machines are not set up. |
@@ -1170,15 +1180,15 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `POST /cloud/machines/<label>/wake` | Starts it if it sleeps: `200` with its state. `403` when the account may not run one now, `404` for another account's, `503` without containers. |
 | `POST /cloud/machines/<label>/sleep` | Snapshots it and stops it: `204`. |
 | `DELETE /cloud/machines/<label>` | Stops it and forgets it, with its key, snapshot, registration and session: `204`. |
-| `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, github_id, login, name, created_at, running, snapshot}]`, newest first. |
+| `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, account_id, login, name, created_at, running, snapshot}]`, newest first. |
 | `POST /admin/cloud/machines/<label>/sleep` with `ADMIN_SECRET` | Snapshots it and stops it now: `204`, and a `cloud.machine.sleep` entry in the log. `404` for no such machine. |
-| `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
-| `PUT /admin/cloud/requests/<github_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
-| `PUT /admin/cloud/requests/<github_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
+| `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{account_id, github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
+| `PUT /admin/cloud/requests/<account_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
+| `PUT /admin/cloud/requests/<account_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |
 | `GET /beta` with the session | `200 {email, ios, android}`: `email` is the account's verified GitHub email or `null`, and each platform is `{status, email, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `admitted` or `declined`; `retry_at` is set only for `declined`. `401` without a session. |
 | `POST /beta/<ios\|android>` with the session, `{"email"?: "..."}` | Signs up: `201` with the platform's shape, `pending`. While pending, changes the email: `200`. `400` for an address that does not look like one or is over 254 characters, or no email when GitHub gave none. `401`, `403 {error: "blocked"}`, `404` for another platform, `409 {error, ...}` when `already admitted` or `declined recently`, `429` after 5 a minute. |
-| `GET /admin/beta/signups[?platform=][&status=]` with `ADMIN_SECRET` | `200 [{github_id, login, platform, email, status, requested_at, decided_at, decided_by, retry_at, blocked, github: {...}}]`, pending first. |
-| `PUT /admin/beta/signups/<github_id>/<platform>/admit\|decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Marks it admitted or declined, from any state: `200` with the sign-up. The same decision again keeps its first time and name. `404` without a sign-up. |
+| `GET /admin/beta/signups[?platform=][&status=]` with `ADMIN_SECRET` | `200 [{account_id, github_id, login, platform, email, status, requested_at, decided_at, decided_by, retry_at, blocked, github: {...}}]`, pending first. |
+| `PUT /admin/beta/signups/<account_id>/<platform>/admit\|decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Marks it admitted or declined, from any state: `200` with the sign-up. The same decision again keeps its first time and name. `404` without a sign-up. |
 | `POST /push/v1/{apns,apns-sandbox,fcm}/<token>` with a Web Push request (`Content-Encoding: aes128gcm`, `Authorization: vapid t=..., k=...`, `TTL`, `Urgency`) | `201` once Apple or Google took it. `401` for a missing or bad VAPID token (wrong signature, audience or expiry), `404` for a token that is not one, `410` when Apple or Google say the token is gone, `413` for a body over 2800 bytes, `415` without `aes128gcm`, `429` after 30 a minute for one token or when the service is busy, `502` when it refuses or cannot be reached, `503` without its keys. |
 | `GET /healthz` | `200 {"ok": true}` |
 
@@ -1192,7 +1202,8 @@ Every request below needs the session and the `teams` flag: `401` without a sess
 `403` without the flag. Team requests answer `404` to anyone who is not a member
 (pending members included, except on `remind`), and "admin" ones `403` to members who are not an owner or
 admin. "Device" means the request carries `X-Arakun-Device` with one of the caller's
-devices: `400` without it, `403` if it is someone else's.
+devices: `400` without it, `403` if it is someone else's. `github_id`, in paths and
+answers, is the account ID (see PROTOCOL.md), except in the answer to an invite.
 
 | Request | Who | Answer |
 | --- | --- | --- |

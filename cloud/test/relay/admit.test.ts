@@ -254,7 +254,7 @@ describe("a device the Worker let through just before", () => {
   it("its account was blocked is told blocked", async () => {
     const { me, owner } = await connectedComputer();
     const dev = await device(owner);
-    await env.DB.prepare("UPDATE users SET blocked_at = 1 WHERE github_id = ?").bind(owner.github_id).run();
+    await env.DB.prepare("UPDATE accounts SET blocked_at = 1 WHERE id = ?").bind(owner.account_id).run();
     const phone = await pastTheDoor(me.label, dev);
     expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "blocked" });
     expect((await phone.inbox.closedWith()).code).toBe(4403);

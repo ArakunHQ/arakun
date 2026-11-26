@@ -96,7 +96,7 @@ describe("channel sockets", () => {
     const m = await join(t);
     const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
     // Membership gone without the Worker telling the channel: the send itself checks.
-    await env.DB.prepare("DELETE FROM members WHERE github_id = ?").bind(m.user.id).run();
+    await env.DB.prepare("DELETE FROM members WHERE account_id = ?").bind(m.user.id).run();
     b.send(await message(t.teamId, t.channelId, m.device, 1, t.keys.get(1)!, "still here?"));
     expect((await refused(b)).error).toBe("not a member of this team");
     expect((await b.inbox.closedWith()).code).toBe(4403);
@@ -146,7 +146,7 @@ describe("channel sockets", () => {
     const t = await team();
     const m = await join(t);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
-    const { token_hash: mine } = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(m.user.id).first<{ token_hash: string }>())!;
+    const { token_hash: mine } = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE account_id = ?").bind(m.user.id).first<{ token_hash: string }>())!;
     const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`));
     // Holds the member's admission after its check passed, until the owner's
     // send is checking the open sockets; the member logs out in between.
@@ -186,7 +186,7 @@ describe("channel sockets", () => {
     const m = await join(t);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
     const hash = async (id: number) =>
-      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
+      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE account_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
     const owner = await hash(t.owner.user.id);
     const mine = await hash(m.user.id);
     const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
@@ -306,7 +306,7 @@ describe("channel sockets", () => {
     const t = await team();
     const m = await join(t);
     const b = await openChannel(m.user, m.device, t.teamId, t.channelId, {
-      "X-Teams-Github-Id": String(t.owner.user.id),
+      "X-Teams-Account-Id": String(t.owner.user.id),
       "X-Teams-Device-Id": t.owner.device.id,
       "X-Teams-Sig-Pub": t.owner.device.sigPub,
       "X-Teams-Session-Hash": "0".repeat(64),
@@ -393,7 +393,7 @@ describe("rotation", () => {
 
   /// Holds the owner's next send in its membership read, until `release`.
   async function holdOwnerSend(t: TeamSetup): Promise<DurableObjectStub> {
-    const owner = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(t.owner.user.id).first<{ token_hash: string }>())!.token_hash;
+    const owner = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE account_id = ?").bind(t.owner.user.id).first<{ token_hash: string }>())!.token_hash;
     const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
     await runInDurableObject<Channel, void>(stub, (instance) => {
       const ch = instance as any;
@@ -534,7 +534,7 @@ describe("presence", () => {
     const t = await team();
     const m = await join(t);
     const hash = async (id: number) =>
-      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
+      (await env.DB.prepare("SELECT token_hash FROM sessions WHERE account_id = ?").bind(id).first<{ token_hash: string }>())!.token_hash;
     const owner = await hash(t.owner.user.id);
     const mine = await hash(m.user.id);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);

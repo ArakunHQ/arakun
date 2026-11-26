@@ -90,7 +90,12 @@ describe("GET /auth/github/callback", () => {
     const token = /^__Host-arakun_session=([^;]+)/.exec(set)![1]!;
     const me = await call("GET", "/me", { Cookie: `__Host-arakun_session=${token}` });
     expect(me.status).toBe(200);
-    expect(await me.json()).toMatchObject({ github_id: 1001, login: "octocat" });
+    const body = await me.json<{ account_id: number; github_id: number }>();
+    expect(body).toMatchObject({ login: "octocat" });
+    // The account linked to the GitHub user who signed in; github_id is its ID too, for old clients.
+    const linked = await env.DB.prepare("SELECT account_id FROM identities WHERE provider = 'github' AND subject = '1001'").first("account_id");
+    expect(body.account_id).toBe(linked);
+    expect(body.github_id).toBe(body.account_id);
     // The same steps as the app's sign-in: the GitHub token is revoked.
     expect(github.users.has("gho_1001_octocat")).toBe(false);
     expect(github.calls.map((r) => r.method)).toEqual(["POST", "DELETE"]);

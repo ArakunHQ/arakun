@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { parseGithubId } from "../format";
+import { parseId } from "../format";
 import { useCreateNotice } from "../queries";
 import type { NewNotice } from "../types";
 import { Confirm } from "./Confirm";
@@ -25,9 +25,9 @@ function isHttps(url: string): boolean {
   }
 }
 
-/// A notice for one account (`githubId`), or, without it, for everyone or an
+/// A notice for one account (`accountId`), or, without it, for everyone or an
 /// account whose ID is typed in. A notice to everyone asks first.
-export function NoticeForm({ githubId }: { githubId?: number }) {
+export function NoticeForm({ accountId }: { accountId?: number }) {
   const create = useCreateNotice();
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
@@ -36,7 +36,7 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
   const [target, setTarget] = useState("");
   const [sent, setSent] = useState(false);
 
-  const targetId = githubId ?? (everyone ? undefined : parseGithubId(target.trim()));
+  const targetId = accountId ?? (everyone ? undefined : parseId(target.trim()));
   // The first thing wrong, in the order of the form; null when it can be sent.
   const problem =
     text.length < 1
@@ -50,14 +50,14 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
             : expires !== "" && endOfDay(expires)! <= Date.now() / 1000
               ? "Choose a day that has not passed."
               : targetId === null
-              ? "Enter a GitHub ID: digits only."
+              ? "Enter an account ID: digits only."
               : null;
   const touched = text !== "" || url !== "" || target !== "";
 
   function send() {
     if (problem !== null) return;
     const notice: NewNotice = { text };
-    if (targetId !== undefined && targetId !== null) notice.github_id = targetId;
+    if (targetId !== undefined && targetId !== null) notice.account_id = targetId;
     if (url !== "") notice.url = url;
     if (expires !== "") notice.expires_at = endOfDay(expires)!;
     setSent(false);
@@ -71,7 +71,7 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
     });
   }
 
-  const toEveryone = githubId === undefined && everyone;
+  const toEveryone = accountId === undefined && everyone;
   return (
     <form
       className="form"
@@ -82,7 +82,7 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
         if (!toEveryone) send();
       }}
     >
-      {githubId === undefined && (
+      {accountId === undefined && (
         <fieldset className="field">
           <legend>Send to</legend>
           <label className="choice">
@@ -96,9 +96,9 @@ export function NoticeForm({ githubId }: { githubId?: number }) {
           {!everyone && (
             <input
               className="input"
-              aria-label="GitHub ID"
+              aria-label="Account ID"
               inputMode="numeric"
-              placeholder="GitHub ID"
+              placeholder="Account ID"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
             />

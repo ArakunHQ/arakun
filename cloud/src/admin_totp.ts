@@ -12,14 +12,14 @@
 // maintainer's, with curl, for an operator who lost their phone.
 
 import { record, type Operator } from "./admin_log";
-import { GITHUB_ID, error, isObject, jsonBody, now, type Env } from "./util";
+import { ACCOUNT_OF_GITHUB, NUMERIC_ID, error, isObject, jsonBody, now, type Env } from "./util";
 
 const MAX_BODY = 1024;
 /// base64url of the IV and the sealed key: about 70 characters.
 const SEALED = /^[A-Za-z0-9_-]{16,200}$/;
 
 export async function operatorTotp(request: Request, env: Env, op: Operator, idText: string, use: boolean): Promise<Response | null> {
-  const id = GITHUB_ID.test(idText) ? Number(idText) : NaN;
+  const id = NUMERIC_ID.test(idText) ? Number(idText) : NaN;
   if (!Number.isSafeInteger(id)) return error(400, "the GitHub ID must be a positive integer");
   if (use) return request.method === "POST" ? useStep(request, env, id) : null;
   switch (request.method) {
@@ -55,7 +55,7 @@ async function putKey(request: Request, env: Env, op: Operator, id: number, firs
       .bind(id, sealed, step, now())
       .run();
     if (result.meta.changes === 0) return error(409, "a key exists");
-    await record(env, op, "operator.totp.add", id);
+    await record(env, op, "operator.totp.add", await accountOf(env, id), { github_id: id });
     return new Response(null, { status: 201 });
   }
   await env.DB.prepare(
@@ -64,7 +64,7 @@ async function putKey(request: Request, env: Env, op: Operator, id: number, firs
   )
     .bind(id, sealed, step, now())
     .run();
-  await record(env, op, "operator.totp.replace", id);
+  await record(env, op, "operator.totp.replace", await accountOf(env, id), { github_id: id });
   return new Response(null, { status: 204 });
 }
 
@@ -79,8 +79,14 @@ async function useStep(request: Request, env: Env, id: number): Promise<Response
 
 async function forget(env: Env, op: Operator, id: number): Promise<Response> {
   const result = await env.DB.prepare("DELETE FROM operator_totp WHERE github_id = ?").bind(id).run();
-  if (result.meta.changes > 0) await record(env, op, "operator.totp.reset", id);
+  if (result.meta.changes > 0) await record(env, op, "operator.totp.reset", await accountOf(env, id), { github_id: id });
   return new Response(null, { status: 204 });
+}
+
+/// The operator's account, if they have one, for the log: operators are
+/// GitHub users, and need no account to use the panel.
+async function accountOf(env: Env, githubId: number): Promise<number | null> {
+  return env.DB.prepare(`SELECT ${ACCOUNT_OF_GITHUB("?1")} AS id`).bind(githubId).first<number | null>("id");
 }
 
 function validStep(step: unknown): step is number {

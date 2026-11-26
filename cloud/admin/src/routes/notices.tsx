@@ -45,11 +45,11 @@ function Notice({ notice: n }: { notice: NoticeRow }) {
   return (
     <li className="row" aria-label={n.text}>
       <span className="reason">{n.text}</span>
-      {n.github_id === null ? (
+      {n.account_id === null ? (
         <span className="chip">Everyone</span>
       ) : (
-        <Link className="request-login" to="/users/$githubId" params={{ githubId: String(n.github_id) }}>
-          {n.login || `GitHub ID ${n.github_id}`}
+        <Link className="request-login" to="/users/$accountId" params={{ accountId: String(n.account_id) }}>
+          {n.login || `Account ${n.account_id}`}
         </Link>
       )}
       {n.url !== null && n.url.startsWith("https://") && (

@@ -6,6 +6,7 @@ import { Time } from "../components/Time";
 import { age, githubUrl, platformName } from "../format";
 import { signupsQuery, useDecideSignup, type SignupStatus } from "../queries";
 import type { BetaPlatform, BetaSignup } from "../types";
+import { Avatar } from "../components/Avatar";
 
 interface BetaSearch {
   /// Pending when it is left out.
@@ -97,7 +98,7 @@ function Betas() {
           {platform && <CopyEmails emails={signups.data.map((s) => s.email)} />}
           <ul className="requests">
             {signups.data.map((s) => (
-              <Signup key={`${s.github_id}-${s.platform}`} signup={s} />
+              <Signup key={`${s.account_id}-${s.platform}`} signup={s} />
             ))}
           </ul>
         </>
@@ -150,13 +151,13 @@ function Signup({ signup: s }: { signup: BetaSignup }) {
   const decide = useDecideSignup();
   const { github } = s;
   const url = githubUrl(s.login);
-  const name = s.login || `GitHub ID ${s.github_id}`;
+  const name = s.login || `Account ${s.account_id}`;
   const which = platformName(s.platform);
-  const act = (decision: "admit" | "decline") => decide.mutate({ githubId: s.github_id, platform: s.platform, decision });
+  const act = (decision: "admit" | "decline") => decide.mutate({ accountId: s.account_id, platform: s.platform, decision });
   return (
     <li className="request" aria-label={`${s.login} ${which}`}>
       <div className="request-head">
-        <img className="avatar" src={`https://avatars.githubusercontent.com/u/${s.github_id}?s=64`} alt="" />
+        <Avatar githubId={s.github_id} size={64} />
         {url ? (
           <a className="request-login" href={url} rel="noreferrer">
             {s.login}
@@ -166,7 +167,7 @@ function Signup({ signup: s }: { signup: BetaSignup }) {
         )}
         <span className="chip">{which}</span>
         {s.blocked && <span className="chip">blocked</span>}
-        <Link className="request-account" to="/users/$githubId" params={{ githubId: String(s.github_id) }}>
+        <Link className="request-account" to="/users/$accountId" params={{ accountId: String(s.account_id) }}>
           Account
         </Link>
       </div>

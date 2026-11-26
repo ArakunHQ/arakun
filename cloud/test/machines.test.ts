@@ -61,7 +61,7 @@ describe("the recheck on the alarm", () => {
     expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
     expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "signed_out" });
 
-    await env.DB.prepare("UPDATE users SET blocked_at = 1 WHERE github_id = ?").bind(owner.github_id).run();
+    await env.DB.prepare("UPDATE accounts SET blocked_at = 1 WHERE id = ?").bind(owner.account_id).run();
     await recheckDue(me.label);
     expect(await pc.inbox.control()).toEqual({ type: "bye", reason: "blocked" });
   });
@@ -141,7 +141,7 @@ describe("a recheck that fails", () => {
 
 describe("the recheck's rule", () => {
   const base = { label: "aaaaaaaaaaaaaaaa", account: 7, session: "h", plan: "free", checked: 0, nonce: "", until: 0, name: "", kind: "app" };
-  const row = { token_hash: "h", github_id: 7, blocked: 0, plan: "free" };
+  const row = { token_hash: "h", account_id: 7, blocked: 0, plan: "free" };
 
   it("does not judge a computer by an owner read from before its claim", () => {
     const claimed: Tag = { role: "pc", claimed: true, ...base };

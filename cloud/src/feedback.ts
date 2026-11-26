@@ -1,8 +1,8 @@
 // Feedback from the app (bug reports, feature requests, UX notes and the
 // rest) as Linear customer requests. The app cannot hold a Linear key, since
 // anyone could read it out of the binary, so it posts here and the Worker
-// holds the key. Support questions do not come here: the app opens those in
-// PostHog's Support inbox, where the team answers them.
+// holds the key. Support questions do not come here: they stay in the
+// `survey sent` event in PostHog.
 //
 //   POST /feedback  { kind, title, description, request, from, email? } → 202
 //

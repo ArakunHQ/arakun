@@ -1,7 +1,6 @@
-//! A sent survey response as text for a person to read: the PostHog Support
-//! ticket (`support`) and the Linear customer request (`linear`) both use it.
-//! It is plain text with line breaks and labels, never Markdown, since the
-//! Support inbox shows it as it is.
+//! A sent survey response as text for a person to read, for the Linear
+//! customer request (`linear`). It is plain text with line breaks and labels,
+//! never Markdown, so it reads the same wherever it is shown.
 
 use serde_json::{Map, Value};
 

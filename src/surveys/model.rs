@@ -107,7 +107,7 @@ pub enum Kind {
     Feature,
     Ux,
     Other,
-    /// A question for the team, answered in PostHog's Support inbox.
+    /// A question for the team. It stays in the `survey sent` event.
     Support,
 }
 

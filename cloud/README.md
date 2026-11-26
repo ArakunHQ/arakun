@@ -30,7 +30,8 @@ cloud/
                         /machines/<label>/pc and /ws, and the recheck after a sign-out
   src/relay/router.ts   the old label hosts: "update", and the page
   src/relay/relay.ts    the Relay Durable Object: computer claim, registration, devices,
-                        channels, limits, the recheck of sessions, alarm
+                        channels, limits, the recheck of sessions, the Linear delivery
+                        queue, alarm
   src/relay/limits.ts   plans and the kill switch, read from KV
   src/relay/frames.ts   binary frames and control messages
   src/relay/label.ts    label = base32 of the first 80 bits of SHA-256(public key)
@@ -54,8 +55,15 @@ cloud/
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
-  src/linear.ts         Linear delegation: the /linear gate (flag and secrets) and its routes
+  src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the
+                        install, the links, the routes, the delivery accept and the
+                        computer's activity
+  src/linear_webhook.ts POST /linear/webhook: the signature check, then a delegated issue
+                        or a follow-up becomes a delivery for a computer
+  src/linear_api.ts     calls to Linear as the app: token exchange and refresh, GraphQL,
+                        activities, links and the place of an issue
   src/linear_seal.ts    seals Linear tokens with AES-GCM under LINEAR_TOKEN_KEY
+  src/linear_expire.ts  what a session hears when a delivery waited 7 days unanswered
   src/push.ts           the native apps' push service: POST /push/v1/<service>/<token>
   src/teams.ts          devices, teams, invites, envelopes, members, channels
   src/channel.ts        the Channel Durable Object: messages, seq, live sockets
@@ -800,6 +808,207 @@ checks the token's signature and audience, and passes the ciphertext on as `e`:
 in a mutable alert to Apple, which the app's notification service opens, and in
 a data message to Google. Neither the Worker, Apple nor Google can read the
 notice. Each token gets 30 messages a minute.
+
+## Linear
+
+Delegating an issue to Arakun in Linear starts a session on the delegator's own
+computer. The Worker is the doorbell and the mouthpiece: it hears Linear's webhook,
+finds the computer, hands it the ids of the issue through the relay, and posts what the
+computer reports back to the issue's session as Arakun. The work itself, and the
+issue's text, stay between Linear and the computer.
+
+### What is stored
+
+Four D1 tables (`migrations/0013_linear.sql`):
+
+| Table | Holds |
+| --- | --- |
+| `linear_workspaces` | One row per Linear workspace that installed the app: the workspace id and name, the app's user id, its access and refresh tokens, when the access token ends, who installed it. |
+| `linear_links` | Which GitHub account a Linear user is, per workspace. The row goes with its account. |
+| `linear_routes` | Which computer takes the issues of a Linear team or project. The row goes with the machine. |
+| `linear_deliveries` | One row per webhook that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), the computer's label, and the times it was announced, accepted and expired. The unique webhook id makes Linear's retry a no-op. |
+
+Both tokens of a workspace are sealed with AES-GCM under `LINEAR_TOKEN_KEY`, with the
+workspace id as additional data, so a token copied to another workspace's row does not
+open. The Worker stores and logs no issue text, prompt or progress text: only ids,
+times and labels. A follow-up's text is passed on only to a connected computer, in one
+frame, and is never stored (see "The relay side"). A user's own Linear token, sent to
+link, is used for one call and dropped.
+
+### Routes
+
+Every path is under `/linear`. Without all four secrets, every `/linear` path answers
+`404 { "error": "not found" }`. Except the webhook and the callback, a route needs a
+session of an account that is not blocked and has the `linear` flag: `401 { "error":
+"not signed in" }` without a session, `403 { "error": "Linear is not available for this
+account" }` otherwise. An unknown path under `/linear` is a `404 not found`. Errors are
+JSON `{ "error": "..." }`.
+
+| Request | Who | Answer |
+| --- | --- | --- |
+| `GET /linear/install` | a signed-in account with the flag, in a browser | `302` to Linear's consent page (scopes `read,write,app:assignable,app:mentionable`, `actor=app`). Sets the cookie `__Host-arakun_linear_state` for ten minutes, holding a random state and the account's ID. |
+| `GET /linear/callback?code&state` | Linear's redirect of the same browser | Checks the state against the cookie and the account, then trades the code for the app's tokens and saves the workspace (a second install replaces the first): `200` with a plain-text page, "Arakun is installed in <workspace>. You can close this page." `400 bad state` for a missing or wrong state, or one made by another account; `400 linear refused the install` for an `error` parameter, no code or a code over 512 characters; `502 linear refused the install` when Linear refuses the exchange or does not answer. The session and flag are checked here, so `401` or `403` as above. The cookie is cleared on every answer. |
+| `GET /linear/link` | the account | `200 { links: [{ organization_id, linear_user_id, installed }] }`, oldest first. `installed` says whether that workspace has installed Arakun. |
+| `POST /linear/link` with `{ "token": "<the user's Linear API key or OAuth token>" }` | the account | Asks Linear who the token is, and links that Linear user in that workspace to the account: `200 { organization_id, linear_user_id, installed }`. If another account held the link, it moves here, and that account's routes in the workspace go. `400 bad token` for a token that is missing, empty or over 512 bytes, `400 linear refused that token`, `429 too many requests` (see Limits), `503` when the limit could not be checked. |
+| `DELETE /linear/link/<organization_id>` | the account | `204`, also when there was no link. Removes the account's link and its routes in that workspace. `404` for an id that is not a UUID. |
+| `PUT /linear/routes` with `{ "label", "organization_id", "teams": [<uuid>], "projects": [<uuid>] }` | the account | Replaces what that computer takes in that workspace: `204`. At most 200 ids in all, up to 32 KiB. `400 bad routes` for a bad body, `404 no such computer` for a label that is not one of the account's machines, `409 link linear first` when the account has no link in that workspace. Of two computers that take the same issue, the one with the project route wins over the team route, and then the one seen last. |
+| `POST /linear/deliveries/<id>/accept` | the account | The computer took the delivery: `204`, also on a second call. The relay forgets it. `404 no such delivery` for an id that is unknown or another account's. |
+| `POST /linear/sessions/<agent_session>/activity` with `{ "type", "body", "links"? }` | the account | Posts the computer's progress in the session as Arakun: `204`. `type` is `thought`, `elicitation`, `response` or `error`; `body` is 1 to 8000 characters; `links` is at most 5 of `{ label, url }`, a label of 1 to 80 characters and an `https://` URL without spaces, at most 2048 characters, which become the session's external URLs. The body is at most 64 KiB. `400 bad activity`, `404 no such session` for a session that is not a `created` delivery of this account (the workspace comes from the delivery, not the caller), `429`, `503`, `502 linear refused` when Linear refuses or does not answer. |
+| `POST /linear/webhook` | Linear | See below. |
+
+### The webhook
+
+Linear signs the body with HMAC-SHA256 under `LINEAR_WEBHOOK_SECRET` and sends it in
+`Linear-Signature`. The Worker compares the two as SHA-256 hashes, in constant time.
+It answers `413 too large` for a body over 1 MiB, `401 bad signature` for a wrong or
+missing signature, and `400 bad webhook` for a body that is not JSON or lacks the ids.
+The body's `webhookTimestamp` must be within 60 seconds of the Worker's clock, or the
+answer is `401 bad signature`, so a captured webhook cannot be replayed later. Any
+event but an `AgentSessionEvent` with the action `created` or `prompted` gets an empty
+`200`. A failure after that answers `500 internal error` with nothing of Linear's
+text in it, and Linear sends the webhook again.
+
+**`created`**: an issue was delegated to Arakun, or Arakun was mentioned on one. The
+Worker finds the Linear user who created the session, the account that user is linked
+to (not blocked, with the `linear` flag), the issue's team and project (asked from
+Linear), and the computer whose routes take it. It saves a `created` delivery, hands it
+to the computer's relay, and says in the session where it went. Every refusal below is
+an activity in the session and an empty `200` to Linear.
+
+**`prompted`**: someone wrote in the session, or stopped it. The Worker finds the
+newest `created` delivery of the session that has not expired. The words of the person
+who delegated it, and only theirs, go to that computer as a `prompt` delivery, or as a
+`stop` if Linear's signal says so. Anyone else's words get the "Only the person" answer
+below.
+
+**A retry**: a delivery is keyed by the webhook's id. A retry finds the row and
+finishes the same delivery under the same id: it is not saved twice, and it is not
+handed to the relay again if the computer took it or it expired meanwhile. Once a
+delivery is announced, a retry is an empty `200`.
+
+The Worker's own activities, character for character. `<computer>` is the machine's
+name, or `this computer` if its row is gone (`This computer` in the expiry one).
+
+| Type | When | Text |
+| --- | --- | --- |
+| `error` | the session has no creator | `Arakun starts work only for a person. Delegate this issue yourself.` |
+| `error` | no issue in the session | `Arakun works on issues. Mention it on an issue instead.` |
+| `error` | the creator is not linked, or the account is blocked or lacks the flag | `The person who delegated this has not connected Linear in Arakun. In Arakun, open the Linear tab and turn on "Let Linear start sessions on this computer".` |
+| `error` | no route takes the issue's team or project, or the app cannot see the issue | `No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer.` |
+| `thought` | delivered and the computer is connected, or it had taken it already | `Sent to <computer>. A session starts there now.` |
+| `thought` | delivered and the computer is offline | `<computer> is offline. The session starts when it is back, for up to 7 days.` |
+| `error` | the computer already has 50 deliveries waiting (the delivery is not kept) | `Too many requests are waiting for <computer>. Try again when it has caught up.` |
+| `error` | a follow-up for a session that has no live delegation | `Arakun has no session for this. Delegate the issue again.` |
+| `thought` | a follow-up from someone other than the delegator | `Only the person who delegated this can steer it.` |
+| `error` | a `created` delivery waited 7 days and the computer never took it | `<computer> stayed offline for 7 days, so this was dropped. Delegate it again when the computer is on.` |
+
+A follow-up that is dropped for a full queue is also answered with the full-queue text.
+An expired follow-up, or a `created` delivery the computer had taken, says nothing.
+
+### The relay side
+
+A delivery goes to the relay Durable Object of the computer's label, through
+`deliver()` in `src/machines.ts` (`POST /_linear` inside the Worker), and is kept in
+its storage until the computer accepts it (`POST /linear/deliveries/<id>/accept`, which
+calls `/_linear_drop`) or it expires. If the computer is connected, it gets the frame
+at once. The frame is a control frame on channel 0 (the computer's control channel,
+JSON in a binary frame, like `claimed`):
+
+```json
+{ "type": "linear", "id": "<32 hex>", "kind": "created", "agent_session": "<uuid>",
+  "issue": "<uuid>", "organization": "<uuid>", "activity": null, "body": null }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | The delivery's id, 32 hex characters. Unique per delivery. |
+| `kind` | `created` (start a session for the issue), `prompt` (a follow-up message) or `stop` (the person stopped the session). |
+| `agent_session` | The Linear agent session's id. Pass it back to `/linear/sessions/<agent_session>/activity`. |
+| `issue` | The issue's id. |
+| `organization` | The Linear workspace's id. |
+| `activity` | The id of the follow-up's activity in Linear, or `null` for `created`. |
+| `body` | The follow-up's text, or `null`. See below. |
+
+`body` is set only on the frame sent the moment a `prompt` arrives while the computer is
+connected, and only when the text is 16,000 characters or fewer (a longer one is not
+cut; the computer reads it from Linear by `activity`). The relay never stores it, so a
+frame sent again has `body: null`, as has one for `created` and `stop`.
+
+A delivery is sent again after every `claimed` until the computer accepts it, oldest
+first, so a computer that was offline, or lost the connection before it took the
+delivery, gets it back. A computer should ignore a delivery id it has already handled:
+in a narrow race a frame can arrive twice, or just before `claimed`.
+
+The queue holds 50 deliveries for one computer. A 51st is refused, and the person
+hears so in the session. A delivery lives 7 days from its creation; after that the relay
+drops it, marks the row expired and, for a `created` delivery the computer never took,
+posts the expiry activity above. These frames do not count toward a plan's frame,
+burst or daily limits.
+
+### Limits
+
+`LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1015) counts, per account, the calls
+that ask Linear: `POST /linear/link` and `POST /linear/sessions/<id>/activity`. It is
+about 30 a minute, and a call over it answers `429 too many requests`. If the limit
+cannot be checked, the answer is `503`. Every call from the Worker to Linear times out
+after 3 seconds.
+
+### Known gaps
+
+- Linear's webhook has no typed field that tells a person's delegation from an
+  automation's. Linear's documentation says an automation's `creator` is the issue's
+  assignee, so an automation that delegates an issue assigned to a linked person starts
+  work on that person's computer. The design wanted automations refused.
+  `agentSession.sourceMetadata` is an untyped JSON object and is not used.
+- A follow-up from an account that is blocked or has lost the `linear` flag is still
+  queued for its own computer. The `created` path refuses such an account.
+- If Linear's API is slow twice in one webhook, the answer can take longer than Linear's
+  5 seconds. Linear then retries, and the retry finishes the same delivery.
+- A computer can still report progress for sessions it was given before its account
+  unlinked Linear.
+
+### Deploy
+
+1. Register the app in Linear as an OAuth application, with the redirect URL
+   `https://app.arakun.dev/linear/callback` and the webhook URL
+   `https://app.arakun.dev/linear/webhook`, with agent session events on. The app asks for
+   the scopes `read,write,app:assignable,app:mentionable` with `actor=app`; the Worker
+   sends them, so they are not set in Linear.
+2. Make the key that seals the tokens, and save it in your password manager:
+
+   ```sh
+   openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+   ```
+
+   Losing or changing this key makes every stored token unreadable, so every workspace
+   must install again.
+3. Set the four secrets. Each command asks for the value:
+
+   ```sh
+   npx wrangler secret put LINEAR_CLIENT_ID --env production
+   npx wrangler secret put LINEAR_CLIENT_SECRET --env production
+   npx wrangler secret put LINEAR_WEBHOOK_SECRET --env production
+   npx wrangler secret put LINEAR_TOKEN_KEY --env production
+   ```
+
+   Without all four, `/linear` answers 404.
+4. The rate limit `LINEAR_LIMIT` is a binding in `wrangler.toml` (top level and
+   `[env.production]`), so there is nothing to set. Apply the migration, then deploy:
+
+   ```sh
+   npx wrangler d1 migrations apply prod-arakun-cloud --env production --remote
+   npx wrangler deploy --env production
+   ```
+
+A workspace admin installs the app by opening `https://app.arakun.dev/linear/install`
+in a browser where they are signed in to Arakun with an account that has the `linear`
+flag, and approving it in Linear. An operator gives an account that flag with the admin
+flag route (see Granting flags):
+
+```sh
+printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
+  curl -fsS -X PUT -H @- "https://app.arakun.dev/admin/users/<github_id>/flags/linear"
+```
 
 ## API
 

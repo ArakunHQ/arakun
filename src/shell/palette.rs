@@ -1420,7 +1420,7 @@ impl Shell {
                 "Workspace panel",
                 "Layout",
                 "Sessions, files and changes at the right.",
-                self.panel_open,
+                self.panel.open,
             ),
             (
                 Setting::Subagents,

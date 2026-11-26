@@ -325,7 +325,6 @@ pub struct Shell {
     /// The thread the pane drew last, to fade in the next (`switching`).
     shown: RefCell<switching::Shown>,
     active_project: usize,
-    panel_tab: PanelTab,
     dock_open: bool,
     dock_height: f32,
     /// Set while the dock's top edge is being dragged.
@@ -371,7 +370,6 @@ pub struct Shell {
     home_face: Entity<crate::ascii_face::AsciiFace>,
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
-    explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
     /// The composer's focus, caret, scroll, history and completion.
     composer: composer::Composer,
@@ -407,15 +405,14 @@ pub struct Shell {
     teams: Entity<crate::arakun_teams::Teams>,
     teams_view: Entity<crate::arakun_teams::view::TeamsView>,
     _teams: [Subscription; 2],
-    panel_open: bool,
     /// The project rail on the left: open, width, picks and the session tree.
     rail: rail::Rail,
+    /// The Workspace panel on the right: open, width, tab and Customize.
+    panel: panel::Panel,
     /// What the rail shows, in the user's order.
     sidebar: crate::sidebar::Sidebar,
     /// The sidebar builder tab's selection, fields and undo.
     builder: sidebar_builder::Builder,
-    /// Dragged width of the Workspace panel; state::PANEL_W until dragged.
-    panel_w: f32,
     /// The widths the rail and workspace panel are drawn at this frame: the
     /// dragged ones, narrowed when the window is too small to leave the work
     /// in the middle `MAIN_MIN_W` (see `fit_sides`).
@@ -482,10 +479,6 @@ pub struct Shell {
     servers: Option<servers::ServersLink>,
     #[cfg(feature = "coderlabs")]
     canvas_view: Entity<crate::canvas_view::CanvasView>,
-    /// The Customize panel, while it is open in the workspace panel's place.
-    customize: Option<(Entity<CustomizeView>, Subscription)>,
-    /// The tab Customize shows: on Sidebar, the rail is being arranged.
-    customize_tab: CustomizeTab,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
     /// The project check's state per session id.
@@ -743,6 +736,7 @@ impl Shell {
                 _ => {}
             });
         let rail = rail::Rail::new(&layout, cx);
+        let panel = panel::Panel::new(&layout);
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -842,7 +836,6 @@ impl Shell {
             ahead: Default::default(),
             shown: Default::default(),
             active_project,
-            panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
             dock_height: layout.dock_height,
             dock_drag: false,
@@ -867,7 +860,6 @@ impl Shell {
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
-            explorer_scroll: UniformListScrollHandle::new(),
             focus,
             composer,
             _activation: activation,
@@ -888,10 +880,9 @@ impl Shell {
             teams_view,
             _teams: teams_subs,
             rail,
-            panel_open: layout.panel_open,
+            panel,
             sidebar,
             builder: Default::default(),
-            panel_w: layout.panel_w,
             side_fit: Cell::new([layout.rail_w, layout.panel_w]),
             side_crowded: Cell::new(false),
             subagents_dismissed: false,
@@ -933,8 +924,6 @@ impl Shell {
             beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,
             servers: None,
-            customize: None,
-            customize_tab: CustomizeTab::Colors,
             #[cfg(feature = "coderlabs")]
             canvas_view,
             fix_loops: std::collections::HashMap::new(),
@@ -1210,7 +1199,7 @@ impl Shell {
         self.composer.completion = None;
         self.sync_teams_project(cx);
         self.refresh_visible(cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             self.ensure_explorer(cx);
         }
         self.env_followed = true;
@@ -1291,9 +1280,9 @@ impl Shell {
             dock_open: self.dock_open,
             dock_height: self.dock_height,
             rail_open: self.rail.open,
-            panel_open: self.panel_open,
+            panel_open: self.panel.open,
             rail_w: self.rail.width,
-            panel_w: self.panel_w,
+            panel_w: self.panel.width,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
             glass: theme::glass_chosen(),
@@ -1470,7 +1459,7 @@ impl Shell {
         }
         let path = self.env().path.clone();
         self.refresh_status(&path, cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             let dirs = self.env().explorer.loaded_dirs();
             self.reload_dirs(path, dirs, cx);
         }
@@ -2823,7 +2812,7 @@ impl Shell {
             }
         });
         let look = crate::customize_view::Summary::of(
-            &match &self.customize {
+            &match &self.panel.customize {
                 Some((view, _)) => view.read(cx).saved().clone(),
                 None => crate::palettes::load(),
             },
@@ -3018,16 +3007,16 @@ impl Shell {
     fn toggle_panel(&mut self, cx: &mut Context<Self>) {
         // Customize holds the panel's place: the toggle brings the workspace
         // panel back there rather than hiding it unseen.
-        if self.customize.is_some() {
+        if self.panel.customize.is_some() {
             self.close_customize(cx);
-            if !self.panel_open {
-                self.panel_open = true;
+            if !self.panel.open {
+                self.panel.open = true;
                 self.save(cx);
             }
             cx.notify();
             return;
         }
-        self.panel_open = !self.panel_open;
+        self.panel.open = !self.panel.open;
         self.save(cx);
         cx.notify();
     }
@@ -3045,9 +3034,9 @@ impl Shell {
             self.close_modal(window, cx);
         }
         self.menu = None;
-        if let Some((view, _)) = &self.customize {
+        if let Some((view, _)) = &self.panel.customize {
             view.update(cx, |v, cx| v.set_tab(tab, cx));
-            self.customize_tab = tab;
+            self.panel.customize_tab = tab;
         } else {
             let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
             let sub =
@@ -3057,7 +3046,7 @@ impl Shell {
                     |this, _, ev: &CustomizeEvent, window, cx| match ev {
                         CustomizeEvent::Close => this.close_customize(cx),
                     CustomizeEvent::Tab(tab) => {
-                        this.customize_tab = *tab;
+                        this.panel.customize_tab = *tab;
                         cx.notify();
                     }
                         CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
@@ -3150,15 +3139,15 @@ impl Shell {
                         .map(|s| s.update(cx, |s, cx| s.render_arrange_panel(window, cx)))
                 }))
             });
-            self.customize_tab = tab;
-            self.customize = Some((view, sub));
+            self.panel.customize_tab = tab;
+            self.panel.customize = Some((view, sub));
         }
         cx.notify();
     }
 
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
-        self.customize = None;
+        self.panel.customize = None;
         // The views the Add chips marked new have been seen, except Teams
         // while the server keeps the account out: it stays new until it shows.
         let hidden: &[crate::sidebar::View] = if self.teams.read(cx).enabled() {
@@ -3248,7 +3237,7 @@ impl Shell {
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
             self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
-            self.customize.is_some(),
+            self.panel.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
@@ -3268,7 +3257,7 @@ impl Shell {
         );
         self.side_fit.set([
             if rail { r } else { self.rail.width },
-            if panel { p } else { self.panel_w },
+            if panel { p } else { self.panel.width },
         ]);
     }
 
@@ -3280,18 +3269,18 @@ impl Shell {
     /// Something should sit in the workspace panel's place: the panel of a
     /// project, or Customize, which also shows without one.
     fn panel_wanted(&self) -> bool {
-        self.customize.is_some() || (self.has_projects() && self.panel_open)
+        self.panel.customize.is_some() || (self.has_projects() && self.panel.open)
     }
 
     /// The panel's dragged width, or wider while Customize is in it (its
     /// palettes sit three to a row) or while it shows a subagent's transcript.
     fn panel_preferred_w(&self) -> f32 {
-        if self.customize.is_some() {
-            self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
-        } else if self.panel_tab == PanelTab::Session && self.subagent_view.is_some() {
-            self.panel_w.max(SUBAGENT_TRANSCRIPT_W)
+        if self.panel.customize.is_some() {
+            self.panel.width.max(crate::customize_view::CUSTOMIZE_W)
+        } else if self.panel.tab == PanelTab::Session && self.subagent_view.is_some() {
+            self.panel.width.max(SUBAGENT_TRANSCRIPT_W)
         } else {
-            self.panel_w
+            self.panel.width
         }
     }
 
@@ -3325,8 +3314,8 @@ impl Shell {
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
         self.set_panel_tab(PanelTab::Changes, cx);
-        if !self.panel_open {
-            self.panel_open = true;
+        if !self.panel.open {
+            self.panel.open = true;
             self.save(cx);
         }
         self.refresh_visible(cx);
@@ -3443,7 +3432,7 @@ impl Shell {
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             self.ensure_explorer(cx);
         }
         self.save(cx);
@@ -4298,7 +4287,7 @@ impl Render for Shell {
                                 this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
-                                this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
+                                this.panel.width = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
                             None => {}

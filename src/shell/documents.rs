@@ -515,7 +515,7 @@ impl Shell {
                     .collect::<Vec<_>>()
             }),
         )
-        .track_scroll(&self.explorer_scroll)
+        .track_scroll(&self.panel.explorer_scroll)
         .flex_1()
         .min_h_0()
         .py(crate::ui::sp(6.))

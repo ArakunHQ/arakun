@@ -3,12 +3,39 @@
 
 use super::*;
 
+/// The Workspace panel's own state: whether it is open, its width and tab,
+/// and the Customize panel while it stands in the panel's place.
+pub(super) struct Panel {
+    pub open: bool,
+    /// Dragged width; state::PANEL_W until dragged.
+    pub width: f32,
+    pub tab: PanelTab,
+    pub explorer_scroll: UniformListScrollHandle,
+    /// The Customize panel, while it is open in the Workspace panel's place.
+    pub customize: Option<(Entity<CustomizeView>, Subscription)>,
+    /// The tab Customize shows: on Sidebar, the rail is being arranged.
+    pub customize_tab: CustomizeTab,
+}
+
+impl Panel {
+    pub fn new(layout: &state::Layout) -> Self {
+        Self {
+            open: layout.panel_open,
+            width: layout.panel_w,
+            tab: PanelTab::Sessions,
+            explorer_scroll: UniformListScrollHandle::new(),
+            customize: None,
+            customize_tab: CustomizeTab::Colors,
+        }
+    }
+}
+
 impl Shell {
     /// The sidebar as Customize's Sidebar tab shows it.
     fn rail_look(&self) -> crate::customize_view::RailLook {
         crate::customize_view::RailLook {
             style: self.sidebar.style,
-            width: self.rail_w,
+            width: self.rail.width,
             preset: self.sidebar_preset(),
             can_undo: self.builder.history.can_undo(),
             can_redo: self.builder.history.can_redo(),
@@ -40,7 +67,7 @@ impl Shell {
     }
 
     pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some((view, _)) = &self.customize {
+        if let Some((view, _)) = &self.panel.customize {
             let look = self.rail_look();
             view.update(cx, |v, cx| v.sync_rail(look, cx));
             return self
@@ -132,7 +159,7 @@ impl Shell {
         // The tab shows once the session on screen has subagents or a pull
         // request, and stays while it is the one open.
         let mut shown_tabs = vec![PanelTab::Sessions, PanelTab::Explorer, PanelTab::Changes];
-        if subagents > 0 || self.panel_tab == PanelTab::Session || self.session_has_pr(cx) {
+        if subagents > 0 || self.panel.tab == PanelTab::Session || self.session_has_pr(cx) {
             shown_tabs.push(PanelTab::Session);
         }
         // Four tabs at the panel's usual width: a little less air in each.
@@ -158,7 +185,7 @@ impl Shell {
                     .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_hover())
                     .children(shown_tabs.into_iter().map(|tab| {
-                        let active = tab == self.panel_tab;
+                        let active = tab == self.panel.tab;
                         let label = match tab {
                             PanelTab::Sessions => "Sessions",
                             PanelTab::Explorer => "Explorer",
@@ -248,7 +275,7 @@ impl Shell {
                     })),
             );
 
-        let body: AnyElement = match self.panel_tab {
+        let body: AnyElement = match self.panel.tab {
             PanelTab::Sessions => self.render_sessions(env, cx).into_any_element(),
             PanelTab::Explorer => self.render_explorer(cx).into_any_element(),
             PanelTab::Changes => self.render_changes(cx).into_any_element(),

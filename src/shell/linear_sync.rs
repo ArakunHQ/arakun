@@ -193,7 +193,7 @@ impl Shell {
 
     pub(super) fn push_linear_host(&self, cx: &mut Context<Self>) {
         let host = self.linear_host(cx);
-        self.linear_view.update(cx, |v, cx| v.set_host(host, cx));
+        self.views.linear.update(cx, |v, cx| v.set_host(host, cx));
     }
 
     /// Teams changed: the page hears of it, and an account that may now use
@@ -233,7 +233,8 @@ impl Shell {
         }) = gate
         else {
             // Nothing was checked, so the page must not say it is up to date.
-            self.linear_view
+            self.views
+                .linear
                 .update(cx, |v, cx| v.set_sync(Sync::Unknown, cx));
             return;
         };
@@ -243,7 +244,8 @@ impl Shell {
         }
         self.linear_sync.running = true;
         self.linear_sync.owed = false;
-        self.linear_view
+        self.views
+            .linear
             .update(cx, |v, cx| v.set_sync(Sync::Sending, cx));
         let d = Delegation::load();
         let keys = keys(&linear::sessions());
@@ -281,12 +283,13 @@ impl Shell {
         // it said is not this one's, and the change is still owed.
         if self.teams.read(cx).account().map(|a| a.session) != Some(session) {
             self.linear_sync.owed = true;
-            self.linear_view
+            self.views
+                .linear
                 .update(cx, |v, cx| v.set_sync(Sync::Unknown, cx));
             self.sync_linear(window, cx);
             return;
         }
-        self.linear_view.update(cx, |v, cx| {
+        self.views.linear.update(cx, |v, cx| {
             for (workspace, installed) in &ran.installed {
                 v.set_installed(workspace, Some(*installed), cx);
             }
@@ -296,7 +299,8 @@ impl Shell {
         }
         match ran.error {
             None => {
-                self.linear_view
+                self.views
+                    .linear
                     .update(cx, |v, cx| v.set_sync(Sync::Idle, cx));
                 if self.linear_sync.owed {
                     self.sync_linear(window, cx);
@@ -305,7 +309,7 @@ impl Shell {
             Some(e) => {
                 self.linear_sync.owed = true;
                 let sync = outcome(&e);
-                self.linear_view.update(cx, |v, cx| v.set_sync(sync, cx));
+                self.views.linear.update(cx, |v, cx| v.set_sync(sync, cx));
                 if e == cloud::Error::SignedOut {
                     self.account_call_failed(e, cx);
                 }

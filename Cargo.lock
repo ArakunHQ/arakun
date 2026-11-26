@@ -334,6 +334,7 @@ dependencies = [
  "anyhow",
  "base64 0.23.1",
  "cef",
+ "core-foundation",
  "dunce",
  "futures",
  "getrandom 0.4.3",
@@ -361,6 +362,7 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "windows-sys 0.61.2",
+ "zbus",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ impl Shell {
         }
         self.show_view_tab("Doop", TabKind::Doop, |k| matches!(k, TabKind::Doop));
         self.note_active_tab(cx);
-        self.doop_view.update(cx, |v, cx| {
+        self.views.doop.update(cx, |v, cx| {
             v.refresh_if_stale(cx);
             v.focus(window, cx);
         });

@@ -140,16 +140,7 @@ impl QueuedPrompt {
 }
 
 pub(super) fn summary(text: &str) -> SharedString {
-    let text = crate::agent::attach::title_text(text);
-    let line = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    match line.char_indices().nth(80) {
-        Some((i, _)) => format!("{}…", &line[..i]).into(),
-        None => line.to_string().into(),
-    }
+    crate::agent::attach::title(text, 80).into()
 }
 
 impl Shell {
@@ -571,10 +562,8 @@ impl Shell {
             ThreadEvent::Rewound { meta, prompt } => {
                 let meta = meta.clone();
                 self.add_forked_session(env_path, meta, window, cx);
-                if let Some(env) = self.find_env_mut(env_path) {
-                    env.draft.set(prompt.clone());
-                }
-                window.focus(&self.composer_focus, cx);
+                self.edit_draft(env_path, cx, |d| d.set(prompt.clone()));
+                self.focus_composer(window, cx);
                 self.save(cx);
                 cx.notify();
             }
@@ -812,15 +801,17 @@ impl Shell {
     /// goes back into the composer it was written in, before anything typed since.
     pub(super) fn unqueue(&mut self, p: QueuedPrompt, cx: &mut Context<Self>) {
         let here = self.has_projects() && self.env().path == p.from;
-        let Some(env) = self.find_env_mut(&p.from) else {
+        if self.find_env(&p.from).is_none() {
             return;
-        };
-        let typed = env.draft.trim().to_string();
-        if typed.is_empty() {
-            env.draft.set(&p.text);
-        } else {
-            env.draft.set(format!("{}\n\n{typed}", p.text));
         }
+        self.edit_draft(&p.from, cx, |draft| {
+            let typed = draft.trim().to_string();
+            if typed.is_empty() {
+                draft.set(&p.text);
+            } else {
+                draft.set(format!("{}\n\n{typed}", p.text));
+            }
+        });
         if here {
             self.composer_changed(cx);
         }
@@ -927,7 +918,7 @@ impl Shell {
                 self.name_after_first_prompt(&path, &text, agent, cx);
             } else {
                 // Not sent: back into the composer, as the user wrote it.
-                self.env_mut().draft.set(&text);
+                self.edit_draft(&path, cx, |d| d.set(&text));
                 self.composer_changed(cx);
                 if let Some(note) = note {
                     self.rename_notes.insert(path, note);
@@ -1078,8 +1069,8 @@ impl Shell {
             desktop: true,
         };
         if !self.servers_start_first(first, p.agent, &picks, cx) {
-            if let Some(env) = self.find_env_mut(env_path) {
-                env.draft.set(&p.text);
+            if self.find_env(env_path).is_some() {
+                self.edit_draft(env_path, cx, |d| d.set(&p.text));
             }
             if let Some(note) = note {
                 self.rename_notes.insert(env_path.to_path_buf(), note);
@@ -2103,7 +2094,7 @@ impl Shell {
         else {
             return;
         };
-        self.composer_flash = Some(format!("{}: {}", s.label(), next.name).into());
+        self.flash(format!("{}: {}", s.label(), next.name), cx);
         let id = next.id.clone();
         self.choose_setting(s, &id, cx);
     }
@@ -2517,6 +2508,8 @@ fn desktop_input_text(t: &Thread) -> String {
         }
     } else if t.pending_question().is_some() {
         "Has a question for you.".into()
+    } else if let Some(r) = t.pending_secret() {
+        format!("Asks for a secret: {}", r.label)
     } else {
         "Needs your input.".into()
     }
@@ -2571,6 +2564,10 @@ pub(super) fn send_notification(
     if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
         return;
     }
+    // The OS keeps a history of notices. A title from before titles were
+    // scrubbed, or an agent's words, may still hold a secret.
+    let title = &crate::secrets::scrub(title);
+    let body = &crate::secrets::scrub(body);
     // osascript's notifications belong to Script Editor, and a click opens it. From
     // Arakun.app they are Arakun's own, and main.rs hears the click.
     #[cfg(target_os = "macos")]

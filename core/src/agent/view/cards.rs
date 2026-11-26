@@ -1,4 +1,5 @@
-//! Cards that wait on the user inside the transcript: permissions, spec plans, questions and rewinds.
+//! Cards that wait on the user inside the transcript: permissions, spec plans,
+//! questions, secrets and rewinds.
 
 use super::*;
 
@@ -560,6 +561,18 @@ impl ThreadView {
                         )
                     })
                     .when_some(ask.and_then(|a| a.inputs.get(qi)).cloned(), |d, input| {
+                        if q.secret {
+                            let shown = ask
+                                .and_then(|a| a.revealed.get(qi))
+                                .copied()
+                                .unwrap_or(false);
+                            return d.child(div().ml(px(22.)).child(masked_field(
+                                ("ask-reveal", qi),
+                                Some(input),
+                                shown,
+                                cx.listener(move |this, _, _, cx| this.toggle_ask_reveal(qi, cx)),
+                            )));
+                        }
                         d.child(
                             div()
                                 .ml(px(22.))
@@ -634,6 +647,150 @@ impl ThreadView {
                             .text_color(theme::text_faint())
                             .child("Enter in a field sends the answers"),
                     ),
+            )
+            .into_any_element()
+    }
+}
+
+impl ThreadView {
+    /// `request_secret`: masked inputs the agent never sees, with Save and
+    /// Decline. What is typed goes to `secret::keep`; the agent gets a handle.
+    pub(super) fn secret_card(&self, req: &SecretRequest, cx: &Context<Self>) -> AnyElement {
+        let ready = self.secret_ready(cx);
+        let state = self.secret.as_ref().filter(|s| s.id == req.id);
+        let error = state.and_then(|s| s.error.clone());
+        let button = |id: &'static str, label: &'static str, primary: bool, on: bool| {
+            crate::ui::labelled(div().id(id), gpui::Role::Button, label)
+                .flex()
+                .items_center()
+                .h(px(24.))
+                .px(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(8.))
+                .text_size(px(crate::ui::TEXT_SM))
+                .map(|d| {
+                    if primary {
+                        d.bg(theme::content()).text_color(theme::background())
+                    } else {
+                        d.bg(theme::fill_selected()).text_color(theme::text_muted())
+                    }
+                })
+                .when(on, |d| {
+                    d.cursor_pointer().hover(move |s| {
+                        s.bg(if primary {
+                            theme::mix(0.8)
+                        } else {
+                            theme::mix(0.18)
+                        })
+                    })
+                })
+                .when(!on, |d| d.opacity(0.4))
+                .child(label)
+        };
+        div()
+            .id("secret-card")
+            .mt(px(6.))
+            .mb(px(6.))
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
+            .border_1()
+            .border_color(amber().opacity(0.35))
+            .bg(theme::raised())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(icon("square-lock02", 14.).text_color(amber()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(crate::ui::TEXT_MD))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text_muted())
+                            .child(req.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child("Stays out of the transcript"),
+                    ),
+            )
+            .child(
+                div()
+                    .pl(crate::ui::sp(22.))
+                    .text_size(px(crate::ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child(req.reason.clone()),
+            )
+            .when_some(req.url.clone(), |d, url| {
+                d.child(
+                    crate::ui::labelled(div().id("secret-url"), gpui::Role::Link, url.clone())
+                        .ml(crate::ui::sp(22.))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(4.))
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .text_color(theme::link())
+                        .cursor_pointer()
+                        .hover(|s| s.underline())
+                        .child(icon("link-square02", 12.).text_color(theme::link()))
+                        .child(url.clone())
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+            })
+            .children(req.fields.iter().enumerate().map(|(i, field)| {
+                let input = state.and_then(|s| s.inputs.get(i)).cloned();
+                let shown = state
+                    .and_then(|s| s.revealed.get(i))
+                    .copied()
+                    .unwrap_or(false);
+                div()
+                    .pl(crate::ui::sp(22.))
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(4.))
+                    .child(
+                        div()
+                            .text_size(px(crate::ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(field.label.clone()),
+                    )
+                    .child(masked_field(
+                        ("secret-reveal", i),
+                        input,
+                        shown,
+                        cx.listener(move |this, _, _, cx| this.toggle_reveal(i, cx)),
+                    ))
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .pl(crate::ui::sp(22.))
+                    .child(button("secret-save", "Save", true, ready).when(ready, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| this.save_secret(cx)))
+                    }))
+                    .child(
+                        button("secret-decline", "Decline", false, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.decline_secret(cx))),
+                    )
+                    .child(div().flex_1())
+                    .child(div().text_size(px(crate::ui::TEXT_XS)).map(|d| {
+                        match &error {
+                            Some(e) => d.text_color(theme::danger()).child(e.clone()),
+                            None => d
+                                .text_color(theme::text_faint())
+                                .child("The agent gets a handle, never the value"),
+                        }
+                    })),
             )
             .into_any_element()
     }
@@ -731,4 +888,44 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                 })),
         )
         .into_any_element()
+}
+
+/// A masked input with a Show/Hide toggle, for a secret the user types: the
+/// secret card's fields and a question's password field.
+fn masked_field(
+    id: impl Into<gpui::ElementId>,
+    input: Option<Entity<TextInput>>,
+    shown: bool,
+    on_toggle: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(8.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .bg(theme::fill_raised())
+        .text_size(px(crate::ui::TEXT_MD))
+        .child(div().flex_1().min_w_0().children(input))
+        .child(
+            crate::ui::labelled(
+                div().id(id),
+                gpui::Role::Button,
+                if shown { "Hide" } else { "Show" },
+            )
+            .group("secret-reveal")
+            .flex_none()
+            .cursor_pointer()
+            .child(hover_icon(
+                if shown { "view-off" } else { "view" },
+                14.,
+                theme::text_faint(),
+                theme::text_muted(),
+                "secret-reveal",
+            ))
+            .on_click(on_toggle),
+        )
 }

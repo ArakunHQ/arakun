@@ -102,7 +102,7 @@ pub fn api_key() -> Option<String> {
 }
 
 pub fn store_api_key(key: &str) -> Result<(), String> {
-    keyring::store(KEYRING_ACCOUNT, "arakun: ElevenLabs API key", key.trim())
+    keyring::store(KEYRING_ACCOUNT, "arakun: ElevenLabs API key", key.trim()).map_err(String::from)
 }
 
 pub fn clear_api_key() {
@@ -529,6 +529,7 @@ mod tests {
             question: question.into(),
             options: options.iter().map(|o| o.to_string()).collect(),
             multi,
+            secret: false,
         }
     }
 

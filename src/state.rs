@@ -797,17 +797,32 @@ impl Saves {
     }
 }
 
-/// [`snapshot_with`] for projects that have no tabs open.
+/// Each environment's draft as restored: its path, its text with the
+/// caret, and the images waiting with it. The composer keeps them.
+pub type Drafts = Vec<(PathBuf, crate::draft::Draft, Vec<PathBuf>)>;
+
+/// An environment's draft as saved: text, caret and images.
+pub type SavedDraft = (String, usize, Vec<PathBuf>);
+
+/// [`snapshot_with`] for projects that have no tabs open and no drafts.
 #[cfg(test)]
 pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
-    snapshot_with(projects, &TabStrip::default(), active_project, layout)
+    snapshot_with(
+        projects,
+        &TabStrip::default(),
+        active_project,
+        layout,
+        &|_| None,
+    )
 }
 
+/// The state to save. `drafts` gives an environment's draft by its path.
 pub fn snapshot_with(
     projects: &[Project],
     strip: &TabStrip,
     active_project: usize,
     layout: Layout,
+    drafts: &dyn Fn(&Path) -> Option<SavedDraft>,
 ) -> Vec<u8> {
     // Headless sessions are listed from their own folder, not saved here;
     // their project stays once it holds sessions the app took over.
@@ -859,105 +874,108 @@ pub fn snapshot_with(
                     .environments
                     .iter()
                     .filter(|e| e.remote.is_none())
-                    .map(|e| EnvState {
-                        path: e.path.clone(),
-                        branch: Some(e.branch.to_string()),
-                        is_main: e.is_checkout,
-                        placeholder: e.placeholder.clone(),
-                        follow_branch: e.follow_branch,
-                        used: e.used,
-                        agent: Some(e.agent.id().into()),
-                        settings: e
-                            .draft_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        claude_settings: e
-                            .claude_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        opencode_settings: e
-                            .opencode_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        codex_settings: e
-                            .codex_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        devin_settings: e
-                            .devin_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        cursor_settings: e
-                            .cursor_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        antigravity_settings: e
-                            .antigravity_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        workers_ai_settings: e
-                            .workers_ai_settings
-                            .iter()
-                            .map(|(s, v)| (s.key().to_string(), v.clone()))
-                            .collect(),
-                        sessions: e
-                            .sessions
-                            .iter()
-                            .filter(|s| !crate::headless::shown(&s.id))
-                            .map(|s| SessionState {
-                                id: s.id.to_string(),
-                                title: s.title.to_string(),
-                                agent: s.agent.id().into(),
-                                updated: s.updated,
-                                added: s.added,
-                                removed: s.removed,
-                                meta: s.meta.clone(),
-                                #[cfg(feature = "coderlabs")]
-                                task: s.task.clone(),
-                                ci_run: s.ci_run,
-                                cli_model: s.cli_model.clone(),
-                                auto_allow: s.auto_allow,
-                                continues: s.continues.clone(),
-                                settled: s.settled,
-                                unread: s.unread,
-                            })
-                            .collect(),
-                        open: tabs_of(strip, e)
-                            .into_iter()
-                            .filter_map(|t| match &t.kind {
-                                TabKind::Session { id, .. } => Some(id.to_string()),
-                                _ => None,
-                            })
-                            .collect(),
-                        pinned: Some(
-                            tabs_of(strip, e)
-                                .into_iter()
-                                .filter(|t| t.pinned)
-                                .filter_map(|t| t.session_id().map(|id| id.to_string()))
+                    .map(|e| {
+                        let (draft, caret, images) = drafts(&e.path).unwrap_or_default();
+                        EnvState {
+                            path: e.path.clone(),
+                            branch: Some(e.branch.to_string()),
+                            is_main: e.is_checkout,
+                            placeholder: e.placeholder.clone(),
+                            follow_branch: e.follow_branch,
+                            used: e.used,
+                            agent: Some(e.agent.id().into()),
+                            settings: e
+                                .draft_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
                                 .collect(),
-                        ),
-                        active_tab: active_session_tab(strip, e),
-                        browsers: tabs_of(strip, e)
-                            .into_iter()
-                            .filter_map(|t| match &t.kind {
-                                // Blank tabs are not worth reopening.
-                                TabKind::Browser { url } if is_saved_browser(t) => {
-                                    Some(url.to_string())
-                                }
-                                _ => None,
-                            })
-                            .collect(),
-                        split: split_state(strip, e),
-                        draft: e.draft.to_string(),
-                        caret: e.draft.head(),
-                        images: e.draft_images.clone(),
+                            claude_settings: e
+                                .claude_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            opencode_settings: e
+                                .opencode_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            codex_settings: e
+                                .codex_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            devin_settings: e
+                                .devin_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            cursor_settings: e
+                                .cursor_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            antigravity_settings: e
+                                .antigravity_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            workers_ai_settings: e
+                                .workers_ai_settings
+                                .iter()
+                                .map(|(s, v)| (s.key().to_string(), v.clone()))
+                                .collect(),
+                            sessions: e
+                                .sessions
+                                .iter()
+                                .filter(|s| !crate::headless::shown(&s.id))
+                                .map(|s| SessionState {
+                                    id: s.id.to_string(),
+                                    title: s.title.to_string(),
+                                    agent: s.agent.id().into(),
+                                    updated: s.updated,
+                                    added: s.added,
+                                    removed: s.removed,
+                                    meta: s.meta.clone(),
+                                    #[cfg(feature = "coderlabs")]
+                                    task: s.task.clone(),
+                                    ci_run: s.ci_run,
+                                    cli_model: s.cli_model.clone(),
+                                    auto_allow: s.auto_allow,
+                                    continues: s.continues.clone(),
+                                    settled: s.settled,
+                                    unread: s.unread,
+                                })
+                                .collect(),
+                            open: tabs_of(strip, e)
+                                .into_iter()
+                                .filter_map(|t| match &t.kind {
+                                    TabKind::Session { id, .. } => Some(id.to_string()),
+                                    _ => None,
+                                })
+                                .collect(),
+                            pinned: Some(
+                                tabs_of(strip, e)
+                                    .into_iter()
+                                    .filter(|t| t.pinned)
+                                    .filter_map(|t| t.session_id().map(|id| id.to_string()))
+                                    .collect(),
+                            ),
+                            active_tab: active_session_tab(strip, e),
+                            browsers: tabs_of(strip, e)
+                                .into_iter()
+                                .filter_map(|t| match &t.kind {
+                                    // Blank tabs are not worth reopening.
+                                    TabKind::Browser { url } if is_saved_browser(t) => {
+                                        Some(url.to_string())
+                                    }
+                                    _ => None,
+                                })
+                                .collect(),
+                            split: split_state(strip, e),
+                            draft,
+                            caret,
+                            images,
+                        }
                     })
                     .collect(),
             })
@@ -998,8 +1016,9 @@ pub fn snapshot_with(
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
 
-pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
+pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) {
     let mut strip = TabStrip::default();
+    let mut drafts: Drafts = Vec::new();
     // The split each environment was saved with, and the tab of its focused
     // pane; the one on screen gets its own back, the others wait. The other
     // pane's tab is found once every environment's tabs are in.
@@ -1075,8 +1094,12 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
-                    env.draft = crate::draft::Draft::restore(e.draft, e.caret);
-                    env.draft_images = e.images.into_iter().filter(|p| p.is_file()).collect();
+                    let images: Vec<PathBuf> =
+                        e.images.into_iter().filter(|p| p.is_file()).collect();
+                    if !e.draft.is_empty() || !images.is_empty() {
+                        let draft = crate::draft::Draft::restore(e.draft, e.caret);
+                        drafts.push((env.path.clone(), draft, images));
+                    }
                     env.sessions = e
                         .sessions
                         .into_iter()
@@ -1257,7 +1280,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         (true, Some(agent)) => crate::model::set_default_agent(agent),
         (true, None) => {}
     }
-    (projects, active, layout, strip)
+    (projects, active, layout, strip, drafts)
 }
 
 pub fn new_project(path: &Path) -> Project {
@@ -1511,7 +1534,8 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        let (_, _, layout, _, _) =
+            restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
     }
 
@@ -1576,7 +1600,8 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        let (_, _, layout, _, _) =
+            restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true, false]);
         assert_eq!(
             (layout.grays, layout.type_scale),
@@ -1644,7 +1669,7 @@ mod tests {
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (mut projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (mut projects, _, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let env = &mut projects[0].environments[1];
         assert!(env.awaits_name());
         // Renamed by hand while arakun was closed: the refresh after the restart reads it.
@@ -1655,8 +1680,7 @@ mod tests {
     #[test]
     fn draft_survives_a_restart() {
         let mut project = new_project(Path::new("/tmp/arakun-draft-test"));
-        project.environments[0].draft.set("fix the tests\nplease");
-        project.environments[0].draft.move_to(3, false);
+        let here = project.environments[0].path.clone();
         project.environments.push(Environment::new(
             "/tmp/arakun-draft-test-2".into(),
             None,
@@ -1679,11 +1703,23 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
-        let draft = &projects[0].environments[0].draft;
+        let saved = |env: &Path| {
+            (env == here).then(|| ("fix the tests\nplease".to_string(), 3, Vec::new()))
+        };
+        let bytes = snapshot_with(
+            std::slice::from_ref(&project),
+            &TabStrip::default(),
+            0,
+            layout,
+            &saved,
+        );
+        let (_, _, _, _, drafts) = restore(serde_json::from_slice(&bytes).unwrap());
+        let [(path, draft, images)] = &drafts[..] else {
+            panic!("one draft back, not {}", drafts.len());
+        };
+        assert_eq!(path, &here);
         assert_eq!((&**draft, draft.head()), ("fix the tests\nplease", 3));
-        assert!(projects[0].environments[1].draft.is_empty());
+        assert!(images.is_empty());
         let empty = String::from_utf8(bytes).unwrap();
         assert_eq!(
             empty.matches("\"draft\"").count(),
@@ -1750,8 +1786,8 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
-        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout, &|_| None);
+        let (_, _, _, strip, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
         assert_eq!(titles, ["Two", "Three", "https://example.com", "One"]);
         let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
@@ -1763,7 +1799,7 @@ mod tests {
         for e in &mut old.projects[0].envs {
             e.pinned = None;
         }
-        let (_, _, _, strip) = restore(old);
+        let (_, _, _, strip, _) = restore(old);
         let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
         assert_eq!(titles, ["Two", "One", "https://example.com", "Three"]);
         // From before pins, every open session stays in the bar.
@@ -1799,7 +1835,7 @@ mod tests {
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout.clone());
-        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (projects, _, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let order: Vec<&str> = projects[0]
             .session_order
             .iter()
@@ -1818,7 +1854,7 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(saved["projects"][0].get("session_order").is_none());
         assert!(saved["projects"][0].get("sort").is_none());
-        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (projects, _, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         assert!(projects[0].session_order.is_empty());
     }
 
@@ -1874,8 +1910,14 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
-        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let bytes = snapshot_with(
+            std::slice::from_ref(&project),
+            &strip,
+            0,
+            layout.clone(),
+            &|_| None,
+        );
+        let (_, _, _, strip, _) = restore(serde_json::from_slice(&bytes).unwrap());
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
         assert_eq!(strip.tabs.len(), 2);
         let split = strip.split.expect("split restored");
@@ -1896,8 +1938,8 @@ mod tests {
         assert!(strip.split.is_none());
         // The environment's front tab moved on since; the split keeps its own.
         strip.front.insert(here.clone(), other);
-        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
-        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout, &|_| None);
+        let (_, _, _, mut strip, _) = restore(serde_json::from_slice(&bytes).unwrap());
         assert!(strip.split.is_none(), "it is not the one on screen");
         strip.active_tab = strip.front_of(&here).unwrap();
         strip.bring_split(&here, None);
@@ -1955,8 +1997,14 @@ mod tests {
             window: None,
         };
         let title = |strip: &TabStrip, i: usize| strip.tabs[i].title.to_string();
-        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
-        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let bytes = snapshot_with(
+            std::slice::from_ref(&project),
+            &strip,
+            0,
+            layout.clone(),
+            &|_| None,
+        );
+        let (_, _, _, mut strip, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let split = strip.split.expect("split restored");
         let other = strip.split_other().expect("both panes show");
         assert_eq!(
@@ -1972,8 +2020,8 @@ mod tests {
         strip.bring_split(&a, prev);
         strip.settle_split(prev);
         project.active_env = 0;
-        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
-        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout, &|_| None);
+        let (_, _, _, strip, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let split = strip.split.expect("split restored");
         let other = strip.split_other().expect("both panes show");
         assert_eq!(

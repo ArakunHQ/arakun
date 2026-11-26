@@ -793,6 +793,9 @@ fn waiting_on(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
             shape(&p.title)
         });
     }
+    if let Some(r) = t.pending_secret() {
+        return Some(shape(&format!("Asks for a secret: {}", r.label)));
+    }
     t.pending_question()
         .and_then(|q| q.questions.first())
         .map(|q| shape(&q.question))

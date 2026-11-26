@@ -18,9 +18,12 @@ use serde::{Deserialize, Serialize};
 use crate::control::{self, Reply, Request};
 
 pub const USAGE: &str = "\
-arakun dev start [dir] [--size WxH]  start a fresh test arakun (Linux: on a virtual display;
+arakun dev start [dir] [--size WxH] [--seed DIR]
+                                  start a fresh test arakun (Linux: on a virtual display;
                                   macOS: in a window that never takes the focus), with
-                                  dir (default: here) as its project; restarts one
+                                  dir (default: here) as its project; restarts one.
+                                  --seed starts it from DIR/state.json and DIR/data
+                                  (its XDG data home) instead of an empty state
 arakun dev shot [file.png]          screenshot its window, in the pixels click takes
                                   (on a Retina Mac, 2 a point)
 arakun dev click <x> <y> [--right] [--double] [--ctrl] [--shift]
@@ -226,26 +229,67 @@ fn born(file: &Path) -> Option<u64> {
 }
 
 /// `[dir] [--size WxH]`.
-fn start_args(args: &[String]) -> Result<(Option<String>, (u32, u32)), String> {
-    let (mut dir, mut size) = (None, DEFAULT_SIZE);
+/// What `arakun dev start` was asked for.
+#[derive(Debug, PartialEq)]
+struct StartArgs {
+    dir: Option<String>,
+    size: (u32, u32),
+    /// A folder with the state.json and data the test arakun starts from.
+    seed: Option<PathBuf>,
+}
+
+fn start_args(args: &[String]) -> Result<StartArgs, String> {
+    let mut out = StartArgs {
+        dir: None,
+        size: DEFAULT_SIZE,
+        seed: None,
+    };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         if arg == "--size" {
             let v = it.next().ok_or("--size needs WxH")?;
-            size = v
+            out.size = v
                 .split_once('x')
                 .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
                 .filter(|&(w, h): &(u32, u32)| {
                     (800..=4000).contains(&w) && (520..=3000).contains(&h)
                 })
                 .ok_or_else(|| format!("bad --size {v}: WxH, at least 800x520"))?;
-        } else if dir.is_none() {
-            dir = Some(arg.clone());
+        } else if arg == "--seed" {
+            out.seed = Some(it.next().ok_or("--seed needs a folder")?.into());
+        } else if out.dir.is_none() {
+            out.dir = Some(arg.clone());
         } else {
             return Err(format!("unexpected {arg}"));
         }
     }
-    Ok((dir, size))
+    Ok(out)
+}
+
+/// Copies the seed's state.json over the default one and its data folder
+/// into the test arakun's, so it opens with sessions already there.
+fn plant_seed(seed: &Path, root: &Path) -> Result<(), String> {
+    let state = seed.join("state.json");
+    std::fs::copy(&state, state_file()).map_err(|e| format!("seed: {}: {e}", state.display()))?;
+    let data = seed.join("data");
+    if data.is_dir() {
+        copy_dir(&data, &root.join("data")).map_err(|e| format!("seed: {e}"))?;
+    }
+    Ok(())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
 }
 
 fn free_display() -> Option<u32> {
@@ -272,7 +316,11 @@ fn start(args: &[String]) -> Result<String, String> {
     if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err("arakun dev runs on Linux (with Xvfb) and macOS only".into());
     }
-    let (dir, (width, height)) = start_args(args)?;
+    let StartArgs {
+        dir,
+        size: (width, height),
+        seed,
+    } = start_args(args)?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let project = cwd
         .join(dir.as_deref().unwrap_or("."))
@@ -302,6 +350,9 @@ fn start(args: &[String]) -> Result<String, String> {
         "panel_open": true, "arcade": false,
     });
     std::fs::write(state_file(), state.to_string()).map_err(|e| e.to_string())?;
+    if let Some(seed) = &seed {
+        plant_seed(&cwd.join(seed), &root)?;
+    }
 
     let (display, xvfb) = if cfg!(target_os = "linux") {
         start_xvfb(&root, width, height)?
@@ -1222,13 +1273,23 @@ mod tests {
 
     #[test]
     fn start_takes_a_dir_and_a_size() {
-        assert_eq!(start_args(&[]), Ok((None, DEFAULT_SIZE)));
+        let none = StartArgs {
+            dir: None,
+            size: DEFAULT_SIZE,
+            seed: None,
+        };
+        assert_eq!(start_args(&[]), Ok(none));
         assert_eq!(
-            start_args(&s(&["--size", "1200x800", "proj"])),
-            Ok((Some("proj".into()), (1200, 800)))
+            start_args(&s(&["--size", "1200x800", "proj", "--seed", "/tmp/s"])),
+            Ok(StartArgs {
+                dir: Some("proj".into()),
+                size: (1200, 800),
+                seed: Some("/tmp/s".into()),
+            })
         );
         assert!(start_args(&s(&["--size", "10x10"])).is_err());
         assert!(start_args(&s(&["--size"])).is_err());
+        assert!(start_args(&s(&["--seed"])).is_err());
         assert!(start_args(&s(&["a", "b"])).is_err());
     }
 

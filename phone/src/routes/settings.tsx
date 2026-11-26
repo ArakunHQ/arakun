@@ -74,7 +74,7 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** A switch; the whole row is its target, not only the knob. */
-function Toggle({ icon, title, on, onFlip }: { icon: IconName; title: string; on: boolean; onFlip: (on: boolean) => void }) {
+function Toggle({ icon, title, sub, on, onFlip }: { icon: IconName; title: string; sub?: string; on: boolean; onFlip: (on: boolean) => void }) {
   return (
     <div className="prow" onClick={() => onFlip(!on)}>
       <span className="ricon">
@@ -82,6 +82,7 @@ function Toggle({ icon, title, on, onFlip }: { icon: IconName; title: string; on
       </span>
       <span className="rbody">
         <span className="rt">{title}</span>
+        {sub ? <span className="rs">{sub}</span> : null}
       </span>
       <button
         className={`switch${on ? " on" : ""}`}
@@ -238,9 +239,16 @@ export function Settings() {
   let notify: ReactNode[];
   if (ns === "on") {
     notify = [
-      <Toggle key="done" icon="check" title="Turn finished" on={notices.done} onFlip={(on) => setNotice({ done: on })} />,
-      <Toggle key="input" icon="help" title="Needs permission or answer" on={notices.input} onFlip={(on) => setNotice({ input: on })} />,
-      <Toggle key="error" icon="alert" title="Something went wrong" on={notices.error} onFlip={(on) => setNotice({ error: on })} />,
+      <Toggle key="done" icon="check" title="Turn finished" sub="When an agent is done and waits for you." on={notices.done} onFlip={(on) => setNotice({ done: on })} />,
+      <Toggle
+        key="input"
+        icon="help"
+        title="Needs permission or answer"
+        sub="When an agent asks to run a tool or asks you a question."
+        on={notices.input}
+        onFlip={(on) => setNotice({ input: on })}
+      />,
+      <Toggle key="error" icon="alert" title="Something went wrong" sub="When a turn stops on an error." on={notices.error} onFlip={(on) => setNotice({ error: on })} />,
       <Choice key="away" title="Only when I'm away for" value={notices.away_after_secs} choices={AWAY} onPick={(n) => setNotice({ away_after_secs: n })} />,
       <Choice key="short" title="Turns shorter than this stay quiet" value={notices.min_turn_secs} choices={SHORTEST} onPick={(n) => setNotice({ min_turn_secs: n })} />,
     ];
@@ -292,7 +300,7 @@ export function Settings() {
         {/* A phone has no Usage tab: it is here. */}
         {width === "phone" ? (
           <Group label="Agents">
-            <Row icon="gauge" title="Usage" onClick={() => void navigate({ to: "/usage" })} />
+            <Row icon="gauge" title="Usage" sub="How much of each agent's plan limits is used." right={<span className="rgo"><Icon name="chevron" size={16} /></span>} onClick={() => void navigate({ to: "/usage" })} />
           </Group>
         ) : null}
         <Group label="Notifications">{notify}</Group>
@@ -302,12 +310,12 @@ export function Settings() {
           {account ? (
             <>
               <Row icon="phone" title={name} sub={bootData?.me?.login ? `Signed in as ${bootData.me.login}` : ""} />
-              <Row icon="unlink" title="Sign out" danger onClick={askSignOut} />
+              <Row icon="unlink" title="Sign out" sub="This browser will need to sign in again to reach your computers." danger onClick={askSignOut} />
             </>
           ) : (
             <>
               <Row icon="phone" title={name} sub={me?.paired_at ? `Paired ${pairedOn(Number(me.paired_at))} · last seen now` : ""} />
-              <Row icon="unlink" title="Unpair this device" danger onClick={unpair} />
+              <Row icon="unlink" title="Unpair this device" sub="You will need a new code from Arakun to pair it again." danger onClick={unpair} />
             </>
           )}
         </Group>

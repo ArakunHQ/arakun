@@ -286,6 +286,18 @@ sees the project's skills.
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
   global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
   project's sessions, worth keeping as a script of the project.
+- **Secrets on a card.** When an agent needs something only you can give, such as a
+  login, an API token, a PIN or a pairing code, it asks with a card in the session
+  instead of a message. The card shows what it is, why the agent needs it and, when
+  there is one, the page to sign in or make it. Its inputs are masked (the eye shows
+  what you typed, and nothing copies out of them), and **Save** or **Decline**
+  answers. The agent gets a `secret-ref:` handle per field, never the value, and the
+  transcript records only whether you saved, declined or the request was cancelled.
+  A request is cancelled when you stop the run, send a new message, the turn ends,
+  or 10 minutes pass. Claude Code, Codex and Droid sessions on this computer have it
+  through Arakun's MCP server (`arakun mcp`, which Arakun starts for each session);
+  the phone and sessions on a server don't show the card yet. Saved values stay in
+  Arakun's memory only, for 24 hours or until a handle is used.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
   going with the app closed. Its tools run inside a sandbox (workspace writable, the
   rest read-only, no credentials, no network unless `--allow net`), and a policy
@@ -760,8 +772,8 @@ after a week).
   the device it is on. A server other than the default (`ARAKUN_TEAMS_URL`) names its
   own GitHub app, which Arakun asks it for. Arakun drops the GitHub token and keeps the
   session the server answers with in the system keyring: the Keychain on macOS, the
-  Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
-  (without it, the session lasts until Arakun quits). Signed in, the User row shows
+  Credential Manager on Windows, and the Secret Service (gnome-keyring, KWallet or
+  KeePassXC) on Linux (without one, the session lasts until Arakun quits). Signed in, the User row shows
   your GitHub picture and "Signed in with GitHub". An account the server has turned
   Teams on for gets a **Team** row under Search in the sidebar; any other account is
   signed in all the same, but cannot use Teams. A Team tab left open from
@@ -1315,12 +1327,24 @@ Turns of Workers AI sessions also log what each tool's results added to the cont
 the program the command runs (`bash cargo`, `bash git`), so you can see which tools and
 commands cost the tokens.
 
+`arakun usage where [--days N] [--json]` reads the Claude Code transcripts on this
+computer (`~/.claude/projects`) and shows where their tokens go: the setup that loads
+with every message (skills, plugins, MCP servers, `CLAUDE.md` files, hook output) and
+which of it no session called, each project's first-message size, how full sessions
+got, and the noisiest tool results. It lists what to fix first, largest first, with one
+suggestion each. The last 30 days count by default (`--days 0` for all). Every number
+is an estimate, at about 4 bytes a token. It only reads the files: nothing is sent
+anywhere and your setup is not changed. The Usage tab shows the same findings under
+Breakdown, as "Where tokens go", each with a button that opens the file, or the
+Marketplace tab's installed MCP servers, plugins or skills, where you change it.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
-from GLib (`libglib2.0-bin` on Debian), `tailscale` (phone over Tailscale), `cf`
-(Cloudflare tab). Teams on Linux does not work without `secret-tool`, which keeps the
-session and the device keys, and on its first run it needs `gdbus` too, to tell a locked
-keyring from one with no device yet.
+(headless agents on Linux), `tailscale` (phone over Tailscale), `cf` (Cloudflare tab).
+Stored logins and Teams on Linux need a Secret Service on the session bus, such as
+gnome-keyring, KWallet or KeePassXC; Arakun talks to it over D-Bus, with no
+`secret-tool` needed. Teams does not work without one, since it keeps the session and
+the device keys there. Without one, Arakun keeps its other keys and tokens in
+`secrets.json` in its data folder (`~/.local/share/arakun`), which only you can read, and tells you so once.
 
 ## Build from source
 
@@ -1497,6 +1521,7 @@ arakun shrink -- cargo test       # run it and print a summary: failures, collap
 arakun feedback --kind bug "..."  # tell the Arakun team about a problem (agents use it; needs usage telemetry on)
 arakun notices --unseen           # notices you haven't read yet
 arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
+arakun usage where                # where Claude Code sessions' tokens go, and what to fix first
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
 arakun seat ls                    # the seats and their 5-hour and weekly usage
 arakun seat rm work               # forget a seat
@@ -1518,6 +1543,8 @@ arakun github pilot connect <url> --token -
                                   # from stdin (-) or ARAKUN_PILOT_TOKEN and
                                   # ARAKUN_PILOT_ADMIN_TOKEN; also --admin-token -,
                                   # --no-admin-token, --no-check
+arakun mcp                        # Arakun's MCP server on stdio (request_secret); Arakun
+                                  # starts it for each agent session, not you
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)

@@ -161,7 +161,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
 | A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
 
-On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
+On Linux those sessions live in the keyring (the Secret Service); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
 
 ## Differences from Linux

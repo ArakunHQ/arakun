@@ -43,11 +43,13 @@ pub fn notice(
     env: &str,
     secs: Option<u64>,
 ) -> String {
-    let title = shorten(title, TITLE_CHARS);
+    // A notice shows on a lock screen and passes through the push services.
+    let title = shorten(&crate::secrets::scrub(title), TITLE_CHARS);
+    let text = crate::secrets::scrub(text);
     let mut chars = TEXT_CHARS;
     loop {
         let mut notice = serde_json::json!({
-            "kind": kind, "session": session, "title": title, "body": shorten(text, chars),
+            "kind": kind, "session": session, "title": title, "body": shorten(&text, chars),
         });
         if !env.is_empty() {
             notice["env"] = env.into();
@@ -321,6 +323,24 @@ fn expand(prk: &hkdf::Prk, info: &[u8], out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notice_never_carries_a_secret() {
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let n = notice(
+            "done",
+            "s1",
+            &format!("deploy {key}"),
+            &format!("used {key}"),
+            "",
+            None,
+        );
+        assert!(!n.contains(key), "{n}");
+        assert!(
+            n.contains("deploy [secret]") && n.contains("used [secret]"),
+            "{n}"
+        );
+    }
 
     /// A phone's side: its key pair and auth secret, and how it opens a message.
     struct Phone {

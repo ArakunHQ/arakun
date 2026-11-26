@@ -24,41 +24,8 @@ const DEVICE_ACCOUNT: &str = "teams-device";
 /// still holds the device of everyone who used the default server then.
 const FORMER_DEFAULT_URL: &str = "https://teams.arakun.dev";
 
-/// The keyring account for `name`. A test Arakun with a state file of its own
-/// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
-/// device, so it never signs the person's own Arakun out or takes its keys.
-pub fn account(name: &str) -> String {
-    account_in(name, std::env::var_os("ARAKUN_STATE").as_deref())
-}
-
-fn account_in(name: &str, state: Option<&std::ffi::OsStr>) -> String {
-    // A path that is not UTF-8 still names a test Arakun. Read as unset, it
-    // would give that one the person's own session to use and to clear.
-    let state = state.map(|s| s.to_string_lossy());
-    account_for(name, state.as_deref().map(profile).as_deref())
-}
-
-/// `ARAKUN_STATE` as it names this profile's credentials. A relative path
-/// is read from the working directory, like the state file itself, so two
-/// folders with `state.json` don't share one device and session. An
-/// absolute path stays as given, so the names already in use don't change.
-fn profile(state: &str) -> String {
-    let path = Path::new(state);
-    if path.is_absolute() {
-        return state.to_string();
-    }
-    std::path::absolute(path)
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| state.to_string())
-}
-
-fn account_for(name: &str, state: Option<&str>) -> String {
-    match state.filter(|s| !s.is_empty()) {
-        Some(state) => format!("{name}@{state}"),
-        None => name.to_string(),
-    }
-}
+pub use crate::secret_store::account;
+use crate::secret_store::{account_for, profile};
 
 /// A compact, filesystem- and keyring-safe name. Neither a change of GitHub
 /// login nor a new session changes it. Two states in one folder stay separate.
@@ -232,221 +199,22 @@ fn new_device(
 
 const BAD_ENTRY: &str = "The keyring's Teams device entry could not be read.";
 
-// The general-purpose lookup treats a locked keyring, malformed bytes and an
-// absent entry alike. Only the last permits creation of a new device.
-#[cfg(not(windows))]
-fn secret_service_entry(account: &str) -> std::io::Result<Option<String>> {
-    use std::io;
-    use std::process::Command;
-
-    let out = Command::new("secret-tool")
-        .args(["lookup", "service", "arakun", "account", account])
-        .output()?;
-    if out.status.success() {
-        return String::from_utf8(out.stdout)
-            .map(Some)
-            .map_err(|_| io::Error::other(BAD_ENTRY));
-    }
-    if out.status.code() == Some(1) && out.stderr.is_empty() {
-        // A failed unlock must not look like a first run. SearchItems lists
-        // both unlocked and locked matches without asking for their secrets.
-        let attrs = format!(
-            "{{'service': 'arakun', 'account': {}}}",
-            serde_json::to_string(account)?
-        );
-        let found = Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.freedesktop.secrets",
-                "--object-path",
-                "/org/freedesktop/secrets",
-                "--method",
-                "org.freedesktop.Secret.Service.SearchItems",
-                &attrs,
-            ])
-            .output()
-            .map_err(|e| {
-                // Without it a locked keyring and a first run look the same,
-                // and only the second may make a new device.
-                if e.kind() == io::ErrorKind::NotFound {
-                    io::Error::other(
-                        "Teams needs gdbus (from GLib) to check the keyring. Install it and try again.",
-                    )
-                } else {
-                    io::Error::other(format!("Could not check Secret Service: {e}"))
-                }
-            })?;
-        if found.status.success() && found.stdout.trim_ascii() == b"(@ao [], @ao [])" {
-            return Ok(None);
-        }
-    }
-    Err(io::Error::other(
-        "Could not read the Secret Service entry. Unlock the keyring and try again.",
-    ))
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
+// A locked keyring, a missing one and malformed bytes are errors, not an absent
+// entry: only an absent entry permits creation of a new device.
 fn read_entry(account: &str) -> Result<Option<String>, String> {
-    secret_service_entry(account).map_err(|e| e.to_string())
-}
-
-#[cfg(windows)]
-fn read_entry(account: &str) -> Result<Option<String>, String> {
-    use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
-    use windows_sys::Win32::Security::Credentials::{CRED_TYPE_GENERIC, CredFree, CredReadW};
-    // Match keyring::store, including for the unscoped entry written by old
-    // releases. keyring::lookup used "arakun:arakun/<account>" instead.
-    let target: Vec<_> = format!("arakun:{account}")
-        .encode_utf16()
-        .chain([0])
-        .collect();
-    let mut cred = std::ptr::null_mut();
-    // SAFETY: the target is NUL-terminated. The blob is copied before CredFree.
-    unsafe {
-        if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
-            let e = std::io::Error::last_os_error();
-            return if e.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
-                Ok(None)
-            } else {
-                Err(format!("Credential Manager: {e}"))
-            };
-        }
-        let blob = (*cred).CredentialBlob;
-        let len = (*cred).CredentialBlobSize as usize;
-        let result = if len == 0 || blob.is_null() {
-            Err(BAD_ENTRY.to_string())
-        } else {
-            String::from_utf8(std::slice::from_raw_parts(blob, len).to_vec())
-                .map(Some)
-                .map_err(|_| BAD_ENTRY.to_string())
-        };
-        CredFree(cred.cast());
-        result
+    match crate::platform::keyring::read(account) {
+        Ok(Some(text)) if text.is_empty() => Err(BAD_ENTRY.to_string()),
+        Ok(entry) => Ok(entry),
+        Err(e) => Err(format!(
+            "The keyring could not read this device's Teams keys: {e}. Unlock the keyring and try again."
+        )),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// Only called after the entry read as absent, so replacing never loses a device.
 fn write_entry(account: &str, text: &str) -> Result<(), String> {
     crate::platform::keyring::store(account, "arakun: Teams device keys", text)
         .map_err(|e| format!("The keyring could not keep this device's Teams keys: {e}"))
-}
-
-#[cfg(target_os = "macos")]
-fn read_entry(account: &str) -> Result<Option<String>, String> {
-    if account == DEVICE_ACCOUNT || account.starts_with("teams-device@") {
-        // Builds that kept this entry with `keyring::store` put it in the
-        // Keychain. Reading Arakun's own item there does not ask the person.
-        if let Some(text) = mac::read(account)? {
-            return Ok(Some(text));
-        }
-        // Older macOS builds used secret-tool if it was installed. Don't
-        // write there; a missing helper is normal on a stock Mac.
-        return match secret_service_entry(account) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            other => other.map_err(|e| e.to_string()),
-        };
-    }
-    mac::read(account)
-}
-
-#[cfg(target_os = "macos")]
-use mac::add as write_entry;
-
-#[cfg(target_os = "macos")]
-mod mac {
-    use std::ffi::c_void;
-    use std::ptr::{null, null_mut};
-
-    const SERVICE: &[u8] = b"arakun";
-    const ITEM_NOT_FOUND: i32 = -25300;
-
-    #[link(name = "Security", kind = "framework")]
-    unsafe extern "C" {
-        fn SecKeychainFindGenericPassword(
-            keychain: *const c_void,
-            service_len: u32,
-            service: *const u8,
-            account_len: u32,
-            account: *const u8,
-            len: *mut u32,
-            data: *mut *mut c_void,
-            item: *mut *mut c_void,
-        ) -> i32;
-        fn SecKeychainItemFreeContent(attrs: *const c_void, data: *mut c_void) -> i32;
-        fn SecKeychainAddGenericPassword(
-            keychain: *const c_void,
-            service_len: u32,
-            service: *const u8,
-            account_len: u32,
-            account: *const u8,
-            password_len: u32,
-            password: *const u8,
-            item: *mut *mut c_void,
-        ) -> i32;
-    }
-
-    pub(super) fn read(account: &str) -> Result<Option<String>, String> {
-        let (mut len, mut data) = (0, null_mut());
-        // SAFETY: the buffers live through the call. On success Keychain
-        // owns `len` bytes at `data`, which we copy then release.
-        unsafe {
-            let status = SecKeychainFindGenericPassword(
-                null(),
-                SERVICE.len() as u32,
-                SERVICE.as_ptr(),
-                account.len() as u32,
-                account.as_ptr(),
-                &mut len,
-                &mut data,
-                null_mut(),
-            );
-            if status == ITEM_NOT_FOUND {
-                return Ok(None);
-            }
-            if status != 0 {
-                return Err(format!(
-                    "Keychain could not read the Teams device ({status})."
-                ));
-            }
-            let entry = if len == 0 || data.is_null() {
-                Err(super::BAD_ENTRY.to_string())
-            } else {
-                String::from_utf8(std::slice::from_raw_parts(data.cast(), len as usize).to_vec())
-                    .map(Some)
-                    .map_err(|_| super::BAD_ENTRY.to_string())
-            };
-            SecKeychainItemFreeContent(null(), data);
-            entry
-        }
-    }
-
-    pub(super) fn add(account: &str, text: &str) -> Result<(), String> {
-        // Add only, not update. Using the API rather than `security -w <secret>`
-        // keeps private keys out of the process list.
-        // SAFETY: the byte buffers live through the call. Null selects the
-        // default keychain and requests no returned item.
-        let status = unsafe {
-            SecKeychainAddGenericPassword(
-                null(),
-                SERVICE.len() as u32,
-                SERVICE.as_ptr(),
-                account.len() as u32,
-                account.as_ptr(),
-                text.len() as u32,
-                text.as_ptr(),
-                null_mut(),
-            )
-        };
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(format!(
-                "Keychain could not add the Teams device ({status})."
-            ))
-        }
-    }
 }
 
 fn read_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -1215,39 +983,6 @@ mod tests {
         std::fs::rename(&old.path, &scope.file).unwrap();
         assert!(f.load(&scope, no_lookup).is_err());
         assert_eq!(std::fs::read(&scope.file).unwrap(), b"unreadable");
-    }
-
-    #[test]
-    fn a_test_arakun_keeps_its_own_keyring_entries() {
-        assert_eq!(account_for("teams-session", None), "teams-session");
-        assert_eq!(account_for("teams-session", Some("")), "teams-session");
-        assert_eq!(
-            account_for("teams-device", Some("/tmp/dev/state.json")),
-            "teams-device@/tmp/dev/state.json"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_state_path_that_is_not_utf8_still_keeps_its_own_entries() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let state = std::ffi::OsStr::from_bytes(b"/tmp/dev\xff/state.json");
-        assert!(state.to_str().is_none());
-        assert_eq!(
-            account_in("teams-session", Some(state)),
-            "teams-session@/tmp/dev\u{fffd}/state.json"
-        );
-        assert_eq!(account_in("teams-session", None), "teams-session");
-    }
-
-    #[test]
-    fn a_relative_state_names_its_own_folder() {
-        let absolute = std::env::temp_dir().join("dev").join("state.json");
-        let absolute = absolute.to_str().unwrap();
-        assert_eq!(profile(absolute), absolute);
-        let here = std::env::current_dir().unwrap().join("state.json");
-        assert_eq!(profile("state.json"), here.to_str().unwrap());
-        assert_eq!(profile(""), "");
     }
 
     #[test]

@@ -460,8 +460,14 @@ pub fn ago(then: u64, now: u64) -> String {
     }
 }
 
+/// The first `max` characters of `s` on one line. A secret in it is replaced
+/// before it is cut, so no part of one is left: what memory shows goes into
+/// every new session's prompt.
 fn first_line(s: &str, max: usize) -> String {
-    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = crate::secrets::scrub(s)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if flat.chars().count() <= max {
         return flat;
     }
@@ -571,7 +577,11 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
             s.title
         ));
         if !s.body.is_empty() {
-            let body: String = s.body.trim().chars().take(2400).collect();
+            // Scrubbed before it is cut, so no part of a secret is left.
+            let body: String = crate::secrets::scrub(s.body.trim())
+                .chars()
+                .take(2400)
+                .collect();
             for l in body.lines() {
                 out.push_str(&format!("  {l}\n"));
             }
@@ -629,7 +639,8 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
     if out.is_empty() {
         out.push_str(&format!("Nothing saved yet for {name}.\n"));
     }
-    out
+    // Entries saved before `mem save` refused secrets, or edited by hand.
+    crate::secrets::scrub(&out).into_owned()
 }
 
 /// How agents are told to use memory; the index follows it.
@@ -740,7 +751,9 @@ pub fn session_draft(
     }
     let files = files.iter().take(FILES_KEPT).cloned().collect();
     Some(Draft {
-        title,
+        // A title the user gave may hold a secret too; the rest is cut by
+        // `first_line`, which scrubs it.
+        title: crate::secrets::scrub(&title).into_owned(),
         kind: "session".into(),
         body: body.trim_end().to_string(),
         topic: Some(format!("session/{key}")),
@@ -902,6 +915,23 @@ pub fn record_session(
 }
 // ---- command line ---------------------------------------------------------
 
+/// Why `mem save` turned an entry down. Memory goes into the system prompt of
+/// every new session, so a secret saved there would spread to all of them.
+const SECRET_REFUSED: &str = "not saved: it holds what looks like a secret (a key, token or password). \
+Memory goes into every new session's prompt, so it never keeps one. Save where the secret lives \
+instead, such as the name of its environment variable or file, and leave the value out.";
+
+fn holds_secret(d: &Draft) -> bool {
+    [
+        d.title.as_str(),
+        d.body.as_str(),
+        d.topic.as_deref().unwrap_or(""),
+    ]
+    .into_iter()
+    .chain(d.files.iter().map(String::as_str))
+    .any(crate::secrets::holds)
+}
+
 pub const USAGE: &str = "\
 arakun mem save <title> [--kind K] [--body text | --body -] [--files a,b] [--topic key] [--global]
                                   remember something (--body - reads stdin; words after
@@ -1006,6 +1036,9 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
                 topic,
                 files,
             };
+            if holds_secret(&draft) {
+                return Err(SECRET_REFUSED.into());
+            }
             let saved = update(
                 &file(scope),
                 if scope == Scope::Global { "" } else { &path },
@@ -1354,6 +1387,54 @@ mod tests {
         assert!(run(&["search", "polls"]).unwrap().starts_with("nothing"));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&proj);
+    }
+
+    #[test]
+    fn memory_never_keeps_a_secret() {
+        let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        let root = tmp("secret");
+        let proj = tmp("secret-proj");
+        let run = |a: &[&str]| run(&s(a), &proj, &root, 1_000_000);
+        // An agent is told why, and nothing is written.
+        let body = format!("the deploy token is {key}");
+        assert_eq!(
+            run(&["save", "Deploy token", "--body", &body]),
+            Err(SECRET_REFUSED.into())
+        );
+        let title = format!("Token {key}");
+        assert_eq!(run(&["save", &title]), Err(SECRET_REFUSED.into()));
+        assert!(
+            run(&["list"]).unwrap().starts_with("nothing"),
+            "{:?}",
+            run(&["list"])
+        );
+        assert!(run(&["save", "Deploy token", "--body", "in DEPLOY_TOKEN"]).is_ok());
+
+        // What Arakun records by itself is scrubbed, even where it is cut.
+        let turns = [Turn {
+            asked: format!("{} {key}", "x".repeat(210)),
+            reply: format!("Pushed with {key}."),
+        }];
+        let d = session_draft("k", "", &turns, &[format!("use {key}")], &[]).unwrap();
+        assert!(
+            !d.body.contains("ghp_") && !d.title.contains("ghp_"),
+            "{}",
+            d.body
+        );
+        assert!(d.body.contains("[secret]"), "{}", d.body);
+
+        // An entry from before, or edited by hand, does not reach a prompt.
+        let mut p = Store::default();
+        let old = Draft {
+            title: format!("Old {key}"),
+            kind: "note".into(),
+            body: format!("value {key}"),
+            topic: None,
+            files: vec![],
+        };
+        save(&mut p, old, 1);
+        let ctx = context(&p, &Store::default(), "x", 2);
+        assert!(!ctx.contains(key) && ctx.contains("[secret]"), "{ctx}");
     }
 
     #[test]

@@ -46,4 +46,10 @@ describe("settings", () => {
     expect(JSON.parse(init.body)).toEqual({ notices: { done: false, input: true, error: true, away_after_secs: 300 } });
     setActiveLink(null);
   });
+
+  // A row with only a title leaves the person guessing what it does.
+  it("says what unpairing does", async () => {
+    await renderScreen(<Settings />, "/settings", fakeLink({ host: "MacBook Pro" }));
+    expect(screen.getByText(/new code from Arakun to pair it again/)).toBeTruthy();
+  });
 });

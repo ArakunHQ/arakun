@@ -110,7 +110,8 @@ pub fn sandbox_allows(req: &Request) -> Result<(), String> {
     };
     let arg = |i: usize| req.args.get(i).map_or("", String::as_str);
     let ok = match req.cmd.as_str() {
-        "logs" | "notify" | "ls" | "rename" | "show" | "focus" => true,
+        // Asking the user for a secret shows a card; the value stays outside.
+        "logs" | "notify" | "ls" | "rename" | "show" | "focus" | "secret" => true,
         // Asking for the check is fine; setting it would run a command outside.
         "check" => arg(0).is_empty(),
         // A file:// page could show it what the sandbox hides.
@@ -376,6 +377,11 @@ Usage:
                              where the tokens of Workers AI sessions' tool
                              results go: each tool's calls and tokens, bash by
                              the program it runs (cargo, git…), largest first
+  arakun usage where [--days N] [--json]
+                             where the tokens of Claude Code sessions go, from
+                             their transcripts: unused skills, plugins and MCP
+                             servers, long CLAUDE.md files, noisy tools and
+                             full sessions, what to fix first (estimates)
   arakun seat add <name>       save a Claude seat: a token from `claude setup-token`,
                              read from stdin and checked with one small call;
                              each new Claude Code session then runs on the seat
@@ -649,6 +655,10 @@ fn cli(args: Vec<String>) -> Cli {
         println!("arakun {}", env!("ARAKUN_VERSION"));
         return Cli::Exit(0);
     }
+    // Agents start it; it talks MCP on stdio, not to a person.
+    if first == "mcp" {
+        return Cli::Exit(crate::secret_mcp::serve());
+    }
     if first == "mem" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         return Cli::Exit(crate::memory::cli(&args[1..], &cwd));
@@ -679,6 +689,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "shrink" {
         return Cli::Exit(crate::shrink::cli(&args[1..]));
+    }
+    if first == "usage" && args.get(1).is_some_and(|a| a == "where") {
+        return Cli::Exit(crate::usage_where::cli(&args[2..]));
     }
     if first == "usage" {
         return Cli::Exit(crate::agent::ledger::cli(&args[1..]));
@@ -1600,7 +1613,7 @@ pub fn send_to(socket: &Path, req: &Request) -> std::io::Result<Reply> {
 }
 
 /// `send_to`, giving up on the reply after `wait` (more than zero).
-fn send_within(socket: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
+pub(crate) fn send_within(socket: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply> {
     let mut stream = UnixStream::connect(socket)?;
     stream.set_read_timeout(Some(wait))?;
     stream.set_write_timeout(Some(wait))?;

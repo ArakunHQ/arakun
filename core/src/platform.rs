@@ -1726,31 +1726,71 @@ pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-/// A secret in the desktop keyring: the Secret Service (through `secret-tool`) on Linux,
-/// the Keychain on macOS, the Credential Manager on Windows. `account` tells arakun's
+/// A secret in the desktop keyring: the Secret Service (over D-Bus) on Linux, the
+/// Keychain on macOS, the Credential Manager on Windows. `account` tells arakun's
 /// secrets apart.
 pub mod keyring {
+    use std::fmt;
+
+    /// Why the keyring could not keep or give back a secret.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Error {
+        /// There is no keyring to ask: no session bus, or nothing on it answers
+        /// for the Secret Service. A caller can keep the secret somewhere else.
+        Unavailable(String),
+        /// The keyring is there but said no: it stayed locked, its prompt was
+        /// dismissed, or the entry is not text.
+        Failed(String),
+    }
+
+    impl fmt::Display for Error {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Error::Unavailable(e) | Error::Failed(e) => f.write_str(e),
+            }
+        }
+    }
+
+    impl std::error::Error for Error {}
+
+    impl From<Error> for String {
+        fn from(e: Error) -> String {
+            e.to_string()
+        }
+    }
+
+    /// Arakun's secret filed under `account`, as stored. None means there is none;
+    /// an error means the keyring could not say, so a locked keyring never looks
+    /// like a first run.
+    pub fn read(account: &str) -> Result<Option<String>, Error> {
+        read_in("arakun", account)
+    }
+
+    fn read_in(service: &str, account: &str) -> Result<Option<String>, Error> {
+        #[cfg(windows)]
+        return win::read(&target_name(service, account));
+        // Only arakun's own items come from the Keychain: reading another app's item
+        // would ask the user to allow it.
+        #[cfg(target_os = "macos")]
+        return match service {
+            // Before the Keychain, a Mac with `secret-tool` kept these there: a
+            // secret stored then is still found.
+            "arakun" => Ok(mac::read(account)?.or_else(|| secret_tool::lookup(service, account))),
+            _ => Ok(secret_tool::lookup(service, account)),
+        };
+        #[cfg(not(any(windows, target_os = "macos")))]
+        secret_service::Keyring::connect()?.read(service, account)
+    }
+
     pub fn lookup(account: &str) -> Option<String> {
         lookup_in("arakun", account)
     }
 
     /// A secret stored by another app, e.g. droid's "Factory CLI" keyring entries.
     pub fn lookup_in(service: &str, account: &str) -> Option<String> {
-        #[cfg(windows)]
-        let secret = win::read(&target_name(service, account));
-        // Only arakun's own items come from the Keychain: reading another app's item
-        // would ask the user to allow it.
-        #[cfg(target_os = "macos")]
-        let secret = if service == "arakun" {
-            // Before the Keychain, a Mac with `secret-tool` kept these there: a
-            // secret stored then is still found.
-            mac::read(account).or_else(|| secret_tool::lookup(service, account))
-        } else {
-            secret_tool::lookup(service, account)
-        };
-        #[cfg(not(any(windows, target_os = "macos")))]
-        let secret = secret_tool::lookup(service, account);
-        secret
+        read_in(service, account)
+            .ok()
+            .flatten()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
@@ -1768,27 +1808,35 @@ pub mod keyring {
         }
     }
 
-    pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
+    /// Stores `secret` under `account`, replacing what was there. `label` is the name
+    /// the keyring's own app shows.
+    pub fn store(account: &str, label: &str, secret: &str) -> Result<(), Error> {
         #[cfg(windows)]
         return win::write(&target_name("arakun", account), label, secret);
         #[cfg(target_os = "macos")]
         return mac::write(account, label, secret);
         #[cfg(not(any(windows, target_os = "macos")))]
-        secret_tool::store(account, label, secret)
+        secret_service::Keyring::connect()?.store(account, label, secret)
     }
 
     pub fn clear(account: &str) {
         #[cfg(windows)]
         win::delete(&target_name("arakun", account));
         #[cfg(target_os = "macos")]
-        mac::delete(account);
-        // On macOS too: a secret from before the Keychain would come back on
-        // the next lookup.
-        #[cfg(not(windows))]
-        secret_tool::clear(account);
+        {
+            mac::delete(account);
+            // A secret from before the Keychain would come back on the next lookup.
+            secret_tool::clear(account);
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
+        if let Ok(keyring) = secret_service::Keyring::connect() {
+            let _ = keyring.clear(account);
+        }
     }
 
-    #[cfg(not(windows))]
+    /// Old Mac builds kept secrets with `secret-tool` when it was installed, and other
+    /// apps' secrets are only looked for there. Missing is normal on a stock Mac.
+    #[cfg(target_os = "macos")]
     mod secret_tool {
         use std::process::{Command, Stdio};
 
@@ -1804,37 +1852,6 @@ pub mod keyring {
                 .flatten()
         }
 
-        #[cfg(not(target_os = "macos"))]
-        pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
-            use std::io::Write as _;
-            let mut child = Command::new("secret-tool")
-                .args([
-                    "store",
-                    &format!("--label={label}"),
-                    "service",
-                    "arakun",
-                    "account",
-                    account,
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("secret-tool: {e}"))?;
-            child
-                .stdin
-                .take()
-                .ok_or("secret-tool: no stdin")?
-                .write_all(secret.as_bytes())
-                .map_err(|e| e.to_string())?;
-            let out = child.wait_with_output().map_err(|e| e.to_string())?;
-            if out.status.success() {
-                Ok(())
-            } else {
-                Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-            }
-        }
-
         pub fn clear(account: &str) {
             let _ = Command::new("secret-tool")
                 .args(["clear", "service", "arakun", "account", account])
@@ -1844,164 +1861,408 @@ pub mod keyring {
         }
     }
 
-    /// Generic passwords in the default keychain, service "arakun". The Security API,
-    /// rather than `security add-generic-password -w <secret>`, keeps the secret out of
-    /// the process list.
+    /// The Secret Service API (gnome-keyring, KeePassXC, KWallet) over the session
+    /// bus, with the attributes `secret-tool` uses: items it stored are found, and
+    /// it finds ours.
+    #[cfg(not(any(windows, target_os = "macos")))]
+    pub(in crate::platform) mod secret_service {
+        use super::Error;
+        use std::collections::HashMap;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use zbus::blocking::{Connection, Proxy};
+        use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+        const DEST: &str = "org.freedesktop.secrets";
+        pub(in crate::platform) const PATH: &str = "/org/freedesktop/secrets";
+        const SERVICE: &str = "org.freedesktop.Secret.Service";
+        const COLLECTION: &str = "org.freedesktop.Secret.Collection";
+        const ITEM: &str = "org.freedesktop.Secret.Item";
+        const PROMPT: &str = "org.freedesktop.Secret.Prompt";
+        /// How long the keyring's unlock prompt may wait for the person.
+        const PROMPT_WAIT: Duration = Duration::from_secs(120);
+
+        /// Session, parameters, value, content type: `(oayays)` on the wire.
+        type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
+
+        pub(in crate::platform) struct Keyring {
+            conn: Connection,
+            session: OwnedObjectPath,
+        }
+
+        fn failed(e: zbus::Error) -> Error {
+            Error::Failed(format!("Secret Service: {e}"))
+        }
+
+        impl Keyring {
+            pub fn connect() -> Result<Self, Error> {
+                let conn = Connection::session()
+                    .map_err(|e| Error::Unavailable(format!("no D-Bus session bus: {e}")))?;
+                Self::on(conn)
+            }
+
+            /// Opens a session on `conn`. Nothing answering means no Secret Service.
+            pub(in crate::platform) fn on(conn: Connection) -> Result<Self, Error> {
+                // "plain" sends secrets unencrypted over the user's own bus. The
+                // encrypted kind only guards against a process that watches the bus,
+                // and such a process, running as the user, can ask the service itself.
+                let (_, session): (OwnedValue, OwnedObjectPath) = proxy(&conn, PATH, SERVICE)
+                    .and_then(|p| p.call("OpenSession", &("plain", Value::from(""))))
+                    .map_err(|e| Error::Unavailable(format!("no Secret Service: {e}")))?;
+                Ok(Self { conn, session })
+            }
+
+            fn proxy<'a>(&'a self, path: &'a str, interface: &'a str) -> Result<Proxy<'a>, Error> {
+                proxy(&self.conn, path, interface).map_err(failed)
+            }
+
+            /// Unlocked and locked items with exactly these attributes among theirs.
+            fn search(
+                &self,
+                service: &str,
+                account: &str,
+            ) -> Result<(Vec<OwnedObjectPath>, Vec<OwnedObjectPath>), Error> {
+                let attributes = HashMap::from([("service", service), ("account", account)]);
+                self.proxy(PATH, SERVICE)?
+                    .call("SearchItems", &(attributes,))
+                    .map_err(failed)
+            }
+
+            pub fn read(&self, service: &str, account: &str) -> Result<Option<String>, Error> {
+                let (unlocked, locked) = self.search(service, account)?;
+                let item = match (unlocked.into_iter().next(), locked.into_iter().next()) {
+                    (Some(item), _) => item,
+                    (None, Some(item)) => {
+                        self.unlock(std::slice::from_ref(&item))?;
+                        item
+                    }
+                    (None, None) => return Ok(None),
+                };
+                let (_, _, value, _): Secret = self
+                    .proxy(item.as_str(), ITEM)?
+                    .call("GetSecret", &(&self.session,))
+                    .map_err(failed)?;
+                String::from_utf8(value)
+                    .map(Some)
+                    .map_err(|_| Error::Failed("the keyring's entry is not text".into()))
+            }
+
+            pub fn store(&self, account: &str, label: &str, secret: &str) -> Result<(), Error> {
+                let collection = self.default_collection()?;
+                let locked: bool = self
+                    .proxy(collection.as_str(), COLLECTION)?
+                    .get_property("Locked")
+                    .map_err(failed)?;
+                if locked {
+                    self.unlock(std::slice::from_ref(&collection))?;
+                }
+                let attributes = HashMap::from([("service", "arakun"), ("account", account)]);
+                let properties = HashMap::from([
+                    ("org.freedesktop.Secret.Item.Label", Value::from(label)),
+                    (
+                        "org.freedesktop.Secret.Item.Attributes",
+                        Value::from(attributes),
+                    ),
+                ]);
+                let secret = (
+                    &self.session,
+                    Vec::<u8>::new(),
+                    secret.as_bytes().to_vec(),
+                    "text/plain",
+                );
+                // `true` replaces an item with the same attributes, as `secret-tool
+                // store` does.
+                let (_, prompt): (OwnedObjectPath, OwnedObjectPath) = self
+                    .proxy(collection.as_str(), COLLECTION)?
+                    .call("CreateItem", &(properties, secret, true))
+                    .map_err(failed)?;
+                self.prompt(&prompt).map(drop)
+            }
+
+            pub fn clear(&self, account: &str) -> Result<(), Error> {
+                let (unlocked, locked) = self.search("arakun", account)?;
+                if !locked.is_empty() {
+                    self.unlock(&locked)?;
+                }
+                for item in unlocked.iter().chain(&locked) {
+                    let prompt: OwnedObjectPath = self
+                        .proxy(item.as_str(), ITEM)?
+                        .call("Delete", &())
+                        .map_err(failed)?;
+                    self.prompt(&prompt)?;
+                }
+                Ok(())
+            }
+
+            /// Where new items go: the "default" alias, made the way libsecret makes
+            /// it when a fresh keyring has none.
+            fn default_collection(&self) -> Result<OwnedObjectPath, Error> {
+                let service = self.proxy(PATH, SERVICE)?;
+                let path: OwnedObjectPath =
+                    service.call("ReadAlias", &("default",)).map_err(failed)?;
+                if path.as_str() != "/" {
+                    return Ok(path);
+                }
+                let properties = HashMap::from([(
+                    "org.freedesktop.Secret.Collection.Label",
+                    Value::from("Default keyring"),
+                )]);
+                let (path, prompt): (OwnedObjectPath, OwnedObjectPath) = service
+                    .call("CreateCollection", &(properties, "default"))
+                    .map_err(failed)?;
+                if path.as_str() != "/" {
+                    return Ok(path);
+                }
+                OwnedObjectPath::try_from(self.prompt(&prompt)?)
+                    .map_err(|e| Error::Failed(format!("Secret Service: {e}")))
+            }
+
+            fn unlock(&self, objects: &[OwnedObjectPath]) -> Result<(), Error> {
+                let (_, prompt): (Vec<OwnedObjectPath>, OwnedObjectPath) = self
+                    .proxy(PATH, SERVICE)?
+                    .call("Unlock", &(objects,))
+                    .map_err(failed)?;
+                self.prompt(&prompt).map(drop)
+            }
+
+            /// Shows the service's prompt, if it asked for one ("/" means it didn't),
+            /// and waits for the person's answer: the prompt's result.
+            fn prompt(&self, path: &OwnedObjectPath) -> Result<OwnedValue, Error> {
+                if path.as_str() == "/" {
+                    return Ok(OwnedValue::from(false));
+                }
+                let prompt = self.proxy(path.as_str(), PROMPT)?;
+                // Listen first, or a quick answer could come before the listener.
+                let mut completed = prompt.receive_signal("Completed").map_err(failed)?;
+                prompt.call::<_, _, ()>("Prompt", &("",)).map_err(failed)?;
+                // The signal iterator has no timeout, so it waits on its own thread.
+                // Dismissing the prompt below ends that wait too.
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(completed.next());
+                });
+                let message = match rx.recv_timeout(PROMPT_WAIT) {
+                    Ok(Some(message)) => message,
+                    Ok(None) => return Err(Error::Failed("the keyring closed its prompt".into())),
+                    Err(_) => {
+                        let _ = prompt.call::<_, _, ()>("Dismiss", &());
+                        return Err(Error::Failed("no answer to the keyring's prompt".into()));
+                    }
+                };
+                let (dismissed, result): (bool, OwnedValue) =
+                    message.body().deserialize().map_err(failed)?;
+                if dismissed {
+                    Err(Error::Failed("the keyring stayed locked".into()))
+                } else {
+                    Ok(result)
+                }
+            }
+        }
+
+        fn proxy<'a>(
+            conn: &Connection,
+            path: &'a str,
+            interface: &'a str,
+        ) -> zbus::Result<Proxy<'a>> {
+            Proxy::new(conn, DEST, path, interface)
+        }
+    }
+
+    /// Generic passwords with service "arakun", through the SecItem API.
     #[cfg(target_os = "macos")]
     mod mac {
-        use std::ffi::c_void;
-        use std::ptr::{null, null_mut};
+        use super::Error;
+        use core_foundation::base::{CFType, CFTypeRef, OSStatus, TCFType};
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::data::{CFData, CFDataRef};
+        use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+        use core_foundation::string::{CFString, CFStringRef};
+        use std::ptr::null_mut;
 
-        const SERVICE: &[u8] = b"arakun";
+        const SERVICE: &str = "arakun";
         /// errSecItemNotFound.
-        const ITEM_NOT_FOUND: i32 = -25300;
+        const NOT_FOUND: OSStatus = -25300;
+        /// errSecDuplicateItem.
+        const DUPLICATE: OSStatus = -25299;
+        /// errSecMissingEntitlement: the data protection keychain refuses a build
+        /// without a keychain entitlement, such as an ad-hoc signed one.
+        const MISSING_ENTITLEMENT: OSStatus = -34018;
 
         #[link(name = "Security", kind = "framework")]
         unsafe extern "C" {
-            fn SecKeychainFindGenericPassword(
-                keychain: *const c_void,
-                service_len: u32,
-                service: *const u8,
-                account_len: u32,
-                account: *const u8,
-                len: *mut u32,
-                data: *mut *mut c_void,
-                item: *mut *mut c_void,
-            ) -> i32;
-            fn SecKeychainItemFreeContent(attrs: *const c_void, data: *mut c_void) -> i32;
-            fn SecKeychainAddGenericPassword(
-                keychain: *const c_void,
-                service_len: u32,
-                service: *const u8,
-                account_len: u32,
-                account: *const u8,
-                len: u32,
-                data: *const u8,
-                item: *mut *mut c_void,
-            ) -> i32;
-            fn SecKeychainItemModifyAttributesAndData(
-                item: *mut c_void,
-                attrs: *const c_void,
-                len: u32,
-                data: *const c_void,
-            ) -> i32;
-            fn SecKeychainItemDelete(item: *mut c_void) -> i32;
+            static kSecClass: CFStringRef;
+            static kSecClassGenericPassword: CFStringRef;
+            static kSecAttrService: CFStringRef;
+            static kSecAttrAccount: CFStringRef;
+            static kSecAttrLabel: CFStringRef;
+            static kSecAttrAccessible: CFStringRef;
+            static kSecAttrAccessibleWhenUnlockedThisDeviceOnly: CFStringRef;
+            static kSecUseDataProtectionKeychain: CFStringRef;
+            static kSecValueData: CFStringRef;
+            static kSecReturnData: CFStringRef;
+            fn SecItemCopyMatching(query: CFDictionaryRef, result: *mut CFTypeRef) -> OSStatus;
+            fn SecItemAdd(attributes: CFDictionaryRef, result: *mut CFTypeRef) -> OSStatus;
+            fn SecItemUpdate(query: CFDictionaryRef, changes: CFDictionaryRef) -> OSStatus;
+            fn SecItemDelete(query: CFDictionaryRef) -> OSStatus;
         }
 
-        #[link(name = "CoreFoundation", kind = "framework")]
-        unsafe extern "C" {
-            fn CFRelease(cf: *const c_void);
+        /// Where an item lives.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Keychain {
+            /// The data protection keychain, where an item opens only while the Mac
+            /// is unlocked and never moves to another Mac. Needs a signed build with
+            /// a keychain entitlement.
+            Protected,
+            /// The login keychain, where earlier builds kept every item.
+            Login,
         }
 
-        /// A keychain item reference, released when dropped.
-        struct Item(*mut c_void);
-
-        impl Drop for Item {
-            fn drop(&mut self) {
-                // SAFETY: `find` makes an Item only from a non-null reference the
-                // keychain handed over, and nothing else releases it.
-                unsafe { CFRelease(self.0) }
-            }
+        fn string(s: CFStringRef) -> CFString {
+            // SAFETY: `s` is one of the Security framework's constant strings, which
+            // live as long as the process.
+            unsafe { CFString::wrap_under_get_rule(s) }
         }
 
-        /// The item filed under `account`, or the status the keychain answered.
-        fn find(account: &str) -> Result<Option<Item>, i32> {
-            let mut item = null_mut();
-            // SAFETY: the byte buffers live through the call. Null length and data ask
-            // for the item reference only.
-            let status = unsafe {
-                SecKeychainFindGenericPassword(
-                    null(),
-                    SERVICE.len() as u32,
-                    SERVICE.as_ptr(),
-                    account.len() as u32,
-                    account.as_ptr(),
-                    null_mut(),
-                    null_mut(),
-                    &mut item,
-                )
+        fn dictionary(pairs: &[(CFStringRef, CFType)]) -> CFDictionary<CFString, CFType> {
+            let pairs: Vec<_> = pairs.iter().map(|(k, v)| (string(*k), v.clone())).collect();
+            CFDictionary::from_CFType_pairs(&pairs)
+        }
+
+        /// The item for `account` in `keychain`, with `extra` attributes.
+        fn query(
+            keychain: Keychain,
+            account: &str,
+            extra: &[(CFStringRef, CFType)],
+        ) -> CFDictionary<CFString, CFType> {
+            // SAFETY: reading the framework's constant strings, set when it loads.
+            let mut pairs = unsafe {
+                vec![
+                    (kSecClass, string(kSecClassGenericPassword).as_CFType()),
+                    (kSecAttrService, CFString::new(SERVICE).as_CFType()),
+                    (kSecAttrAccount, CFString::new(account).as_CFType()),
+                    (
+                        kSecUseDataProtectionKeychain,
+                        CFBoolean::from(keychain == Keychain::Protected).as_CFType(),
+                    ),
+                ]
             };
-            match status {
-                0 if !item.is_null() => Ok(Some(Item(item))),
-                0 | ITEM_NOT_FOUND => Ok(None),
-                s => Err(s),
-            }
+            pairs.extend_from_slice(extra);
+            dictionary(&pairs)
         }
 
-        pub fn read(account: &str) -> Option<String> {
-            let (mut len, mut data) = (0u32, null_mut());
-            // SAFETY: the buffers live through the call. On success the keychain owns
-            // `len` bytes at `data`, which are copied, then released.
-            unsafe {
-                let status = SecKeychainFindGenericPassword(
-                    null(),
-                    SERVICE.len() as u32,
-                    SERVICE.as_ptr(),
-                    account.len() as u32,
-                    account.as_ptr(),
-                    &mut len,
-                    &mut data,
-                    null_mut(),
-                );
-                if status != 0 || data.is_null() {
-                    return None;
+        fn failed(status: OSStatus) -> Error {
+            Error::Failed(format!("Keychain: error {status}"))
+        }
+
+        fn copy(keychain: Keychain, account: &str) -> Result<Option<Vec<u8>>, OSStatus> {
+            // SAFETY: reading a constant string.
+            let query = query(
+                keychain,
+                account,
+                &[(
+                    unsafe { kSecReturnData },
+                    CFBoolean::true_value().as_CFType(),
+                )],
+            );
+            let mut data: CFTypeRef = null_mut();
+            // SAFETY: `query` lives through the call. On success `data` is a CFData the
+            // caller owns, which `wrap_under_create_rule` releases.
+            match unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), &mut data) } {
+                0 if !data.is_null() => {
+                    let data = unsafe { CFData::wrap_under_create_rule(data as CFDataRef) };
+                    Ok(Some(data.bytes().to_vec()))
                 }
-                let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len as usize).to_vec();
-                SecKeychainItemFreeContent(null(), data);
-                String::from_utf8(bytes).ok()
+                0 | NOT_FOUND => Ok(None),
+                status => Err(status),
             }
         }
 
-        /// Keychain Access names a generic password after its service, so `_label`
-        /// has nowhere to go.
-        pub fn write(account: &str, _label: &str, secret: &str) -> Result<(), String> {
-            let status = match find(account) {
-                // SAFETY: `item` is a live reference and `secret` outlives the call.
-                // Null attributes change the data only.
-                Ok(Some(item)) => unsafe {
-                    SecKeychainItemModifyAttributesAndData(
-                        item.0,
-                        null(),
-                        secret.len() as u32,
-                        secret.as_ptr().cast(),
-                    )
-                },
-                // SAFETY: the byte buffers live through the call. Null selects the
-                // default keychain and asks for no item back.
-                Ok(None) => unsafe {
-                    SecKeychainAddGenericPassword(
-                        null(),
-                        SERVICE.len() as u32,
-                        SERVICE.as_ptr(),
-                        account.len() as u32,
-                        account.as_ptr(),
-                        secret.len() as u32,
-                        secret.as_ptr(),
-                        null_mut(),
-                    )
-                },
-                Err(status) => status,
+        /// The protected item first, then one in the login keychain, so items from
+        /// earlier builds still load.
+        pub fn read(account: &str) -> Result<Option<String>, Error> {
+            for keychain in [Keychain::Protected, Keychain::Login] {
+                match copy(keychain, account) {
+                    Ok(Some(bytes)) => {
+                        return String::from_utf8(bytes)
+                            .map(Some)
+                            .map_err(|_| Error::Failed("the Keychain's entry is not text".into()));
+                    }
+                    Ok(None) | Err(MISSING_ENTITLEMENT) => {}
+                    Err(status) => return Err(failed(status)),
+                }
+            }
+            Ok(None)
+        }
+
+        fn put(
+            keychain: Keychain,
+            account: &str,
+            label: &str,
+            secret: &str,
+        ) -> Result<(), OSStatus> {
+            // SAFETY: reading constant strings.
+            let mut changes = unsafe {
+                vec![
+                    (
+                        kSecValueData,
+                        CFData::from_buffer(secret.as_bytes()).as_CFType(),
+                    ),
+                    (kSecAttrLabel, CFString::new(label).as_CFType()),
+                ]
             };
-            if status == 0 {
-                Ok(())
+            if keychain == Keychain::Protected {
+                // SAFETY: reading constant strings.
+                changes.push(unsafe {
+                    (
+                        kSecAttrAccessible,
+                        string(kSecAttrAccessibleWhenUnlockedThisDeviceOnly).as_CFType(),
+                    )
+                });
+            }
+            let add = query(keychain, account, &changes);
+            // SAFETY: `add` lives through the call; no item is asked back.
+            let status = unsafe { SecItemAdd(add.as_concrete_TypeRef(), null_mut()) };
+            let status = if status == DUPLICATE {
+                let find = query(keychain, account, &[]);
+                let changes = dictionary(&changes);
+                // SAFETY: both dictionaries live through the call.
+                unsafe { SecItemUpdate(find.as_concrete_TypeRef(), changes.as_concrete_TypeRef()) }
             } else {
-                Err(format!("Keychain: error {status}"))
+                status
+            };
+            if status == 0 { Ok(()) } else { Err(status) }
+        }
+
+        fn delete_in(keychain: Keychain, account: &str) {
+            let find = query(keychain, account, &[]);
+            // SAFETY: `find` lives through the call.
+            unsafe { SecItemDelete(find.as_concrete_TypeRef()) };
+        }
+
+        pub fn write(account: &str, label: &str, secret: &str) -> Result<(), Error> {
+            match put(Keychain::Protected, account, label, secret) {
+                Ok(()) => {
+                    // The secret lives in one place, not also in an old login item.
+                    delete_in(Keychain::Login, account);
+                    Ok(())
+                }
+                Err(MISSING_ENTITLEMENT) => {
+                    put(Keychain::Login, account, label, secret).map_err(failed)
+                }
+                Err(status) => Err(failed(status)),
             }
         }
 
         pub fn delete(account: &str) {
-            if let Ok(Some(item)) = find(account) {
-                // SAFETY: `item` is a live reference. Deleting the keychain item leaves
-                // releasing the reference to Drop.
-                unsafe {
-                    SecKeychainItemDelete(item.0);
-                }
-            }
+            delete_in(Keychain::Protected, account);
+            delete_in(Keychain::Login, account);
         }
     }
 
     #[cfg(windows)]
     mod win {
+        use super::Error;
+        use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
         use windows_sys::Win32::Security::Credentials::{
             CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
             CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW,
@@ -2012,28 +2273,40 @@ pub mod keyring {
         }
 
         /// `target` is the full name, from [`super::target_name`].
-        pub fn read(target: &str) -> Option<String> {
+        pub fn read(target: &str) -> Result<Option<String>, Error> {
             let target = wide(target);
             let mut cred: *mut CREDENTIALW = std::ptr::null_mut();
             // SAFETY: `target` is NUL-terminated; on success `cred` points at a block the
             // system allocated, read here and released with CredFree.
             unsafe {
                 if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
-                    return None;
+                    let e = std::io::Error::last_os_error();
+                    return if e.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+                        Ok(None)
+                    } else {
+                        Err(Error::Failed(format!("Credential Manager: {e}")))
+                    };
                 }
-                let blob = std::slice::from_raw_parts(
-                    (*cred).CredentialBlob,
-                    (*cred).CredentialBlobSize as usize,
-                );
-                let secret = String::from_utf8(blob.to_vec()).ok();
+                let (blob, len) = ((*cred).CredentialBlob, (*cred).CredentialBlobSize as usize);
+                let secret = if blob.is_null() {
+                    Ok(Some(String::new()))
+                } else {
+                    String::from_utf8(std::slice::from_raw_parts(blob, len).to_vec())
+                        .map(Some)
+                        .map_err(|_| {
+                            Error::Failed("the Credential Manager's entry is not text".into())
+                        })
+                };
                 CredFree(cred.cast());
                 secret
             }
         }
 
-        pub fn write(target: &str, label: &str, secret: &str) -> Result<(), String> {
+        pub fn write(target: &str, label: &str, secret: &str) -> Result<(), Error> {
             if secret.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
-                return Err("too long for the Windows Credential Manager".into());
+                return Err(Error::Failed(
+                    "too long for the Windows Credential Manager".into(),
+                ));
             }
             let mut target = wide(target);
             let mut comment = wide(label);
@@ -2045,16 +2318,19 @@ pub mod keyring {
                 Comment: comment.as_mut_ptr(),
                 CredentialBlobSize: blob.len() as u32,
                 CredentialBlob: blob.as_mut_ptr(),
+                // This user on this machine, across sign-ins. The other choice,
+                // enterprise, would also copy it to every machine a domain profile
+                // roams to.
                 Persist: CRED_PERSIST_LOCAL_MACHINE,
                 UserName: user.as_mut_ptr(),
                 ..Default::default()
             };
             // SAFETY: every pointer in `cred` points into a buffer alive for the call.
             if unsafe { CredWriteW(&cred, 0) } == 0 {
-                return Err(format!(
+                return Err(Error::Failed(format!(
                     "Credential Manager: {}",
                     std::io::Error::last_os_error()
-                ));
+                )));
             }
             Ok(())
         }
@@ -2483,17 +2759,399 @@ mod tests {
         );
     }
 
-    /// What arakun stores it must find again, and forget on clear. Only Windows: the
-    /// Secret Service needs a desktop session that CI and headless Linux lack.
-    #[cfg(windows)]
+    /// What arakun stores it must find again, replaced by a second store, and forget
+    /// on clear. Against the real keyring: CI runs it on macOS, where the test build
+    /// lands in the login keychain. Windows CI only runs clippy, and the Secret
+    /// Service gets its own test against a stand-in below.
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    #[ignore = "writes to this machine's Credential Manager"]
+    #[cfg_attr(windows, ignore = "writes to this machine's Credential Manager")]
     fn a_stored_secret_is_found_again_and_cleared() {
         let account = format!("test-roundtrip-{}", std::process::id());
         keyring::store(&account, "arakun: test", "s3cret").unwrap();
-        let found = keyring::lookup(&account);
+        let first = keyring::read(&account);
+        keyring::store(&account, "arakun: test", "n3w").unwrap();
+        let second = keyring::read(&account);
         keyring::clear(&account);
-        assert_eq!(found.as_deref(), Some("s3cret"));
-        assert_eq!(keyring::lookup(&account), None);
+        assert_eq!(first, Ok(Some("s3cret".into())));
+        assert_eq!(second, Ok(Some("n3w".into())));
+        assert_eq!(keyring::read(&account), Ok(None));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn the_secret_service_stores_reads_replaces_and_deletes() {
+        let fake = secret_service_fake::Fake::start();
+        let ring = fake.keyring();
+        assert_eq!(ring.read("arakun", "voice"), Ok(None));
+        ring.store("voice", "arakun: ElevenLabs API key", "s3cret")
+            .unwrap();
+        assert_eq!(ring.read("arakun", "voice"), Ok(Some("s3cret".into())));
+        // Filed the way `secret-tool store service arakun account voice` files it.
+        let items = fake.items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "arakun: ElevenLabs API key");
+        assert_eq!(items[0].attributes["service"], "arakun");
+        assert_eq!(items[0].attributes["account"], "voice");
+
+        ring.store("voice", "arakun: ElevenLabs API key", "n3w")
+            .unwrap();
+        assert_eq!(ring.read("arakun", "voice"), Ok(Some("n3w".into())));
+        assert_eq!(fake.items().len(), 1);
+
+        ring.clear("voice").unwrap();
+        assert_eq!(ring.read("arakun", "voice"), Ok(None));
+        assert!(fake.items().is_empty());
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn a_locked_secret_is_unlocked_through_the_prompt() {
+        let fake = secret_service_fake::Fake::start();
+        let ring = fake.keyring();
+        ring.store("teams-device", "arakun: Teams device keys", "keys")
+            .unwrap();
+        fake.lock_all();
+        assert_eq!(ring.read("arakun", "teams-device"), Ok(Some("keys".into())));
+        assert_eq!(fake.prompts(), 1);
+
+        fake.lock_all();
+        fake.dismiss_prompts();
+        // A refused unlock is an error, never "no entry": Teams would make a new device.
+        assert!(matches!(
+            ring.read("arakun", "teams-device"),
+            Err(keyring::Error::Failed(_))
+        ));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn no_secret_service_is_an_error_to_fall_back_from() {
+        let fake = secret_service_fake::Fake::empty();
+        assert!(matches!(
+            keyring::secret_service::Keyring::on(fake.connection()),
+            Err(keyring::Error::Unavailable(_))
+        ));
+    }
+
+    /// A Secret Service that keeps items in memory, served over a socket pair: just
+    /// enough of the API for the keyring's calls, with gnome-keyring's habit of
+    /// unlocking through a prompt.
+    #[cfg(not(any(windows, target_os = "macos")))]
+    mod secret_service_fake {
+        use super::keyring::secret_service::{Keyring, PATH};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use zbus::blocking::Connection;
+        use zbus::object_server::{ObjectServer, SignalEmitter};
+        use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+        use zbus::{fdo, interface};
+
+        const COLLECTION: &str = "/org/freedesktop/secrets/collection/login";
+
+        #[derive(Clone, Debug)]
+        pub struct Item {
+            pub label: String,
+            pub attributes: HashMap<String, String>,
+            secret: Vec<u8>,
+            locked: bool,
+        }
+
+        #[derive(Default)]
+        struct State {
+            items: HashMap<String, Item>,
+            next: u32,
+            prompts: u32,
+            dismiss: bool,
+        }
+
+        type Shared = Arc<Mutex<State>>;
+
+        fn path(s: &str) -> OwnedObjectPath {
+            OwnedObjectPath::try_from(s.to_string()).unwrap()
+        }
+
+        struct Service(Shared);
+
+        #[interface(name = "org.freedesktop.Secret.Service")]
+        impl Service {
+            fn open_session(
+                &self,
+                algorithm: &str,
+                _input: Value<'_>,
+            ) -> fdo::Result<(OwnedValue, OwnedObjectPath)> {
+                if algorithm != "plain" {
+                    return Err(fdo::Error::NotSupported(algorithm.into()));
+                }
+                Ok((
+                    OwnedValue::from(0u8),
+                    path("/org/freedesktop/secrets/session/1"),
+                ))
+            }
+
+            fn search_items(
+                &self,
+                attributes: HashMap<String, String>,
+            ) -> (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) {
+                let state = self.0.lock().unwrap();
+                let (mut unlocked, mut locked) = (vec![], vec![]);
+                for (p, item) in &state.items {
+                    if attributes
+                        .iter()
+                        .all(|(k, v)| item.attributes.get(k) == Some(v))
+                    {
+                        if item.locked {
+                            &mut locked
+                        } else {
+                            &mut unlocked
+                        }
+                        .push(path(p));
+                    }
+                }
+                (unlocked, locked)
+            }
+
+            async fn unlock(
+                &self,
+                objects: Vec<OwnedObjectPath>,
+                #[zbus(object_server)] server: &ObjectServer,
+            ) -> fdo::Result<(Vec<OwnedObjectPath>, OwnedObjectPath)> {
+                let n = {
+                    let mut state = self.0.lock().unwrap();
+                    state.prompts += 1;
+                    state.prompts
+                };
+                let at = format!("/org/freedesktop/secrets/prompt/{n}");
+                let prompt = Prompt {
+                    state: self.0.clone(),
+                    objects,
+                };
+                server.at(at.as_str(), prompt).await?;
+                Ok((vec![], path(&at)))
+            }
+
+            fn read_alias(&self, _name: &str) -> OwnedObjectPath {
+                path(COLLECTION)
+            }
+        }
+
+        struct Collection(Shared);
+
+        #[interface(name = "org.freedesktop.Secret.Collection")]
+        impl Collection {
+            async fn create_item(
+                &self,
+                properties: HashMap<String, OwnedValue>,
+                secret: (OwnedObjectPath, Vec<u8>, Vec<u8>, String),
+                replace: bool,
+                #[zbus(object_server)] server: &ObjectServer,
+            ) -> fdo::Result<(OwnedObjectPath, OwnedObjectPath)> {
+                let get = |k: &str| {
+                    properties
+                        .get(k)
+                        .and_then(|v| v.try_clone().ok())
+                        .ok_or_else(|| fdo::Error::InvalidArgs(k.into()))
+                };
+                let attributes: HashMap<String, String> =
+                    get("org.freedesktop.Secret.Item.Attributes")?
+                        .try_into()
+                        .map_err(zbus::Error::from)?;
+                let label: String = get("org.freedesktop.Secret.Item.Label")?
+                    .try_into()
+                    .map_err(zbus::Error::from)?;
+                let item = Item {
+                    label,
+                    attributes,
+                    secret: secret.2,
+                    locked: false,
+                };
+                let at = {
+                    let mut state = self.0.lock().unwrap();
+                    let same = state
+                        .items
+                        .iter()
+                        .find(|(_, i)| i.attributes == item.attributes)
+                        .map(|(p, _)| p.clone());
+                    match same {
+                        Some(at) if replace => {
+                            state.items.insert(at.clone(), item);
+                            return Ok((path(&at), path("/")));
+                        }
+                        _ => {
+                            state.next += 1;
+                            let at = format!("{COLLECTION}/{}", state.next);
+                            state.items.insert(at.clone(), item);
+                            at
+                        }
+                    }
+                };
+                server
+                    .at(
+                        at.as_str(),
+                        ItemObject {
+                            state: self.0.clone(),
+                            at: at.clone(),
+                        },
+                    )
+                    .await?;
+                Ok((path(&at), path("/")))
+            }
+
+            #[zbus(property)]
+            fn locked(&self) -> bool {
+                false
+            }
+        }
+
+        struct ItemObject {
+            state: Shared,
+            at: String,
+        }
+
+        #[interface(name = "org.freedesktop.Secret.Item")]
+        impl ItemObject {
+            fn get_secret(
+                &self,
+                session: OwnedObjectPath,
+            ) -> fdo::Result<(OwnedObjectPath, Vec<u8>, Vec<u8>, String)> {
+                let state = self.state.lock().unwrap();
+                match state.items.get(&self.at) {
+                    Some(item) if item.locked => Err(fdo::Error::AccessDenied("locked".into())),
+                    Some(item) => Ok((session, vec![], item.secret.clone(), "text/plain".into())),
+                    None => Err(fdo::Error::UnknownObject(self.at.clone())),
+                }
+            }
+
+            fn delete(&self) -> OwnedObjectPath {
+                self.state.lock().unwrap().items.remove(&self.at);
+                path("/")
+            }
+        }
+
+        struct Prompt {
+            state: Shared,
+            objects: Vec<OwnedObjectPath>,
+        }
+
+        #[interface(name = "org.freedesktop.Secret.Prompt")]
+        impl Prompt {
+            async fn prompt(
+                &self,
+                _window_id: &str,
+                #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+            ) -> fdo::Result<()> {
+                let dismissed = {
+                    let mut state = self.state.lock().unwrap();
+                    if !state.dismiss {
+                        for p in &self.objects {
+                            if let Some(item) = state.items.get_mut(p.as_str()) {
+                                item.locked = false;
+                            }
+                        }
+                    }
+                    state.dismiss
+                };
+                let unlocked = if dismissed {
+                    vec![]
+                } else {
+                    self.objects.clone()
+                };
+                Self::completed(&emitter, dismissed, Value::from(unlocked)).await?;
+                Ok(())
+            }
+
+            fn dismiss(&self) {}
+
+            #[zbus(signal)]
+            async fn completed(
+                emitter: &SignalEmitter<'_>,
+                dismissed: bool,
+                result: Value<'_>,
+            ) -> zbus::Result<()>;
+        }
+
+        /// Some other app's object, on a peer that is not a Secret Service.
+        struct Elsewhere;
+
+        #[interface(name = "org.example.Elsewhere")]
+        impl Elsewhere {}
+
+        pub struct Fake {
+            state: Shared,
+            client: Connection,
+            // Dropping it would close the socket.
+            _server: Connection,
+        }
+
+        impl Fake {
+            pub fn start() -> Self {
+                Self::serve(true)
+            }
+
+            /// Something on the bus that is not a Secret Service.
+            pub fn empty() -> Self {
+                Self::serve(false)
+            }
+
+            // `unix_stream` is deprecated only for builds with zbus's `tokio` feature,
+            // which this tree never turns on; its replacement needs `async-io` directly.
+            #[allow(deprecated)]
+            fn serve(secret_service: bool) -> Self {
+                use zbus::blocking::connection::Builder;
+                let state = Shared::default();
+                let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+                let served = state.clone();
+                // The server's handshake waits for the client's, so it runs alongside.
+                let server = std::thread::spawn(move || {
+                    let mut builder = Builder::unix_stream(a)
+                        .server(zbus::Guid::generate())
+                        .unwrap()
+                        .p2p();
+                    // Without any object the peer has no object server, and a call
+                    // would wait forever for an answer a bus would give at once.
+                    builder = builder.serve_at("/elsewhere", Elsewhere).unwrap();
+                    if secret_service {
+                        builder = builder
+                            .serve_at(PATH, Service(served.clone()))
+                            .unwrap()
+                            .serve_at(COLLECTION, Collection(served))
+                            .unwrap();
+                    }
+                    builder.build().unwrap()
+                });
+                let client = Builder::unix_stream(b).p2p().build().unwrap();
+                Fake {
+                    state,
+                    client,
+                    _server: server.join().unwrap(),
+                }
+            }
+
+            pub fn connection(&self) -> Connection {
+                self.client.clone()
+            }
+
+            pub fn keyring(&self) -> Keyring {
+                Keyring::on(self.connection()).unwrap()
+            }
+
+            pub fn items(&self) -> Vec<Item> {
+                self.state.lock().unwrap().items.values().cloned().collect()
+            }
+
+            pub fn lock_all(&self) {
+                for item in self.state.lock().unwrap().items.values_mut() {
+                    item.locked = true;
+                }
+            }
+
+            pub fn dismiss_prompts(&self) {
+                self.state.lock().unwrap().dismiss = true;
+            }
+
+            pub fn prompts(&self) -> u32 {
+                self.state.lock().unwrap().prompts
+            }
+        }
     }
 }

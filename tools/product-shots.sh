@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Takes product screenshots of Arakun's start screen in dark and light, for the
-# brand book, the README and the site.
+# Takes product screenshots of Arakun in dark and light, for the brand book,
+# the README and the site.
 #
 #   tools/product-shots.sh [--out DIR] [--modes "dark light"] [--palette ID]
-#                          [--size WxH] [--project DIR] [--wait SECONDS] [--no-build]
+#                          [--size WxH] [--project DIR] [--empty] [--wait SECONDS]
+#                          [--no-build]
 #
 # Each mode gets a fresh Arakun of its own, built from this checkout, that never
 # touches yours: on macOS a separate process with a scratch home, data and
@@ -13,9 +14,13 @@
 # typed: no keystroke can land in another app.
 #
 # The shots show a demo project (`/tmp/brave-otter`, made for the run and
-# removed after, unless --project names one) and a neutral shell prompt, so no
-# real path, account or host name gets in. Look at every file before you
-# publish it anyway.
+# removed after) and a neutral shell prompt, so no real path, account or host
+# name gets in. tools/product-shots-seed.py fills it with mock data: a small
+# TypeScript project with some history, and a finished Claude Code session
+# whose edits are left uncommitted, so the session, the Changes list and the
+# diffs agree. --empty shows the bare start screen instead, with a project of
+# one commit and no session; --project shoots a folder of yours, without mock
+# data. Look at every file before you publish it anyway.
 #
 # On Linux it stops any `arakun dev` already running and replaces that test
 # Arakun's palettes.json.
@@ -31,6 +36,7 @@ modes="dark light"
 palette=black
 size=1440x900
 project=""
+empty=0
 settle=10
 build=1
 
@@ -41,9 +47,10 @@ while [ $# -gt 0 ]; do
     --palette) palette=$2; shift 2 ;;
     --size) size=$2; shift 2 ;;
     --project) project=$2; shift 2 ;;
+    --empty) empty=1; shift ;;
     --wait) settle=$2; shift 2 ;;
     --no-build) build=0; shift ;;
-    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "product-shots: unknown argument $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -72,8 +79,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# A demo project with one commit, so the branch and status read like a real one.
-# A short fixed path, since the status bar shows it.
+# The demo project, at a short fixed path, since the status bar shows it. The
+# seed is the state and data the test Arakun starts from (see
+# tools/product-shots-seed.py); none for --empty or --project.
+seed=""
 if [ -z "$project" ]; then
   project=/tmp/brave-otter
   if [ -e "$project" ]; then
@@ -82,10 +91,18 @@ if [ -z "$project" ]; then
   fi
   demo=$project
   mkdir -p "$project"
-  git -C "$project" init -q -b main
-  printf '# brave-otter\n\nA demo project for Arakun screenshots.\n' > "$project/README.md"
-  git -C "$project" add README.md
-  git -C "$project" -c user.name=demo -c user.email=demo@example.com commit -qm "init"
+  if [ "$empty" = 1 ]; then
+    # One commit, so the branch and status read like a real one.
+    git -C "$project" init -q -b main
+    printf '# brave-otter\n\nA demo project for Arakun screenshots.\n' > "$project/README.md"
+    git -C "$project" add README.md
+    git -C "$project" -c user.name=demo -c user.email=demo@example.com commit -qm "init"
+  else
+    seed="$scratch/seed"
+    python3 "$root_dir/tools/product-shots-seed.py" "$project" "$seed"
+    # The restored session connects to this stand-in instead of Claude Code.
+    export ARAKUN_CLAUDE_ACP="$seed/mock-acp.py"
+  fi
 fi
 mkdir -p "$out"
 
@@ -105,6 +122,10 @@ neutral_shell() {
 shoot_macos() {
   local mode=$1 dir="$scratch/$1"
   mkdir -p "$dir/home" "$dir/data/arakun" "$dir/run"
+  if [ -n "$seed" ]; then
+    cp "$seed/state.json" "$dir/state.json"
+    cp -R "$seed/data/." "$dir/data/"
+  fi
   palettes "$mode" > "$dir/palettes.json"
   neutral_shell "$dir/zdot"
   # The largest on-screen window of a process, by its CoreGraphics number.
@@ -130,6 +151,7 @@ SWIFT
     LANG=en_US.UTF-8 USER=demo LOGNAME=demo SHELL=/bin/zsh ZDOTDIR="$dir/zdot" \
     ARAKUN_STATE="$dir/state.json" XDG_DATA_HOME="$dir/data" XDG_RUNTIME_DIR="$dir/run" \
     ARAKUN_CI=off ARAKUN_GITHUB=readonly ARAKUN_DEV="$size" \
+    ${ARAKUN_CLAUDE_ACP:+ARAKUN_CLAUDE_ACP="$ARAKUN_CLAUDE_ACP"} \
     "$bin" "$project" > "$dir/arakun.log" 2>&1 &
   local pid=$! id=0
   running=$pid
@@ -175,12 +197,14 @@ shoot_linux() {
   mkdir -p "$devroot"
   palettes "$mode" > "$devroot/palettes.json"
   dev_running=1
+  local args=("$project" --size "$size")
+  [ -n "$seed" ] && args+=(--seed "$seed")
   if command -v zsh >/dev/null; then
     neutral_shell "$scratch/zdot"
-    SHELL=$(command -v zsh) ZDOTDIR="$scratch/zdot" "$bin" dev start "$project" --size "$size"
+    SHELL=$(command -v zsh) ZDOTDIR="$scratch/zdot" "$bin" dev start "${args[@]}"
   else
     echo "product-shots: no zsh, so the terminal shows your usual prompt" >&2
-    "$bin" dev start "$project" --size "$size"
+    "$bin" dev start "${args[@]}"
   fi
   sleep "$settle"
   "$bin" dev shot "$out/$mode.png"

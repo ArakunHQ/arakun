@@ -332,14 +332,15 @@ impl Shell {
         cx.background_spawn(crate::guard::task(async { onboarding::set_done() }))
             .detach();
         for view in onboarding::views_set_up(o.fresh, o.github, o.pair_phone) {
-            self.extensions_view
+            self.views
+                .extensions
                 .update(cx, |v, cx| v.set_view(view, true, cx));
         }
         if self.has_projects() {
             // Someone new lands on the start screen with a few keys to know.
             self.setup_tips = o.fresh;
             self.phone_after_project = false;
-            window.focus(&self.composer_focus, cx);
+            self.focus_composer(window, cx);
             if o.pair_phone {
                 self.open_phone_tab(window, cx);
             }

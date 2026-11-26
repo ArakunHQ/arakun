@@ -11,7 +11,7 @@ use gpui::{BorderStyle, Bounds, Corners, Edges, Hsla, Pixels, Point, canvas, qua
 impl Shell {
     /// Customize is open on its Sidebar tab: the rail is being arranged.
     pub(super) fn arranging(&self) -> bool {
-        self.customize.is_some() && self.customize_tab == CustomizeTab::Sidebar
+        self.panel.customize.is_some() && self.panel.customize_tab == CustomizeTab::Sidebar
     }
 
     /// Lays a click target over a rail piece or segment title while
@@ -380,7 +380,8 @@ impl Shell {
             chip("arr-more".into(), "store01", "More in Marketplace…".into()).on_click(
                 cx.listener(|this, _, window, cx| {
                     this.open_extensions_tab(window, cx);
-                    this.extensions_view
+                    this.views
+                        .extensions
                         .update(cx, |v, cx| v.show_extensions(cx));
                 }),
             ),

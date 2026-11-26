@@ -55,7 +55,6 @@ pub(crate) mod pages;
 mod palette;
 mod panel;
 mod panes;
-mod paste;
 mod phone;
 mod pinned;
 mod posthog;
@@ -77,6 +76,7 @@ mod subagents;
 mod subnav;
 mod survey_card;
 mod switching;
+mod tab_views;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -94,30 +94,20 @@ use crate::account::Account;
 use crate::account_view::{self, AccountDialog, AccountDialogEvent};
 use crate::agent::AgentKind;
 use crate::attach_picker::{AttachEvent, AttachPicker};
-use crate::branches_view::BranchesView;
 use crate::ci::{self, Ci};
-use crate::cloudflare_view::CloudflareView;
 #[cfg(feature = "coderlabs")]
 use crate::coderspace::CoderSpace;
 use crate::customize_view::{CustomizeEvent, CustomizeTab, CustomizeView};
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
-use crate::doop_view::DoopView;
 use crate::explorer;
-use crate::extensions_view::ExtensionsView;
-use crate::gallery_view::GalleryView;
 use crate::git;
 use crate::github::GitHub;
-use crate::github_view::GitHubView;
 use crate::highlight;
 use crate::input::{InputEvent, TextInput};
-use crate::linear_view::LinearView;
-use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
     self, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
 };
 use crate::picker::{FolderPicker, PickerEvent};
-use crate::posthog_view::PostHogView;
-use crate::runs_view::RunsView;
 use crate::settings_view::{SettingsDialog, SettingsEvent};
 #[cfg(feature = "coderlabs")]
 use crate::site_view::SiteView;
@@ -129,8 +119,6 @@ use crate::team_view::{TeamEvent, TeamView};
 use crate::terminal::{Terminal, TerminalEvent, TerminalView};
 use crate::theme;
 use crate::ui::{self, hover_icon, icon, icon_button};
-use crate::usage_view::UsageView;
-use composer::Completion;
 
 gpui::actions!(
     arakun,
@@ -337,7 +325,6 @@ pub struct Shell {
     /// The thread the pane drew last, to fade in the next (`switching`).
     shown: RefCell<switching::Shown>,
     active_project: usize,
-    panel_tab: PanelTab,
     dock_open: bool,
     dock_height: f32,
     /// Set while the dock's top edge is being dragged.
@@ -350,30 +337,11 @@ pub struct Shell {
     /// Where the environment menu was opened from below (the composer); `None`
     /// anchors it under the panel header.
     env_menu_at: Option<gpui::Point<Pixels>>,
-    /// The composer's text as last painted, for clicks, Up/Down and the IME.
-    composer_layout: Rc<RefCell<Option<TextLayout>>>,
-    composer_scroll: ScrollHandle,
     tab_scroll: ScrollHandle,
     /// The tab last scrolled into view in the title bar, so a new active tab is too.
     tab_revealed: Cell<Option<u64>>,
     /// A check is queued for keyboard focus that went nowhere (see `render`).
     refocus_queued: bool,
-    /// Scroll the composer to its caret on the next paint; set by edits and
-    /// caret moves, not by the wheel.
-    composer_reveal: Rc<Cell<bool>>,
-    /// A mouse selection is being dragged in the composer.
-    composer_selecting: bool,
-    /// Where Up/Down aim, so the caret keeps its column across shorter lines.
-    composer_goal_x: Option<Pixels>,
-    prompt_history: crate::history::History,
-    /// The history entry Up/Down brought into the composer.
-    history_at: Option<usize>,
-    /// Saves the state shortly after the draft stops changing.
-    draft_save: Option<Task<()>>,
-    /// The composer's caret, shared with the canvas that paints it.
-    caret: Rc<RefCell<crate::caret::Caret>>,
-    _caret_focus: Subscription,
-    _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
     /// The popover survey card and what its clock knows (`shell::survey_card`).
     survey: survey_card::CardState,
@@ -386,14 +354,6 @@ pub struct Shell {
     /// The background read of `repo_slugs`; a new one replaces it.
     repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
-    /// Rows of the sidebar picked with Ctrl or Shift+click (`rail_pick`), by path.
-    rail_pick: Vec<std::path::PathBuf>,
-    /// The row Shift+click picks from.
-    rail_pick_anchor: Option<std::path::PathBuf>,
-    /// Sessions of the sidebar's tree picked with Ctrl or Shift+click, by id,
-    /// and the one clicked last, where Shift starts.
-    tree_pick: Vec<SharedString>,
-    tree_pick_anchor: Option<SharedString>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// When the last background `git fetch` ended, so the network is asked rarely.
@@ -404,24 +364,20 @@ pub struct Shell {
     git_reads: git_actions::GitReads,
     /// Diff tabs whose file lost its changes; closed from `render` (needs a window).
     stale_diffs: Vec<(std::path::PathBuf, String)>,
-    /// Open `@`/`/` completion of the composer.
-    completion: Option<Completion>,
-    /// `git ls-files` of an environment, cached briefly for `@` completion.
-    file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
-    /// The environment whose file index is being read, if any.
-    file_index_loading: Option<std::path::PathBuf>,
-    /// The skills an environment's agents read, cached briefly for `/` completion.
-    skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
-    skill_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
     /// while its intro fades the screen in) and the small raccoon atop the
     /// rail, which steps aside while a raccoon shows in the main view.
     home_face: Entity<crate::ascii_face::AsciiFace>,
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
-    explorer_scroll: UniformListScrollHandle,
     focus: FocusHandle,
+    /// The composer: each environment's draft, its caret, history and completion.
+    composer: Entity<composer::Composer>,
+    /// The composer's focus, kept here to focus it without reading the entity.
     composer_focus: FocusHandle,
+    /// The composer's events, and its focus: focusing it claims its tab,
+    /// leaving it lets the tab go.
+    _composer: [Subscription; 3],
     _activation: Subscription,
     /// Where the window is, saved with the state so it reopens there.
     window_state: Option<state::WindowState>,
@@ -454,15 +410,14 @@ pub struct Shell {
     teams: Entity<crate::arakun_teams::Teams>,
     teams_view: Entity<crate::arakun_teams::view::TeamsView>,
     _teams: [Subscription; 2],
-    rail_open: bool,
-    panel_open: bool,
+    /// The project rail on the left: open, width, picks and the session tree.
+    rail: rail::Rail,
+    /// The Workspace panel on the right: open, width, tab and Customize.
+    panel: panel::Panel,
     /// What the rail shows, in the user's order.
     sidebar: crate::sidebar::Sidebar,
     /// The sidebar builder tab's selection, fields and undo.
     builder: sidebar_builder::Builder,
-    /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
-    rail_w: f32,
-    panel_w: f32,
     /// The widths the rail and workspace panel are drawn at this frame: the
     /// dragged ones, narrowed when the window is too small to leave the work
     /// in the middle `MAIN_MIN_W` (see `fit_sides`).
@@ -470,13 +425,8 @@ pub struct Shell {
     /// The workspace panel, open but left out this frame because the window
     /// is too narrow for it (see `crowd_out`).
     side_crowded: Cell<bool>,
-    /// The user left the Session tab, so a new subagent or pull request
-    /// doesn't bring it back until restart.
-    subagents_dismissed: bool,
-    /// The subagent whose transcript the Session tab shows.
-    subagent_view: Option<subagents::SubagentView>,
-    /// Redraws the Session tab each second while a subagent in it runs.
-    subagent_tick: Option<Task<()>>,
+    /// The Session tab's subagent state: the one open, its redraw, dismissal.
+    subagents: subagents::Subagents,
     /// The session on screen when its branch's pull request was last looked
     /// at, and whether it had one: a read that finds one counts as connecting
     /// it, a switch to a session that already has one does not.
@@ -504,13 +454,8 @@ pub struct Shell {
     #[cfg(feature = "coderlabs")]
     _tasks: [Subscription; 3],
     ci: Entity<Ci>,
-    runs_view: Entity<RunsView>,
-    memory_view: Entity<MemoryView>,
-    _memory_view: Subscription,
-    /// New scene and Change in the Isometric tab start sessions.
-    _iso_view: Subscription,
-    cloudflare_view: Entity<CloudflareView>,
-    _cloudflare_view: [Subscription; 2],
+    /// The views of the one-page tabs, with their subscriptions.
+    views: tab_views::TabViews,
     #[cfg(feature = "coderlabs")]
     site_view: Entity<SiteView>,
     #[cfg(feature = "coderlabs")]
@@ -519,21 +464,10 @@ pub struct Shell {
     team_view: Entity<TeamView>,
     #[cfg(feature = "team")]
     _team_view: Subscription,
-    posthog_view: Entity<PostHogView>,
-    _posthog_view: Subscription,
-    linear_view: Entity<LinearView>,
-    _linear_view: Subscription,
     linear_sync: linear_sync::LinearSync,
-    doop_view: Entity<DoopView>,
-    _doop_view: Subscription,
-    branches_view: Entity<BranchesView>,
     github: Entity<GitHub>,
-    github_view: Entity<GitHubView>,
     pilot: Entity<crate::github::pilot::Pilot>,
-    _github: [Subscription; 5],
-    extensions_view: Entity<ExtensionsView>,
-    _extensions_view: [Subscription; 2],
-    _branches_view: Subscription,
+    _github: [Subscription; 4],
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
     /// The account's signed-in devices, for the Phone tab's relay section.
@@ -541,33 +475,15 @@ pub struct Shell {
     beta_card: beta_card::BetaCard,
     /// The account `relay_owner_changed` last settled the relay's devices for.
     relay_owner_seen: Option<crate::phone::AccountNow>,
-    phone_view: Entity<crate::phone_view::PhoneView>,
-    _phone_view: Subscription,
     /// The connections to the machines running `arakun server`, once the
     /// Computers tab was opened.
     servers: Option<servers::ServersLink>,
-    servers_view: Entity<crate::servers_view::ServersView>,
-    _servers_view: Subscription,
-    usage_view: Entity<UsageView>,
-    /// Set while a frame is built when it shows the Usage view.
-    usage_shown: std::cell::Cell<bool>,
-    gallery_view: Entity<GalleryView>,
-    iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
     canvas_view: Entity<crate::canvas_view::CanvasView>,
-    /// The Customize panel, while it is open in the workspace panel's place.
-    customize: Option<(Entity<CustomizeView>, Subscription)>,
-    /// The tab Customize shows: on Sidebar, the rail is being arranged.
-    customize_tab: CustomizeTab,
-    _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
     /// The project check's state per session id.
     checks: std::collections::HashMap<String, checks::CheckLoop>,
-    /// Large pastes waiting in each environment's composer, sent with the draft.
-    pastes: std::collections::HashMap<std::path::PathBuf, Vec<paste::Paste>>,
-    /// Annotations and review comments waiting in each environment's composer.
-    notes: std::collections::HashMap<std::path::PathBuf, Vec<crate::agent::notes::ChatNote>>,
     review_draft: Option<notes::ReviewDraft>,
     /// The session card being dragged.
     lifted: Option<SharedString>,
@@ -581,11 +497,6 @@ pub struct Shell {
     /// The session on screen pinned itself, or something was pinned: after
     /// that, nothing pins by itself in this window.
     pins_seeded: bool,
-    /// Projects the user folded (false) or opened (true) in the sidebar's
-    /// tree of sessions, over what `tab_layout::Quiet` does by itself.
-    tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
-    /// The tree's row under the pointer, which Alt+P pins.
-    tree_hover: Option<(usize, usize, SharedString)>,
     /// The local servers found by the last look (`shell::running`).
     running: Vec<crate::running::Server>,
     /// A look is under way.
@@ -593,31 +504,14 @@ pub struct Shell {
     /// Look once more when the one under way ends.
     running_again: bool,
     running_checked: Option<Instant>,
-    /// Where the tree's rows sat when the pointer came over it. They stay
-    /// there until it leaves, so no row moves from under the pointer.
-    tree_held: Option<session_tree::HeldRows>,
-    /// The tree menu's Applies to is on Select projects: the order picked
-    /// goes to the projects ticked in the list beside it.
-    tree_sort_select: bool,
-    /// The id of the sidebar's active row under the pointer, which shows
-    /// its archive button.
-    active_hover: Option<SharedString>,
-    /// The search of the Sessions menu.
-    tree_filter: Entity<TextInput>,
-    _tree_filter: Subscription,
     /// The pinned tabs drawn under "N more" in the last frame.
     bar_more: RefCell<Vec<u64>>,
     /// Where the pinned tabs' part of the title bar was in the last frame.
     bar_area: Rc<Cell<Bounds<Pixels>>>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
-    /// Other sessions' conversations waiting in each environment's composer.
-    attached: std::collections::HashMap<std::path::PathBuf, Vec<drag::AttachedContext>>,
     /// Dropped sessions still being read for each environment's composer.
     dropping: std::collections::HashMap<std::path::PathBuf, usize>,
-    saved_prompts: Vec<crate::prompts::SavedPrompt>,
-    /// A one-line note under the composer (a prompt was saved, ...), until the next key.
-    composer_flash: Option<SharedString>,
     /// The agent whose models the model menu shows; `None` is the composer's.
     menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
@@ -631,7 +525,7 @@ pub struct Shell {
     limit_alerts: std::collections::HashMap<String, u8>,
     /// The first limit check only notes the levels; later ones notify.
     limits_seen: bool,
-    _runs: [Subscription; 3],
+    _runs: [Subscription; 2],
     /// The Dynamic Island, while it is on and the compositor has layer-shell.
     island: Option<island::IslandLink>,
     #[cfg(feature = "team")]
@@ -776,18 +670,26 @@ impl Shell {
                 .update(cx, |ci, cx| ci.set_window_active(active, cx));
             this.github
                 .update(cx, |g, cx| g.set_window_active(active, cx));
+            this.pilot
+                .update(cx, |p, cx| p.set_window_active(active, cx));
             this.sync_teams_shown(window, cx);
             this.sync_polled_shown(window, cx);
         });
         let focus = cx.focus_handle();
-        let composer_focus = cx.focus_handle();
-        let caret_focus = cx.on_focus(&composer_focus, window, |this, window, cx| {
-            this.claim_composer_tab(window, cx)
-        });
-        let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| {
-            this.spy_from_composer(window, cx)
-        });
-        let (projects, active_project, layout, strip) = state::restore(state::load());
+        let (projects, active_project, layout, strip, drafts) = state::restore(state::load());
+        let composer = cx.new(|cx| composer::Composer::new(drafts, cx));
+        let composer_focus = composer.read(cx).focus.clone();
+        let composer_subs = [
+            cx.subscribe_in(&composer, window, |this, _, ev, window, cx| {
+                this.on_composer_event(ev, window, cx)
+            }),
+            cx.on_focus(&composer_focus, window, |this, window, cx| {
+                this.claim_composer_tab(window, cx)
+            }),
+            cx.on_blur(&composer_focus, window, |this, window, cx| {
+                this.spy_from_composer(window, cx)
+            }),
+        ];
         crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
             std::iter::once(&p.path)
                 .chain(p.environments.iter().map(|e| &e.path))
@@ -840,15 +742,8 @@ impl Shell {
                 InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
                 _ => {}
             });
-        let tree_filter = cx.new(|cx| TextInput::new("Find a session", cx));
-        let tree_filter_sub = cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
-            match ev {
-                InputEvent::Cancel => this.menu = None,
-                InputEvent::Changed => {}
-                _ => return,
-            }
-            cx.notify();
-        });
+        let rail = rail::Rail::new(&layout, cx);
+        let panel = panel::Panel::new(&layout);
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -877,78 +772,17 @@ impl Shell {
             }),
         ];
         let ci = cx.new(Ci::new);
-        let runs_view = cx.new(|cx| RunsView::new(ci.clone(), cx));
         let runs_subs = [
             cx.observe(&ci, |this, _, cx| {
                 this.branch_pr_read(cx);
                 cx.notify()
             }),
-            cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| {
-                this.on_runs_event(ev, window, cx)
-            }),
             cx.subscribe_in(&ci, window, |this, _, ev, window, cx| {
                 this.on_ci_event(ev, window, cx)
             }),
         ];
-        let memory_view = cx.new(MemoryView::new);
-        let memory_sub = cx.subscribe_in(
-            &memory_view,
-            window,
-            |this, _, ev: &MemoryEvent, window, cx| match ev {
-                MemoryEvent::Edit(path) => this.edit_in_terminal(path, None, window, cx),
-            },
-        );
-        let usage_view = cx.new(UsageView::new);
-        let gallery_view = cx.new(GalleryView::new);
-        let iso_view = cx.new(crate::iso_view::IsoView::new);
-        let iso_sub = cx.subscribe_in(
-            &iso_view,
-            window,
-            |this, _, ev: &crate::iso_view::IsoEvent, window, cx| match ev {
-                crate::iso_view::IsoEvent::Ask { title, prompt } => {
-                    let env = this.env().path.clone();
-                    this.start_session_in(
-                        &env,
-                        model::default_agent(),
-                        title.clone().into(),
-                        prompt.clone(),
-                        true,
-                        window,
-                        cx,
-                    );
-                }
-            },
-        );
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
-        let usage_sub = cx.subscribe_in(
-            &usage_view,
-            window,
-            |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
-                crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
-                crate::usage_view::UsageEvent::ClaudeSignIn => {
-                    if let Some(cmd) = crate::agent::login_command(AgentKind::Claude) {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
-                }
-                crate::usage_view::UsageEvent::PlanUpdated => {
-                    this.check_limit_alerts(cx);
-                    this.phone_usage_changed(cx);
-                }
-            },
-        );
-        let cloudflare_view = cx.new(CloudflareView::new);
-        let cloudflare_sub = [
-            cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
-                this.on_cloudflare_event(ev, window, cx)
-            }),
-            // Open, its pages are tabs the shell draws: their counts follow the view.
-            cx.observe(&cloudflare_view, |this, _, cx| {
-                if this.shows_subnav_view(crate::sidebar::View::Cloudflare) {
-                    cx.notify();
-                }
-            }),
-        ];
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
@@ -966,38 +800,11 @@ impl Shell {
                 TeamEvent::Reload => this.sync_team(window, cx),
             },
         );
-        let posthog_view = cx.new(PostHogView::new);
-        let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
-            this.on_posthog_event(ev, window, cx)
-        });
-        let linear_view = cx.new(|cx| LinearView::new(window, cx));
-        let linear_sub = cx.subscribe_in(&linear_view, window, |this, _, ev, window, cx| {
-            this.on_linear_event(ev, window, cx)
-        });
-        let doop_view = cx.new(DoopView::new);
-        let doop_sub = cx.subscribe_in(&doop_view, window, |this, _, ev, window, cx| {
-            this.on_doop_event(ev, window, cx)
-        });
-        let branches_view = cx.new(BranchesView::new);
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
-        let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
-        let extensions_sub = [
-            cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
-                this.on_extensions_event(ev, window, cx)
-            }),
-            cx.observe(&extensions_view, |this, _, cx| {
-                if this.shows_subnav_view(crate::sidebar::View::Extensions) {
-                    cx.notify();
-                }
-            }),
-        ];
-        let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
-            this.on_branches_event(ev, window, cx)
-        });
         let github = cx.new(GitHub::new);
         let pilot = cx.new(crate::github::pilot::Pilot::new);
-        let github_view = cx.new(|cx| GitHubView::new(github.clone(), pilot.clone(), cx));
+        let tab_views = tab_views::TabViews::new(&ci, &github, &pilot, views, window, cx);
         let github_subs = [
             cx.observe(&pilot, |_, _, cx| cx.notify()),
             cx.subscribe_in(&pilot, window, |this, _, ev, window, cx| {
@@ -1005,21 +812,10 @@ impl Shell {
             }),
             // The rail badge counts what the model holds.
             cx.observe(&github, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&github_view, window, |this, _, ev, window, cx| {
-                this.on_github_view_event(ev, window, cx)
-            }),
             cx.subscribe_in(&github, window, |this, _, ev, window, cx| {
                 this.on_github_event(ev, window, cx)
             }),
         ];
-        let phone_view = cx.new(crate::phone_view::PhoneView::new);
-        let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
-            this.on_phone_event(ev, window, cx)
-        });
-        let servers_view = cx.new(crate::servers_view::ServersView::new);
-        let servers_sub = cx.subscribe_in(&servers_view, window, |this, _, ev, window, cx| {
-            this.on_servers_event(ev, window, cx)
-        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -1047,7 +843,6 @@ impl Shell {
             ahead: Default::default(),
             shown: Default::default(),
             active_project,
-            panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
             dock_height: layout.dock_height,
             dock_drag: false,
@@ -1055,46 +850,27 @@ impl Shell {
             env_menu_open: false,
             pending_envs: Vec::new(),
             env_menu_at: None,
-            composer_layout: Rc::default(),
-            composer_scroll: ScrollHandle::new(),
             tab_scroll: ScrollHandle::new(),
             tab_revealed: Cell::new(None),
             refocus_queued: false,
-            composer_reveal: Rc::default(),
-            composer_selecting: false,
-            composer_goal_x: None,
-            prompt_history: crate::history::History::load(),
-            history_at: None,
-            draft_save: None,
-            caret: Default::default(),
-            _caret_focus: caret_focus,
-            _composer_blur: composer_blur,
             modal: None,
             survey: survey_card::CardState::new(Instant::now()),
             palette_watch: None,
             repo_slugs: Default::default(),
             repo_slugs_read: None,
             menu: None,
-            rail_pick: Vec::new(),
-            rail_pick_anchor: None,
-            tree_pick: Vec::new(),
-            tree_pick_anchor: None,
             poll: None,
             last_fetch: None,
             fetching: false,
             git_reads: Default::default(),
             stale_diffs: Vec::new(),
-            completion: None,
-            file_index: None,
-            file_index_loading: None,
-            skill_index: None,
-            skill_index_loading: false,
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
-            explorer_scroll: UniformListScrollHandle::new(),
             focus,
+            composer,
             composer_focus,
+            _composer: composer_subs,
             _activation: activation,
             window_state: layout.window,
             _bounds: cx
@@ -1112,17 +888,13 @@ impl Shell {
             teams,
             teams_view,
             _teams: teams_subs,
-            rail_open: layout.rail_open,
-            panel_open: layout.panel_open,
+            rail,
+            panel,
             sidebar,
             builder: Default::default(),
-            rail_w: layout.rail_w,
-            panel_w: layout.panel_w,
             side_fit: Cell::new([layout.rail_w, layout.panel_w]),
             side_crowded: Cell::new(false),
-            subagents_dismissed: false,
-            subagent_view: None,
-            subagent_tick: None,
+            subagents: Default::default(),
             branch_pr_seen: None,
             arcade: layout.arcade,
             pins: crate::palette::pins::Pins::load(),
@@ -1142,12 +914,7 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             _tasks: tasks_subs,
             ci,
-            runs_view,
-            memory_view,
-            _memory_view: memory_sub,
-            _iso_view: iso_sub,
-            cloudflare_view,
-            _cloudflare_view: cloudflare_sub,
+            views: tab_views,
             #[cfg(feature = "coderlabs")]
             site_view,
             #[cfg(feature = "coderlabs")]
@@ -1156,68 +923,34 @@ impl Shell {
             team_view,
             #[cfg(feature = "team")]
             _team_view: team_sub,
-            posthog_view,
-            _posthog_view: posthog_sub,
-            linear_view,
-            _linear_view: linear_sub,
             linear_sync: Default::default(),
-            doop_view,
-            _doop_view: doop_sub,
-            branches_view,
-            _branches_view: branches_sub,
             github,
-            github_view,
             pilot,
             _github: github_subs,
-            extensions_view,
-            _extensions_view: extensions_sub,
             phone: None,
             signed_in: Default::default(),
             beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,
-            phone_view,
-            _phone_view: phone_sub,
             servers: None,
-            servers_view,
-            _servers_view: servers_sub,
-            _usage_view: usage_sub,
-            usage_view,
-            usage_shown: std::cell::Cell::new(false),
-            gallery_view,
-            customize: None,
-            customize_tab: CustomizeTab::Colors,
-            iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
             fix_loops: std::collections::HashMap::new(),
             checks: std::collections::HashMap::new(),
-            pastes: std::collections::HashMap::new(),
-            notes: std::collections::HashMap::new(),
             review_draft: None,
             lifted: None,
             lifted_tab: None,
             tab_drop: None,
             tab_drop_over: None,
             pins_seeded: false,
-            tree_open: std::collections::HashMap::new(),
-            tree_hover: None,
             running: Vec::new(),
             running_scanning: false,
             running_again: false,
             running_checked: None,
-            tree_held: None,
-            tree_sort_select: false,
-            active_hover: None,
-            tree_filter,
-            _tree_filter: tree_filter_sub,
             bar_more: RefCell::default(),
             bar_area: Rc::default(),
             slide: None,
             drop_menu: None,
-            attached: std::collections::HashMap::new(),
             dropping: std::collections::HashMap::new(),
-            saved_prompts: crate::prompts::load(),
-            composer_flash: None,
             menu_agent: None,
             menu_cursor: None,
             effort_hover: None,
@@ -1244,7 +977,7 @@ impl Shell {
                 cx.on_app_quit(|this, cx| {
                     // A draft typed in the last moments may not be saved yet.
                     // Replaces any save still queued, so none can land over it.
-                    state::queue(this.state_bytes());
+                    state::queue(this.state_bytes(cx));
                     if let Err(e) = state::write_queued() {
                         eprintln!("arakun: could not save state: {e}");
                     }
@@ -1311,6 +1044,7 @@ impl Shell {
         this.restore_servers(window, cx);
         this.start_updates(window, cx);
         this.report_unreadable(cx);
+        this.watch_secret_store(cx);
         this
     }
 
@@ -1468,10 +1202,11 @@ impl Shell {
         self.active_project = pi;
         self.projects[pi].active_env = ei;
         self.env_menu_open = false;
-        self.completion = None;
+        let env = self.env().path.clone();
+        self.composer.update(cx, |c, _| c.show_env(&env));
         self.sync_teams_project(cx);
         self.refresh_visible(cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             self.ensure_explorer(cx);
         }
         self.env_followed = true;
@@ -1488,7 +1223,15 @@ impl Shell {
                 .chain(p.environments.iter().map(|e| &e.path))
                 .map(|path| (path.clone(), p.sandbox))
         }));
-        state::queue(self.state_bytes());
+        let envs: std::collections::HashSet<&std::path::Path> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .map(|e| e.path.as_path())
+            .collect();
+        self.composer
+            .update(cx, |c, _| c.retain_drafts(|env| envs.contains(env)));
+        state::queue(self.state_bytes(cx));
         cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write_queued() {
                 eprintln!("arakun: could not save state: {e}");
@@ -1532,6 +1275,29 @@ impl Shell {
         }
     }
 
+    /// Says once, ever, that secrets went to a private file because there is
+    /// no keyring. They are kept on background threads, so this looks every
+    /// few seconds, and stops once it has said it.
+    fn watch_secret_store(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if this.upgrade().is_none() {
+                    break;
+                }
+                let Some(body) = crate::secret_store::take_notice() else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    let title = "Keys are kept in a private file";
+                    this.notify(crate::island::AlertKind::Warning, title, body, None, cx);
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
     /// Notes where the window is, for the next save.
     fn track_window(&mut self, window: &Window, cx: &App) {
         let display = window
@@ -1547,14 +1313,14 @@ impl Shell {
         ));
     }
 
-    fn state_bytes(&self) -> Vec<u8> {
+    fn state_bytes(&self, cx: &App) -> Vec<u8> {
         let layout = state::Layout {
             dock_open: self.dock_open,
             dock_height: self.dock_height,
-            rail_open: self.rail_open,
-            panel_open: self.panel_open,
-            rail_w: self.rail_w,
-            panel_w: self.panel_w,
+            rail_open: self.rail.open,
+            panel_open: self.panel.open,
+            rail_w: self.rail.width,
+            panel_w: self.panel.width,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
             glass: theme::glass_chosen(),
@@ -1570,7 +1336,14 @@ impl Shell {
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
         };
-        state::snapshot_with(&self.projects, &self.strip, self.active_project, layout)
+        let composer = self.composer.read(cx);
+        state::snapshot_with(
+            &self.projects,
+            &self.strip,
+            self.active_project,
+            layout,
+            &|env| composer.saved(env),
+        )
     }
 
     /// Re-reads a project's worktrees, then the status of every environment.
@@ -1731,7 +1504,7 @@ impl Shell {
         }
         let path = self.env().path.clone();
         self.refresh_status(&path, cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             let dirs = self.env().explorer.loaded_dirs();
             self.reload_dirs(path, dirs, cx);
         }
@@ -1921,7 +1694,7 @@ impl Shell {
             self.sync_linear(window, cx);
         }
         self.save(cx);
-        window.focus(&self.composer_focus, cx);
+        self.focus_composer(window, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
         // The setup goes on to its next step, or ends when the project
@@ -2328,7 +2101,7 @@ impl Shell {
         }
         self.select_env(pi, ei, window, cx);
         // It opens on its New session tab, ready for the first prompt.
-        window.focus(&self.composer_focus, cx);
+        self.focus_composer(window, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -2452,7 +2225,7 @@ impl Shell {
         self.show_view_tab("Memory", TabKind::Memory, |k| matches!(k, TabKind::Memory));
         self.note_active_tab(cx);
         let dir = self.env().path.clone();
-        self.memory_view.update(cx, |v, cx| {
+        self.views.memory.update(cx, |v, cx| {
             v.set_dir(&dir, cx);
             v.focus(window, cx);
         });
@@ -2469,7 +2242,7 @@ impl Shell {
             self.show_alone(Some(home::Alone::Usage), cx);
         }
         self.sync_usage_view(cx);
-        self.usage_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.usage.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -2508,14 +2281,30 @@ impl Shell {
         self.tab_shown(window, |k| matches!(k, TabKind::Memory))
     }
 
+    fn usage_shown(&self, window: &Window) -> bool {
+        if self.has_projects() {
+            self.tab_shown(window, |k| matches!(k, TabKind::Usage))
+        } else {
+            // With no project the tab shows in the welcome's place.
+            window.is_window_active()
+                && self.terminal_alone.is_none()
+                && self.alone == Some(home::Alone::Usage)
+        }
+    }
+
     /// Tells the tabs that poll files whether they are on screen: they only
     /// poll then.
     fn sync_polled_shown(&mut self, window: &Window, cx: &mut Context<Self>) {
         let cloudflare = self.cloudflare_shown(window);
         let memory = self.memory_shown(window);
-        self.cloudflare_view
+        let usage = self.usage_shown(window);
+        self.views
+            .cloudflare
             .update(cx, |v, _| v.set_shown(cloudflare));
-        self.memory_view.update(cx, |v, cx| v.set_shown(memory, cx));
+        self.views
+            .memory
+            .update(cx, |v, cx| v.set_shown(memory, cx));
+        self.views.usage.update(cx, |v, cx| v.set_shown(usage, cx));
     }
 
     /// Tells the Teams tab whether it is on screen: only then does a message
@@ -2613,7 +2402,7 @@ impl Shell {
             matches!(k, TabKind::Gallery)
         });
         self.note_active_tab(cx);
-        self.gallery_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.gallery.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -2628,7 +2417,7 @@ impl Shell {
         });
         self.note_active_tab(cx);
         let root = self.env().path.clone();
-        self.iso_view.update(cx, |v, cx| {
+        self.views.iso.update(cx, |v, cx| {
             v.set_root(root, cx);
             v.focus(window, cx);
         });
@@ -2684,7 +2473,7 @@ impl Shell {
             }
             places.push((p.path.clone(), name));
         }
-        self.usage_view.update(cx, |v, cx| {
+        self.views.usage.update(cx, |v, cx| {
             v.set_account(self.account.clone(), cx);
             v.set_context(titles, places, cx);
         });
@@ -2798,7 +2587,7 @@ impl Shell {
             self.sync_linear(window, cx);
             self.sync_poll(window, cx);
         }
-        self.rail_pick.retain(|p| !paths.contains(p));
+        self.rail.pick.retain(|p| !paths.contains(p));
         // Their tabs, and the pages of their browser tabs, go with them.
         self.settle_strip(cx);
         self.unfloat_github(cx);
@@ -2873,7 +2662,7 @@ impl Shell {
     fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = self.github_item(&url, cx) {
             self.open_github_tab(window, cx);
-            self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+            self.views.github.update(cx, |v, cx| v.reveal(&item, cx));
         } else {
             self.open_page(url, window, cx);
         }
@@ -3061,7 +2850,7 @@ impl Shell {
             })
         };
         let views_on = {
-            let ext = self.extensions_view.read(cx);
+            let ext = self.views.extensions.read(cx);
             crate::sidebar::View::EXTENSIONS
                 .iter()
                 .copied()
@@ -3080,7 +2869,7 @@ impl Shell {
             }
         });
         let look = crate::customize_view::Summary::of(
-            &match &self.customize {
+            &match &self.panel.customize {
                 Some((view, _)) => view.read(cx).saved().clone(),
                 None => crate::palettes::load(),
             },
@@ -3100,7 +2889,7 @@ impl Shell {
                 cx,
             )
         });
-        let rail_w = self.rail_w;
+        let rail_w = self.rail.width;
         dialog.update(cx, |d, _| d.rail_w = rail_w);
         let sub = cx.subscribe_in(
             &dialog,
@@ -3136,12 +2925,13 @@ impl Shell {
                     this.apply_tab_layout(*layout, *preset, cx)
                 }
                 SettingsEvent::SidebarWidth(w) => {
-                    this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
+                    this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
                     this.save(cx);
                     cx.notify();
                 }
                 SettingsEvent::SidebarView(view, on) => {
-                    this.extensions_view
+                    this.views
+                        .extensions
                         .update(cx, |v, cx| v.set_view(*view, *on, cx));
                 }
                 SettingsEvent::ProjectCommand {
@@ -3274,16 +3064,16 @@ impl Shell {
     fn toggle_panel(&mut self, cx: &mut Context<Self>) {
         // Customize holds the panel's place: the toggle brings the workspace
         // panel back there rather than hiding it unseen.
-        if self.customize.is_some() {
+        if self.panel.customize.is_some() {
             self.close_customize(cx);
-            if !self.panel_open {
-                self.panel_open = true;
+            if !self.panel.open {
+                self.panel.open = true;
                 self.save(cx);
             }
             cx.notify();
             return;
         }
-        self.panel_open = !self.panel_open;
+        self.panel.open = !self.panel.open;
         self.save(cx);
         cx.notify();
     }
@@ -3301,9 +3091,9 @@ impl Shell {
             self.close_modal(window, cx);
         }
         self.menu = None;
-        if let Some((view, _)) = &self.customize {
+        if let Some((view, _)) = &self.panel.customize {
             view.update(cx, |v, cx| v.set_tab(tab, cx));
-            self.customize_tab = tab;
+            self.panel.customize_tab = tab;
         } else {
             let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
             let sub =
@@ -3313,7 +3103,7 @@ impl Shell {
                     |this, _, ev: &CustomizeEvent, window, cx| match ev {
                         CustomizeEvent::Close => this.close_customize(cx),
                     CustomizeEvent::Tab(tab) => {
-                        this.customize_tab = *tab;
+                        this.panel.customize_tab = *tab;
                         cx.notify();
                     }
                         CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
@@ -3354,14 +3144,14 @@ impl Shell {
                             this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
-                            this.rail_w = *w;
+                            this.rail.width = *w;
                             this.save(cx);
                             cx.notify();
                         }
                         CustomizeEvent::ResetSidebar => {
                             this.change_sidebar(cx, |s| *s = crate::sidebar::Sidebar::default());
                             this.clear_builder_selection();
-                            this.rail_w = crate::state::RAIL_W;
+                            this.rail.width = crate::state::RAIL_W;
                             this.save(cx);
                         }
                         CustomizeEvent::UndoSidebar(redo) => this.undo_sidebar(*redo, cx),
@@ -3406,15 +3196,15 @@ impl Shell {
                         .map(|s| s.update(cx, |s, cx| s.render_arrange_panel(window, cx)))
                 }))
             });
-            self.customize_tab = tab;
-            self.customize = Some((view, sub));
+            self.panel.customize_tab = tab;
+            self.panel.customize = Some((view, sub));
         }
         cx.notify();
     }
 
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
-        self.customize = None;
+        self.panel.customize = None;
         // The views the Add chips marked new have been seen, except Teams
         // while the server keeps the account out: it stays new until it shows.
         let hidden: &[crate::sidebar::View] = if self.teams.read(cx).enabled() {
@@ -3433,12 +3223,13 @@ impl Shell {
     fn toggle_rail(&mut self, cx: &mut Context<Self>) {
         if self.sidebar.style.collapse == crate::sidebar::Collapse::Never {
             // Otherwise the key looks broken.
-            self.composer_flash =
-                Some("The sidebar always shows: Customize sidebar → When hidden.".into());
-            cx.notify();
+            self.flash(
+                "The sidebar always shows: Customize sidebar → When hidden.",
+                cx,
+            );
             return;
         }
-        self.rail_open = !self.rail_open;
+        self.rail.open = !self.rail.open;
         self.save(cx);
         cx.notify();
     }
@@ -3456,7 +3247,7 @@ impl Shell {
     /// Narrowed to icons it still shows, and some rails never close.
     fn rail_shown(&self) -> bool {
         use crate::sidebar::Collapse;
-        self.rail_open
+        self.rail.open
             || self.arranging()
             || !self.has_projects()
             || matches!(
@@ -3497,14 +3288,14 @@ impl Shell {
         let rail_card = match (rail, self.rail_narrow()) {
             (false, _) => (0., 0.),
             (true, true) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
-            (true, false) => (self.rail_w, RAIL_W_RANGE.start),
+            (true, false) => (self.rail.width, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
         let crowded = crowd_out(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
             self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
-            self.customize.is_some(),
+            self.panel.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
@@ -3523,8 +3314,8 @@ impl Shell {
             ],
         );
         self.side_fit.set([
-            if rail { r } else { self.rail_w },
-            if panel { p } else { self.panel_w },
+            if rail { r } else { self.rail.width },
+            if panel { p } else { self.panel.width },
         ]);
     }
 
@@ -3536,18 +3327,18 @@ impl Shell {
     /// Something should sit in the workspace panel's place: the panel of a
     /// project, or Customize, which also shows without one.
     fn panel_wanted(&self) -> bool {
-        self.customize.is_some() || (self.has_projects() && self.panel_open)
+        self.panel.customize.is_some() || (self.has_projects() && self.panel.open)
     }
 
     /// The panel's dragged width, or wider while Customize is in it (its
     /// palettes sit three to a row) or while it shows a subagent's transcript.
     fn panel_preferred_w(&self) -> f32 {
-        if self.customize.is_some() {
-            self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
-        } else if self.panel_tab == PanelTab::Session && self.subagent_view.is_some() {
-            self.panel_w.max(SUBAGENT_TRANSCRIPT_W)
+        if self.panel.customize.is_some() {
+            self.panel.width.max(crate::customize_view::CUSTOMIZE_W)
+        } else if self.panel.tab == PanelTab::Session && self.subagents.view.is_some() {
+            self.panel.width.max(SUBAGENT_TRANSCRIPT_W)
         } else {
-            self.panel_w
+            self.panel.width
         }
     }
 
@@ -3581,8 +3372,8 @@ impl Shell {
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
         self.set_panel_tab(PanelTab::Changes, cx);
-        if !self.panel_open {
-            self.panel_open = true;
+        if !self.panel.open {
+            self.panel.open = true;
             self.save(cx);
         }
         self.refresh_visible(cx);
@@ -3640,7 +3431,7 @@ impl Shell {
         if let Some(focus) = self.onboarding_focus() {
             window.focus(focus, cx);
         } else if self.has_projects() {
-            window.focus(&self.composer_focus, cx);
+            self.focus_composer(window, cx);
         } else {
             window.focus(&self.focus, cx);
         }
@@ -3689,7 +3480,8 @@ impl Shell {
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_teams_project(cx);
-        self.completion = None;
+        let env = self.env().path.clone();
+        self.composer.update(cx, |c, _| c.show_env(&env));
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -3699,7 +3491,7 @@ impl Shell {
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);
-        if self.panel_tab == PanelTab::Explorer {
+        if self.panel.tab == PanelTab::Explorer {
             self.ensure_explorer(cx);
         }
         self.save(cx);
@@ -3992,7 +3784,7 @@ impl Shell {
             None => self.strip.add(Tab::new_session(&path)),
         };
         self.note_active_tab(cx);
-        window.focus(&self.composer_focus, cx);
+        self.focus_composer(window, cx);
         cx.notify();
     }
 }
@@ -4149,7 +3941,7 @@ impl Shell {
                                         div().absolute().top(px(-top)).right(px(40.)).child(mascot),
                                     )
                                 })
-                                .child(self.render_composer(false, window, cx)),
+                                .child(self.render_composer(false, cx)),
                         )
                     })
                     .into_any_element()
@@ -4170,15 +3962,15 @@ impl Shell {
             }
             Some(TabKind::Runs) => {
                 self.sync_runs_view(cx);
-                self.runs_view.clone().into_any_element()
+                self.views.runs.clone().into_any_element()
             }
             Some(TabKind::Memory) => {
                 let dir = env.path.clone();
-                self.memory_view.update(cx, |v, cx| v.set_dir(&dir, cx));
-                self.memory_view.clone().into_any_element()
+                self.views.memory.update(cx, |v, cx| v.set_dir(&dir, cx));
+                self.views.memory.clone().into_any_element()
             }
             Some(TabKind::Cloudflare) => {
-                self.with_subnav(index, self.cloudflare_view.clone().into_any_element(), cx)
+                self.with_subnav(index, self.views.cloudflare.clone().into_any_element(), cx)
             }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Site) => self.site_view.clone().into_any_element(),
@@ -4187,37 +3979,39 @@ impl Shell {
             Some(TabKind::PostHog) => {
                 // Follows the visible project, also when it changes under an open tab.
                 let root = self.project().path.clone();
-                self.posthog_view
+                self.views
+                    .posthog
                     .update(cx, |v, cx| v.set_project(&root, cx));
-                self.posthog_view.clone().into_any_element()
+                self.views.posthog.clone().into_any_element()
             }
-            Some(TabKind::Linear) => self.linear_view.clone().into_any_element(),
-            Some(TabKind::Doop) => self.doop_view.clone().into_any_element(),
+            Some(TabKind::Linear) => self.views.linear.clone().into_any_element(),
+            Some(TabKind::Doop) => self.views.doop.clone().into_any_element(),
             Some(TabKind::Branches) => {
                 // Sessions start and stop all the time; the rows follow them.
                 self.sync_branches_view(cx);
-                self.branches_view.clone().into_any_element()
+                self.views.branches.clone().into_any_element()
             }
             Some(TabKind::GitHub) => {
                 let corners = self.pane_card_corners(index);
-                self.github_view
+                self.views
+                    .github
                     .update(cx, |v, cx| v.set_card_corners(corners, cx));
-                self.github_view.clone().into_any_element()
+                self.views.github.clone().into_any_element()
             }
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();
-                self.extensions_view.update(cx, |v, cx| {
+                self.views.extensions.update(cx, |v, cx| {
                     v.set_dir(dir, cx);
                     v.refresh_if_stale(cx);
                 });
-                self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
+                self.with_subnav(index, self.views.extensions.clone().into_any_element(), cx)
             }
-            Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
+            Some(TabKind::Phone) => self.views.phone.clone().into_any_element(),
             Some(TabKind::Servers) => {
                 // This computer's sessions start and stop all the time; its row follows them.
                 self.sync_this_computer(cx);
-                self.servers_view.clone().into_any_element()
+                self.views.servers.clone().into_any_element()
             }
             Some(TabKind::Teams) => {
                 // @bot reads the visible environment's code.
@@ -4225,22 +4019,21 @@ impl Shell {
                 self.teams_view.update(cx, |v, cx| v.set_project(dir, cx));
                 self.teams_view.clone().into_any_element()
             }
-            Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
+            Some(TabKind::Gallery) => self.views.gallery.clone().into_any_element(),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at
                 // launch that was never opened from the rail.
                 let root = self.env().path.clone();
-                self.iso_view.update(cx, |v, cx| v.set_root(root, cx));
-                self.iso_view.clone().into_any_element()
+                self.views.iso.update(cx, |v, cx| v.set_root(root, cx));
+                self.views.iso.clone().into_any_element()
             }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Canvas) => self.canvas_view.clone().into_any_element(),
             Some(TabKind::Usage) => {
-                self.usage_shown.set(true);
                 self.sync_usage_view(cx);
-                self.usage_view.clone().into_any_element()
+                self.views.usage.clone().into_any_element()
             }
-            _ if focused => self.render_home(window, cx).into_any_element(),
+            _ if focused => self.render_home(cx).into_any_element(),
             _ => div()
                 .flex()
                 .flex_col()
@@ -4390,8 +4183,9 @@ impl Render for Shell {
         if self.teams_view.read(cx).is_shown() != self.teams_shown(window) {
             cx.defer_in(window, |this, window, cx| this.sync_teams_shown(window, cx));
         }
-        if self.cloudflare_view.read(cx).is_shown() != self.cloudflare_shown(window)
-            || self.memory_view.read(cx).is_shown() != self.memory_shown(window)
+        if self.views.cloudflare.read(cx).is_shown() != self.cloudflare_shown(window)
+            || self.views.memory.read(cx).is_shown() != self.memory_shown(window)
+            || self.views.usage.read(cx).is_shown() != self.usage_shown(window)
         {
             cx.defer_in(window, |this, window, cx| {
                 this.sync_polled_shown(window, cx)
@@ -4447,9 +4241,6 @@ impl Render for Shell {
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
-        self.usage_view
-            .read(cx)
-            .set_on_screen(self.usage_shown.take());
 
         let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
@@ -4552,10 +4343,10 @@ impl Render for Shell {
                                 } else {
                                     x - gap()
                                 };
-                                this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
+                                this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
-                                this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
+                                this.panel.width = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
                             None => {}

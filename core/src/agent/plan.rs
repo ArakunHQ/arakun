@@ -416,8 +416,9 @@ pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats
     }
     let mut changed = refresh_named(&mut out.named, &names, &probe, at, |name| {
         let token = store
-            .token(name)
-            .ok_or_else(|| anyhow!("the seat's token file is gone"))?;
+            .read(name)
+            .map_err(|e| anyhow!("the keyring could not give the seat's token: {e}"))?
+            .ok_or_else(|| anyhow!("the seat's token is gone"))?;
         fetch_borrowed(&token)
             .map(|u| (u, super::seats::fingerprint(&token)))
             .map_err(|e| anyhow!(hide_token(&format!("{e:#}"), &token)))

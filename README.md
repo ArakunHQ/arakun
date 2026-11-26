@@ -671,8 +671,10 @@ after a week).
   seat of its own so parallel sessions don't drain one. Save each subscription's
   long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
   from stdin, checked with one small call (about 35 tokens of that seat) and kept in
-  `~/.local/share/arakun/seats/<name>`, readable only by you. From then on each new
-  Claude Code session starts on the seat with the most room in its 5-hour window that
+  the system keyring, with an empty `~/.local/share/arakun/seats/<name>` that lists
+  the seat. A token an older Arakun saved in that file moves to the keyring the first
+  time it is read. From then on each new Claude Code session starts on the seat with
+  the most room in its 5-hour window that
   is not near its 5-hour or weekly limit (your own sign-in and a
   `CLAUDE_CODE_OAUTH_TOKEN` Arakun was started with count as seats too), and keeps
   that seat for its whole life, also when it is resumed or restarted. The token goes

@@ -103,6 +103,8 @@ interface Row {
   label: string;
   created_at: number;
   announced_at: number | null;
+  accepted_at: number | null;
+  expired_at: number | null;
   machine: string | null;
 }
 
@@ -134,7 +136,8 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   if (!route) return (await say("error", NO_ROUTE), ok());
 
   // The row first, keyed by the webhook: a retry finds it and finishes the
-  // same delivery, under the same id, which the relay takes only once.
+  // same delivery, under the same id, which the relay takes only once while
+  // it still keeps it.
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
@@ -142,8 +145,10 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
        VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (webhook_id) DO NOTHING`,
     ).bind(id, hook.webhookId, hook.agentSessionId, hook.organizationId, hook.issueId, link.github_id, route.label, now()),
     env.DB.prepare(
-      `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.label, d.created_at, d.announced_at, m.name AS machine
-       FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label WHERE d.webhook_id = ?`,
+      `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.label, d.created_at, d.announced_at, d.accepted_at, d.expired_at,
+         m.name AS machine
+       FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
+       WHERE d.webhook_id = ?`,
     ).bind(hook.webhookId),
   ]);
   const row = read!.results[0]!;
@@ -151,6 +156,12 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   // A retry may find its computer renamed or gone since; it still goes to
   // the label the row holds.
   const machine = row.machine ?? route.machine;
+  const done = () => env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
+  // The relay forgets a delivery once the computer took it or the week ran
+  // out, so sending it again would start a second session. For an expired
+  // one, linear_expire.ts speaks in the session.
+  if (row.accepted_at !== null) return (await say("thought", sent(machine)), await done(), ok());
+  if (row.expired_at !== null) return (await done(), ok());
   const delivery: Delivery = {
     id: row.id,
     kind: "created",
@@ -171,6 +182,6 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
     return ok();
   }
   await say("thought", online ? sent(machine) : offline(machine));
-  await env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
+  await done();
   return ok();
 }

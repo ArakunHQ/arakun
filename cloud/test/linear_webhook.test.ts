@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
-import { deliver } from "../src/machines";
+import { deliver, dropDelivery } from "../src/machines";
 import { verified } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
 import { account, claim, connectedComputer, openPc, untilStored, type Computer, type PcSocket } from "./relay/helpers";
@@ -220,6 +220,33 @@ describe("Linear's webhook", () => {
     expect(log.mock.calls).toEqual([["POST /linear/webhook: 500"]]);
     expect(await dump(env.DB)).not.toContain("SECRET-CONTEXT");
     expect(await dump(env.DB)).not.toContain("Make it blue");
+  });
+
+  it.each([
+    ["accepted", "accepted_at", [{ agentSessionId: SESSION, type: "thought", body: "Sent to Desk. A session starts there now." }]],
+    ["expired", "expired_at", []],
+  ])("a retry after the computer's delivery was %s does not send it again", async (_n, column, said) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { me, pc } = await linkedComputerWithRoute();
+    const hook = signedWebhook(created({ creatorId: LU, issueId: ISSUE }));
+    linearFake.refuse = 500;
+    linearFake.refuseOnly = "agentActivityCreate";
+    expect((await send(hook)).status).toBe(500);
+    const first = await pc.inbox.control();
+    // What accepting (or the week running out) does: the row says so and the relay forgets it.
+    await env.DB.prepare(`UPDATE linear_deliveries SET ${column} = ? WHERE id = ?`).bind(nowSeconds(), first["id"]).run();
+    await dropDelivery(env, me.label, first["id"] as string);
+
+    linearFake.refuse = null;
+    linearFake.refuseOnly = null;
+    expect((await send(hook)).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(linearFake.activities()).toEqual(said);
+    const [row] = await deliveries();
+    expect(row!["announced_at"]).toBeTypeOf("number");
+    // The same webhook again changes nothing.
+    expect((await send(hook)).status).toBe(200);
+    expect(linearFake.activities()).toEqual(said);
   });
 
   it.each([

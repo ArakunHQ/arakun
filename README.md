@@ -529,6 +529,18 @@ after a week).
   listed. A device signed out elsewhere is dropped here with its notifications, and so
   is every device of the account when you sign out or change accounts; devices paired
   on the network stay. There is no code to pair through the relay.
+  On the local network and over Tailscale everything but the page itself goes through
+  one WebSocket, `/e2e`, sealed end to end with the same protocol as the relay: the
+  pairing code, the phone's token, transcripts, prompts and pictures. The QR code's link
+  (`?p=<code>&k=<label>`) names the computer's key, and the phone trusts no other key at
+  that address; a code typed by hand trusts the key that answers first. Someone on the
+  same Wi-Fi then reads nothing. The page itself still comes over plain http on the
+  local network, so someone who can change traffic on the way (not only read it) could
+  change the page: use Tailscale or the relay on a network you do not trust. That is
+  also why the phone does not send typed secrets on the local network. The phone keeps
+  its token in the browser's storage, and over https in a cookie for the iOS home-screen
+  app, where the page's script can read it to send it sealed. The desktop app
+  and `arakun-server` connect directly only this way, so update both together.
   The first time a device connects, a notice says "<name> connected for the first
   time"; `phone.json` keeps it by its signed-in device's id and name, with no token,
   and the account that let those devices in (`relay_account`, its GitHub id): signed

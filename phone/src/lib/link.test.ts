@@ -2,39 +2,49 @@ import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RelayHandlers } from "./globals";
-import { createLink, type Link, LinkContext, type LinkEvent, LOCAL_OPEN_MS, LOCAL_PING_MS, LOCAL_SILENT_MS, useLink } from "./link";
-import { TOKEN_KEY } from "./token";
+import { createLink, type Link, LinkContext, type LinkEvent, LOCAL_PING_MS, LOCAL_SILENT_MS, useLink } from "./link";
+import type { Closed, SealedHandlers, SealedOptions } from "./sealed";
+import { LABEL_KEY, TOKEN_KEY } from "./token";
 
-// A socket that does only what the test says: open, a message, close.
-class FakeSocket extends EventTarget {
-  static OPEN = 1;
-  static all: FakeSocket[] = [];
-  readyState = 0;
+// The sealed socket, doing only what the test says: let in, a message, a drop.
+class FakeSealed {
+  static all: FakeSealed[] = [];
   sent: any[] = [];
   closed = false;
-  constructor(readonly url: string) {
-    super();
-    FakeSocket.all.push(this);
+  ready = false;
+  constructor(
+    readonly opts: SealedOptions,
+    readonly handlers: SealedHandlers,
+  ) {
+    FakeSealed.all.push(this);
   }
-  send(data: string) {
-    this.sent.push(JSON.parse(data));
+  send(obj: unknown) {
+    if (this.ready && !this.closed) this.sent.push(obj);
   }
+  fetch(path: string, init?: { method?: string; body?: unknown }) {
+    return (fetchMe as any)(path, init) as Promise<Response>;
+  }
+  /** Closing from the page's side is silent, as the real one is. */
   close() {
-    if (this.closed) return;
     this.closed = true;
-    this.readyState = 3;
-    this.dispatchEvent(new Event("close"));
   }
-  open() {
-    this.readyState = 1;
-    this.dispatchEvent(new Event("open"));
+  /** The computer let the phone in, with the key `label`. */
+  open(label = "aaaaaaaaaaaaaaaa") {
+    this.ready = true;
+    this.handlers.onopen({ label });
   }
   say(msg: object) {
-    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+    this.handlers.onmessage(msg);
+  }
+  /** The socket ended on its own. */
+  drop(kind: Closed["kind"] = "gone", detail = "") {
+    this.closed = true;
+    this.handlers.onclose({ kind, detail });
   }
 }
 
-const last = () => FakeSocket.all[FakeSocket.all.length - 1];
+const sealedImpl = (opts: SealedOptions, handlers: SealedHandlers) => new FakeSealed(opts, handlers) as any;
+const last = () => FakeSealed.all[FakeSealed.all.length - 1];
 const flush = () => vi.advanceTimersByTimeAsync(0);
 
 function setVisibility(v: "visible" | "hidden") {
@@ -46,22 +56,23 @@ let fetchMe: ReturnType<typeof vi.fn>;
 let link: Link | null = null;
 
 function local(): Link {
-  link = createLink({ mode: "local", WebSocketImpl: FakeSocket as any, fetchImpl: fetchMe as any });
+  link = createLink({ mode: "local", sealedImpl });
   return link;
 }
 
-// Opens a local link up to an open socket.
-async function linkedLocal(): Promise<{ link: Link; ws: FakeSocket }> {
+// Opens a local link up to a sealed socket the computer let in.
+async function linkedLocal(): Promise<{ link: Link; ws: FakeSealed }> {
   const l = local();
   await flush();
   const ws = last();
   ws.open();
+  await flush();
   return { link: l, ws };
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
-  FakeSocket.all = [];
+  FakeSealed.all = [];
   localStorage.setItem(TOKEN_KEY, "tok");
   fetchMe = vi.fn(async () => new Response(JSON.stringify({ id: "p1", host: "mbp", push_key: "k" }), { status: 200 }));
   setVisibility("visible");
@@ -76,14 +87,23 @@ afterEach(() => {
 });
 
 describe("local link", () => {
-  it("asks /me with the token, then opens the socket", async () => {
+  it("brings the token inside the sealed socket, then asks /me there", async () => {
     const { link: l, ws } = await linkedLocal();
-    expect(fetchMe).toHaveBeenCalledWith("/me", expect.objectContaining({ headers: { Authorization: "Bearer tok" } }));
-    expect(ws.url).toMatch(/\/ws\?t=tok$/);
+    expect(ws.opts.who).toEqual({ token: "tok" });
+    expect(fetchMe).toHaveBeenCalledWith("/me", undefined);
     expect(l.getState()).toMatchObject({ connected: true, host: "mbp", pushKey: "k" });
   });
 
-  it("pings, and with no word for 40 s closes the socket and reconnects", async () => {
+  it("pins the key of an old pairing, and trusts only the pinned one after", async () => {
+    await linkedLocal();
+    expect(last().opts.label).toBe("");
+    expect(localStorage.getItem(LABEL_KEY)).toBe("aaaaaaaaaaaaaaaa");
+    last().drop();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(last().opts.label).toBe("aaaaaaaaaaaaaaaa");
+  });
+
+  it("pings, and with no word for 40 s lets go and reconnects", async () => {
     const { link: l, ws } = await linkedLocal();
     await vi.advanceTimersByTimeAsync(LOCAL_PING_MS);
     expect(ws.sent).toContainEqual({ type: "ping" });
@@ -91,7 +111,7 @@ describe("local link", () => {
     expect(ws.closed).toBe(true);
     expect(l.getState().connected).toBe(false);
     await vi.advanceTimersByTimeAsync(500);
-    expect(FakeSocket.all.length).toBe(2);
+    expect(FakeSealed.all.length).toBe(2);
   });
 
   it("a pong keeps it open", async () => {
@@ -103,36 +123,44 @@ describe("local link", () => {
     expect(ws.closed).toBe(false);
   });
 
-  it("gives up on a socket that does not open in time", async () => {
-    local();
-    await flush();
-    await vi.advanceTimersByTimeAsync(LOCAL_OPEN_MS);
-    expect(last().closed).toBe(true);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(FakeSocket.all.length).toBe(2);
-  });
-
   it("waits longer after each failure", async () => {
-    fetchMe.mockRejectedValue(new Error("offline"));
     local();
     await flush();
-    expect(fetchMe).toHaveBeenCalledTimes(1);
+    expect(FakeSealed.all.length).toBe(1);
+    last().drop();
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(2);
+    expect(FakeSealed.all.length).toBe(2);
+    last().drop();
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(2);
+    expect(FakeSealed.all.length).toBe(2);
     await vi.advanceTimersByTimeAsync(500);
-    expect(fetchMe).toHaveBeenCalledTimes(3);
+    expect(FakeSealed.all.length).toBe(3);
   });
 
   it("a refused token is forgotten and says so", async () => {
-    fetchMe.mockResolvedValue(new Response("", { status: 403 }));
     const events: LinkEvent[] = [];
     local().subscribeEvents((e) => events.push(e));
     await flush();
+    last().drop("refused", "unpaired");
     expect(events).toContainEqual({ type: "unpaired", message: "This phone is no longer paired. Pair it again from Arakun." });
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
-    expect(FakeSocket.all.length).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(FakeSealed.all.length).toBe(1);
+  });
+
+  it("another key at the address is not trusted, and the token is not tried again", async () => {
+    localStorage.setItem(LABEL_KEY, "aaaaaaaaaaaaaaaa");
+    const events: LinkEvent[] = [];
+    local().subscribeEvents((e) => events.push(e));
+    await flush();
+    expect(last().opts.label).toBe("aaaaaaaaaaaaaaaa");
+    last().drop("untrusted", "bad hello: label");
+    expect(events).toContainEqual({
+      type: "unpaired",
+      message: "The computer at this address is not the one this phone paired with. Pair it again from Arakun.",
+    });
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull();
+    expect(localStorage.getItem(LABEL_KEY)).toBeNull();
   });
 
   it("with no token it asks to pair", async () => {
@@ -141,13 +169,15 @@ describe("local link", () => {
     local().subscribeEvents((e) => events.push(e));
     await flush();
     expect(events).toContainEqual({ type: "unpaired", message: "" });
-    expect(fetchMe).not.toHaveBeenCalled();
+    expect(FakeSealed.all.length).toBe(0);
   });
 
-  it("fetch carries the token", async () => {
-    const l = local();
-    await l.fetch("/phone", { method: "POST" });
-    expect(fetchMe).toHaveBeenCalledWith("/phone", { method: "POST", headers: { Authorization: "Bearer tok" } });
+  it("fetch goes inside the socket", async () => {
+    const { link: l } = await linkedLocal();
+    await l.fetch("/push", { method: "POST", body: "{}" });
+    expect(fetchMe).toHaveBeenCalledWith("/push", { method: "POST", body: "{}" });
+    l.retryNow();
+    await expect(l.fetch("/me")).rejects.toThrow("not connected");
   });
 });
 
@@ -157,13 +187,12 @@ describe("visibility", () => {
     setVisibility("visible");
     expect(ws.sent).toContainEqual({ type: "visible", visible: true });
 
-    fetchMe.mockRejectedValue(new Error("offline"));
-    ws.close();
+    ws.drop();
     await flush();
-    const calls = fetchMe.mock.calls.length;
+    expect(FakeSealed.all.length).toBe(1);
     setVisibility("visible");
     await flush();
-    expect(fetchMe.mock.calls.length).toBe(calls + 1);
+    expect(FakeSealed.all.length).toBe(2);
   });
 
   it("hidden tells the computer", async () => {
@@ -202,9 +231,10 @@ describe("messages", () => {
     expect(ws.sent).toContainEqual({ type: "open", session: "s1" });
     expect(l.getState().session).toMatchObject({ id: "s1", entries: [] });
     ws.say({ type: "entries", id: "s1", from: 0, count: 1, entries: [{ n: 0 }] });
-    ws.close();
+    ws.drop();
     await vi.advanceTimersByTimeAsync(500);
     last().open();
+    await flush();
     expect(last().sent).toContainEqual({ type: "open", session: "s1" });
     expect(l.getState().session!.entries).toEqual([{ n: 0 }]);
   });
@@ -329,6 +359,6 @@ describe("retryNow", () => {
     expect(ws.closed).toBe(true);
     expect(l.getState().connected).toBe(false);
     await flush();
-    expect(FakeSocket.all.length).toBe(2);
+    expect(FakeSealed.all.length).toBe(2);
   });
 });

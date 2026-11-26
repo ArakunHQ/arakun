@@ -45,6 +45,16 @@ Of particular interest:
   and the relay in `cloud/src/relay/` (including the hosted relay at `arakun.dev`). Pairing without
   the code, reading or injecting traffic, impersonating a computer or phone, or one
   computer reaching another's sessions.
+- **What each way to the phone protects.** Through the relay, traffic is encrypted end
+  to end between the phone and the computer, and the computer's key is the one the
+  account lists. On the local network and over Tailscale, everything but the page goes
+  through the computer's `/e2e` socket with the same encryption, and the phone pins the
+  computer's key when it pairs (from the QR link, or the first answer to a typed code).
+  That keeps the pairing code, the token and the transcripts from anyone who listens.
+  On the local network the page itself comes over plain http, so someone who can change
+  traffic could serve a changed page; Tailscale's https and the relay do not have this
+  gap. A way to read or inject sealed traffic, or to pass for a pinned computer, is in
+  scope.
 - **Agent permissions.** Tool calls running without the permission the user chose,
   permission prompts that misrepresent what will run, or project files or web content
   that make Arakun itself (not the agent's model) run commands.

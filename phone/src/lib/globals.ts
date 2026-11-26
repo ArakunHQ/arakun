@@ -58,7 +58,23 @@ export interface RelayApi {
   open(machine: Pick<Machine, "label" | "pub">, handlers: RelayHandlers): RelayLink;
 }
 
+export interface E2eSession {
+  seal(plain: Uint8Array | string): Promise<Uint8Array>;
+  open(payload: Uint8Array): Promise<Uint8Array>;
+}
+
 export interface E2eApi {
+  HELLO: number;
+  DATA: number;
+  /** The channel a handshake on the computer's own server signs. */
+  DIRECT: number;
+  hasWebCrypto(): boolean;
+  usePrimitives(p: unknown): void;
+  /** The label of the key a computer's hello names, or null. */
+  helloLabel(reply: Uint8Array): Promise<string | null>;
+  begin(): Promise<{ hello: Uint8Array; finish(reply: Uint8Array, label: string, channel: number): Promise<E2eSession> }>;
+  encodeFrame(type: number, payload: Uint8Array): Uint8Array<ArrayBuffer>;
+  decodeFrame(bytes: Uint8Array): { type: number; payload: Uint8Array } | null;
   b64url(bytes: Uint8Array): string;
   fromB64url(s: string): Uint8Array | null;
   utf8(s: string): Uint8Array;

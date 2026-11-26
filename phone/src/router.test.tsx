@@ -7,6 +7,10 @@ import { renderHook } from "@testing-library/react";
 import type { Link } from "./lib/link";
 import { TOKEN_KEY } from "./lib/token";
 
+// Pairing goes inside the sealed socket; its own tests are in lib/pair.test.ts.
+const pairMock = vi.hoisted(() => vi.fn());
+vi.mock("./lib/pair", async (orig) => ({ ...(await orig<typeof import("./lib/pair")>()), pair: pairMock }));
+
 // The page's scripts, faked: which way in this is, and what the account says.
 function fakeRelay(over: Record<string, unknown> = {}) {
   (globalThis as any).RELAY = {
@@ -58,18 +62,22 @@ describe("where the page lands", () => {
 
   it("pairs with the code in the QR link once, also when the router asks again meanwhile", async () => {
     fakeRelay();
-    const pending: { answer?: (r: Response) => void } = {};
-    vi.stubGlobal("fetch", (url: string) => (url === "/pair" ? new Promise<Response>((r) => (pending.answer = r)) : new Promise(() => {})));
-    history.replaceState(null, "", "/?p=123456");
+    const pending: { answer?: (r: { ok: true; host: string }) => void } = {};
+    pairMock.mockImplementation(() => new Promise((r) => (pending.answer = r)));
+    history.replaceState(null, "", "/?p=123456&k=bbbbbbbbbbbbbbbb");
     const qc = new QueryClient();
     const first = whereTo("/", qc);
     // Dropping the code from the address makes the router load again before the pairing is done.
     while (!pending.answer) await new Promise((r) => setTimeout(r, 0));
+    expect(location.search).toBe("");
     const second = whereTo("/", qc);
-    pending.answer(new Response(JSON.stringify({ token: "tok" })));
+    localStorage.setItem(TOKEN_KEY, "tok");
+    pending.answer({ ok: true, host: "" });
     expect(await first).toBe("/inbox");
     expect(await second).toBe("/inbox");
-    expect(localStorage.getItem(TOKEN_KEY)).toBe("tok");
+    // Once, with the key the link named.
+    expect(pairMock).toHaveBeenCalledTimes(1);
+    expect(pairMock).toHaveBeenCalledWith("123456", "bbbbbbbbbbbbbbbb");
   });
 
   it("opens the inbox on the computer's own server with a token", async () => {

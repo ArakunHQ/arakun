@@ -1,7 +1,10 @@
 // What the computer gave this phone when it paired. It lives in localStorage
 // and, over https, in a cookie too: an iOS home-screen app gets its own
 // storage but inherits Safari's cookies, so it starts paired instead of
-// asking for a new code.
+// asking for a new code. The page sends it only inside the sealed channel
+// (sealed.ts), so it has to be readable here: an HttpOnly cookie would not do.
+// With it goes the label of the computer's key, pinned at pairing: the token
+// goes to no other key.
 
 export const TOKEN_KEY = "arakun.token";
 
@@ -27,4 +30,17 @@ export function loadToken(): string {
 
 export function forgetToken(): void {
   keepToken("");
+  keepLabel("");
+}
+
+export const LABEL_KEY = "arakun.key";
+
+/** The label of the computer's key this phone trusts, or "" before it knows one. */
+export function loadLabel(): string {
+  return localStorage.getItem(LABEL_KEY) || "";
+}
+
+export function keepLabel(label: string): void {
+  if (label) localStorage.setItem(LABEL_KEY, label);
+  else localStorage.removeItem(LABEL_KEY);
 }

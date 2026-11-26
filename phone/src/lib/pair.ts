@@ -1,7 +1,10 @@
 // Pairing on the computer's own server: a six-digit code, from the QR link or
-// typed, traded for a token that stays on this phone.
+// typed, traded for a token that stays on this phone. The trade goes inside the
+// sealed socket (sealed.ts); the QR link also names the computer's key, which
+// is then the only one trusted.
 
-import { keepToken } from "./token";
+import { openSealed, type SealedOptions } from "./sealed";
+import { keepLabel, keepToken } from "./token";
 
 /** What the computer will call this phone. */
 export function deviceName(ua: string = navigator.userAgent, touches: number = navigator.maxTouchPoints): string {
@@ -17,22 +20,31 @@ export function deviceName(ua: string = navigator.userAgent, touches: number = n
 
 export type Paired = { ok: true; host: string } | { ok: false; error: string };
 
-/** Trades `code` for a token and keeps it. */
-export async function pair(code: string): Promise<Paired> {
-  try {
-    const res = await fetch("/pair", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name: deviceName() }),
-    });
-    if (!res.ok) {
-      return { ok: false, error: res.status === 403 ? "That code is wrong or has expired. Make a new one in Arakun." : `Could not pair (${res.status}).` };
-    }
-    const data = (await res.json()) as { token: string; host?: string };
-    keepToken(data.token);
-    return { ok: true, host: data.host || "" };
-  } catch {
-    const why = location.protocol === "https:" ? "Is Tailscale on, on the phone and on the computer?" : "Is the phone on the same network?";
-    return { ok: false, error: `Could not reach Arakun. ${why}` };
-  }
+/** Trades `code` for a token and keeps it, with the label of the key that answered. `label`, from the QR link, is the only key trusted. */
+export function pair(code: string, label = "", WebSocketImpl?: SealedOptions["WebSocketImpl"]): Promise<Paired> {
+  return new Promise((resolve) => {
+    const link = openSealed(
+      { who: { code, name: deviceName() }, label, WebSocketImpl },
+      {
+        onopen: ({ label: shown, paired }) => {
+          link.close();
+          if (!paired?.token) return resolve({ ok: false, error: "Could not pair." });
+          keepToken(paired.token);
+          keepLabel(shown);
+          resolve({ ok: true, host: paired.host });
+        },
+        onmessage: () => {},
+        onclose: ({ kind, detail }) => {
+          if (kind === "refused" && detail === "bad_code") {
+            return resolve({ ok: false, error: "That code is wrong or has expired. Make a new one in Arakun." });
+          }
+          if (kind === "untrusted") {
+            return resolve({ ok: false, error: "The computer at this address is not the one that made the code. Pair from Arakun's own QR code." });
+          }
+          const why = location.protocol === "https:" ? "Is Tailscale on, on the phone and on the computer?" : "Is the phone on the same network?";
+          resolve({ ok: false, error: `Could not reach Arakun. ${why}` });
+        },
+      },
+    );
+  });
 }

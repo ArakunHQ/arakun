@@ -1,0 +1,30 @@
+ios/ArakunKit/Tests/ArakunKitTests/ModelTests.swift
+  s_ab294943a95879::t_36c005c44386b3 70-87
+ios/ArakunKit/Sources/ArakunKit/Models.swift
+  s_ab294943a95879::t_72313a946b7fed 177-207,220,276
+ios/Arakun/AppModel.swift
+  s_ab294943a95879::t_5f19d66ca1c950 1091-1098
+  s_ab294943a95879::t_620e543ef6a6ef 794-806
+ios/Arakun/Views/SessionView.swift
+  s_ab294943a95879::t_4a7beb44f976de 88-89
+ios/Arakun/Views/AskCards.swift
+  s_ab294943a95879::t_ca991b25928ade 220-322
+ios/README.md
+  s_ab294943a95879::t_786871428bb4c2 38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1384ad16460f5b313e9ade6fdc50885f15f8c612",
+  "prompts": {},
+  "sessions": {
+    "s_ab294943a95879": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b100d334-65a6-46c6-9f47-7f66716f33c8",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

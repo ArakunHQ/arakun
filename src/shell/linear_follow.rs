@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use gpui::{AppContext as _, Context, Window};
 
 use super::Shell;
-use super::linear_run::{busy_line, computer, no_sign_in_line, refusal_line};
+use super::linear_run::{busy_line, computer};
 use crate::agent::Thread;
-use crate::linear::delegation::{Delegation, Refusal};
+use crate::linear::delegation::Delegation;
 use crate::linear::runs::{ReportKind, Run, RunState};
 use crate::linear::{Session, issues};
 use crate::phone::linear::{Delivery, DeliveryKind};
@@ -182,7 +182,7 @@ fn pending_in(t: &Thread) -> Pending {
 /// Whether a reply from Linear first skips what the session waits for. Only
 /// a plain question: the person answered it in their own words, in Linear.
 /// A permission is never answered from Linear, and a secret never leaves
-/// Arakun, so both are left alone and the reply goes on as any message.
+/// Arakun, so neither is answered and the reply goes on as any message.
 pub fn skips_question(pending: Pending) -> bool {
     pending == Pending::Question
 }
@@ -220,8 +220,24 @@ pub fn no_session_line(computer: &str) -> String {
 
 pub fn unread_line(computer: &str) -> String {
     format!(
-        "Arakun could not read that message, because {computer} was offline when you sent it. \
-         Send it again."
+        "Arakun on {computer} could not read that message from Linear. Send it again, or type \
+         it in the session in Arakun."
+    )
+}
+
+/// A reply while the switch is off. Delegating again is the wrong advice for
+/// a reply, so it has its own line.
+pub fn reply_off_line(computer: &str) -> String {
+    format!(
+        "{computer} no longer takes work from Linear, so your message was not passed on. Turn \
+         it on in Arakun's Linear tab, then send it again."
+    )
+}
+
+pub fn reply_no_sign_in_line(computer: &str) -> String {
+    format!(
+        "{computer} is not signed in to this Linear workspace, so it could not read your \
+         message. Sign in in Arakun's Linear tab, then send it again."
     )
 }
 
@@ -245,11 +261,10 @@ impl Shell {
         let on = Delegation::load().enabled;
         let activity = match reply_source(&d, on, sign_in.is_some()) {
             Source::Off => {
-                let line = refusal_line(&Refusal::Off, &computer());
-                return self.linear_turn_away(&d, line, cx);
+                return self.linear_turn_away(&d, reply_off_line(&computer()), cx);
             }
             Source::NoSignIn => {
-                self.linear_turn_away(&d, no_sign_in_line(&computer()), cx);
+                self.linear_turn_away(&d, reply_no_sign_in_line(&computer()), cx);
                 // The server must stop sending this workspace's replies here.
                 return self.sync_linear(window, cx);
             }
@@ -303,8 +318,7 @@ impl Shell {
             self.linear_keep(d.clone(), cx);
         } else if !Delegation::load().enabled {
             // Turned off while the text was read.
-            let line = refusal_line(&Refusal::Off, &computer());
-            self.linear_turn_away(&d, line, cx);
+            self.linear_turn_away(&d, reply_off_line(&computer()), cx);
         } else {
             // The run may have changed during the read.
             let decided = self.linear_follow_up(&d, text.as_deref());
@@ -834,8 +848,18 @@ mod tests {
         );
         assert_eq!(
             unread_line("rik-mac"),
-            "Arakun could not read that message, because rik-mac was offline when you sent \
-             it. Send it again."
+            "Arakun on rik-mac could not read that message from Linear. Send it again, or \
+             type it in the session in Arakun."
+        );
+        assert_eq!(
+            reply_off_line("rik-mac"),
+            "rik-mac no longer takes work from Linear, so your message was not passed on. Turn \
+             it on in Arakun's Linear tab, then send it again."
+        );
+        assert_eq!(
+            reply_no_sign_in_line("rik-mac"),
+            "rik-mac is not signed in to this Linear workspace, so it could not read your \
+             message. Sign in in Arakun's Linear tab, then send it again."
         );
         assert_eq!(
             not_started_line("rik-mac"),

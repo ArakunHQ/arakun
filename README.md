@@ -677,13 +677,13 @@ after a week).
   hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
   *Talking to the session.* A reply in Linear from the person who delegated goes to
-  the session as a new message. Arakun's server only says that there is a reply:
-  its text is read from Linear with your own key, and if that fails the issue asks
-  you to send it again. With the switch off, or without a Linear sign-in for the
+  the session as a new message. Arakun does not take a reply's text from
+  its server: it reads it from Linear with your own key, and if that fails the
+  issue asks you to send it again. With the switch off, or without a Linear sign-in for the
   workspace on this computer, a reply is refused and the issue hears why. A reply
   waits in the session's queue when the agent is busy, and it never answers a
   permission prompt. A reply while a question is pending skips the question and
-  sends the reply. A reply to a finished session continues it, unless another
+  sends the reply, unless the question asks for a secret. A reply to a finished session continues it, unless another
   session from Linear is working on the same issue by then. A stop in Linear
   cancels the turn. A stop that arrives while a reply or a new delegation for the
   same issue is still being read is applied after the work it follows. A stop

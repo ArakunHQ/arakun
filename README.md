@@ -647,7 +647,9 @@ after a week).
   branch. The session uses the project's usual agent, model and permission mode.
   Its prompt is built from the issue: the title, description and comments, marked
   as data. It ends by asking the agent to commit, push and open a draft pull
-  request that names the issue. So only map a project where you want that. A
+  request that names the issue. Anyone who can write in the issue or its
+  comments, integrations included, can steer a session that commits and pushes
+  under your permission mode; map only projects where you accept that. A
   session started from Linear shows its issue's identifier before its title in the
   sidebar and the Inbox.
 
@@ -659,7 +661,9 @@ after a week).
   as data.
 
   *How many.* At most three such sessions run at once on a computer. More wait in a
-  saved queue and start, in the order they came, as others finish.
+  saved queue and start, in the order they came, as others finish. A queued issue
+  is read again when it starts, so its text may have changed since you delegated
+  it.
 
   *What the issue hears.* Arakun writes to the issue as the work goes:
   `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
@@ -673,15 +677,18 @@ after a week).
   hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
   *Talking to the session.* A reply in Linear from the person who delegated goes to
-  the session as a new message. It waits in the session's queue when the agent is
-  busy, and it never answers a permission prompt. A reply to a finished session
-  continues it. A stop in Linear cancels the turn; a stop is never lost, even
-  when it arrives while a reply or a new delegation for the same issue is still
-  being read: it waits until that has landed and is then applied. A stop, and a
-  reply that carries its text, work even if this computer is no longer signed in to
-  that Linear workspace. A reply sent while the computer was off may arrive without
-  its text. Arakun then reads it from Linear, and if that fails it asks you to send
-  it again.
+  the session as a new message. Arakun's server only says that there is a reply:
+  its text is read from Linear with your own key, and if that fails the issue asks
+  you to send it again. With the switch off, or without a Linear sign-in for the
+  workspace on this computer, a reply is refused and the issue hears why. A reply
+  waits in the session's queue when the agent is busy, and it never answers a
+  permission prompt. A reply while a question is pending skips the question and
+  sends the reply. A reply to a finished session continues it, unless another
+  session from Linear is working on the same issue by then. A stop in Linear
+  cancels the turn. A stop that arrives while a reply or a new delegation for the
+  same issue is still being read is applied after the work it follows. A stop
+  works even with the switch off, or when this computer is no longer signed in to
+  that Linear workspace.
 
   *When nothing starts.* Each case gets a line in the issue that says why: the
   switch is off, the issue is not mapped, the mapped project is gone, this computer
@@ -696,7 +703,12 @@ after a week).
   with its **Connect** button while the switch is on. Its key is sent once the
   workspace has a mapping, and again only if the server loses the link. Otherwise
   only the relay label of this computer, the Linear organization id of the
-  workspace and the ids of its mapped teams and projects go. Turning it off removes
+  workspace and the ids of its mapped teams and projects go for the setup. Once a
+  session runs, what the issue hears goes through Arakun's server to the issue:
+  the session's last reply (up to 7,500 characters, code included, with secrets
+  scrubbed), its questions and their choices, the kind of a permission it waits
+  for (never its arguments), the project name, the branch, this computer's name
+  and the reason of a failure. The server stores none of it. Turning it off removes
   this computer's routes on the server and leaves the link, so your other computers
   keep working. Until you turn it on nothing about Linear is sent, except that an
   account with the flag asks the server whether Arakun is installed in the

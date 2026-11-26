@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, Context, Window};
 
 use super::Shell;
+use super::linear_follow::needs_sign_in;
 use super::linear_sync::{Gate, may_sync};
 use super::sessions::queued_from;
 use crate::cloud;
@@ -195,7 +196,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let gate = self.linear_gate(cx).is_some();
-        let in_flight = self.linear_in_flight.contains(&d.id);
+        let in_flight = self.linear_in_flight.contains_key(&d.id);
         let handled = self.linear_runs.was_seen(&d.id);
         let sessions = if gate && !in_flight && !handled {
             crate::linear::sessions()
@@ -203,28 +204,28 @@ impl Shell {
             Vec::new()
         };
         let sign_in = crate::linear::session_for(&sessions, &d.organization).cloned();
-        match (
-            first_step(in_flight, handled, gate, sign_in.is_some()),
-            sign_in,
-        ) {
+        // A stop, or a reply with its text, needs no Linear key.
+        let may_go = sign_in.is_some() || !needs_sign_in(d.kind, d.body.is_some());
+        match (first_step(in_flight, handled, gate, may_go), sign_in) {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),
-            (First::Read, Some(sign_in)) => match d.kind {
-                DeliveryKind::Created => {
-                    // Recorded as handled only with its outcome, so a crash
-                    // while the issue is read leaves it for the relay to send again.
-                    self.linear_in_flight.insert(d.id.clone());
-                    let start = Start {
-                        agent_session: d.agent_session,
-                        organization: d.organization,
-                        issue: d.issue,
-                        delivery: Some(d.id),
-                    };
-                    self.linear_read(start, sign_in, window, cx);
-                }
-                DeliveryKind::Prompt => self.linear_prompt(d, sign_in, window, cx),
-                DeliveryKind::Stop => self.linear_stop(&d, window, cx),
-            },
+            (First::Read, Some(sign_in)) if d.kind == DeliveryKind::Created => {
+                // Recorded as handled only with its outcome, so a crash
+                // while the issue is read leaves it for the relay to send again.
+                let flight = d.agent_session.clone();
+                self.linear_in_flight.insert(d.id.clone(), flight);
+                let start = Start {
+                    agent_session: d.agent_session,
+                    organization: d.organization,
+                    issue: d.issue,
+                    delivery: Some(d.id),
+                };
+                self.linear_read(start, sign_in, window, cx);
+            }
+            (First::Read, _) if d.kind == DeliveryKind::Stop => self.linear_stop(&d, window, cx),
+            (First::Read, sign_in) if d.kind == DeliveryKind::Prompt => {
+                self.linear_prompt(d, sign_in, window, cx)
+            }
             (First::RefuseNoSignIn | First::Read, _) => {
                 self.linear_runs.mark_seen(&d.id);
                 let line = no_sign_in_line(&computer());
@@ -283,6 +284,24 @@ impl Shell {
     }
 
     fn linear_issue_read(
+        &mut self,
+        start: Start,
+        read: Result<Detail, ApiError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let held = start
+            .delivery
+            .is_some()
+            .then(|| start.agent_session.clone());
+        self.linear_issue_outcome(start, read, window, cx);
+        // A stop that came during the read finds the run, if any, in place.
+        if let Some(agent_session) = held {
+            self.linear_release_stops(&agent_session, window, cx);
+        }
+    }
+
+    fn linear_issue_outcome(
         &mut self,
         start: Start,
         read: Result<Detail, ApiError>,

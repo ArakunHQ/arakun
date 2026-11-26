@@ -475,8 +475,11 @@ pub struct Shell {
     /// Sessions started from Linear, and the reports Linear has not taken yet.
     linear_runs: crate::linear::runs::Runs,
     linear_outbox: linear_outbox::Outbox,
-    /// Deliveries whose issue is being read: a second frame waits for the first.
-    linear_in_flight: std::collections::HashSet<String>,
+    /// Deliveries being worked on, by id, with their agent session: a second
+    /// frame waits for the first, and a stop for the work to land.
+    linear_in_flight: std::collections::HashMap<String, String>,
+    /// Stops that came while other work for their agent session was in flight.
+    linear_held_stops: Vec<crate::phone::linear::Delivery>,
     /// The timer that tells Linear a quiet session still works is on.
     linear_watching: bool,
     github: Entity<GitHub>,
@@ -944,6 +947,7 @@ impl Shell {
             linear_runs: crate::linear::runs::Runs::load(),
             linear_outbox: Default::default(),
             linear_in_flight: Default::default(),
+            linear_held_stops: Vec::new(),
             linear_watching: false,
             github,
             pilot,

@@ -16,11 +16,14 @@
 //! session starts on a named seat, its token is checked with one small read.
 //! A session never moves to another account without a notice that says so,
 //! and sessions in the sandbox leave seats out.
+//!
+//! A seat's token is kept in the keyring (`secret_store`); its file in
+//! `seats/` only says the seat is there.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -82,20 +85,79 @@ fn called(id: &str) -> String {
 
 // ---- storage -------------------------------------------------------------
 
-/// Where named seats keep their tokens: one file per seat, named after it.
+/// Where named seats are listed: one file per seat, named after it.
 pub fn dir() -> PathBuf {
     crate::platform::app_dir().join("seats")
 }
 
-/// The named seats' tokens, one private file each (0600 in a 0700 folder on
-/// Unix; under the user's own profile on Windows), as the CLIProxyAPI key is.
+/// The keyring entry of seat `name`'s token. Not per test Arakun: the seats'
+/// files are shared too.
+fn account(name: &str) -> String {
+    format!("seat:{name}")
+}
+
+/// The named seats. Each has an empty file in `dir` (0600 in a 0700 folder on
+/// Unix), which lists it, and its token in the keyring. A file from before
+/// holds the token itself, until it is moved to the keyring.
 pub struct Store {
     dir: PathBuf,
+    keep: Keep,
+    /// Seats the keyring failed for while this store was open. It is not
+    /// asked for them again: one session start reads a token several times,
+    /// and a locked keyring would show its unlock prompt each time.
+    failed: Mutex<HashSet<String>>,
+}
+
+/// Where the tokens are kept: the keyring, or one in memory in the tests.
+enum Keep {
+    Keyring,
+    #[cfg(test)]
+    Fake(std::sync::Arc<Mutex<tests::FakeRing>>),
+}
+
+impl Keep {
+    fn get(&self, account: &str) -> std::result::Result<Option<String>, String> {
+        match self {
+            Keep::Keyring => crate::secret_store::get(account),
+            #[cfg(test)]
+            Keep::Fake(ring) => lock(ring).get(account),
+        }
+    }
+
+    fn set(&self, account: &str, secret: &str) -> std::result::Result<(), String> {
+        match self {
+            Keep::Keyring => crate::secret_store::set(account, "arakun: Claude seat token", secret),
+            #[cfg(test)]
+            Keep::Fake(ring) => lock(ring).set(account, secret),
+        }
+    }
+
+    fn forget(&self, account: &str) {
+        match self {
+            Keep::Keyring => crate::secret_store::forget(account),
+            #[cfg(test)]
+            Keep::Fake(ring) => {
+                lock(ring).entries.remove(account);
+            }
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Store { dir }
+        Self::with(dir, Keep::Keyring)
+    }
+
+    fn with(dir: PathBuf, keep: Keep) -> Self {
+        Store {
+            dir,
+            keep,
+            failed: Mutex::new(HashSet::new()),
+        }
     }
 
     /// The store in Arakun's data folder.
@@ -118,30 +180,90 @@ impl Store {
         names
     }
 
+    /// Seat `name`'s token, `None` when there is none or the keyring could
+    /// not give it. Not on the UI thread: the keyring may wait for the person
+    /// to unlock it.
     pub fn token(&self, name: &str) -> Option<String> {
-        valid_name(name).ok()?;
-        std::fs::read_to_string(self.dir.join(name))
-            .ok()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
+        self.read(name).unwrap_or_else(|e| {
+            eprintln!("arakun: the keyring could not give seat {name}'s token: {e}");
+            None
+        })
     }
 
-    /// Saves `token` as seat `name`, replacing one of that name.
+    /// [`token`](Self::token), with an error when the keyring could not say.
+    /// A token still in the seat's file is moved to the keyring first.
+    pub(super) fn read(&self, name: &str) -> std::result::Result<Option<String>, String> {
+        if valid_name(name).is_err() {
+            return Ok(None);
+        }
+        let path = self.path(name);
+        // No file, no seat: the keyring is not asked.
+        let Ok(in_file) = std::fs::read_to_string(&path) else {
+            return Ok(None);
+        };
+        let in_file = in_file.trim();
+        if !in_file.is_empty() {
+            if !lock(&self.failed).contains(name) {
+                self.move_to_keyring(name, in_file, &path);
+            }
+            return Ok(Some(in_file.to_string()));
+        }
+        if lock(&self.failed).contains(name) {
+            return Err("it did not answer before".into());
+        }
+        match self.keep.get(&account(name)) {
+            Ok(t) => Ok(t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())),
+            Err(e) => {
+                lock(&self.failed).insert(name.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    /// Moves seat `name`'s token from its file to the keyring, and empties
+    /// the file. When the keyring can't take it, it stays in the file and is
+    /// still used.
+    fn move_to_keyring(&self, name: &str, token: &str, path: &Path) {
+        if let Err(e) = self.keep.set(&account(name), token) {
+            eprintln!("arakun: could not move seat {name}'s token to the keyring: {e}");
+            lock(&self.failed).insert(name.to_string());
+            return;
+        }
+        // Emptied in place, not written anew: a seat removed meanwhile must
+        // not come back.
+        if let Err(e) = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("arakun: could not empty {}: {e}", path.display());
+        }
+    }
+
+    /// Saves `token` as seat `name`, replacing one of that name: the token
+    /// in the keyring, an empty file to list the seat.
     pub fn add(&self, name: &str, token: &str) -> Result<()> {
         valid_name(name)?;
         check_token(token)?;
-        crate::durable::write_private(&self.dir.join(name), token.trim().as_bytes())?;
+        self.keep
+            .set(&account(name), token.trim())
+            .map_err(|e| anyhow!("the keyring could not keep the token: {e}"))?;
+        lock(&self.failed).remove(name);
+        crate::durable::write_private(&self.path(name), b"")?;
         Ok(())
     }
 
     /// Whether there was a seat to remove.
     pub fn remove(&self, name: &str) -> Result<bool> {
         valid_name(name)?;
-        match std::fs::remove_file(self.dir.join(name)) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e.into()),
-        }
+        let was = match std::fs::remove_file(self.path(name)) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        self.keep.forget(&account(name));
+        Ok(was)
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -807,8 +929,14 @@ fn add(
     out: &mut impl Write,
 ) -> Result<PlanUsage> {
     valid_name(name)?;
-    if store.token(name).is_some() {
-        bail!("there is already a seat named {name}; `arakun seat rm {name}` first");
+    // A keyring that could not say is not read as no seat: adding would
+    // replace one.
+    match store.read(name) {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            bail!("there is already a seat named {name}; `arakun seat rm {name}` first")
+        }
+        Err(e) => bail!("the keyring could not say whether seat {name} is there: {e}"),
     }
     let token = read()?;
     check_token(&token)?;
@@ -819,12 +947,7 @@ fn add(
         )
     })?;
     store.add(name, &token)?;
-    writeln!(
-        out,
-        "Added seat {name}: {}. Its token is in {}.",
-        summary(Some(&usage)),
-        store.path(name).display()
-    )?;
+    writeln!(out, "Added seat {name}: {}.", summary(Some(&usage)))?;
     Ok(usage)
 }
 
@@ -989,6 +1112,48 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("arakun-seats-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A keyring in memory. `locked` makes it refuse, as one left locked does.
+    #[derive(Default)]
+    pub(super) struct FakeRing {
+        pub(super) entries: HashMap<String, String>,
+        locked: bool,
+        asked: usize,
+    }
+
+    impl FakeRing {
+        pub(super) fn get(&mut self, account: &str) -> std::result::Result<Option<String>, String> {
+            self.asked += 1;
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.entries.get(account).cloned())
+        }
+
+        pub(super) fn set(
+            &mut self,
+            account: &str,
+            secret: &str,
+        ) -> std::result::Result<(), String> {
+            self.asked += 1;
+            if self.locked {
+                return Err("locked".into());
+            }
+            self.entries.insert(account.into(), secret.into());
+            Ok(())
+        }
+    }
+
+    type Ring = std::sync::Arc<Mutex<FakeRing>>;
+
+    /// A store in `dir` on a keyring in memory, never the person's own.
+    fn store_in(dir: &Path) -> (Store, Ring) {
+        let ring = Ring::default();
+        (
+            Store::with(dir.to_path_buf(), Keep::Fake(ring.clone())),
+            ring,
+        )
     }
 
     fn usage(five_hour: u64, weekly: u64) -> PlanUsage {
@@ -1545,10 +1710,13 @@ mod tests {
     #[test]
     fn the_store_round_trips_and_keeps_tokens_private() {
         let dir = scratch("store");
-        let store = Store::new(dir.clone());
+        let (store, ring) = store_in(&dir);
         assert!(store.names().is_empty());
         store.add("work", &format!("  {SECRET}\n")).unwrap();
         store.add("spare", "tok-2").unwrap();
+        // The file only lists the seat; the keyring has the token.
+        assert_eq!(std::fs::read_to_string(dir.join("work")).unwrap(), "");
+        assert_eq!(lock(&ring).entries["seat:work"], SECRET);
         // A temp file a crash left behind is not a seat.
         std::fs::write(dir.join(".work.123-0.tmp"), "x").unwrap();
         assert_eq!(store.names(), ["spare", "work"]);
@@ -1567,13 +1735,79 @@ mod tests {
         assert!(store.remove("work").unwrap());
         assert!(!store.remove("work").unwrap());
         assert_eq!(store.names(), ["spare"]);
+        assert!(!lock(&ring).entries.contains_key("seat:work"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_token_from_before_moves_to_the_keyring() {
+        let dir = scratch("move");
+        let (store, ring) = store_in(&dir);
+        crate::durable::write_private(&dir.join("work"), format!("{SECRET}\n").as_bytes()).unwrap();
+        assert_eq!(store.token("work").as_deref(), Some(SECRET));
+        assert_eq!(lock(&ring).entries["seat:work"], SECRET);
+        assert_eq!(std::fs::read_to_string(dir.join("work")).unwrap(), "");
+        assert_eq!(store.names(), ["work"]);
+        assert_eq!(store.token("work").as_deref(), Some(SECRET));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(dir.join("work"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A seat without a file is not asked of the keyring.
+        let asked = lock(&ring).asked;
+        assert_eq!(store.token("gone"), None);
+        assert_eq!(lock(&ring).asked, asked);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locked_keyring_keeps_the_files_token_and_is_asked_once() {
+        let dir = scratch("locked");
+        let (store, ring) = store_in(&dir);
+        lock(&ring).locked = true;
+        crate::durable::write_private(&dir.join("old"), SECRET.as_bytes()).unwrap();
+        crate::durable::write_private(&dir.join("new"), b"").unwrap();
+        for _ in 0..3 {
+            assert_eq!(store.token("old").as_deref(), Some(SECRET));
+            assert_eq!(store.token("new"), None);
+        }
+        assert_eq!(
+            lock(&ring).asked,
+            2,
+            "one prompt per seat, not one per read"
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("old")).unwrap(), SECRET);
+        // Adding over a seat the keyring can't read is refused, not a replace.
+        let err = add(
+            &store,
+            "new",
+            || Ok("tok".into()),
+            |_| Ok(usage(0, 0)),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("keyring"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_seat_removed_while_its_token_moves_stays_removed() {
+        let dir = scratch("removed");
+        let (store, _ring) = store_in(&dir);
+        store.move_to_keyring("work", SECRET, &dir.join("work"));
+        assert!(store.names().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn adding_a_seat_never_prints_its_token() {
         let dir = scratch("add");
-        let store = Store::new(dir.clone());
+        let (store, _ring) = store_in(&dir);
         let mut out = Vec::new();
         // A check that fails, quoting the token: neither the error nor the
         // output carries it, and nothing is saved.

@@ -1,5 +1,5 @@
 //! Who this computer is to the relay: one P-256 key pair, made once and kept in
-//! the phone settings. Its label, the first level of the host phones reach it
+//! the keyring (`Settings::identity`). Its label, the first level of the host phones reach it
 //! at, is derived from the public key, so nobody can claim a label that is not
 //! theirs and a phone can check it is talking to the key it expects. The relay
 //! challenges the computer to sign with this key before trusting it, and the

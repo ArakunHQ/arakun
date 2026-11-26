@@ -36,6 +36,8 @@ import {
   phoneFrame,
   utf8,
 } from "./frames";
+import { expired } from "../linear_expire";
+import type { Delivery } from "../machines";
 import type { Env } from "../util";
 import { labelOf } from "./label";
 import { planFor, type Plan } from "./limits";
@@ -120,6 +122,18 @@ const PHONE_SILENT_MS = 90_000;
 /// Nothing is lost, the computer claims again on connecting.
 const PURGE_AFTER_MS = 90 * 24 * 3_600_000;
 
+/// A Linear delivery the computer has not taken in a week is given up: the
+/// person who delegated the issue hears so rather than wait on a machine
+/// that may never return.
+const LINEAR_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+/// How many deliveries wait for one computer at most. A few are normal; this
+/// many means it is away, and more would only grow its storage.
+const LINEAR_QUEUE_MAX = 50;
+
+/// Where a delivery is stored: the prefix, then its id.
+const LINEAR_KEY = "linear:";
+
 /// How many frames crossed today; the day is UTC, as days since the epoch.
 interface Today {
   day: number;
@@ -148,7 +162,7 @@ export class Relay extends DurableObject<Env> {
   }
 
   /// Only the Worker reaches this: machines.ts for the sockets, and for
-  /// `/_recheck` and `/_state`.
+  /// `/_recheck`, `/_state`, `/_linear` and `/_linear_drop`.
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const h = request.headers;
@@ -160,6 +174,8 @@ export class Relay extends DurableObject<Env> {
       return new Response(null, { status: ok ? 204 : 503 });
     }
     if (url.pathname === "/_state" && request.method === "GET") return Response.json({ online: this.computer() !== null });
+    if (url.pathname === "/_linear" && request.method === "POST") return this.linearDeliver(request);
+    if (url.pathname === "/_linear_drop" && request.method === "POST") return this.linearDrop(request);
     if (h.get("Upgrade") !== "websocket") return new Response("expected a websocket", { status: 426 });
     const account = Number(h.get("x-arakun-account"));
     const session = h.get("x-arakun-session") ?? "";
@@ -258,7 +274,13 @@ export class Relay extends DurableObject<Env> {
     this.closeSilent(now);
     ws.serializeAttachment({ ...tag, claimed: true } satisfies Tag);
     await this.schedule();
+    // Read before `claimed` goes out, so nothing awaits between the two and
+    // the deliveries follow it at once.
+    const queued = await this.deliveries();
     ws.send(pcControl({ type: "claimed" }));
+    // What waited for the computer, or what it was sent before and has not
+    // finished: it tells deliveries apart by id.
+    for (const d of queued) ws.send(pcControl(linearMessage(d, null)));
     // The computer knows nothing of the devices already waiting: introduce
     // them. One of another account (the label changed hands) goes instead.
     for (const phone of this.phones()) {
@@ -515,6 +537,7 @@ export class Relay extends DurableObject<Env> {
     this.closeSilent(now);
     const recheckAt = this.recheckAt();
     if (recheckAt !== null && recheckAt <= now) await this.tryRecheck();
+    await this.expireDeliveries(now);
     if (!this.computer()) {
       const due = await this.purgeAt();
       if (due !== null && due <= now) await this.purge();
@@ -634,9 +657,10 @@ export class Relay extends DurableObject<Env> {
   private async purgeAt(): Promise<number | null> {
     const seen = await this.ctx.storage.get<number>("last_seen");
     if (seen !== undefined) return seen + PURGE_AFTER_MS;
-    const keys = await this.ctx.storage.list({ limit: 2 });
-    keys.delete("next_channel");
-    return keys.size > 0 ? 0 : null;
+    // Deliveries are not such state either: they may wait for a computer
+    // that has not claimed yet, and go when they expire.
+    const keys = await this.ctx.storage.list({ limit: LINEAR_QUEUE_MAX + 2 });
+    return [...keys.keys()].some((k) => k !== "next_channel" && !k.startsWith(LINEAR_KEY)) ? 0 : null;
   }
 
   /// Closes the devices that pinged and then went quiet for too long.
@@ -655,11 +679,14 @@ export class Relay extends DurableObject<Env> {
 
   /// Sets the alarm for the next thing it has to do, so every object that
   /// keeps a socket or state wakes again: a claim running out, a device gone
-  /// quiet while the computer is there to hear it, a recheck, or the purge.
+  /// quiet while the computer is there to hear it, a recheck, a delivery
+  /// expiring, or the purge.
   private async schedule(): Promise<void> {
     const times = this.unclaimed().map((ws) => (ws.deserializeAttachment() as Tag & { role: "pc" }).until);
     const recheckAt = this.recheckAt();
     if (recheckAt !== null) times.push(recheckAt);
+    const oldest = (await this.deliveries())[0];
+    if (oldest) times.push(expiresAt(oldest));
     if (this.computer()) {
       // A phone that has not pinged yet (a page from before pings) is looked at again later.
       for (const phone of this.phones()) times.push(this.silentAt(phone) ?? Date.now() + this.silentMs);
@@ -670,6 +697,67 @@ export class Relay extends DurableObject<Env> {
     if (times.length === 0) return this.ctx.storage.deleteAlarm();
     const at = Math.max(Math.min(...times), Date.now());
     if ((await this.ctx.storage.getAlarm()) !== at) await this.ctx.storage.setAlarm(at);
+  }
+
+  // ---- Linear deliveries ---------------------------------------------------
+
+  /// `POST /_linear {delivery, body}`: keeps the delivery and sends it to the
+  /// computer if it is here. Linear may send the same event twice, so a
+  /// delivery already kept is neither kept again nor sent again.
+  private async linearDeliver(request: Request): Promise<Response> {
+    const msg = await request.json().catch(() => null);
+    const d = isObj(msg) ? parseDelivery(msg["delivery"]) : null;
+    const body = isObj(msg) ? msg["body"] : undefined;
+    if (!d || (body !== null && typeof body !== "string")) return new Response("bad delivery", { status: 400 });
+    const key = LINEAR_KEY + d.id;
+    if ((await this.ctx.storage.get(key)) === undefined) {
+      const queued = await this.ctx.storage.list({ prefix: LINEAR_KEY, limit: LINEAR_QUEUE_MAX });
+      if (queued.size >= LINEAR_QUEUE_MAX) return new Response("queue full", { status: 429 });
+      await this.ctx.storage.put(key, d);
+      await this.schedule();
+      const pc = this.computer();
+      if (pc) {
+        try {
+          pc.send(pcControl(linearMessage(d, body)));
+        } catch {
+          // closing: it is sent again on the next claim
+        }
+      }
+    }
+    return Response.json({ online: this.computer() !== null });
+  }
+
+  /// `POST /_linear_drop {id}`: the work is done or stopped; forget it.
+  private async linearDrop(request: Request): Promise<Response> {
+    const msg = await request.json().catch(() => null);
+    const id = isObj(msg) ? msg["id"] : undefined;
+    if (typeof id !== "string" || !DELIVERY_ID.test(id)) return new Response("bad id", { status: 400 });
+    await this.ctx.storage.delete(LINEAR_KEY + id);
+    await this.schedule();
+    return new Response(null, { status: 204 });
+  }
+
+  /// The deliveries kept, oldest first.
+  private async deliveries(): Promise<Delivery[]> {
+    const kept = await this.ctx.storage.list<Delivery>({ prefix: LINEAR_KEY });
+    return [...kept.values()].sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  /// Forgets the deliveries a week old. Telling linear.ts must not take the
+  /// alarm down: a failure is logged, and the delivery is gone either way.
+  private async expireDeliveries(now: number): Promise<void> {
+    for (const d of await this.deliveries()) {
+      if (expiresAt(d) > now) break;
+      // The computer may have accepted it while an earlier one was told:
+      // then it was not given up on.
+      if ((await this.ctx.storage.get(LINEAR_KEY + d.id)) === undefined) continue;
+      await this.ctx.storage.delete(LINEAR_KEY + d.id);
+      try {
+        await expired(this.env, d.id);
+      } catch (e) {
+        console.error(`expiring delivery ${d.id} failed:`, e);
+      }
+    }
   }
 
   // ---- sockets -------------------------------------------------------------
@@ -856,6 +944,59 @@ export function refusal(tag: Tag, row: SessionRow | undefined, owner: number | n
   if (owner === null) return "no_machine";
   if (owner !== tag.account) return tag.role === "pc" ? "label_taken" : "not_yours";
   return null;
+}
+
+/// A delivery's id: 32 hex characters.
+const DELIVERY_ID = /^[0-9a-f]{32}$/;
+
+/// The ids Linear uses are UUIDs. linear.ts has the same; importing it from
+/// here would make a cycle.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const DELIVERY_KINDS: readonly string[] = ["created", "prompt", "stop"] satisfies Delivery["kind"][];
+
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/// A delivery as the Worker sent it, rebuilt field by field so nothing else
+/// is stored with it; null when any field is off.
+function parseDelivery(v: unknown): Delivery | null {
+  if (!isObj(v)) return null;
+  const { id, kind, agent_session, issue, organization, activity, created } = v;
+  if (typeof id !== "string" || !DELIVERY_ID.test(id)) return null;
+  if (typeof kind !== "string" || !DELIVERY_KINDS.includes(kind)) return null;
+  for (const u of [agent_session, issue, organization]) if (typeof u !== "string" || !UUID.test(u)) return null;
+  if (activity !== null && (typeof activity !== "string" || !UUID.test(activity))) return null;
+  if (typeof created !== "number" || !Number.isSafeInteger(created) || created <= 0) return null;
+  return {
+    id,
+    kind: kind as Delivery["kind"],
+    agent_session: agent_session as string,
+    issue: issue as string,
+    organization: organization as string,
+    activity,
+    created,
+  };
+}
+
+/// When a delivery is given up.
+function expiresAt(d: Delivery): number {
+  return d.created * 1000 + LINEAR_KEEP_MS;
+}
+
+/// The control frame for a delivery. `body` is only ever the live one's.
+function linearMessage(d: Delivery, body: string | null): object {
+  return {
+    type: "linear",
+    id: d.id,
+    kind: d.kind,
+    agent_session: d.agent_session,
+    issue: d.issue,
+    organization: d.organization,
+    activity: d.activity,
+    body,
+  };
 }
 
 /// What the computer hears when a device's channel opens: who the device is.

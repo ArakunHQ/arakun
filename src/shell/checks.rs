@@ -154,6 +154,7 @@ impl Shell {
                 // The turn's own notice waited for this.
                 let done = ThreadEvent::Finished { stop_reason };
                 this.notify_desktop(&env_path, &id, &thread, &done, window, cx);
+                this.linear_thread_event(&id, &thread, &done, window, cx);
                 this.retire_if_hidden(&env_path, &id, cx);
             });
         })
@@ -386,6 +387,13 @@ impl Shell {
                 stop_reason: "end_turn".into(),
             };
             self.notify_desktop(env_path, id, &thread, &done, window, cx);
+        }
+        // Linear hears the turn's end once the check is over, passed or not.
+        if gave_up || waiting {
+            let done = ThreadEvent::Finished {
+                stop_reason: "end_turn".into(),
+            };
+            self.linear_thread_event(id, &thread, &done, window, cx);
         }
         self.save_transcript(env_path, id, cx);
         self.retire_if_hidden(env_path, id, cx);

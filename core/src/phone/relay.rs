@@ -38,7 +38,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 use super::e2e::{Handshake, PhoneHello, Session};
 use super::identity::Identity;
 use super::quiet::Quiet;
-use super::{ClientId, ClientMsg, Effect, Head, Incoming, Seen, Shared, wire};
+use super::{ClientId, ClientMsg, Effect, Head, Incoming, Seen, Shared, linear, wire};
 
 pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
@@ -669,6 +669,8 @@ impl Link {
                     })?;
                 }
                 Some(msg) if msg["type"] == "bye" => return Err(bye(&msg)),
+                // Sent again after `claimed`, so an early one can go.
+                Some(msg) if msg["type"] == "linear" => {}
                 Some(msg) => {
                     return Err(Ended::Retry(format!(
                         "The relay said {} before challenging us",
@@ -696,6 +698,9 @@ impl Link {
             match self.next_control(ws)? {
                 Some(msg) if msg["type"] == "claimed" => return Ok(()),
                 Some(msg) if msg["type"] == "bye" => return Err(bye(&msg)),
+                // A delivery can race `claimed`. The relay sends it again
+                // after, so the early one is dropped.
+                Some(msg) if msg["type"] == "linear" => {}
                 Some(msg) => {
                     return Err(Ended::Retry(format!(
                         "The relay said {} to our claim",
@@ -900,6 +905,12 @@ impl Link {
                 }
             }
             Some("bye") => return Err(bye(&msg)),
+            // A broken one is dropped: the relay sends the delivery again.
+            Some("linear") => {
+                if let Some(delivery) = linear::parse(&msg) {
+                    let _ = self.tx.unbounded_send(Incoming::Linear(delivery));
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -2061,6 +2072,101 @@ mod tests {
             .map(|d| d.id.clone())
             .collect();
         assert_eq!(left, ["sess2"]);
+    }
+
+    /// A delivery as the relay sends it, with its own `id`.
+    fn delivery(id: &str) -> Value {
+        json!({
+            "type": "linear",
+            "id": id,
+            "kind": "created",
+            "agent_session": "5b0c1f9e-0000-4000-8000-000000000001",
+            "issue": "5b0c1f9e-0000-4000-8000-000000000002",
+            "organization": "5b0c1f9e-0000-4000-8000-000000000003",
+            "activity": null,
+            "body": null,
+        })
+    }
+
+    const FIRST: &str = "0123456789abcdef0123456789abcdef";
+    const SECOND: &str = "fedcba9876543210fedcba9876543210";
+
+    fn next_delivery(rx: &mut mpsc::UnboundedReceiver<Incoming>) -> linear::Delivery {
+        match next_incoming(rx) {
+            Incoming::Linear(d) => d,
+            _ => panic!("expected a Linear delivery"),
+        }
+    }
+
+    #[test]
+    fn a_linear_delivery_reaches_the_app() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+
+        tell(&mut ws, delivery(FIRST));
+        assert_eq!(
+            next_delivery(&mut rx),
+            linear::Delivery {
+                id: FIRST.into(),
+                kind: linear::DeliveryKind::Created,
+                agent_session: "5b0c1f9e-0000-4000-8000-000000000001".into(),
+                issue: "5b0c1f9e-0000-4000-8000-000000000002".into(),
+                organization: "5b0c1f9e-0000-4000-8000-000000000003".into(),
+                activity: None,
+                body: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_malformed_linear_delivery_is_dropped_and_the_connection_stays() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+
+        let mut bad = delivery(FIRST);
+        bad["id"] = json!("not hex");
+        tell(&mut ws, bad);
+        let mut bad = delivery(FIRST);
+        bad["kind"] = json!("deleted");
+        tell(&mut ws, bad);
+        // The next good one comes first, down the same socket.
+        tell(&mut ws, delivery(SECOND));
+        assert_eq!(next_delivery(&mut rx).id, SECOND);
+        assert!(rx.try_recv().is_err(), "nothing else, and no status change");
+    }
+
+    #[test]
+    fn a_linear_delivery_before_claimed_does_not_break_the_claim() {
+        let me = Identity::generate();
+        let label = me.label();
+        let relay = FakeRelay::start(&label);
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+
+        let (mut ws, _) = relay.accept();
+        tell(
+            &mut ws,
+            json!({"type": "challenge", "nonce": B64.encode([7u8; 16])}),
+        );
+        assert_eq!(control(&mut ws)["type"], "claim");
+        // In a narrow race the relay sends one before `claimed`. It sends it
+        // again after, so the early one is dropped.
+        tell(&mut ws, delivery(FIRST));
+        tell(&mut ws, json!({"type": "claimed"}));
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        tell(&mut ws, delivery(SECOND));
+        assert_eq!(next_delivery(&mut rx).id, SECOND);
+        assert!(rx.try_recv().is_err(), "the early one never comes");
     }
 
     #[test]

@@ -40,6 +40,7 @@ impl LinearView {
                 this.signing_in.settle(got);
                 if signed_in {
                     this.read(false, cx);
+                    cx.emit(LinearEvent::WorkspacesChanged);
                 }
             },
         );
@@ -53,6 +54,7 @@ impl LinearView {
         }
         self.reload(cx);
         self.read(false, cx);
+        cx.emit(LinearEvent::WorkspacesChanged);
     }
 
     pub(super) fn render_accounts(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -135,7 +137,7 @@ impl LinearView {
             .child(ui::text(
                 Type::Body,
                 theme::text_muted(),
-                "Every sign-in stays saved on this computer. The key goes to Linear and nowhere else.",
+                "Every sign-in stays saved on this computer. The key goes to Linear. If you let Linear start sessions on this computer, it also goes to Arakun, to prove the Linear user is you.",
             ));
         for (i, s) in self.sessions.iter().enumerate() {
             let id = s.id.clone();

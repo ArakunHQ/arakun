@@ -103,7 +103,7 @@ impl Subscription {
 }
 
 /// The key pair this computer signs its push requests with. One per computer,
-/// kept in the phone settings: the phone's browser binds its subscription to
+/// kept in the keyring (`Settings::vapid`): the phone's browser binds its subscription to
 /// the public half, so a new pair would orphan every subscription.
 pub struct Vapid {
     pair: signature::EcdsaKeyPair,
@@ -619,7 +619,7 @@ mod tests {
     #[ignore]
     fn ring_the_real_phones() {
         let mut settings = super::super::Settings::load();
-        let vapid = settings.vapid();
+        let vapid = settings.vapid().unwrap();
         let payload = serde_json::json!({ "kind": "input", "session": "probe", "title": "Arakun", "body": "Test push from the computer." });
         let mut rang = 0;
         for device in settings.devices.iter().filter(|d| d.push.is_some()) {

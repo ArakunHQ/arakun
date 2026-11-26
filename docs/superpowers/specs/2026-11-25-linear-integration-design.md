@@ -183,8 +183,10 @@ the list of Linear team ids and project ids it takes work for. Ids only. The app
 sends it when the mapping or the opt-in changes. An empty list means this computer
 takes nothing.
 
-**Webhook.** `POST /linear/webhook`. Verify the signature and the timestamp, drop
-repeats by `webhookId`, answer 200. Then for `created`:
+**Webhook.** `POST /linear/webhook`. Verify the signature and the timestamp, answer
+200. Repeats are dropped by the agent session's id (a delegation) or the activity's
+id (a follow-up), because `webhookId` names the webhook, not the event. Then for
+`created`:
 
 1. Find the account by (`organizationId`, `creatorId`). If there is none, post an
    `error` activity: the person has not linked Linear in Arakun, with a line on how.

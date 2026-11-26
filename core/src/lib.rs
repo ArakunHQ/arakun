@@ -28,6 +28,7 @@ pub mod phone;
 mod phone_page;
 pub mod platform;
 pub mod poll;
+pub mod private_socket;
 pub mod redact;
 pub mod rotate;
 pub mod schedule;

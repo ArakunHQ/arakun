@@ -67,6 +67,10 @@ pub struct Run {
     /// ask is told once. Never its text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<String>,
+    /// Linear stopped it while its session had a turn: the cancel's own
+    /// events must not move it, until that turn ends.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
 }
 
 impl std::fmt::Debug for Run {
@@ -83,6 +87,7 @@ impl std::fmt::Debug for Run {
             .field("state", &self.state)
             .field("reported_at", &self.reported_at)
             .field("asked", &self.asked.is_some())
+            .field("stopped", &self.stopped)
             .finish()
     }
 }
@@ -294,6 +299,33 @@ impl Runs {
             .collect()
     }
 
+    /// The Arakun sessions of the runs that have one.
+    pub fn session_ids(&self) -> Vec<String> {
+        self.runs.iter().filter_map(|r| r.session.clone()).collect()
+    }
+
+    /// The sessions in `gone` were removed from Arakun: their runs end. Gives
+    /// the agent sessions whose issue must hear it; a run already over says
+    /// nothing more.
+    pub fn forget_sessions(&mut self, gone: &[String]) -> Vec<String> {
+        let mut told = Vec::new();
+        for r in &mut self.runs {
+            let Some(s) = &r.session else { continue };
+            if !gone.contains(s) {
+                continue;
+            }
+            if matches!(
+                r.state,
+                RunState::Running | RunState::Asked | RunState::Interrupted
+            ) {
+                told.push(r.agent_session.clone());
+            }
+            r.state = RunState::Done;
+            r.stopped = false;
+        }
+        told
+    }
+
     /// Whether a run is at work, so Linear may need telling it still is.
     pub fn any_running(&self) -> bool {
         self.count(RunState::Running) > 0
@@ -357,6 +389,7 @@ mod tests {
             state: RunState::Waiting,
             reported_at: 0,
             asked: None,
+            stopped: false,
         }
     }
 
@@ -562,6 +595,33 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_session_ends_its_run() {
+        let mut r = Runs::default();
+        for (id, state) in [
+            ("a", RunState::Running),
+            ("b", RunState::Asked),
+            ("c", RunState::Interrupted),
+            ("d", RunState::Done),
+            ("e", RunState::Running),
+        ] {
+            r.add(run(id));
+            let x = r.by_agent_session(id).unwrap();
+            x.session = Some(format!("s-{id}"));
+            x.state = state;
+        }
+        r.add(run("f"));
+        let gone: Vec<String> = ["s-a", "s-b", "s-c", "s-d", "s-x"].map(String::from).into();
+        assert_eq!(r.forget_sessions(&gone), ["a", "b", "c"]);
+        for id in ["a", "b", "c", "d"] {
+            assert_eq!(state(&mut r, id), RunState::Done, "{id}");
+        }
+        assert_eq!(state(&mut r, "e"), RunState::Running);
+        assert_eq!(state(&mut r, "f"), RunState::Waiting);
+        assert!(r.forget_sessions(&gone).is_empty(), "told once");
+        assert_eq!(r.session_ids(), ["s-a", "s-b", "s-c", "s-d", "s-e"]);
+    }
+
+    #[test]
     fn the_timer_is_needed_while_a_run_works_or_reports_wait() {
         let mut r = Runs::default();
         assert!(!r.any_running() && !r.unsent());
@@ -640,6 +700,7 @@ mod tests {
         r.add(run("a"));
         r.by_agent_session("a").unwrap().environment = Some(PathBuf::from("/e/a"));
         r.by_agent_session("a").unwrap().asked = Some("00ff".into());
+        r.by_agent_session("a").unwrap().stopped = true;
         r.queue(Report {
             kind: ReportKind::Response,
             link: Some("https://x".into()),

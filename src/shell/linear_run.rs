@@ -372,6 +372,7 @@ impl Shell {
             state: RunState::Waiting,
             reported_at: 0,
             asked: None,
+            stopped: false,
         });
         self.linear_save();
         match added {

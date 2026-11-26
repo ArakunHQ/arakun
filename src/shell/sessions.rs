@@ -2361,7 +2361,7 @@ impl Shell {
         if removed.is_some() {
             self.forget_phone_sessions(&[pid]);
         }
-        self.forget_sessions(removed.into_iter().collect(), cx);
+        self.forget_sessions(removed.into_iter().collect(), window, cx);
         self.save(cx);
         cx.notify();
     }
@@ -2370,7 +2370,14 @@ impl Shell {
     /// their transcripts, the transcripts of the sessions they continue, and
     /// the notes linked from either. Otherwise private chats outlive the
     /// environment or project the user removed.
-    pub(super) fn forget_sessions(&mut self, sessions: Vec<Session>, cx: &mut Context<Self>) {
+    pub(super) fn forget_sessions(
+        &mut self,
+        sessions: Vec<Session>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let removed: Vec<String> = sessions.iter().map(|s| s.id.to_string()).collect();
+        self.linear_sessions_removed(&removed, window, cx);
         for live in sessions.iter().filter_map(|s| s.live.as_ref()) {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());

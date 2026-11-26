@@ -88,6 +88,16 @@ pub fn follow_up(run: Option<RunState>, session_exists: bool, text: Option<&str>
     }
 }
 
+/// The state a run takes once a reply from Linear is passed on to its
+/// session. An asked run stays asked: the message waits in the session's
+/// queue behind the question or permission. A running one is unchanged.
+pub fn after_reply(state: RunState) -> Option<RunState> {
+    match state {
+        RunState::Done | RunState::Interrupted => Some(RunState::Running),
+        RunState::Waiting | RunState::Running | RunState::Asked => None,
+    }
+}
+
 /// What a stop from Linear leads to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
@@ -273,15 +283,31 @@ impl Shell {
         if let Some(s) = self.session_mut(&env, &sid) {
             s.updated = crate::model::unix_now();
         }
-        // The person answered in Linear, or asked for more after it ended.
-        // An explicit reply is not queued or refused, so a run that ended
-        // can pass the limit of three here; new work then waits until the
-        // running sessions drop below it.
+        // The person asked for more after it ended. An explicit reply is
+        // not queued or refused, so a run that ended can pass the limit of
+        // three here; new work then waits until the running sessions drop
+        // below it.
+        let mut revived = false;
         if let Some(run) = self.linear_runs.by_agent_session(agent_session) {
-            run.state = RunState::Running;
+            // A new turn on purpose: a stop's cancel is behind it.
+            run.stopped = false;
+            if let Some(to) = after_reply(run.state) {
+                run.state = to;
+                run.asked = None;
+                revived = true;
+            }
+        }
+        if revived {
+            self.linear_watch(cx);
         }
         cx.notify();
         true
+    }
+
+    fn linear_mark_stopped(&mut self, agent_session: &str, stopped: bool) {
+        if let Some(run) = self.linear_runs.by_agent_session(agent_session) {
+            run.stopped = stopped;
+        }
     }
 
     /// The environment and id of the run's session, while both are still in
@@ -322,7 +348,15 @@ impl Shell {
             && let Some((env, sid)) = self.linear_session_of(&d.agent_session)
             && let Some(thread) = self.phone_thread(&env, &sid)
         {
+            // While the cancel's turn winds down its events (back to work,
+            // then the turn's end) must not move the run again.
+            let busy = thread.read(cx).is_busy();
+            self.linear_mark_stopped(&d.agent_session, busy);
             thread.update(cx, |t, cx| t.cancel(cx));
+            // No turn end is coming: nothing to wait for.
+            if busy && !thread.read(cx).is_cancelling() {
+                self.linear_mark_stopped(&d.agent_session, false);
+            }
         }
         match decided {
             Stop::Nothing => self.linear_save(),
@@ -409,6 +443,16 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_restarts_only_a_run_that_ended() {
+        assert_eq!(after_reply(RunState::Done), Some(RunState::Running));
+        assert_eq!(after_reply(RunState::Interrupted), Some(RunState::Running));
+        // It waits behind the pending ask; the session's own events move it.
+        assert_eq!(after_reply(RunState::Asked), None);
+        assert_eq!(after_reply(RunState::Running), None);
+        assert_eq!(after_reply(RunState::Waiting), None);
+    }
+
+    #[test]
     fn a_stop_does_what_the_run_needs() {
         assert_eq!(stop(None), Stop::Nothing);
         assert_eq!(stop(Some(RunState::Waiting)), Stop::Dequeue);
@@ -467,6 +511,7 @@ mod tests {
             state: RunState::Running,
             reported_at: 0,
             asked: None,
+            stopped: false,
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);

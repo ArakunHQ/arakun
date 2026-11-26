@@ -1747,7 +1747,7 @@ impl Shell {
             .into_iter()
             .flat_map(|e| e.sessions)
             .collect();
-        self.forget_sessions(sessions, cx);
+        self.forget_sessions(sessions, window, cx);
         if self.active_project >= pi && self.active_project > 0 {
             self.active_project -= 1;
         }
@@ -2566,7 +2566,7 @@ impl Shell {
                         }
                         // A worktree is local: phones call its sessions by id.
                         this.forget_phone_sessions(&own_ids);
-                        this.forget_sessions(moved, cx);
+                        this.forget_sessions(moved, window, cx);
                         sessions::discard_session_files(own_ids.clone(), session_ids.clone(), cx);
                     }
                     this.forget_envs(&[path], window, cx);
@@ -2604,7 +2604,7 @@ impl Shell {
             .filter(|e| paths.contains(&e.path))
             .flat_map(|e| std::mem::take(&mut e.sessions))
             .collect();
-        self.forget_sessions(sessions, cx);
+        self.forget_sessions(sessions, window, cx);
         let before = self.projects.len();
         let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
         if self.projects.len() != before {

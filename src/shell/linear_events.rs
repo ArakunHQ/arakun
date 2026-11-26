@@ -7,6 +7,7 @@
 //! a permission is for go to Linear: never a permission's arguments, which
 //! can hold file contents, commands with secrets or whole diffs.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui::{Context, Entity, Window};
@@ -41,8 +42,16 @@ pub enum Seen {
         reply: String,
     },
     Failed(String),
+    /// It waits on a person for something other than a question or a
+    /// permission, such as a secret. What it is stays in Arakun.
+    Waiting {
+        computer: String,
+    },
     Cancelled,
 }
+
+/// The once-per-ask key of a wait that is neither a question nor a permission.
+pub const WAITING_KEY: &str = "waiting";
 
 /// The report for what the session did, in the plan's words. A cancel says
 /// nothing: a stop from Linear was told already, and one in Arakun is the
@@ -92,8 +101,19 @@ pub fn to_report(ev: Seen, _run: &Run) -> Option<(ReportKind, String)> {
             };
             (ReportKind::Error, failed_line(&reason))
         }
+        Seen::Waiting { computer } => (
+            ReportKind::Elicitation,
+            format!("Waiting for you in Arakun on {computer}."),
+        ),
         Seen::Cancelled => return None,
     })
+}
+
+pub fn removed_line(computer: &str) -> String {
+    format!(
+        "The session for this was removed in Arakun on {computer}. Delegate the issue again \
+         to start over."
+    )
 }
 
 pub fn closed_line(computer: &str) -> String {
@@ -204,6 +224,52 @@ pub fn apply(state: RunState, step: Step) -> Option<Move> {
     }
 }
 
+/// What a step did to a run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Effect {
+    pub step: Step,
+    pub report: bool,
+    pub frees: bool,
+}
+
+/// Moves `run` for one session event. `key` names the pending ask, if any.
+/// Gives what happened when the run changed or Linear must hear it.
+pub fn advance(run: &mut Run, ev: Event, now: Now, key: Option<&str>) -> Option<Effect> {
+    let step = step(ev, now);
+    if run.stopped {
+        // A stop from Linear is winding the turn down: only its end counts,
+        // and it says nothing.
+        if !matches!(ev, Event::Finished(_)) {
+            return None;
+        }
+        run.stopped = false;
+        return Some(Effect {
+            step: Step::Nothing,
+            report: false,
+            frees: false,
+        });
+    }
+    let mv = apply(run.state, step)?;
+    let before = run.clone();
+    let mut report = mv.report;
+    if step == Step::Ask {
+        let key = key?;
+        // Events repeat while one ask is pending: it is told once.
+        report &= run.asked.as_deref() != Some(key);
+        run.asked = Some(key.to_string());
+    }
+    run.state = mv.to;
+    if mv.to == RunState::Running {
+        // Back at work: the next ask is a new one, even with the same words.
+        run.asked = None;
+    }
+    (report || *run != before).then_some(Effect {
+        step,
+        report,
+        frees: mv.frees,
+    })
+}
+
 /// The last thing the agent said in its latest turn, whole.
 fn turn_reply(entries: &[Entry]) -> String {
     let turn = entries
@@ -242,9 +308,18 @@ fn ask_key(parts: &[&str]) -> String {
     format!("{h:016x}")
 }
 
+/// The sessions `resume_after_restart` will bring back. Read, not taken:
+/// that runs after the sweep.
+fn resumed_after_restart() -> Vec<String> {
+    std::fs::read(crate::state::resume_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
 /// What waits on a person in `t`, if anything: a key for it and what Linear
 /// hears. A permission comes first, as on the desktop.
-fn ask_of(t: &Thread) -> Option<(String, Seen)> {
+fn ask_of(t: &Thread, computer: &str) -> Option<(String, Seen)> {
     if let Some(p) = t.pending_permission() {
         let kind = t.entries().iter().find_map(|e| match e {
             Entry::Tool(tc) if tc.id == p.tool_call_id => Some(tc.kind.as_str()),
@@ -254,7 +329,14 @@ fn ask_of(t: &Thread) -> Option<(String, Seen)> {
         let key = ask_key(&["permission", &p.tool_call_id, &p.title]);
         return Some((key, Seen::Permission(what)));
     }
-    let q = t.pending_question()?;
+    let Some(q) = t.pending_question() else {
+        // A secret, or anything else it waits for: never named in Linear.
+        let waiting = Seen::Waiting {
+            computer: computer.to_string(),
+        };
+        return (t.status() == ThreadStatus::NeedsInput)
+            .then(|| (WAITING_KEY.to_string(), waiting));
+    };
     // A secret's field is answered in Arakun only.
     let options = q
         .questions
@@ -283,12 +365,11 @@ impl Shell {
             ThreadEvent::Finished { stop_reason } => Event::Finished(stop_reason),
             _ => return,
         };
-        let Some(run) = self.linear_runs.by_session(id) else {
+        if self.linear_runs.by_session(id).is_none() {
             return;
-        };
-        let (state, asked) = (run.state, run.asked.clone());
+        }
         let t = thread.read(cx);
-        let ask = ask_of(t);
+        let ask = ask_of(t, &computer());
         let status = t.status();
         let now = Now {
             working: status == ThreadStatus::Working,
@@ -296,57 +377,46 @@ impl Shell {
             asking: ask.is_some(),
             continues: !t.queued().is_empty() && !t.queue_paused(),
         };
-        let step = step(event, now);
-        let Some(mv) = apply(state, step) else {
+        let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
+        let session_pr = t.meta().pr.clone();
+        let Some(run) = self.linear_runs.by_session(id) else {
             return;
         };
-        let mut report = mv.report;
-        let mut ask_key = None;
-        let seen = match step {
-            Step::Ask => {
-                let Some((key, seen)) = ask else {
-                    return;
-                };
-                // Events repeat while one ask is pending: it is told once.
-                report &= asked.as_deref() != Some(key.as_str());
-                ask_key = Some(key);
-                seen
-            }
-            Step::Finished => Seen::Finished {
-                reply: turn_reply(t.entries()),
-            },
-            Step::Failed => Seen::Failed(match status {
+        let key = ask.as_ref().map(|(k, _)| k.as_str());
+        let Some(effect) = advance(run, event, now, key) else {
+            return;
+        };
+        let to = run.state;
+        let seen = match effect.step {
+            Step::Ask => ask.map(|(_, seen)| seen),
+            Step::Finished => Some(Seen::Finished {
+                reply: reply.unwrap_or_default(),
+            }),
+            Step::Failed => Some(Seen::Failed(match status {
                 ThreadStatus::Error(msg) => msg,
                 _ => String::new(),
-            }),
-            Step::Cancelled | Step::Working | Step::Nothing => Seen::Cancelled,
+            })),
+            Step::Cancelled => Some(Seen::Cancelled),
+            Step::Working | Step::Nothing => None,
         };
-        let session_pr = t.meta().pr.clone();
-        if mv.to == state && !report {
-            return;
-        }
-        let link = if step == Step::Finished {
+        let report = seen
+            .filter(|_| effect.report)
+            .and_then(|seen| to_report(seen, run));
+        let agent_session = run.agent_session.clone();
+        let link = if effect.step == Step::Finished {
             self.linear_pr(id, session_pr.as_deref(), cx)
         } else {
             None
         };
-        let Some(run) = self.linear_runs.by_session(id) else {
-            return;
-        };
-        run.state = mv.to;
-        if ask_key.is_some() {
-            run.asked = ask_key;
-        }
-        let agent_session = run.agent_session.clone();
         // The new state goes in the same save as the report.
-        match report.then(|| to_report(seen, run)).flatten() {
+        match report {
             Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
             None => self.linear_save(),
         }
-        if mv.to == RunState::Running {
+        if to == RunState::Running {
             self.linear_watch(cx);
         }
-        if mv.frees {
+        if effect.frees {
             self.linear_start_waiting(window, cx);
         }
     }
@@ -368,17 +438,37 @@ impl Shell {
     /// live agent was cut off when Arakun closed. Its issue hears it, and
     /// the runs that wait start in the freed slots.
     pub(super) fn linear_recover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let live: std::collections::HashSet<String> = self
+        let sessions: Vec<&crate::model::Session> = self
             .projects
             .iter()
             .flat_map(|p| &p.environments)
             .flat_map(|e| &e.sessions)
-            .filter(|s| s.live.is_some())
-            .map(|s| s.id.to_string())
             .collect();
+        let listed: HashSet<String> = sessions.iter().map(|s| s.id.to_string()).collect();
+        // `arakun restart` cut these off mid-turn; they go on by themselves
+        // once the app is up, so they were not lost.
+        let mut live: HashSet<String> = resumed_after_restart().into_iter().collect();
+        live.extend(
+            sessions
+                .iter()
+                .filter(|s| s.live.is_some())
+                .map(|s| s.id.to_string()),
+        );
+        // A session removed while Arakun was closed: nothing to continue.
+        let gone: Vec<String> = self
+            .linear_runs
+            .session_ids()
+            .into_iter()
+            .filter(|s| !listed.contains(s))
+            .collect();
+        let removed = self.linear_runs.forget_sessions(&gone);
         let lost = self.linear_runs.interrupted(&|s| live.contains(s));
-        if !lost.is_empty() {
+        if !removed.is_empty() || !lost.is_empty() {
             self.linear_save();
+        }
+        let line = removed_line(&computer());
+        for agent_session in removed {
+            self.linear_report(&agent_session, ReportKind::Error, line.clone(), None, cx);
         }
         let line = closed_line(&computer());
         for agent_session in lost {
@@ -386,6 +476,30 @@ impl Shell {
         }
         self.linear_start_waiting(window, cx);
         self.linear_watch(cx);
+    }
+
+    /// Sessions taken off Arakun's list: their runs end, their issues hear
+    /// it, and the freed slots go to the runs that wait.
+    pub(super) fn linear_sessions_removed(
+        &mut self,
+        ids: &[String],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        let before = self.linear_runs.clone();
+        let told = self.linear_runs.forget_sessions(ids);
+        if self.linear_runs == before {
+            return;
+        }
+        self.linear_save();
+        let line = removed_line(&computer());
+        for agent_session in told {
+            self.linear_report(&agent_session, ReportKind::Error, line.clone(), None, cx);
+        }
+        self.linear_start_waiting(window, cx);
     }
 
     /// Starts the one timer, while a run works or reports wait. It tells
@@ -446,6 +560,7 @@ mod tests {
             state: RunState::Running,
             reported_at: 0,
             asked: None,
+            stopped: false,
         }
     }
 
@@ -702,5 +817,141 @@ mod tests {
         assert_ne!(a, ask_key(&["q", "tc2", "Which database?"]));
         assert_ne!(a, ask_key(&["q", "tc1Which", " database?"]));
         assert!(!a.contains("database") && !a.is_empty());
+    }
+
+    fn ran(state: RunState) -> Run {
+        Run { state, ..run() }
+    }
+
+    fn working() -> Now {
+        Now {
+            working: true,
+            ..Now::default()
+        }
+    }
+
+    fn asking() -> Now {
+        Now {
+            asking: true,
+            ..Now::default()
+        }
+    }
+
+    /// The steps that report, in order, as `(step, report, frees)`.
+    fn feed(r: &mut Run, events: &[(Event, Now, Option<&str>)]) -> Vec<(Step, bool, bool)> {
+        events
+            .iter()
+            .filter_map(|(ev, now, key)| advance(r, *ev, *now, *key))
+            .map(|e| (e.step, e.report, e.frees))
+            .collect()
+    }
+
+    #[test]
+    fn an_asked_run_stopped_from_linear_stays_stopped() {
+        // `linear_stop` marks it Done and stopped, then cancels the turn.
+        let mut r = Run {
+            stopped: true,
+            ..ran(RunState::Done)
+        };
+        let seen = feed(
+            &mut r,
+            &[
+                (Event::Status, working(), None),
+                (Event::Finished("end_turn"), Now::default(), None),
+            ],
+        );
+        assert!(
+            seen.iter().all(|(_, report, frees)| !report && !frees),
+            "{seen:?}"
+        );
+        assert_eq!((r.state, r.stopped), (RunState::Done, false));
+        // After that turn, the person typing in Arakun brings it back.
+        feed(&mut r, &[(Event::Status, working(), None)]);
+        assert_eq!(r.state, RunState::Running);
+    }
+
+    #[test]
+    fn a_stopped_run_ignores_every_event_until_its_turn_ends() {
+        for reason in ["cancelled", "end_turn", "error"] {
+            let mut r = Run {
+                stopped: true,
+                ..ran(RunState::Done)
+            };
+            assert!(advance(&mut r, Event::Status, asking(), Some("k")).is_none());
+            assert!(advance(&mut r, Event::Status, working(), None).is_none());
+            let end = advance(&mut r, Event::Finished(reason), Now::default(), None);
+            assert!(end.is_some_and(|e| !e.report && !e.frees), "{reason}");
+            assert_eq!((r.state, r.stopped), (RunState::Done, false), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_cancel_in_arakun_still_ends_the_run_quietly() {
+        let mut r = ran(RunState::Asked);
+        let seen = feed(
+            &mut r,
+            &[
+                (Event::Status, working(), None),
+                (Event::Finished("cancelled"), Now::default(), None),
+            ],
+        );
+        assert_eq!(seen.last(), Some(&(Step::Cancelled, false, true)));
+        assert!(seen.iter().all(|(_, report, _)| !report));
+        assert_eq!(r.state, RunState::Done);
+    }
+
+    #[test]
+    fn the_same_ask_again_after_an_answer_is_told_again() {
+        let mut r = ran(RunState::Running);
+        let seen = feed(
+            &mut r,
+            &[
+                (Event::Status, asking(), Some("proceed")),
+                (Event::Status, asking(), Some("proceed")),
+                (Event::Status, working(), None),
+                (Event::Status, asking(), Some("proceed")),
+            ],
+        );
+        let told = seen
+            .iter()
+            .filter(|(s, report, _)| *s == Step::Ask && *report);
+        assert_eq!(told.count(), 2, "{seen:?}");
+        assert_eq!(r.state, RunState::Asked);
+    }
+
+    #[test]
+    fn a_session_waiting_for_you_is_told_once() {
+        assert_eq!(
+            report(Seen::Waiting {
+                computer: "rik-mac".into()
+            }),
+            Some((
+                ReportKind::Elicitation,
+                "Waiting for you in Arakun on rik-mac.".into()
+            ))
+        );
+        let mut r = ran(RunState::Running);
+        let seen = feed(
+            &mut r,
+            &[
+                (Event::Status, asking(), Some(WAITING_KEY)),
+                (Event::Finished("end_turn"), asking(), Some(WAITING_KEY)),
+            ],
+        );
+        assert_eq!(
+            seen,
+            [(Step::Ask, true, false)],
+            "the second changes nothing"
+        );
+        assert_eq!(r.state, RunState::Asked);
+    }
+
+    #[test]
+    fn a_removed_session_has_its_line() {
+        assert_eq!(
+            removed_line("rik-mac"),
+            "The session for this was removed in Arakun on rik-mac. Delegate the issue \
+             again to start over."
+        );
     }
 }

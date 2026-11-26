@@ -6,7 +6,7 @@ import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
 import { verified, webhook } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
-import { account, claim, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./relay/helpers";
+import { account, away, claim, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./relay/helpers";
 
 const ORG = HOOK_ORG;
 const SESSION = HOOK_SESSION;
@@ -79,13 +79,6 @@ async function linkedComputerWithRoute({
   linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT });
   linearFake.issues.set(UNMAPPED, { teamId: TEAM2, projectId: null });
   return { me, pc, owner };
-}
-
-/// The computer leaves, so the relay keeps what comes for it.
-async function away(label: string, pc: PcSocket): Promise<void> {
-  pc.ws.close(1000, "shutting down");
-  await pc.inbox.closedWith();
-  await untilStored<number>(label, "last_seen", (v) => v !== undefined);
 }
 
 function deliveries() {

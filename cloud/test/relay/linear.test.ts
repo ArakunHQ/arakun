@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DATA, pcControl, pcFrame, phoneFrame } from "../../src/relay/frames";
 import * as expire from "../../src/linear_expire";
 import { QueueFull, deliver, dropDelivery, type Delivery } from "../../src/machines";
-import { account, claim, computer, computerAndPhone, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./helpers";
+import { account, away, claim, computer, computerAndPhone, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./helpers";
 
 const DAY_MS = 24 * 3_600_000;
 
@@ -42,10 +42,7 @@ async function reconnect(me: Computer, session: string): Promise<PcSocket> {
 /// A computer that claimed once and left, so its label is registered.
 async function awayComputer() {
   const { me, pc, owner } = await connectedComputer();
-  pc.ws.close(1000, "shutting down");
-  await pc.inbox.closedWith();
-  // The object writes when the computer was last seen once it hears the close.
-  await untilStored<number>(me.label, "last_seen", (v) => v !== undefined);
+  await away(me.label, pc);
   return { me, owner };
 }
 

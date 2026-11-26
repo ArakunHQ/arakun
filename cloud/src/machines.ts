@@ -51,9 +51,9 @@ export async function machines(request: Request, env: Env, url: URL, ctx: Execut
 async function list(request: Request, env: Env): Promise<Response> {
   const s = await session(request, env);
   if (!s) return error(401, "not signed in");
-  if (s.blocked) return blockedAnswer(env, s.githubId);
-  const rows = await env.DB.prepare("SELECT label, pub, name, kind, last_seen_at FROM machines WHERE github_id = ? ORDER BY created_at, label")
-    .bind(s.githubId)
+  if (s.blocked) return blockedAnswer(env, s.accountId);
+  const rows = await env.DB.prepare("SELECT label, pub, name, kind, last_seen_at FROM machines WHERE account_id = ? ORDER BY created_at, label")
+    .bind(s.accountId)
     .all<{ label: string; pub: string; name: string; kind: string; last_seen_at: number }>();
   const online = await Promise.all(rows.results.map((r) => isOnline(env, r.label)));
   return Response.json(rows.results.map((r, i) => ({ label: r.label, pub: r.pub, name: r.name, kind: r.kind, online: online[i], last_seen_at: r.last_seen_at })));
@@ -64,8 +64,8 @@ async function list(request: Request, env: Env): Promise<Response> {
 async function forget(request: Request, env: Env, label: string): Promise<Response> {
   const s = await session(request, env, { renew: false });
   if (!s) return error(401, "not signed in");
-  if (s.blocked) return blockedAnswer(env, s.githubId);
-  const result = await env.DB.prepare("DELETE FROM machines WHERE label = ? AND github_id = ?").bind(label, s.githubId).run();
+  if (s.blocked) return blockedAnswer(env, s.accountId);
+  const result = await env.DB.prepare("DELETE FROM machines WHERE label = ? AND account_id = ?").bind(label, s.accountId).run();
   if (result.meta.changes === 0) return error(404, "no such machine");
   await recheckMachine(env, label);
   return new Response(null, { status: 204 });
@@ -85,11 +85,11 @@ async function computerDoor(request: Request, env: Env, url: URL, label: string)
   if (!s) return refuseSocket("pc", "signed_out");
   if (s.blocked) return refuseSocket("pc", "blocked");
   const [owner, count] = await env.DB.batch<{ n: number }>([
-    env.DB.prepare("SELECT github_id AS n FROM machines WHERE label = ?").bind(label),
-    env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE github_id = ?").bind(s.githubId),
+    env.DB.prepare("SELECT account_id AS n FROM machines WHERE label = ?").bind(label),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE account_id = ?").bind(s.accountId),
   ]);
   const ownerId = owner!.results[0]?.n;
-  if (ownerId !== undefined && ownerId !== s.githubId) return refuseSocket("pc", "label_taken");
+  if (ownerId !== undefined && ownerId !== s.accountId) return refuseSocket("pc", "label_taken");
   if (ownerId === undefined && count!.results[0]!.n >= (await planFor(env.CONFIG, s.plan)).machines) return refuseSocket("pc", "machines_full");
   return toObject(env, label, "pc", null, s, {
     "x-arakun-machine-name": encodeURIComponent(name),
@@ -105,12 +105,12 @@ async function deviceDoor(request: Request, env: Env, url: URL, label: string, c
   if (!s) return refuseSocket("ws", "signed_out");
   if (s.blocked) return refuseSocket("ws", "blocked");
   const row = await env.DB.prepare(
-    `SELECT m.github_id, c.label IS NOT NULL AS cloud FROM machines m LEFT JOIN cloud_machines c ON c.label = m.label WHERE m.label = ?`,
+    `SELECT m.account_id, c.label IS NOT NULL AS cloud FROM machines m LEFT JOIN cloud_machines c ON c.label = m.label WHERE m.label = ?`,
   )
     .bind(label)
-    .first<{ github_id: number; cloud: number }>();
+    .first<{ account_id: number; cloud: number }>();
   if (row === null) return refuseSocket("ws", "no_machine");
-  if (row.github_id !== s.githubId) return refuseSocket("ws", "not_yours");
+  if (row.account_id !== s.accountId) return refuseSocket("ws", "not_yours");
   // A start takes seconds: the socket opens now, and the relay tells the
   // device the computer is offline until the server has dialed in.
   if (row.cloud === 1) ctx.waitUntil(wakeIfCloud(env, label));
@@ -132,7 +132,7 @@ function toObject(env: Env, label: string, door: "pc" | "ws", page: string | nul
   const headers = new Headers({
     Upgrade: "websocket",
     "x-arakun-label": label,
-    "x-arakun-account": String(s.githubId),
+    "x-arakun-account": String(s.accountId),
     "x-arakun-plan": s.plan,
     "x-arakun-session": s.hash,
     ...extra,
@@ -155,8 +155,8 @@ export function refuseSocket(door: "pc" | "ws", reason: Refusal, message?: strin
 
 /// Tells the account's machine objects to recheck their sockets, after a
 /// sign-out or a block, so those sockets end now rather than at the alarm.
-export async function recheckAccount(env: Env, githubId: number): Promise<void> {
-  const rows = await env.DB.prepare("SELECT label FROM machines WHERE github_id = ?").bind(githubId).all<{ label: string }>();
+export async function recheckAccount(env: Env, accountId: number): Promise<void> {
+  const rows = await env.DB.prepare("SELECT label FROM machines WHERE account_id = ?").bind(accountId).all<{ label: string }>();
   await Promise.all(rows.results.map((r) => recheckMachine(env, r.label)));
 }
 
@@ -238,8 +238,8 @@ async function isOnline(env: Env, label: string): Promise<boolean> {
 }
 
 /// A blocked account may still see why: the reason the operator gave.
-async function blockedAnswer(env: Env, githubId: number): Promise<Response> {
-  const reason = await env.DB.prepare("SELECT blocked_reason FROM users WHERE github_id = ?").bind(githubId).first<string | null>("blocked_reason");
+async function blockedAnswer(env: Env, accountId: number): Promise<Response> {
+  const reason = await env.DB.prepare("SELECT blocked_reason FROM accounts WHERE id = ?").bind(accountId).first<string | null>("blocked_reason");
   return Response.json({ error: "blocked", reason: reason ?? null }, { status: 403 });
 }
 

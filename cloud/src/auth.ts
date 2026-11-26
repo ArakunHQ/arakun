@@ -32,7 +32,7 @@ export interface Session {
   /// The session's public id, which `GET /sessions` lists and
   /// `DELETE /sessions/<id>` takes. Not a secret.
   id: string;
-  githubId: number;
+  accountId: number;
   login: string;
   name: string;
   kind: string;
@@ -97,14 +97,17 @@ export async function signIn(request: Request, env: Env): Promise<Response> {
 
   const made = await newSession(env, user, body.name ?? user.login, body.kind);
   const [flags, plan] = await env.DB.batch([
-    flagsQuery(env.DB, user.id),
-    env.DB.prepare("SELECT plan FROM users WHERE github_id = ?").bind(user.id),
+    flagsQuery(env.DB, made.account_id),
+    env.DB.prepare("SELECT plan FROM accounts WHERE id = ?").bind(made.account_id),
   ]);
   return Response.json({
     session: made.session,
     session_id: made.session_id,
     expires_at: made.expires_at,
-    github_id: user.id,
+    account_id: made.account_id,
+    // The account ID under its old name, for clients from before accounts had
+    // their own. For accounts made before then it is their GitHub ID.
+    github_id: made.account_id,
     login: user.login,
     flags: flagList(flags!),
     plan: (plan!.results[0] as { plan: string }).plan,
@@ -137,49 +140,101 @@ export async function verifyAndRevoke(token: string, env: Env): Promise<GitHubUs
   return user;
 }
 
-/// Makes the user's row if it is new and gives them a session. Callers have
-/// checked who the user is already, and `name` and `kind` too.
+/// The account linked to a GitHub user, as a subquery on `?1`, the GitHub
+/// user's numeric ID as text. Null when none is.
+export const GITHUB_ACCOUNT = "(SELECT account_id FROM identities WHERE provider = 'github' AND subject = ?1)";
+
+/// The lowest ID a new account gets. GitHub's user IDs are far below it, so a
+/// new account's ID is never also some GitHub user's, and an account made
+/// before accounts had their own IDs (whose ID was its GitHub ID) is told
+/// apart by its size alone.
+export const MIN_NEW_ACCOUNT_ID = 2 ** 32;
+
+/// A random ID for a new account, from MIN_NEW_ACCOUNT_ID up to 2^53: random
+/// so none is ever reused or tells how many accounts there are, and below 2^53
+/// so JSON numbers hold it exactly in every client.
+export function newAccountId(): number {
+  const [hi, lo] = crypto.getRandomValues(new Uint32Array(2));
+  const n = (hi! % 2 ** 21) * 2 ** 32 + lo!;
+  return MIN_NEW_ACCOUNT_ID + (n % (Number.MAX_SAFE_INTEGER - MIN_NEW_ACCOUNT_ID));
+}
+
+/// Two statements that make an account for a GitHub user and link it, unless
+/// one is linked already. Run them first in a batch: a batch is one
+/// transaction, so both happen or neither. Its login stays empty and
+/// `last_seen_at` 0 until it signs in, which is how an account an admin made
+/// before the first sign-in looks. An ID that is taken already fails the
+/// batch rather than link the GitHub user to someone else's account.
+export function accountFor(db: D1Database, githubId: number, t: number): D1PreparedStatement[] {
+  const subject = String(githubId);
+  const id = newAccountId();
+  return [
+    db
+      .prepare(`INSERT INTO accounts (id, login, created_at, last_seen_at) SELECT ?3, '', ?2, 0 WHERE ${GITHUB_ACCOUNT} IS NULL`)
+      .bind(subject, t, id),
+    db
+      .prepare(`INSERT INTO identities (provider, subject, account_id, linked_at) SELECT 'github', ?1, ?3, ?2 WHERE ${GITHUB_ACCOUNT} IS NULL`)
+      .bind(subject, t, id),
+  ];
+}
+
+/// The account's GitHub user ID, or null if it has no GitHub identity.
+export async function githubIdOf(env: Env, accountId: number): Promise<number | null> {
+  const subject = await env.DB.prepare("SELECT subject FROM identities WHERE provider = 'github' AND account_id = ?")
+    .bind(accountId)
+    .first<string>("subject");
+  return subject === null ? null : Number(subject);
+}
+
+/// Makes the account if the GitHub user has none and gives it a session.
+/// Callers have checked who the user is already, and `name` and `kind` too.
 export async function newSession(
   env: Env,
   user: GitHubUser,
   name: string,
   kind: string,
-): Promise<{ session: string; session_id: string; expires_at: number }> {
+): Promise<{ session: string; session_id: string; expires_at: number; account_id: number }> {
   const t = now();
   const session = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   const expiresAt = t + SESSION_DAYS * DAY;
   const db = env.DB;
   const hash = hex(await sha256(session));
-  // One batch is one transaction: no session without its user row.
+  const subject = String(user.id);
+  // One batch is one transaction: no session without its account.
   const results = await db.batch([
-    // Fills in the login of a row an admin made before the first sign-in.
+    ...accountFor(db, user.id, t),
+    // Fills in the login of an account an admin made before the first sign-in.
     db
       .prepare(
-        `INSERT INTO users (github_id, login, email, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4)
-         ON CONFLICT (github_id) DO UPDATE SET login = excluded.login,
-           email = CASE WHEN ?5 THEN excluded.email ELSE users.email END, last_seen_at = excluded.last_seen_at`,
+        `UPDATE accounts SET login = ?2, email = CASE WHEN ?4 THEN ?3 ELSE email END, last_seen_at = ?5
+         WHERE id = ${GITHUB_ACCOUNT}`,
       )
-      .bind(user.id, user.login, user.email ?? null, t, user.email === undefined ? 0 : 1),
+      .bind(subject, user.login, user.email ?? null, user.email === undefined ? 0 : 1, t),
     // Each sign-in adds a session, so old ones are cleared here.
-    db.prepare("DELETE FROM sessions WHERE github_id = ? AND expires_at <= ?").bind(user.id, t),
+    db.prepare(`DELETE FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND expires_at <= ?2`).bind(subject, t),
     db
-      .prepare("INSERT INTO sessions (token_hash, id, name, kind, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(hash, id, name, kind, user.id, t, expiresAt, t),
+      .prepare(
+        `INSERT INTO sessions (token_hash, id, name, kind, account_id, created_at, expires_at, last_used_at)
+         SELECT ?2, ?3, ?4, ?5, ${GITHUB_ACCOUNT}, ?6, ?7, ?6`,
+      )
+      .bind(subject, hash, id, name, kind, t, expiresAt),
     // Past the cap, the sessions used longest ago make room for the new one.
     // Cloud sessions neither count nor go: one per machine bounds them, and
     // signing in on a new phone must not cut off a machine we run.
     db
       .prepare(
-        `DELETE FROM sessions WHERE github_id = ?1 AND token_hash IN (
-           SELECT token_hash FROM sessions WHERE github_id = ?1 AND token_hash != ?2 AND kind != 'cloud'
+        `DELETE FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND token_hash IN (
+           SELECT token_hash FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND token_hash != ?2 AND kind != 'cloud'
            ORDER BY last_used_at DESC, created_at DESC, token_hash LIMIT -1 OFFSET ?3)`,
       )
-      .bind(user.id, hash, MAX_SESSIONS - 1),
+      .bind(subject, hash, MAX_SESSIONS - 1),
+    db.prepare(`SELECT ${GITHUB_ACCOUNT} AS id`).bind(subject),
   ]);
+  const accountId = (results[6]!.results[0] as { id: number }).id;
   // A session that made room may have sockets open: they close now.
-  if (results[3]!.meta.changes > 0) await recheckAccount(env, user.id);
-  return { session, session_id: id, expires_at: expiresAt };
+  if (results[5]!.meta.changes > 0) await recheckAccount(env, accountId);
+  return { session, session_id: id, expires_at: expiresAt, account_id: accountId };
 }
 
 /// A session for the machine with this label, for a user who has signed in
@@ -190,7 +245,7 @@ export async function newSession(
 /// without the cap, and a restarted container leaves no live token behind.
 export async function newCloudSession(
   env: Env,
-  githubId: number,
+  accountId: number,
   label: string,
   name: string,
 ): Promise<{ session: string; session_id: string; expires_at: number } | null> {
@@ -203,17 +258,17 @@ export async function newCloudSession(
   const hash = hex(await sha256(session));
   const db = env.DB;
   const results = await db.batch([
-    db.prepare("DELETE FROM sessions WHERE github_id = ? AND (expires_at <= ? OR machine_label = ?)").bind(githubId, t, label),
+    db.prepare("DELETE FROM sessions WHERE account_id = ? AND (expires_at <= ? OR machine_label = ?)").bind(accountId, t, label),
     // No row without a user who exists and is not blocked.
     db
       .prepare(
-        `INSERT INTO sessions (token_hash, id, name, kind, machine_label, github_id, created_at, expires_at, last_used_at)
-         SELECT ?1, ?2, ?3, ?4, ?5, github_id, ?6, ?7, ?6 FROM users WHERE github_id = ?8 AND blocked_at IS NULL`,
+        `INSERT INTO sessions (token_hash, id, name, kind, machine_label, account_id, created_at, expires_at, last_used_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, id, ?6, ?7, ?6 FROM accounts WHERE id = ?8 AND blocked_at IS NULL`,
       )
-      .bind(hash, id, name, CLOUD_KIND, label, t, expiresAt, githubId),
+      .bind(hash, id, name, CLOUD_KIND, label, t, expiresAt, accountId),
   ]);
   // The session it replaced may hold the machine's socket.
-  if (results[0]!.meta.changes > 0) await recheckAccount(env, githubId);
+  if (results[0]!.meta.changes > 0) await recheckAccount(env, accountId);
   if (results[1]!.meta.changes === 0) return null;
   return { session, session_id: id, expires_at: expiresAt };
 }
@@ -221,8 +276,8 @@ export async function newCloudSession(
 export async function me(request: Request, env: Env): Promise<Response> {
   const s = await session(request, env);
   if (!s) return error(401, "not signed in");
-  const flags = flagList(await flagsQuery(env.DB, s.githubId).run());
-  return Response.json({ github_id: s.githubId, login: s.login, flags, plan: s.plan, notices: await unreadNotices(env, s.githubId) });
+  const flags = flagList(await flagsQuery(env.DB, s.accountId).run());
+  return Response.json({ account_id: s.accountId, github_id: s.accountId, login: s.login, flags, plan: s.plan, notices: await unreadNotices(env, s.accountId) });
 }
 
 export async function logout(request: Request, env: Env): Promise<Response> {
@@ -231,7 +286,7 @@ export async function logout(request: Request, env: Env): Promise<Response> {
   // A cookie that names no session is dead: the page should drop it.
   if (!s) return withoutCookie(request, error(401, "not signed in"));
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(s.hash).run();
-  await recheckAccount(env, s.githubId);
+  await recheckAccount(env, s.accountId);
   return withoutCookie(request, new Response(null, { status: 204 }));
 }
 
@@ -249,9 +304,9 @@ export async function listSessions(request: Request, env: Env): Promise<Response
   const s = await session(request, env);
   if (!s) return error(401, "not signed in");
   const rows = await env.DB.prepare(
-    "SELECT id, name, kind, created_at, last_used_at FROM sessions WHERE github_id = ? AND expires_at > ? ORDER BY created_at, id",
+    "SELECT id, name, kind, created_at, last_used_at FROM sessions WHERE account_id = ? AND expires_at > ? ORDER BY created_at, id",
   )
-    .bind(s.githubId, now())
+    .bind(s.accountId, now())
     .all<{ id: string; name: string; kind: string; created_at: number; last_used_at: number }>();
   return Response.json(rows.results.map((r) => ({ ...r, current: r.id === s.id })));
 }
@@ -260,9 +315,9 @@ export async function listSessions(request: Request, env: Env): Promise<Response
 export async function deleteSession(request: Request, env: Env, id: string): Promise<Response> {
   const s = await session(request, env, { renew: false });
   if (!s) return error(401, "not signed in");
-  const result = await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND github_id = ?").bind(id, s.githubId).run();
+  const result = await env.DB.prepare("DELETE FROM sessions WHERE id = ? AND account_id = ?").bind(id, s.accountId).run();
   if (result.meta.changes === 0) return error(404, "no such session");
-  await recheckAccount(env, s.githubId);
+  await recheckAccount(env, s.accountId);
   const res = new Response(null, { status: 204 });
   // Signing out the session that made this request ends the cookie too.
   return id === s.id ? withoutCookie(request, res) : res;
@@ -296,10 +351,10 @@ export async function session(
   const hash = hex(await sha256(token));
   // A lookup by the hash itself, so no secret is compared here.
   const row = await env.DB.prepare(
-    `SELECT s.id, s.name, s.kind, s.machine_label, s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, u.plan, u.blocked_at IS NOT NULL AS blocked,
+    `SELECT s.id, s.name, s.kind, s.machine_label, s.account_id, s.created_at, s.expires_at, s.last_used_at, u.login, u.plan, u.blocked_at IS NOT NULL AS blocked,
             f.flag IS NOT NULL AS flagged
-     FROM sessions s JOIN users u ON u.github_id = s.github_id
-     LEFT JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?2
+     FROM sessions s JOIN accounts u ON u.id = s.account_id
+     LEFT JOIN user_flags f ON f.account_id = s.account_id AND f.flag = ?2
      WHERE s.token_hash = ?1`,
   )
     .bind(hash, flag)
@@ -308,7 +363,7 @@ export async function session(
       name: string;
       kind: string;
       machine_label: string | null;
-      github_id: number;
+      account_id: number;
       created_at: number;
       expires_at: number;
       last_used_at: number;
@@ -337,7 +392,7 @@ export async function session(
         hash,
         row.last_used_at,
       ),
-      env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ? AND last_seen_at < ?").bind(t, row.github_id, t),
+      env.DB.prepare("UPDATE accounts SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?").bind(t, row.account_id, t),
     ]);
   }
   // A row from before sessions had ids: the migration fills them in, but a
@@ -352,7 +407,7 @@ export async function session(
   return {
     hash,
     id,
-    githubId: row.github_id,
+    accountId: row.account_id,
     login: row.login,
     name,
     kind: row.kind,

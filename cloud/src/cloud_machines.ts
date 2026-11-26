@@ -42,14 +42,14 @@ export async function cloudMachines(request: Request, env: Env, url: URL, ctx: E
   if (s.blocked) return error(403, "blocked");
   if (!s.flagged) return error(403, "this account has no access to cloud machines; ask for it at /cloud/access");
   if (!one) {
-    if (request.method === "GET") return list(env, ns, s.githubId);
-    if (request.method === "POST") return create(request, env, ns, url, s.githubId, s.plan, ctx);
+    if (request.method === "GET") return list(env, ns, s.accountId);
+    if (request.method === "POST") return create(request, env, ns, url, s.accountId, s.plan, ctx);
     return error(404, "not found");
   }
   const label = one[1]!;
   const action = one[2];
-  const owner = await env.DB.prepare("SELECT github_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("github_id");
-  if (owner !== s.githubId) return error(404, "no such cloud machine");
+  const owner = await env.DB.prepare("SELECT account_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("account_id");
+  if (owner !== s.accountId) return error(404, "no such cloud machine");
   const stub = ns.get(ns.idFromName(label));
   if (action === "wake" && request.method === "POST") {
     const woke = await stub.wake();
@@ -61,14 +61,14 @@ export async function cloudMachines(request: Request, env: Env, url: URL, ctx: E
     return new Response(null, { status: 204 });
   }
   if (!action && request.method === "DELETE") {
-    await removeMachine(env, ns, label, s.githubId);
+    await removeMachine(env, ns, label, s.accountId);
     return new Response(null, { status: 204 });
   }
   return error(404, "not found");
 }
 
-async function list(env: Env, ns: DurableObjectNamespace<import("./cloud_machine").CloudMachine>, githubId: number): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT label FROM cloud_machines WHERE github_id = ? ORDER BY created_at, label").bind(githubId).all<{ label: string }>();
+async function list(env: Env, ns: DurableObjectNamespace<import("./cloud_machine").CloudMachine>, accountId: number): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT label FROM cloud_machines WHERE account_id = ? ORDER BY created_at, label").bind(accountId).all<{ label: string }>();
   const states = await Promise.all(rows.results.map((r) => ns.get(ns.idFromName(r.label)).state()));
   return Response.json(states.filter((s) => s !== null));
 }
@@ -78,7 +78,7 @@ async function create(
   env: Env,
   ns: DurableObjectNamespace<import("./cloud_machine").CloudMachine>,
   url: URL,
-  githubId: number,
+  accountId: number,
   plan: string,
   ctx: ExecutionContext,
 ): Promise<Response> {
@@ -91,20 +91,20 @@ async function create(
   const name = typeof given === "string" ? given.trim() : DEFAULT_NAME;
   // The machine registers like any computer of the account once it runs, so
   // it needs room under the plan's limit.
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE github_id = ?").bind(githubId).first<number>("n");
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE account_id = ?").bind(accountId).first<number>("n");
   if ((count ?? 0) >= (await planFor(env.CONFIG, plan)).machines) return error(409, "the account has as many machines as its plan allows");
   const key = await newMachineKey();
   // The count and the insert in one statement, so two requests at once
   // cannot both get under the limit.
   const made = await env.DB.prepare(
-    `INSERT INTO cloud_machines (label, github_id, name, created_at)
-     SELECT ?1, ?2, ?3, ?4 WHERE (SELECT COUNT(*) FROM cloud_machines WHERE github_id = ?2) < ?5`,
+    `INSERT INTO cloud_machines (label, account_id, name, created_at)
+     SELECT ?1, ?2, ?3, ?4 WHERE (SELECT COUNT(*) FROM cloud_machines WHERE account_id = ?2) < ?5`,
   )
-    .bind(key.label, githubId, name, now(), MAX_CLOUD_MACHINES)
+    .bind(key.label, accountId, name, now(), MAX_CLOUD_MACHINES)
     .run();
   if (made.meta.changes === 0) return error(409, `an account has at most ${MAX_CLOUD_MACHINES} cloud machine`);
   const stub = ns.get(ns.idFromName(key.label));
-  await stub.create({ label: key.label, githubId, name, base: accountBase(env, url), identity: key.identity, identityPublic: key.identityPublic });
+  await stub.create({ label: key.label, githubId: accountId, name, base: accountBase(env, url), identity: key.identity, identityPublic: key.identityPublic });
   // The first start pulls the image, which takes a while: the answer does not
   // wait for it. GET /cloud/machines shows when it runs.
   ctx.waitUntil(
@@ -136,11 +136,11 @@ function refusal(why: Refused): Response {
 
 /// Stops the machine and forgets it: its object's key and snapshot, its row,
 /// its registration on the relay and its cloud session.
-async function removeMachine(env: Env, ns: DurableObjectNamespace<import("./cloud_machine").CloudMachine>, label: string, githubId: number): Promise<void> {
+async function removeMachine(env: Env, ns: DurableObjectNamespace<import("./cloud_machine").CloudMachine>, label: string, accountId: number): Promise<void> {
   await ns.get(ns.idFromName(label)).remove();
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM cloud_machines WHERE label = ? AND github_id = ?").bind(label, githubId),
-    env.DB.prepare("DELETE FROM machines WHERE label = ? AND github_id = ?").bind(label, githubId),
+    env.DB.prepare("DELETE FROM cloud_machines WHERE label = ? AND account_id = ?").bind(label, accountId),
+    env.DB.prepare("DELETE FROM machines WHERE label = ? AND account_id = ?").bind(label, accountId),
   ]);
   await recheckMachine(env, label);
 }
@@ -162,10 +162,10 @@ export async function wakeIfCloud(env: Env, label: string): Promise<void> {
 /// GET /admin/cloud/machines: every cloud machine, with its owner and state.
 export async function listAllMachines(env: Env): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT c.label, c.github_id, u.login, c.name, c.created_at
-     FROM cloud_machines c JOIN users u ON u.github_id = c.github_id
+    `SELECT c.label, c.account_id, u.login, c.name, c.created_at
+     FROM cloud_machines c JOIN accounts u ON u.id = c.account_id
      ORDER BY c.created_at DESC, c.label`,
-  ).all<{ label: string; github_id: number; login: string; name: string; created_at: number }>();
+  ).all<{ label: string; account_id: number; login: string; name: string; created_at: number }>();
   const ns = env.CLOUD_MACHINE;
   const states = await Promise.all(rows.results.map((r) => (ns ? ns.get(ns.idFromName(r.label)).state() : null)));
   return Response.json(rows.results.map((r, i) => ({ ...r, running: states[i]?.running ?? false, snapshot: states[i]?.snapshot ?? false })));
@@ -177,7 +177,7 @@ export async function listAllMachines(env: Env): Promise<Response> {
 export async function sleepMachine(env: Env, op: Operator, label: string): Promise<Response> {
   const ns = env.CLOUD_MACHINE;
   if (!ns) return error(503, "cloud machines are not set up here");
-  const owner = await env.DB.prepare("SELECT github_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("github_id");
+  const owner = await env.DB.prepare("SELECT account_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("account_id");
   if (owner === null) return error(404, "no such cloud machine");
   await ns.get(ns.idFromName(label)).sleep("stopped by the operator");
   await record(env, op, "cloud.machine.sleep", owner, { label });

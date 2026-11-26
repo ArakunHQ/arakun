@@ -29,7 +29,8 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM devices"),
     env.DB.prepare("DELETE FROM sessions"),
     env.DB.prepare("DELETE FROM user_flags"),
-    env.DB.prepare("DELETE FROM users"),
+    env.DB.prepare("DELETE FROM identities"),
+    env.DB.prepare("DELETE FROM accounts"),
   ]);
   // The relay's switches, plans and cards: files share storage, so a plan one
   // test set must not limit the phones of the next.

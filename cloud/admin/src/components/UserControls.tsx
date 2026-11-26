@@ -42,7 +42,7 @@ export function Flags({ id, flags }: { id: number; flags: string[] }) {
                 disabled={busy}
                 onConfirm={() => {
                   add.reset();
-                  remove.mutate({ githubId: id, flag: f });
+                  remove.mutate({ accountId: id, flag: f });
                 }}
               >
                 Remove
@@ -61,7 +61,7 @@ export function Flags({ id, flags }: { id: number; flags: string[] }) {
           }
           setInvalid(false);
           remove.reset();
-          add.mutate({ githubId: id, flag }, { onSuccess: () => setFlag("") });
+          add.mutate({ accountId: id, flag }, { onSuccess: () => setFlag("") });
         }}
       >
         <input
@@ -117,7 +117,7 @@ export function Plan({ id, plan }: { id: number; plan: string | null }) {
           type="button"
           className="button"
           disabled={set.isPending || plans.isPending || value === "" || value === plan}
-          onClick={() => set.mutate({ githubId: id, plan: value }, { onSuccess: () => setChosen(null) })}
+          onClick={() => set.mutate({ accountId: id, plan: value }, { onSuccess: () => setChosen(null) })}
         >
           Set plan
         </button>
@@ -165,14 +165,14 @@ export function Block({ id, blockedAt, reason }: { id: number; blockedAt: number
             onChange={(e) => setWhy(e.target.value)}
           />
           <Confirm
-            title={`Block GitHub ID ${id}?`}
+            title={`Block account ${id}?`}
             body={<p>Its computers and devices are disconnected now and cannot connect until it is unblocked. It stays signed in: use Sign out everywhere to end that too.</p>}
             confirmLabel="Block"
             danger
             disabled={busy || why.length > MAX_REASON}
             onConfirm={() => {
               unblock.reset();
-              block.mutate({ githubId: id, reason: why.trim() || undefined });
+              block.mutate({ accountId: id, reason: why.trim() || undefined });
             }}
           >
             Block

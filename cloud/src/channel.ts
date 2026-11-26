@@ -19,7 +19,7 @@ import { messageSigned, parseMessage, sigKey, verify, type WireMessage } from ".
 
 /// Headers only the Worker sets, on a request it builds from scratch.
 export const TRUSTED = {
-  githubId: "X-Teams-Github-Id",
+  accountId: "X-Teams-Account-Id",
   deviceId: "X-Teams-Device-Id",
   sigPub: "X-Teams-Sig-Pub",
   teamId: "X-Teams-Team-Id",
@@ -32,7 +32,7 @@ export const TRUSTED = {
 
 /// Who is on a socket, kept on it across hibernation.
 interface Who {
-  githubId: number;
+  accountId: number;
   deviceId: string;
   sigPub: string;
   teamId: string;
@@ -165,7 +165,7 @@ export class Channel extends DurableObject<Env> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error(426, "expected a WebSocket upgrade");
     const h = request.headers;
     const who: Who = {
-      githubId: Number(h.get(TRUSTED.githubId)),
+      accountId: Number(h.get(TRUSTED.accountId)),
       deviceId: h.get(TRUSTED.deviceId) ?? "",
       sigPub: h.get(TRUSTED.sigPub) ?? "",
       teamId: h.get(TRUSTED.teamId) ?? "",
@@ -173,13 +173,13 @@ export class Channel extends DurableObject<Env> {
       session: h.get(TRUSTED.session) ?? "",
       quiet: h.get(TRUSTED.presence) === "0",
     };
-    if (!Number.isSafeInteger(who.githubId) || who.githubId <= 0 || !who.deviceId || !who.sigPub || !who.teamId || !who.channelId || !who.session) {
+    if (!Number.isSafeInteger(who.accountId) || who.accountId <= 0 || !who.deviceId || !who.sigPub || !who.teamId || !who.channelId || !who.session) {
       return error(500, "internal error");
     }
     // The Worker checked membership before it called here, but a removal can
     // commit and kick in between, before this socket exists. So check again,
     // and refuse if a kick for this user ran while we checked.
-    const kicks = this.kicks.get(who.githubId) ?? 0;
+    const kicks = this.kicks.get(who.accountId) ?? 0;
     this.admitting.set(who.session, (this.admitting.get(who.session) ?? 0) + 1);
     let allowed: Map<string, number>;
     try {
@@ -189,11 +189,11 @@ export class Channel extends DurableObject<Env> {
       if (n > 0) this.admitting.set(who.session, n);
       else this.admitting.delete(who.session);
     }
-    if (!live(allowed, who.session) || (this.kicks.get(who.githubId) ?? 0) !== kicks) return error(404, "not found");
+    if (!live(allowed, who.session) || (this.kicks.get(who.accountId) ?? 0) !== kicks) return error(404, "not found");
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     // The tag lets a removal find one user's sockets.
-    this.ctx.acceptWebSocket(server, [`u:${who.githubId}`]);
+    this.ctx.acceptWebSocket(server, [`u:${who.accountId}`]);
     server.serializeAttachment(who);
     // Everyone, the new socket included, hears who is on the channel now. A
     // quiet socket changes nothing anyone hears.
@@ -217,9 +217,9 @@ export class Channel extends DurableObject<Env> {
   }
 
   /// Closes a removed member's sockets; answers how many there were.
-  kick(githubId: number): number {
-    this.kicks.set(githubId, (this.kicks.get(githubId) ?? 0) + 1);
-    const sockets = this.ctx.getWebSockets(`u:${githubId}`);
+  kick(accountId: number): number {
+    this.kicks.set(accountId, (this.kicks.get(accountId) ?? 0) + 1);
+    const sockets = this.ctx.getWebSockets(`u:${accountId}`);
     for (const ws of sockets) this.close(ws, CLOSE_FORBIDDEN, "removed from the team");
     if (sockets.some(counted)) this.presenceSoon();
     return sockets.length;
@@ -407,9 +407,9 @@ export class Channel extends DurableObject<Env> {
   private async allowed(teamId: string, sessions: string[]): Promise<Map<string, number>> {
     const { results } = await this.env.DB.prepare(
       `SELECT s.token_hash, s.expires_at FROM sessions s
-       JOIN members m ON m.github_id = s.github_id AND m.team_id = ?1
-       JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?3
-       JOIN users u ON u.github_id = s.github_id AND u.blocked_at IS NULL
+       JOIN members m ON m.account_id = s.account_id AND m.team_id = ?1
+       JOIN user_flags f ON f.account_id = s.account_id AND f.flag = ?3
+       JOIN accounts u ON u.id = s.account_id AND u.blocked_at IS NULL
        WHERE s.token_hash IN (SELECT value FROM json_each(?2))`,
     )
       .bind(teamId, JSON.stringify(sessions), TEAMS_FLAG)
@@ -433,7 +433,7 @@ export class Channel extends DurableObject<Env> {
     this.ctx.waitUntil(this.presence());
   }
 
-  /// Sends the GitHub IDs with a counted socket open on this channel, sorted,
+  /// Sends the account IDs with a counted socket open on this channel, sorted,
   /// once each, to every open counted socket that passes the same check as a
   /// send's recipients. Only those are listed; quiet sockets are neither
   /// listed nor told. `gone` is a socket that is closing and
@@ -468,7 +468,7 @@ export class Channel extends DurableObject<Env> {
     // A socket that failed the check is neither told nor listed; the next
     // send closes it.
     const current = open().filter((ws) => live(allowed, sessionOf(ws)));
-    const here = [...new Set(current.map((ws) => (ws.deserializeAttachment() as Who | null)?.githubId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
+    const here = [...new Set(current.map((ws) => (ws.deserializeAttachment() as Who | null)?.accountId ?? 0))].filter((id) => id > 0).sort((a, b) => a - b);
     const out = JSON.stringify({ type: "presence", here });
     for (const ws of current) {
       try {

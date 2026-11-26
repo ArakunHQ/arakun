@@ -15,7 +15,8 @@ let log: LogEntry[];
 function makeDetail(): UserDetail {
   return {
     user: {
-      github_id: 1002,
+      account_id: 1002,
+      github_id: 583231,
       login: "octocat",
       plan: "free",
       blocked_at: null,
@@ -29,7 +30,7 @@ function makeDetail(): UserDetail {
     sessions: [{ id: "s1", name: "Laptop", kind: "app", created_at: NOW - 100, last_used_at: NOW - 50, expires_at: NOW + 1000, machine_label: null }],
     machines: [{ label: "m-1", name: "Studio", kind: "server", created_at: NOW - 100, last_seen_at: NOW - 10 }],
     cloud_request: null,
-    notices: [{ id: "n1", github_id: 1002, login: "octocat", text: "Hello there", url: "https://example.com/x", created_at: NOW - 30, expires_at: null, reads: 2 }],
+    notices: [{ id: "n1", account_id: 1002, login: "octocat", text: "Hello there", url: "https://example.com/x", created_at: NOW - 30, expires_at: null, reads: 2 }],
   };
 }
 
@@ -47,9 +48,10 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   if (url === "/api/plans") return json({ plans: ["free", "pro"] });
   if (url.startsWith("/api/log")) return json({ entries: log, next: null });
   const one = /^\/api\/users\/(\d+)$/.exec(url);
-  if (one && method === "GET") return detail ? json(detail) : json({ error: "no such user" }, 404);
-  if (/^\/api\/users\/\d+\/flags\/\w+$/.test(url)) return json({ github_id: 1002, flags: ["cloud"] });
-  if (/^\/api\/users\/\d+\/sessions$/.test(url)) return json({ github_id: 1002, closed: 2 });
+  if (one && method === "GET") return detail && one[1] !== "1005" ? json(detail) : json({ error: "no such account" }, 404);
+  if (url === "/api/github/1005" && method === "PUT") return json({ account_id: 1002, github_id: 1005, created: true });
+  if (/^\/api\/users\/\d+\/flags\/\w+$/.test(url)) return json({ account_id: 1002, flags: ["cloud"] });
+  if (/^\/api\/users\/\d+\/sessions$/.test(url)) return json({ account_id: 1002, closed: 2 });
   if (url === "/api/notices" && method === "POST") return json({ id: "n2" }, 201);
   if (method !== "GET") return new Response(null, { status: 204 });
   return json({ error: "not found" }, 404);
@@ -86,7 +88,7 @@ describe("one user", () => {
 
   it("calls nothing for an ID that is not one", async () => {
     renderRoute("/users/0123");
-    expect(await screen.findByText("This is not a GitHub ID.")).toBeTruthy();
+    expect(await screen.findByText("This is not an account ID.")).toBeTruthy();
     expect(calls.filter((c) => c.includes("/users/"))).toEqual([]);
   });
 
@@ -118,7 +120,7 @@ describe("one user", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Reason" }), "spam");
     await userEvent.click(screen.getByRole("button", { name: "Block" }));
     expect(writes()).toEqual(["DELETE /api/users/1002/flags/cloud"]);
-    const blockDialog = within(screen.getByRole("dialog", { name: "Block GitHub ID 1002?" }));
+    const blockDialog = within(screen.getByRole("dialog", { name: "Block account 1002?" }));
     // A block ends the relay sockets, not the sign-in; the text must not say it does.
     expect(blockDialog.getByText(/disconnected now and cannot connect until it is unblocked\. It stays signed in: use Sign out everywhere/)).toBeTruthy();
     await userEvent.click(blockDialog.getByRole("button", { name: "Block" }));
@@ -151,19 +153,17 @@ describe("one user", () => {
     expect(bodies["PUT /api/users/1002/plan"]).toEqual({ plan: "pro" });
   });
 
-  it("shows the forms for an account that never signed in", async () => {
-    detail = null;
-    renderRoute("/users/1005");
-    expect(await screen.findByText("This account has not signed in yet.")).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "New flag" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Block" })).toBeTruthy();
-    // No plan is picked for it: one click must not set "free" by accident.
-    expect(screen.getByRole("option", { name: "Choose a plan" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Set plan" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: "Send notice" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Sign out everywhere" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Activity" })).toBeNull();
+  it("offers to set up the account of a GitHub ID no account has, and opens it", async () => {
+    const { router } = renderRoute("/users/1005");
+    expect(await screen.findByText("No account has this ID.")).toBeTruthy();
+    // Nothing to set on an account that does not exist.
+    expect(screen.queryByRole("textbox", { name: "New flag" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Block" })).toBeNull();
+    expect(writes()).toEqual([]);
+    await userEvent.click(screen.getByRole("button", { name: "Set up the account of GitHub ID 1005" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/users/1002"));
+    expect(writes()).toEqual(["PUT /api/github/1005"]);
+    expect(await screen.findByRole("textbox", { name: "New flag" })).toBeTruthy();
   });
 
   it("starts a fresh screen when the operator goes to another account", async () => {
@@ -172,7 +172,7 @@ describe("one user", () => {
     await userEvent.type(await screen.findByRole("textbox", { name: "Reason" }), "spam");
     await userEvent.type(screen.getByRole("textbox", { name: "New flag" }), "beta");
     // Account B is already cached, so nothing unmounts by waiting.
-    await router.navigate({ to: "/users/$githubId", params: { githubId: "1003" } });
+    await router.navigate({ to: "/users/$accountId", params: { accountId: "1003" } });
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Reason" }) as HTMLInputElement).value).toBe(""));
     expect((screen.getByRole("textbox", { name: "New flag" }) as HTMLInputElement).value).toBe("");
   });
@@ -194,14 +194,14 @@ describe("one user", () => {
     await userEvent.type(screen.getByRole("textbox", { name: "Link (optional)" }), "https://example.com/a");
     await userEvent.click(screen.getByRole("button", { name: "Send notice" }));
     await waitFor(() => expect(calls).toContain("POST /api/notices"));
-    expect(bodies["POST /api/notices"]).toEqual({ github_id: 1002, text: "Welcome", url: "https://example.com/a" });
+    expect(bodies["POST /api/notices"]).toEqual({ account_id: 1002, text: "Welcome", url: "https://example.com/a" });
     expect(await screen.findByText("Notice sent.")).toBeTruthy();
   });
 
   it("lists the account's activity", async () => {
-    log = [{ id: 7, at: NOW - 5, operator_id: null, operator_login: null, action: "flag.grant", github_id: 1002, login: "octocat", detail: { flag: "cloud" } }];
+    log = [{ id: 7, at: NOW - 5, operator_id: null, operator_login: null, action: "flag.grant", account_id: 1002, login: "octocat", detail: { flag: "cloud" } }];
     renderRoute("/users/1002");
     expect(await screen.findByText("granted the flag cloud")).toBeTruthy();
-    expect(calls).toContain("GET /api/log?github_id=1002");
+    expect(calls).toContain("GET /api/log?account_id=1002");
   });
 });

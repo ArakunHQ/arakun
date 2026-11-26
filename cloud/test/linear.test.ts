@@ -27,7 +27,7 @@ describe("the /linear gate", () => {
   });
   it("refuses a blocked user", async () => {
     const u = await flagged(1, "ada");
-    await env.DB.prepare("UPDATE users SET blocked_at = 1 WHERE github_id = 1").run();
+    await env.DB.prepare("UPDATE accounts SET blocked_at = 1 WHERE id = ?").bind(u.id).run();
     expect((await call("GET", "/linear/link", as(u.session))).status).toBe(403);
   });
   it("is 404 without all four secrets", async () => {
@@ -99,7 +99,7 @@ describe("installing Arakun in a workspace", () => {
     expect(to.searchParams.get("actor")).toBe("app");
     expect(to.searchParams.get("state")).toBe(state);
     expect(state).toMatch(/^[\w-]{22}$/);
-    expect(value).toBe(`${state}.1`);
+    expect(value).toBe(`${state}.${u.id}`);
     expect(set).toContain("HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600");
   });
   it("needs the flag to start", async () => {
@@ -116,7 +116,7 @@ describe("installing Arakun in a workspace", () => {
     expect(res.headers.getSetCookie().some((c) => /^__Host-arakun_linear_state=;.*Max-Age=0/.test(c))).toBe(true);
     const all = (await rows()).results;
     expect(all).toHaveLength(1);
-    expect(all[0]).toMatchObject({ organization_id: FAKE_ORG, name: "Fake", app_user_id: FAKE_APP_USER, installed_by: 1 });
+    expect(all[0]).toMatchObject({ organization_id: FAKE_ORG, name: "Fake", app_user_id: FAKE_APP_USER, installed_by: u.id });
     expect(String(all[0]!.access_token)).toMatch(/^v1\./);
     expect(String(all[0]!.access_token)).not.toContain("lin_oauth");
   });
@@ -199,16 +199,16 @@ describe("linking a Linear user and routing", () => {
   const link = (session: string, token: string) => call("POST", "/linear/link", as(session), json({ token }));
   const put = (session: string, body: unknown) => call("PUT", "/linear/routes", as(session), json(body));
   const routes = async () =>
-    (await env.DB.prepare("SELECT label, github_id, organization_id, kind, target_id FROM linear_routes ORDER BY label, kind, target_id").all()).results;
-  const links = async () => (await env.DB.prepare("SELECT organization_id, linear_user_id, github_id FROM linear_links").all()).results;
+    (await env.DB.prepare("SELECT label, account_id, organization_id, kind, target_id FROM linear_routes ORDER BY label, kind, target_id").all()).results;
+  const links = async () => (await env.DB.prepare("SELECT organization_id, linear_user_id, account_id FROM linear_links").all()).results;
   const proves = (token: string, userId = LU) => linearFake.tokens.set(token, { userId, organizationId: ORG, organizationName: "Acme" });
   /// An account with the flag, a computer, and a link to ORG.
   const setup = async () => {
     const owner = await account();
-    await call("PUT", `/admin/users/${owner.github_id}/flags/linear`, ADMIN);
+    await call("PUT", `/admin/users/${owner.account_id}/flags/linear`, ADMIN);
     const { me } = await connectedComputer(owner);
-    proves(`lin_api_${owner.github_id}`, `22222222-2222-4222-8222-${String(owner.github_id).padStart(12, "0")}`);
-    expect((await link(owner.session, `lin_api_${owner.github_id}`)).status).toBe(200);
+    proves(`lin_api_${owner.githubId}`, `22222222-2222-4222-8222-${String(owner.githubId).padStart(12, "0")}`);
+    expect((await link(owner.session, `lin_api_${owner.githubId}`)).status).toBe(200);
     return { owner, label: me.label };
   };
 
@@ -218,7 +218,7 @@ describe("linking a Linear user and routing", () => {
     const res = await link(u.session, "lin_api_ada");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ organization_id: ORG, linear_user_id: LU, installed: false });
-    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: LU, github_id: 1 }]);
+    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: LU, account_id: u.id }]);
     expect(await dump(env.DB)).not.toContain("lin_api_ada");
     expect(await (await call("GET", "/linear/link", as(u.session))).json()).toEqual({
       links: [{ organization_id: ORG, linear_user_id: LU, installed: false }],
@@ -228,9 +228,9 @@ describe("linking a Linear user and routing", () => {
     const u = await flagged(1, "ada");
     proves("lin_api_ada");
     await env.DB.prepare(
-      "INSERT INTO linear_workspaces (organization_id, name, app_user_id, access_token, refresh_token, expires_at, installed_by, installed_at) VALUES (?, 'Acme', 'app', 'a', 'r', 1, 1, 1)",
+      "INSERT INTO linear_workspaces (organization_id, name, app_user_id, access_token, refresh_token, expires_at, installed_by, installed_at) VALUES (?, 'Acme', 'app', 'a', 'r', 1, ?, 1)",
     )
-      .bind(ORG)
+      .bind(ORG, u.id)
       .run();
     expect(await (await link(u.session, "lin_api_ada")).json()).toMatchObject({ installed: true });
     expect(await (await call("GET", "/linear/link", as(u.session))).json()).toMatchObject({ links: [{ installed: true }] });
@@ -241,7 +241,7 @@ describe("linking a Linear user and routing", () => {
     proves("lin_api_x");
     expect((await link(a.session, "lin_api_x")).status).toBe(200);
     expect((await link(b.session, "lin_api_x")).status).toBe(200);
-    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: LU, github_id: 2 }]);
+    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: LU, account_id: b.id }]);
     expect(await (await call("GET", "/linear/link", as(a.session))).json()).toEqual({ links: [] });
   });
   it("takes the first account's routes along when a link moves", async () => {
@@ -253,7 +253,7 @@ describe("linking a Linear user and routing", () => {
     proves("lin_api_eve", lu);
     expect((await link(other.session, "lin_api_eve")).status).toBe(200);
     expect(await routes()).toEqual([]);
-    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: lu, github_id: 900 }]);
+    expect(await links()).toEqual([{ organization_id: ORG, linear_user_id: lu, account_id: other.id }]);
   });
   it("refuses a token Linear refuses", async () => {
     const u = await flagged(1, "ada");
@@ -297,7 +297,7 @@ describe("linking a Linear user and routing", () => {
     expect((await put(owner.session, { label, organization_id: ORG, teams: [TEAM, TEAM, TEAM2], projects: [PROJECT] })).status).toBe(204);
     expect(await routes()).toHaveLength(3);
     expect((await put(owner.session, { label, organization_id: ORG, teams: [TEAM2], projects: [] })).status).toBe(204);
-    expect(await routes()).toEqual([{ label, github_id: owner.github_id, organization_id: ORG, kind: "team", target_id: TEAM2 }]);
+    expect(await routes()).toEqual([{ label, account_id: owner.account_id, organization_id: ORG, kind: "team", target_id: TEAM2 }]);
     expect((await put(owner.session, { label, organization_id: ORG, teams: [], projects: [] })).status).toBe(204);
     expect(await routes()).toEqual([]);
   });
@@ -336,14 +336,14 @@ describe("linking a Linear user and routing", () => {
   });
   it("picks the project route over the team route, then the computer seen last", async () => {
     const owner = await account();
-    await call("PUT", `/admin/users/${owner.github_id}/flags/linear`, ADMIN);
+    await call("PUT", `/admin/users/${owner.account_id}/flags/linear`, ADMIN);
     const a = (await connectedComputer(owner)).me.label;
     const b = (await connectedComputer(owner)).me.label;
     proves("lin_api_o", LU);
     expect((await link(owner.session, "lin_api_o")).status).toBe(200);
     await put(owner.session, { label: a, organization_id: ORG, teams: [TEAM], projects: [] });
     await put(owner.session, { label: b, organization_id: ORG, teams: [], projects: [PROJECT] });
-    const id = owner.github_id;
+    const id = owner.account_id;
     expect(await routeFor(env, id, ORG, { teamId: TEAM, projectId: PROJECT })).toMatchObject({ label: b });
     expect(await routeFor(env, id, ORG, { teamId: TEAM, projectId: null })).toMatchObject({ label: a });
     expect(await routeFor(env, id + 1000, ORG, { teamId: TEAM, projectId: PROJECT })).toBeNull();
@@ -359,16 +359,16 @@ describe("linking a Linear user and routing", () => {
   it("does not route to a machine its account no longer owns", async () => {
     const { owner, label } = await setup();
     await put(owner.session, { label, organization_id: ORG, teams: [TEAM], projects: [] });
-    await signIn(999, "mallory");
-    await env.DB.prepare("UPDATE machines SET github_id = 999 WHERE label = ?").bind(label).run();
-    expect(await routeFor(env, owner.github_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
+    const mallory = await signIn(999, "mallory");
+    await env.DB.prepare("UPDATE machines SET account_id = ? WHERE label = ?").bind(mallory.account_id, label).run();
+    expect(await routeFor(env, owner.account_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
   });
   it("forgetting a computer drops its routes", async () => {
     const { owner, label } = await setup();
     await put(owner.session, { label, organization_id: ORG, teams: [TEAM], projects: [] });
     expect((await call("DELETE", `/machines/${label}`, as(owner.session))).status).toBe(204);
     expect(await routes()).toEqual([]);
-    expect(await routeFor(env, owner.github_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
+    expect(await routeFor(env, owner.account_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
   });
   it("unlinking drops that workspace's routes", async () => {
     const { owner, label } = await setup();
@@ -377,7 +377,7 @@ describe("linking a Linear user and routing", () => {
     expect(res.status).toBe(204);
     expect(await links()).toEqual([]);
     expect(await routes()).toEqual([]);
-    expect(await routeFor(env, owner.github_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
+    expect(await routeFor(env, owner.account_id, ORG, { teamId: TEAM, projectId: null })).toBeNull();
     expect((await call("DELETE", `/linear/link/${ORG}`, as(owner.session))).status).toBe(204);
     expect((await call("DELETE", "/linear/link/nope", as(owner.session))).status).toBe(404);
   });

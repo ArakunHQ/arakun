@@ -11,6 +11,7 @@ import type {
   ClosedAnswer,
   CloudRequest,
   FlagsAnswer,
+  GitHubAccount,
   LogPage,
   MachineRow,
   Me,
@@ -57,10 +58,10 @@ export const usersQuery = ({ q, after }: { q?: string; after?: string }) =>
     queryFn: () => api<UserPage>("GET", `users${search({ q, after })}`),
   });
 
-export const userQuery = (githubId: number) =>
+export const userQuery = (accountId: number) =>
   queryOptions({
-    queryKey: ["user", githubId],
-    queryFn: () => api<UserDetail>("GET", `users/${githubId}`),
+    queryKey: ["user", accountId],
+    queryFn: () => api<UserDetail>("GET", `users/${accountId}`),
   });
 
 export const machinesQuery = queryOptions({
@@ -78,10 +79,10 @@ export const plansQuery = queryOptions({
   queryFn: () => api<Plans>("GET", "plans"),
 });
 
-export const logQuery = ({ githubId, before }: { githubId?: number; before?: number }) =>
+export const logQuery = ({ accountId, before }: { accountId?: number; before?: number }) =>
   queryOptions({
-    queryKey: ["log", { githubId, before }],
-    queryFn: () => api<LogPage>("GET", `log${search({ github_id: githubId, before })}`),
+    queryKey: ["log", { accountId, before }],
+    queryFn: () => api<LogPage>("GET", `log${search({ account_id: accountId, before })}`),
   });
 
 // The prefixes that invalidate every page or filter of a list.
@@ -100,51 +101,51 @@ function invalidate(client: QueryClient, keys: QueryKey[]): Promise<unknown> {
 /// A change to one account: the lists it shows in and its own screen.
 function useAccountChange<V, T>(
   mutationFn: (variables: V) => Promise<T>,
-  githubId: (variables: V) => number,
+  accountId: (variables: V) => number,
   lists: QueryKey[],
 ) {
   const client = useQueryClient();
   return useMutation({
     mutationFn,
-    onSuccess: (_data, variables) => invalidate(client, [...lists, userQuery(githubId(variables)).queryKey]),
+    onSuccess: (_data, variables) => invalidate(client, [...lists, userQuery(accountId(variables)).queryKey]),
   });
 }
 
 /// Grants a cloud access request and the `cloud` flag with it.
 export function useGrant() {
   return useAccountChange(
-    (githubId: number) => api<CloudRequest>("PUT", `cloud/requests/${githubId}/grant`),
-    (githubId) => githubId,
+    (accountId: number) => api<CloudRequest>("PUT", `cloud/requests/${accountId}/grant`),
+    (accountId) => accountId,
     [REQUESTS, USERS],
   );
 }
 
 export function useDecline() {
   return useAccountChange(
-    (githubId: number) => api<CloudRequest>("PUT", `cloud/requests/${githubId}/decline`),
-    (githubId) => githubId,
+    (accountId: number) => api<CloudRequest>("PUT", `cloud/requests/${accountId}/decline`),
+    (accountId) => accountId,
     [REQUESTS],
   );
 }
 
-type SignupDecision = { githubId: number; platform: BetaPlatform; decision: "admit" | "decline" };
+type SignupDecision = { accountId: number; platform: BetaPlatform; decision: "admit" | "decline" };
 
 /// Admits or declines a beta sign-up. Admitting invites no one: the operator
 /// adds the email in the store first.
 export function useDecideSignup() {
   return useAccountChange(
-    ({ githubId, platform, decision }: SignupDecision) => api<BetaSignup>("PUT", `beta/signups/${githubId}/${platform}/${decision}`),
-    (v) => v.githubId,
+    ({ accountId, platform, decision }: SignupDecision) => api<BetaSignup>("PUT", `beta/signups/${accountId}/${platform}/${decision}`),
+    (v) => v.accountId,
     [SIGNUPS],
   );
 }
 
-type FlagChange = { githubId: number; flag: string };
+type FlagChange = { accountId: number; flag: string };
 
 export function useAddFlag() {
   return useAccountChange(
-    ({ githubId, flag }: FlagChange) => api<FlagsAnswer>("PUT", `users/${githubId}/flags/${encodeURIComponent(flag)}`),
-    (v) => v.githubId,
+    ({ accountId, flag }: FlagChange) => api<FlagsAnswer>("PUT", `users/${accountId}/flags/${encodeURIComponent(flag)}`),
+    (v) => v.accountId,
     // A request shows whether the account has the `cloud` flag.
     [USERS, REQUESTS],
   );
@@ -152,24 +153,24 @@ export function useAddFlag() {
 
 export function useRemoveFlag() {
   return useAccountChange(
-    ({ githubId, flag }: FlagChange) => api<FlagsAnswer>("DELETE", `users/${githubId}/flags/${encodeURIComponent(flag)}`),
-    (v) => v.githubId,
+    ({ accountId, flag }: FlagChange) => api<FlagsAnswer>("DELETE", `users/${accountId}/flags/${encodeURIComponent(flag)}`),
+    (v) => v.accountId,
     [USERS, REQUESTS],
   );
 }
 
 export function useSetPlan() {
   return useAccountChange(
-    ({ githubId, plan }: { githubId: number; plan: string }) => api<void>("PUT", `users/${githubId}/plan`, { plan }),
-    (v) => v.githubId,
+    ({ accountId, plan }: { accountId: number; plan: string }) => api<void>("PUT", `users/${accountId}/plan`, { plan }),
+    (v) => v.accountId,
     [USERS],
   );
 }
 
 export function useBlock() {
   return useAccountChange(
-    ({ githubId, reason }: { githubId: number; reason?: string }) => api<void>("PUT", `users/${githubId}/block`, { reason }),
-    (v) => v.githubId,
+    ({ accountId, reason }: { accountId: number; reason?: string }) => api<void>("PUT", `users/${accountId}/block`, { reason }),
+    (v) => v.accountId,
     // A request and a sign-up show whether the account is blocked.
     [USERS, REQUESTS, SIGNUPS],
   );
@@ -177,8 +178,8 @@ export function useBlock() {
 
 export function useUnblock() {
   return useAccountChange(
-    (githubId: number) => api<void>("DELETE", `users/${githubId}/block`),
-    (githubId) => githubId,
+    (accountId: number) => api<void>("DELETE", `users/${accountId}/block`),
+    (accountId) => accountId,
     [USERS, REQUESTS, SIGNUPS],
   );
 }
@@ -186,10 +187,20 @@ export function useUnblock() {
 /// Ends every signed-in device of the account.
 export function useCloseSessions() {
   return useAccountChange(
-    (githubId: number) => api<ClosedAnswer>("DELETE", `users/${githubId}/sessions`),
-    (githubId) => githubId,
+    (accountId: number) => api<ClosedAnswer>("DELETE", `users/${accountId}/sessions`),
+    (accountId) => accountId,
     [],
   );
+}
+
+/// The account of a GitHub user, made if it has none, so the operator can set
+/// it up before the person first signs in.
+export function useGitHubAccount() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (githubId: number) => api<GitHubAccount>("PUT", `github/${githubId}`),
+    onSuccess: () => invalidate(client, [USERS]),
+  });
 }
 
 export function useCreateNotice() {
@@ -197,7 +208,7 @@ export function useCreateNotice() {
   return useMutation({
     mutationFn: (notice: NewNotice) => api<NoticeCreated>("POST", "notices", notice),
     onSuccess: (_data, notice) =>
-      invalidate(client, notice.github_id === undefined ? [NOTICES] : [NOTICES, userQuery(notice.github_id).queryKey]),
+      invalidate(client, notice.account_id === undefined ? [NOTICES] : [NOTICES, userQuery(notice.account_id).queryKey]),
   });
 }
 

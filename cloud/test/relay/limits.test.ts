@@ -114,7 +114,7 @@ describe("the plan's limits", () => {
   it("follow the account's plan, set by the operator", async () => {
     await env.CONFIG.put("plans", JSON.stringify({ free: {}, pro: { phones: 1 } }));
     const owner = await account();
-    expect((await call("PUT", `/admin/users/${owner.github_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "pro" }))).status).toBe(204);
+    expect((await call("PUT", `/admin/users/${owner.account_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "pro" }))).status).toBe(204);
     const { me } = await connectedComputer(owner);
     const one = await openPhone(me.label, (await device(owner)).session);
     expect(await one.inbox.control()).toEqual({ type: "open", channel: 1 });
@@ -131,7 +131,7 @@ describe("the plan's limits", () => {
 
   it("let an account the operator put on internal past the free plan", async () => {
     const owner = await account();
-    expect((await call("PUT", `/admin/users/${owner.github_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "internal" }))).status).toBe(204);
+    expect((await call("PUT", `/admin/users/${owner.account_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "internal" }))).status).toBe(204);
     const { me } = await connectedComputer(owner);
     for (let i = 1; i <= FREE.phones + 1; i++) {
       const p = await openPhone(me.label, (await device(owner)).session);
@@ -145,7 +145,7 @@ describe("the plan's limits", () => {
     phone.ws.send(phoneFrame(DATA, new Uint8Array([1, 2])));
     expect(((await pc.inbox.next()) as { payload: Uint8Array }).payload).toEqual(new Uint8Array([1, 2]));
 
-    const res = await call("PUT", `/admin/users/${owner.github_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "small" }));
+    const res = await call("PUT", `/admin/users/${owner.account_id}/plan`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ plan: "small" }));
     expect(res.status).toBe(204);
     phone.ws.send(phoneFrame(DATA, new Uint8Array([3, 4])));
     expect(await phone.inbox.control()).toEqual({ type: "limit", which: "frame" });

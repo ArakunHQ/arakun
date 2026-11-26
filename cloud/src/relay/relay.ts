@@ -46,7 +46,7 @@ import { planFor, type Plan } from "./limits";
 /// last checked against D1.
 interface Owner {
   label: string;
-  /// The account's GitHub ID.
+  /// The account ID.
   account: number;
   /// The SHA-256 of the session token, as `sessions.token_hash`.
   session: string;
@@ -311,15 +311,15 @@ export class Relay extends DurableObject<Env> {
     const now = seconds(Date.now());
     const result = await db
       .prepare(
-        `INSERT INTO machines (label, github_id, pub, name, kind, created_at, last_seen_at)
+        `INSERT INTO machines (label, account_id, pub, name, kind, created_at, last_seen_at)
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
-         WHERE (EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND github_id = ?2)
-                OR (SELECT COUNT(*) FROM machines WHERE github_id = ?2) < ?7)
-           AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.github_id = s.github_id
-                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL
+         WHERE (EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND account_id = ?2)
+                OR (SELECT COUNT(*) FROM machines WHERE account_id = ?2) < ?7)
+           AND EXISTS (SELECT 1 FROM sessions s JOIN accounts u ON u.id = s.account_id
+                       WHERE s.token_hash = ?8 AND s.account_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL
                          AND (s.machine_label IS NULL OR s.machine_label = ?1))
          ON CONFLICT (label) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at
-         WHERE machines.github_id = excluded.github_id`,
+         WHERE machines.account_id = excluded.account_id`,
       )
       .bind(tag.label, tag.account, pub, tag.name, tag.kind, now, plan.machines, tag.session)
       .run();
@@ -327,16 +327,16 @@ export class Relay extends DurableObject<Env> {
     const [session, machine] = await db.batch([
       db
         .prepare(
-          `SELECT u.blocked_at IS NOT NULL AS blocked FROM sessions s JOIN users u ON u.github_id = s.github_id
-           WHERE s.token_hash = ?1 AND s.github_id = ?2 AND s.expires_at > ?3 AND (s.machine_label IS NULL OR s.machine_label = ?4)`,
+          `SELECT u.blocked_at IS NOT NULL AS blocked FROM sessions s JOIN accounts u ON u.id = s.account_id
+           WHERE s.token_hash = ?1 AND s.account_id = ?2 AND s.expires_at > ?3 AND (s.machine_label IS NULL OR s.machine_label = ?4)`,
         )
         .bind(tag.session, tag.account, now, tag.label),
-      db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(tag.label),
+      db.prepare("SELECT account_id FROM machines WHERE label = ?").bind(tag.label),
     ]);
     const row = session!.results[0] as { blocked: number } | undefined;
     if (!row) return "signed_out";
     if (row.blocked) return "blocked";
-    const owner = (machine!.results[0] as { github_id: number } | undefined)?.github_id ?? null;
+    const owner = (machine!.results[0] as { account_id: number } | undefined)?.account_id ?? null;
     return owner !== null && owner !== tag.account ? "label_taken" : "machines_full";
   }
 
@@ -391,9 +391,9 @@ export class Relay extends DurableObject<Env> {
     for (;;) {
       const before = this.rechecks;
       const row = await this.env.DB.prepare(
-        `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
-                (SELECT github_id FROM machines WHERE label = ?2) AS owner
-         FROM sessions s JOIN users u ON u.github_id = s.github_id
+        `SELECT s.token_hash, s.account_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
+                (SELECT account_id FROM machines WHERE label = ?2) AS owner
+         FROM sessions s JOIN accounts u ON u.id = s.account_id
          WHERE s.token_hash = ?1 AND s.expires_at > ?3 AND s.machine_label IS NULL`,
       )
         .bind(admitted.session, admitted.label, seconds(Date.now()))
@@ -598,15 +598,15 @@ export class Relay extends DurableObject<Env> {
     const [sessions, machine] = await db.batch([
       db
         .prepare(
-          `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan
-           FROM sessions s JOIN users u ON u.github_id = s.github_id
+          `SELECT s.token_hash, s.account_id, u.blocked_at IS NOT NULL AS blocked, u.plan
+           FROM sessions s JOIN accounts u ON u.id = s.account_id
            WHERE s.token_hash IN (SELECT value FROM json_each(?1)) AND s.expires_at > ?2`,
         )
         .bind(JSON.stringify([...new Set(sockets.map((s) => s.tag.session))]), seconds(Date.now())),
-      db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(sockets[0]!.tag.label),
+      db.prepare("SELECT account_id FROM machines WHERE label = ?").bind(sockets[0]!.tag.label),
     ]);
     const rows = new Map((sessions!.results as SessionRow[]).map((r) => [r.token_hash, r]));
-    const owner = (machine!.results[0] as { github_id: number } | undefined)?.github_id ?? null;
+    const owner = (machine!.results[0] as { account_id: number } | undefined)?.account_id ?? null;
     const now = Date.now();
     // The computer first, so the one thing it hears is why, not its devices leaving.
     sockets.sort((a, b) => (a.tag.role === "pc" ? 0 : 1) - (b.tag.role === "pc" ? 0 : 1));
@@ -819,7 +819,7 @@ export class Relay extends DurableObject<Env> {
     const [label, account] = await Promise.all([this.ctx.storage.get<string>("label"), this.ctx.storage.get<number>("account")]);
     if (!label || account === undefined) return;
     try {
-      await this.env.DB.prepare("UPDATE machines SET last_seen_at = ? WHERE label = ? AND github_id = ?").bind(seconds(now), label, account).run();
+      await this.env.DB.prepare("UPDATE machines SET last_seen_at = ? WHERE label = ? AND account_id = ?").bind(seconds(now), label, account).run();
     } catch (e) {
       // The list shows an older time until the next claim; nothing else depends on it.
       console.error(`last_seen_at of ${label}:`, e);
@@ -923,7 +923,7 @@ export function replyClose(ws: Pick<WebSocket, "close">, code: number, reason: s
 /// A socket's session as the recheck reads it; only valid, unexpired ones.
 export interface SessionRow {
   token_hash: string;
-  github_id: number;
+  account_id: number;
   blocked: number;
   plan: string;
 }
@@ -937,7 +937,7 @@ function closeCode(why: string): number {
 /// account D1 has the label under, null when it has none; `checkOwner` is
 /// false when that read may predate the socket's own registration.
 export function refusal(tag: Tag, row: SessionRow | undefined, owner: number | null, checkOwner = true): string | null {
-  if (!row || row.github_id !== tag.account) return "signed_out";
+  if (!row || row.account_id !== tag.account) return "signed_out";
   if (row.blocked) return "blocked";
   // A computer that has not claimed yet has registered nothing.
   if (!checkOwner || (tag.role === "pc" && !tag.claimed)) return null;

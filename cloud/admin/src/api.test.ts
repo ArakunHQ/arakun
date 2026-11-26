@@ -30,9 +30,9 @@ async function failure(call: Promise<unknown>): Promise<ApiError> {
 
 describe("api", () => {
   it("sends JSON with the same-origin cookie", async () => {
-    fetchMock.mockResolvedValue(answer(200, { github_id: 1001, flags: ["cloud"] }));
+    fetchMock.mockResolvedValue(answer(200, { account_id: 1001, flags: ["cloud"] }));
     const out = await api<{ flags: string[] }>("PUT", "users/1001/plan", { plan: "pro" });
-    expect(out).toEqual({ github_id: 1001, flags: ["cloud"] });
+    expect(out).toEqual({ account_id: 1001, flags: ["cloud"] });
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("/api/users/1001/plan");

@@ -7,8 +7,9 @@ import type { BetaSignup } from "../types";
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 
-function signup(over: Partial<BetaSignup> & { github_id: number; login: string }): BetaSignup {
+function signup(over: Partial<BetaSignup> & { account_id: number; login: string }): BetaSignup {
   return {
+    github_id: 583231,
     platform: "ios",
     email: `${over.login}@example.com`,
     status: "pending",
@@ -43,7 +44,7 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const act = /^\/api\/beta\/signups\/(\d+)\/(ios|android)\/(admit|decline)$/.exec(url.pathname);
   if (act && method === "PUT") {
     if (fail) return json({ error: fail }, 404);
-    const s = signups.find((q) => q.github_id === Number(act[1]) && q.platform === act[2])!;
+    const s = signups.find((q) => q.account_id === Number(act[1]) && q.platform === act[2])!;
     s.status = act[3] === "admit" ? "admitted" : "declined";
     return json(s);
   }
@@ -58,9 +59,9 @@ beforeEach(() => {
   fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
   signups = [
-    signup({ github_id: 1002, login: "octocat" }),
-    signup({ github_id: 1002, login: "octocat", platform: "android", email: "octocat@gmail.com" }),
-    signup({ github_id: 1003, login: "inside", status: "admitted", decided_at: NOW - DAY, decided_by: "octo-operator" }),
+    signup({ account_id: 1002, login: "octocat" }),
+    signup({ account_id: 1002, login: "octocat", platform: "android", email: "octocat@gmail.com" }),
+    signup({ account_id: 1003, login: "inside", status: "admitted", decided_at: NOW - DAY, decided_by: "octo-operator" }),
   ];
 });
 

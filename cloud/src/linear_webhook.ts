@@ -133,19 +133,19 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   // The newest delegation still waiting or taken. One that ran out of time
   // left nothing on the computer to steer.
   const session = await env.DB.prepare(
-    `SELECT github_id, label, issue_id FROM linear_deliveries
+    `SELECT account_id, label, issue_id FROM linear_deliveries
      WHERE agent_session_id = ? AND organization_id = ? AND kind = 'created' AND expired_at IS NULL
      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
   )
     .bind(hook.agentSessionId, hook.organizationId)
-    .first<{ github_id: number; label: string; issue_id: string }>();
+    .first<{ account_id: number; label: string; issue_id: string }>();
   if (!session) return (await say("error", NO_SESSION), ok());
   // Anyone in the workspace can write in the session. Only the delegator's
   // words reach their computer.
   const mine =
     author !== null &&
-    (await env.DB.prepare("SELECT 1 AS yes FROM linear_links WHERE organization_id = ? AND linear_user_id = ? AND github_id = ?")
-      .bind(hook.organizationId, author, session.github_id)
+    (await env.DB.prepare("SELECT 1 AS yes FROM linear_links WHERE organization_id = ? AND linear_user_id = ? AND account_id = ?")
+      .bind(hook.organizationId, author, session.account_id)
       .first());
   if (!mine) return (await say("thought", NOT_DELEGATOR), ok());
 
@@ -154,9 +154,9 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   const key = `activity:${activityId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
-    ).bind(id, key, hook.agentSessionId, hook.organizationId, session.issue_id, kind, activityId, session.github_id, session.label, now()),
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, session.issue_id, kind, activityId, session.account_id, session.label, now()),
     readBack(env, key),
   ]);
   const row = read!.results[0]!;
@@ -192,7 +192,7 @@ function readBack(env: Env, eventKey: string): D1PreparedStatement {
   return env.DB.prepare(
     `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.label, d.created_at, d.announced_at,
        d.accepted_at, d.expired_at, m.name AS machine
-     FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
+     FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.account_id = d.account_id
      WHERE d.event_key = ?`,
   ).bind(eventKey);
 }
@@ -233,13 +233,13 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   if (!hook.issueId) return (await say("error", NO_ISSUE), ok());
   // A blocked account, or one that lost the flag, is as good as unlinked.
   const link = await env.DB.prepare(
-    `SELECT l.github_id AS github_id FROM linear_links l
-     JOIN users u ON u.github_id = l.github_id AND u.blocked_at IS NULL
-     JOIN user_flags f ON f.github_id = l.github_id AND f.flag = ?3
+    `SELECT l.account_id AS account_id FROM linear_links l
+     JOIN accounts u ON u.id = l.account_id AND u.blocked_at IS NULL
+     JOIN user_flags f ON f.account_id = l.account_id AND f.flag = ?3
      WHERE l.organization_id = ?1 AND l.linear_user_id = ?2`,
   )
     .bind(hook.organizationId, hook.creatorId, FLAG)
-    .first<{ github_id: number }>();
+    .first<{ account_id: number }>();
   if (!link) return (await say("error", NOT_LINKED), ok());
   let place: Awaited<ReturnType<typeof issuePlace>>;
   try {
@@ -249,7 +249,7 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
     if (e instanceof LinearRefused && e.status === 404) return (await say("error", NO_ROUTE), ok());
     throw e;
   }
-  const route = await routeFor(env, link.github_id, hook.organizationId, place);
+  const route = await routeFor(env, link.account_id, hook.organizationId, place);
   if (!route) return (await say("error", NO_ROUTE), ok());
 
   // The row first, keyed by the agent session: a retry finds it and finishes
@@ -260,9 +260,9 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   const key = `created:${hook.agentSessionId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
-    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.github_id, route.label, now()),
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.account_id, route.label, now()),
     readBack(env, key),
   ]);
   const row = read!.results[0]!;

@@ -20,6 +20,7 @@ function signUp(session: string, platform: string, email?: unknown): Promise<Res
   return call("POST", `/beta/${platform}`, headers, email === undefined ? undefined : JSON.stringify({ email }));
 }
 
+/// Decides on the sign-up of the account with that ID.
 function decide(id: number, platform: string, decision: "admit" | "decline", by?: string): Promise<Response> {
   return call("PUT", `/admin/beta/signups/${id}/${platform}/${decision}`, ADMIN, by === undefined ? undefined : JSON.stringify({ by }));
 }
@@ -42,7 +43,7 @@ describe("signing up for a beta", () => {
     const body = await res.json();
     expect(body).toEqual({ status: "pending", email: "tester@example.com", requested_at: expect.any(Number), decided_at: null, retry_at: null });
     expect(await signups(me.session)).toEqual({ email: "tester@example.com", ios: body, android: NONE });
-    const row = await env.DB.prepare("SELECT gh_login, gh_public_repos FROM beta_signups WHERE github_id = 3001").first();
+    const row = await env.DB.prepare("SELECT gh_login, gh_public_repos FROM beta_signups WHERE account_id = ?").bind(me.account_id).first();
     expect(row).toEqual({ gh_login: "tester", gh_public_repos: 12 });
   });
 
@@ -89,7 +90,7 @@ describe("signing up for a beta", () => {
   it("is refused once admitted", async () => {
     const me = await user(3006, "inside");
     await signUp(me.session, "ios");
-    expect((await decide(3006, "ios", "admit")).status).toBe(200);
+    expect((await decide(me.account_id, "ios", "admit")).status).toBe(200);
     const res = await signUp(me.session, "ios", "other@example.com");
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "already admitted", status: "admitted", email: "inside@example.com" });
@@ -108,7 +109,7 @@ describe("signing up for a beta", () => {
 
   it("is refused to a blocked account", async () => {
     const me = await user(3008, "blocked");
-    expect((await call("PUT", "/admin/users/3008/block", ADMIN)).status).toBe(204);
+    expect((await call("PUT", `/admin/users/${me.account_id}/block`, ADMIN)).status).toBe(204);
     expect((await signUp(me.session, "ios")).status).toBe(403);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM beta_signups").first()).toEqual({ n: 0 });
   });
@@ -128,14 +129,14 @@ describe("the operator", () => {
     await signUp(a.session, "ios");
     const b = await user(3102, "second");
     await signUp(b.session, "android", "second@gmail.com");
-    await decide(3101, "ios", "admit", "rik");
+    await decide(a.account_id, "ios", "admit", "rik");
 
     const res = await call("GET", "/admin/beta/signups", ADMIN);
     expect(res.status).toBe(200);
     const list = (await res.json()) as Record<string, unknown>[];
-    expect(list.map((r) => [r["github_id"], r["platform"], r["status"]])).toEqual([
-      [3102, "android", "pending"],
-      [3101, "ios", "admitted"],
+    expect(list.map((r) => [r["account_id"], r["github_id"], r["platform"], r["status"]])).toEqual([
+      [b.account_id, 3102, "android", "pending"],
+      [a.account_id, 3101, "ios", "admitted"],
     ]);
     expect(list[0]).toMatchObject({ email: "second@gmail.com", login: "second", github: { public_repos: 12 } });
     expect(list[1]).toMatchObject({ decided_by: "rik" });
@@ -149,7 +150,7 @@ describe("the operator", () => {
   it("declines, and the account may sign up again after the cooldown", async () => {
     const me = await user(3103, "later");
     await signUp(me.session, "android");
-    const res = await decide(3103, "android", "decline");
+    const res = await decide(me.account_id, "android", "decline");
     expect(res.status).toBe(200);
     const decided = (await res.json()) as { decided_at: number; retry_at: number };
     expect(decided.retry_at).toBe(decided.decided_at + DECLINE_COOLDOWN_DAYS * DAY);
@@ -157,8 +158,8 @@ describe("the operator", () => {
     expect(early.status).toBe(409);
     expect(await early.json()).toMatchObject({ error: "declined recently" });
 
-    await env.DB.prepare("UPDATE beta_signups SET decided_at = ? WHERE github_id = 3103")
-      .bind(nowSeconds() - DECLINE_COOLDOWN_DAYS * DAY - 1)
+    await env.DB.prepare("UPDATE beta_signups SET decided_at = ? WHERE account_id = ?")
+      .bind(nowSeconds() - DECLINE_COOLDOWN_DAYS * DAY - 1, me.account_id)
       .run();
     expect((await signUp(me.session, "android")).status).toBe(201);
     expect((await signups(me.session))["android"]).toMatchObject({ status: "pending", decided_at: null });
@@ -167,35 +168,35 @@ describe("the operator", () => {
   it("can change their mind, and a second decision keeps the first's time", async () => {
     const me = await user(3104, "mind");
     await signUp(me.session, "ios");
-    expect(await (await decide(3104, "ios", "decline")).json()).toMatchObject({ status: "declined" });
-    const admitted = (await (await decide(3104, "ios", "admit", "rik")).json()) as { decided_at: number };
+    expect(await (await decide(me.account_id, "ios", "decline")).json()).toMatchObject({ status: "declined" });
+    const admitted = (await (await decide(me.account_id, "ios", "admit", "rik")).json()) as { decided_at: number };
     expect(admitted).toMatchObject({ status: "admitted", decided_by: "rik", retry_at: null });
-    await env.DB.prepare("UPDATE beta_signups SET decided_at = 1 WHERE github_id = 3104").run();
-    expect(await (await decide(3104, "ios", "admit", "other")).json()).toMatchObject({ decided_at: 1, decided_by: "rik" });
+    await env.DB.prepare("UPDATE beta_signups SET decided_at = 1 WHERE account_id = ?").bind(me.account_id).run();
+    expect(await (await decide(me.account_id, "ios", "admit", "other")).json()).toMatchObject({ decided_at: 1, decided_by: "rik" });
   });
 
   it("logs each change with the operator and the platform, and not a repeat", async () => {
     const me = await user(3106, "logged");
     await signUp(me.session, "android");
     const op = { ...ADMIN, "X-Arakun-Operator-Id": "1001", "X-Arakun-Operator-Login": "operator" };
-    expect((await call("PUT", "/admin/beta/signups/3106/android/admit", op)).status).toBe(200);
-    expect((await call("PUT", "/admin/beta/signups/3106/android/admit", op)).status).toBe(200);
-    expect((await decide(3106, "android", "decline")).status).toBe(200);
-    const rows = await env.DB.prepare("SELECT operator_login, action, github_id, detail FROM admin_log ORDER BY id").all();
+    expect((await call("PUT", `/admin/beta/signups/${me.account_id}/android/admit`, op)).status).toBe(200);
+    expect((await call("PUT", `/admin/beta/signups/${me.account_id}/android/admit`, op)).status).toBe(200);
+    expect((await decide(me.account_id, "android", "decline")).status).toBe(200);
+    const rows = await env.DB.prepare("SELECT operator_login, action, account_id, detail FROM admin_log ORDER BY id").all();
     expect(rows.results).toEqual([
-      { operator_login: "operator", action: "beta.admit", github_id: 3106, detail: '{"platform":"android"}' },
-      { operator_login: null, action: "beta.decline", github_id: 3106, detail: '{"platform":"android"}' },
+      { operator_login: "operator", action: "beta.admit", account_id: me.account_id, detail: '{"platform":"android"}' },
+      { operator_login: null, action: "beta.decline", account_id: me.account_id, detail: '{"platform":"android"}' },
     ]);
   });
 
   it("checks the path and needs the admin secret", async () => {
     const me = await user(3105, "door");
     await signUp(me.session, "ios");
-    expect((await decide(3105, "android", "admit")).status).toBe(404);
-    expect((await decide(3105, "web", "admit")).status).toBe(400);
+    expect((await decide(me.account_id, "android", "admit")).status).toBe(404);
+    expect((await decide(me.account_id, "web", "admit")).status).toBe(400);
     expect((await call("PUT", "/admin/beta/signups/0/ios/admit", ADMIN)).status).toBe(400);
     expect((await call("GET", "/admin/beta/signups", as(me.session))).status).toBe(401);
-    expect((await call("PUT", "/admin/beta/signups/3105/ios/admit", as(me.session))).status).toBe(401);
+    expect((await call("PUT", `/admin/beta/signups/${me.account_id}/ios/admit`, as(me.session))).status).toBe(401);
     expect((await signups(me.session))["ios"]).toMatchObject({ status: "pending" });
   });
 });

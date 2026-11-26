@@ -7,9 +7,10 @@ import type { UserRow } from "../types";
 const NOW = Math.floor(Date.now() / 1000);
 const calls: string[] = [];
 
-function user(github_id: number, login: string, over: Partial<UserRow> = {}): UserRow {
+function user(account_id: number, login: string, over: Partial<UserRow> = {}): UserRow {
   return {
-    github_id,
+    account_id,
+    github_id: 583231,
     login,
     plan: "free",
     blocked_at: null,
@@ -59,7 +60,7 @@ describe("Users", () => {
     expect(octocat.getByRole("link", { name: "octocat" }).getAttribute("href")).toBe("/users/1002");
     expect(octocat.getByText("cloud")).toBeTruthy();
     expect(octocat.getByText("pro")).toBeTruthy();
-    const unnamed = within(screen.getByRole("listitem", { name: "GitHub ID 1003" }));
+    const unnamed = within(screen.getByRole("listitem", { name: "Account 1003" }));
     expect(unnamed.getByText("blocked")).toBeTruthy();
   });
 
@@ -71,7 +72,7 @@ describe("Users", () => {
     expect(calls).toContain("GET /api/users?q=octo");
     // Typed in one go, so one search and not one per letter.
     expect(calls.filter((c) => c.startsWith("GET /api/users?q=")).length).toBe(1);
-    await waitFor(() => expect(screen.queryByRole("listitem", { name: "GitHub ID 1003" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("listitem", { name: "Account 1003" })).toBeNull());
   });
 
   it("Next follows the cursor", async () => {
@@ -115,7 +116,7 @@ describe("Users", () => {
   });
 
   it("says so when nothing matches", async () => {
-    fetchMock.mockImplementationOnce(async () => json({ github_id: 1001, login: "octo-operator" }));
+    fetchMock.mockImplementationOnce(async () => json({ account_id: 1001, login: "octo-operator" }));
     fetchMock.mockImplementationOnce(async () => json({ users: [], next: null }));
     renderRoute("/users?q=zzz");
     expect(await screen.findByText("No account matches.")).toBeTruthy();

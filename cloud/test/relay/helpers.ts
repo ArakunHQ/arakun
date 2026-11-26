@@ -103,7 +103,7 @@ let nextDevice = 0;
 
 /// Another session of the same account: a device.
 export async function device(owner: SignedIn, name = "Phone", kind = "phone"): Promise<SignedIn> {
-  return signIn(owner.github_id, owner.login, `gho_dev_${owner.github_id}_${nextDevice++}`, { name, kind });
+  return signIn(owner.githubId, owner.login, `gho_dev_${owner.githubId}_${nextDevice++}`, { name, kind });
 }
 
 /// What the computer hears when a device's channel opens.

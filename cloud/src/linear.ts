@@ -95,7 +95,7 @@ function install(env: Env, url: URL, who: Session): Response {
   to.searchParams.set("state", state);
   const res = new Response(null, { status: 302, headers: { Location: to.toString() } });
   // Lax, so the cookie comes back with Linear's redirect, a top-level GET.
-  res.headers.append("Set-Cookie", `${STATE_COOKIE}=${state}.${who.githubId}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${STATE_SECONDS}`);
+  res.headers.append("Set-Cookie", `${STATE_COOKIE}=${state}.${who.accountId}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${STATE_SECONDS}`);
   return res;
 }
 
@@ -117,7 +117,7 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
   if (!saved || !state || dot < 1 || !(await same(saved.slice(0, dot), state))) return done(error(400, "bad state"));
   const who = await signedIn(request, env);
   if (who instanceof Response) return done(who);
-  if (saved.slice(dot + 1) !== String(who.githubId)) return done(error(400, "bad state"));
+  if (saved.slice(dot + 1) !== String(who.accountId)) return done(error(400, "bad state"));
   const code = url.searchParams.get("code");
   if (url.searchParams.has("error") || !code || code.length > MAX_CODE) return done(error(400, "linear refused the install"));
   try {
@@ -133,7 +133,7 @@ async function callback(request: Request, env: Env, url: URL): Promise<Response>
       access: tokens.access,
       refresh: tokens.refresh,
       expiresAt: tokens.expiresAt,
-      installedBy: who.githubId,
+      installedBy: who.accountId,
     });
     const text = `Arakun is installed in ${app.organizationName.slice(0, MAX_NAME)}. You can close this page.`;
     return done(new Response(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } }));
@@ -151,9 +151,9 @@ const LABEL = /^[a-z2-7]{16}$/;
 async function listLinks(env: Env, who: Session): Promise<Response> {
   const rows = await env.DB.prepare(
     `SELECT l.organization_id, l.linear_user_id, EXISTS (SELECT 1 FROM linear_workspaces w WHERE w.organization_id = l.organization_id) AS installed
-     FROM linear_links l WHERE l.github_id = ? ORDER BY l.linked_at, l.organization_id`,
+     FROM linear_links l WHERE l.account_id = ? ORDER BY l.linked_at, l.organization_id`,
   )
-    .bind(who.githubId)
+    .bind(who.accountId)
     .all<{ organization_id: string; linear_user_id: string; installed: number }>();
   return Response.json({ links: rows.results.map((r) => ({ ...r, installed: r.installed === 1 })) });
 }
@@ -179,13 +179,13 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
   // it leaves go too: they no longer have a link to stand on.
   const [, , installed] = await env.DB.batch<{ n: number }>([
     env.DB.prepare(
-      `DELETE FROM linear_routes WHERE organization_id = ?1 AND github_id IN
-         (SELECT github_id FROM linear_links WHERE organization_id = ?1 AND linear_user_id = ?2 AND github_id != ?3)`,
-    ).bind(seen.organizationId, seen.userId, who.githubId),
+      `DELETE FROM linear_routes WHERE organization_id = ?1 AND account_id IN
+         (SELECT account_id FROM linear_links WHERE organization_id = ?1 AND linear_user_id = ?2 AND account_id != ?3)`,
+    ).bind(seen.organizationId, seen.userId, who.accountId),
     env.DB.prepare(
-      `INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?1, ?2, ?3, ?4)
-       ON CONFLICT (organization_id, linear_user_id) DO UPDATE SET github_id = excluded.github_id, linked_at = excluded.linked_at`,
-    ).bind(seen.organizationId, seen.userId, who.githubId, now()),
+      `INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT (organization_id, linear_user_id) DO UPDATE SET account_id = excluded.account_id, linked_at = excluded.linked_at`,
+    ).bind(seen.organizationId, seen.userId, who.accountId, now()),
     env.DB.prepare("SELECT COUNT(*) AS n FROM linear_workspaces WHERE organization_id = ?").bind(seen.organizationId),
   ]);
   return Response.json({
@@ -197,8 +197,8 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
 
 async function removeLink(env: Env, who: Session, organizationId: string): Promise<Response> {
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM linear_routes WHERE organization_id = ? AND github_id = ?").bind(organizationId, who.githubId),
-    env.DB.prepare("DELETE FROM linear_links WHERE organization_id = ? AND github_id = ?").bind(organizationId, who.githubId),
+    env.DB.prepare("DELETE FROM linear_routes WHERE organization_id = ? AND account_id = ?").bind(organizationId, who.accountId),
+    env.DB.prepare("DELETE FROM linear_links WHERE organization_id = ? AND account_id = ?").bind(organizationId, who.accountId),
   ]);
   return new Response(null, { status: 204 });
 }
@@ -221,8 +221,8 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
   if (teams.length + projects.length > MAX_IDS) return bad();
   if (!LABEL.test(label)) return error(404, "no such computer");
   const [machine, link] = await env.DB.batch<{ n: number }>([
-    env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE label = ? AND github_id = ?").bind(label, who.githubId),
-    env.DB.prepare("SELECT COUNT(*) AS n FROM linear_links WHERE organization_id = ? AND github_id = ?").bind(org, who.githubId),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE label = ? AND account_id = ?").bind(label, who.accountId),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM linear_links WHERE organization_id = ? AND account_id = ?").bind(org, who.accountId),
   ]);
   if (machine!.results[0]!.n === 0) return error(404, "no such computer");
   if (link!.results[0]!.n === 0) return error(409, "link linear first");
@@ -231,11 +231,11 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
   // between the check above and the batch.
   const insert = (kind: string, target: string) =>
     env.DB.prepare(
-      `INSERT INTO linear_routes (label, github_id, organization_id, kind, target_id, updated_at)
+      `INSERT INTO linear_routes (label, account_id, organization_id, kind, target_id, updated_at)
        SELECT ?1, ?2, ?3, ?4, ?5, ?6
-       WHERE EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND github_id = ?2)
-         AND EXISTS (SELECT 1 FROM linear_links WHERE organization_id = ?3 AND github_id = ?2)`,
-    ).bind(label, who.githubId, org, kind, target, at);
+       WHERE EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND account_id = ?2)
+         AND EXISTS (SELECT 1 FROM linear_links WHERE organization_id = ?3 AND account_id = ?2)`,
+    ).bind(label, who.accountId, org, kind, target, at);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM linear_routes WHERE label = ? AND organization_id = ?").bind(label, org),
     ...teams.map((t) => insert("team", t)),
@@ -248,19 +248,19 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
 /// equals the computer seen last. Only a machine the account still owns.
 export async function routeFor(
   env: Env,
-  githubId: number,
+  accountId: number,
   organizationId: string,
   place: { teamId: string; projectId: string | null },
 ): Promise<{ label: string; machine: string } | null> {
   const row = await env.DB.prepare(
     `SELECT r.label AS label, m.name AS machine FROM linear_routes r
-     JOIN machines m ON m.label = r.label AND m.github_id = r.github_id
-     WHERE r.github_id = ?1 AND r.organization_id = ?2
+     JOIN machines m ON m.label = r.label AND m.account_id = r.account_id
+     WHERE r.account_id = ?1 AND r.organization_id = ?2
        AND ((r.kind = 'team' AND r.target_id = ?3) OR (r.kind = 'project' AND r.target_id = ?4))
      ORDER BY (r.kind = 'project') DESC, m.last_seen_at DESC, r.label
      LIMIT 1`,
   )
-    .bind(githubId, organizationId, place.teamId, place.projectId)
+    .bind(accountId, organizationId, place.teamId, place.projectId)
     .first<{ label: string; machine: string }>();
   return row;
 }
@@ -270,7 +270,7 @@ export async function routeFor(
 async function overLimit(env: Env, who: Session): Promise<Response | null> {
   let limited: boolean;
   try {
-    limited = !(await env.LINEAR_LIMIT.limit({ key: String(who.githubId) })).success;
+    limited = !(await env.LINEAR_LIMIT.limit({ key: String(who.accountId) })).success;
   } catch (e) {
     console.error("linear limit failed:", e);
     return error(503, "the server could not check the request: try again");
@@ -285,9 +285,9 @@ async function accept(env: Env, who: Session, id: string): Promise<Response> {
   if (!DELIVERY_ID.test(id)) return error(404, "no such delivery");
   // Owner and id in one statement, so another account's id looks unknown.
   const row = await env.DB.prepare(
-    "UPDATE linear_deliveries SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ? AND github_id = ? RETURNING label",
+    "UPDATE linear_deliveries SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ? AND account_id = ? RETURNING label",
   )
-    .bind(now(), id, who.githubId)
+    .bind(now(), id, who.accountId)
     .first<{ label: string }>();
   if (!row) return error(404, "no such delivery");
   // Every time: a first accept may have failed after the update.
@@ -343,10 +343,10 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
   if (refused) return refused;
   // The workspace comes from the delivery, not the caller.
   const owned = await env.DB.prepare(
-    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND github_id = ? AND kind = 'created'
+    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
      ORDER BY created_at DESC LIMIT 1`,
   )
-    .bind(agentSessionId, who.githubId)
+    .bind(agentSessionId, who.accountId)
     .first<{ organization_id: string }>();
   if (!owned) return error(404, "no such session");
   try {

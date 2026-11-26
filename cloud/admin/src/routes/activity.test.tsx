@@ -14,7 +14,7 @@ function entry(id: number, over: Partial<LogEntry>): LogEntry {
     operator_id: 1001,
     operator_login: "octo-operator",
     action: "flag.grant",
-    github_id: 1002,
+    account_id: 1002,
     login: "octocat",
     detail: null,
     ...over,
@@ -39,8 +39,8 @@ beforeEach(() => {
         return json({
           entries: [
             entry(50, { detail: { flag: "cloud" } }),
-            entry(45, { action: "cloud.decline", github_id: 1003, login: "hubot" }),
-            entry(41, { operator_id: null, operator_login: null, action: "notice.create", github_id: null, login: null }),
+            entry(45, { action: "cloud.decline", account_id: 1003, login: "hubot" }),
+            entry(41, { operator_id: null, operator_login: null, action: "notice.create", account_id: null, login: null }),
           ],
           next: 40,
         });

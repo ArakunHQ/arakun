@@ -79,8 +79,10 @@ async function callback(request: Request, env: Env, done: (res: Response) => Res
     return failed();
   }
 
-  await endReplacedSession(request, env, user.id);
   const made = await newSession(env, user, platform(request.headers.get("User-Agent") ?? ""), "phone");
+  // After the new session, which is what tells us the account: a sign-in by a
+  // GitHub user with no account yet has no old session of it to end.
+  await endReplacedSession(request, env, made.account_id, made.session);
   const res = redirect("/");
   // The session's row says when it ends, and use renews it. The cookie lives
   // as long as a session can at most, so the browser does not drop it first
@@ -93,11 +95,11 @@ async function callback(request: Request, env: Env, done: (res: Response) => Res
 /// session's row goes, or it would stay listed as a signed-in device no
 /// browser can use. Only a session of the account signing in: one of
 /// another account is not this sign-in's to end.
-async function endReplacedSession(request: Request, env: Env, githubId: number): Promise<void> {
+async function endReplacedSession(request: Request, env: Env, accountId: number, current: string): Promise<void> {
   const old = cookie(request, SESSION_COOKIE);
-  if (!old || !SESSION_TOKEN.test(old)) return;
-  const result = await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ? AND github_id = ?").bind(hex(await sha256(old)), githubId).run();
-  if (result.meta.changes > 0) await recheckAccount(env, githubId);
+  if (!old || old === current || !SESSION_TOKEN.test(old)) return;
+  const result = await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ? AND account_id = ?").bind(hex(await sha256(old)), accountId).run();
+  if (result.meta.changes > 0) await recheckAccount(env, accountId);
 }
 
 function redirect(location: string): Response {

@@ -18,7 +18,7 @@ describe("devices", () => {
     const d = await makeDevice();
     expect(await expectJson(register(u, d), 201)).toEqual({ device_id: d.id });
     expect(await expectJson(register(u, d), 200)).toEqual({ device_id: d.id });
-    const list = await expectJson(api(u, "GET", "/users/1001/devices"), 200);
+    const list = await expectJson(api(u, "GET", `/users/${u.id}/devices`), 200);
     expect(list).toEqual([{ device_id: d.id, sig_pub: d.sigPub, enc_pub: d.encPub, name: "laptop", created_at: expect.any(Number), endorsed_by: null, endorsement_sig: null }]);
   });
 
@@ -29,12 +29,12 @@ describe("devices", () => {
     await expectJson(register(u, first), 201);
     expect((await expectJson(register(u, second), 400)).error).toMatch(/endorsement/);
     expect(await expectJson(register(u, second, first, "phone"), 201)).toEqual({ device_id: second.id });
-    const list = await expectJson<{ device_id: string; endorsed_by: string | null; endorsement_sig: string | null }[]>(api(u, "GET", "/users/1001/devices"), 200);
+    const list = await expectJson<{ device_id: string; endorsed_by: string | null; endorsement_sig: string | null }[]>(api(u, "GET", `/users/${u.id}/devices`), 200);
     const got = list.find((d) => d.device_id === second.id)!;
     expect(got.endorsed_by).toBe(first.id);
     // A client checks the chain itself, with the signature the server kept.
     const key = (await sigKey(first.sigPub))!;
-    expect(await verify(key, got.endorsement_sig!, deviceSigned(1001, second.sigPub, second.encPub))).toBe(true);
+    expect(await verify(key, got.endorsement_sig!, deviceSigned(u.id, second.sigPub, second.encPub))).toBe(true);
   });
 
   it("refuses a forged endorsement", async () => {
@@ -46,14 +46,14 @@ describe("devices", () => {
     await expectJson(register(other, theirs), 201);
     const fresh = await makeDevice();
     const stranger = await makeDevice();
-    const text = `arakun-teams/v1/device|1001|${fresh.sigPub}|${fresh.encPub}`;
+    const text = `arakun-teams/v1/device|${u.id}|${fresh.sigPub}|${fresh.encPub}`;
     for (const endorsement of [
       // Claims to be the user's device, signed by another key.
       { by: first.id, sig: await signText(stranger, text) },
       // The right key, over another enc_pub: the server would have swapped it.
-      { by: first.id, sig: await signText(first, `arakun-teams/v1/device|1001|${fresh.sigPub}|${first.encPub}`) },
+      { by: first.id, sig: await signText(first, `arakun-teams/v1/device|${u.id}|${fresh.sigPub}|${first.encPub}`) },
       // The right text for another user.
-      { by: first.id, sig: await signText(first, `arakun-teams/v1/device|1002|${fresh.sigPub}|${fresh.encPub}`) },
+      { by: first.id, sig: await signText(first, `arakun-teams/v1/device|${other.id}|${fresh.sigPub}|${fresh.encPub}`) },
       // Another user's device.
       { by: theirs.id, sig: await signText(theirs, text) },
       { by: first.id, sig: "AAAA" },
@@ -61,7 +61,7 @@ describe("devices", () => {
       const res = await api(u, "POST", "/devices", { body: { sig_pub: fresh.sigPub, enc_pub: fresh.encPub, name: "x", endorsement } });
       expect(res.status, JSON.stringify(endorsement)).toBe(400);
     }
-    const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE github_id = 1001").first<{ n: number }>();
+    const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM devices WHERE account_id = ?").bind(u.id).first<{ n: number }>();
     expect(n?.n).toBe(1);
   });
 
@@ -117,12 +117,14 @@ describe("devices", () => {
     type People = { github_id: number; devices: { device_id: string; endorsed_by: string | null }[] }[];
 
     const all = await expectJson<People>(api(m.user, "GET", "/devices"), 200);
+    // In account ID order, and account IDs are random.
+    const people = [t.owner, m].sort((a, b) => a.user.id - b.user.id);
     expect(all).toEqual(
-      [t.owner, m].map((p) => ({ github_id: p.user.id, devices: [expect.objectContaining({ device_id: p.device.id, endorsed_by: null })] })),
+      people.map((p) => ({ github_id: p.user.id, devices: [expect.objectContaining({ device_id: p.device.id, endorsed_by: null })] })),
     );
     // The same rows as the per-user list.
     const one = await expectJson<unknown[]>(api(m.user, "GET", `/users/${t.owner.user.id}/devices`), 200);
-    expect(all[0]!.devices).toEqual(one);
+    expect(all.find((p) => p.github_id === t.owner.user.id)!.devices).toEqual(one);
 
     // Only those asked for, and never someone out of reach.
     const asked = await expectJson<People>(api(m.user, "GET", `/devices?users=${t.owner.user.id},${other.owner.user.id},${outsider.id}`), 200);
@@ -177,7 +179,7 @@ describe("the gate", () => {
     expect((await call("DELETE", `/admin/users/${flagged.id}/block`, ADMIN)).status).toBe(204);
     await expectJson(api(flagged, "GET", "/teams"), 200);
     // The owner loses the flag: the team is closed to them too.
-    await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ?").bind(t.owner.user.id).run();
+    await env.DB.prepare("DELETE FROM user_flags WHERE account_id = ?").bind(t.owner.user.id).run();
     await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}`), 403);
   });
 
@@ -256,7 +258,7 @@ describe("teams", () => {
       rotation_pending: false,
       roster_epoch: 1,
       keyed_epoch: 1,
-      members: [{ github_id: 1001, login: "octocat", role: "owner", joined_at: expect.any(Number), first_key_epoch: 1 }],
+      members: [{ github_id: u.id, login: "octocat", role: "owner", joined_at: expect.any(Number), first_key_epoch: 1 }],
       channels: [],
     });
     await expectJson(api(u, "POST", "/teams", { body: { name: "x".repeat(101) } }), 400);
@@ -316,12 +318,12 @@ describe("teams", () => {
     );
     expect(pending).toHaveLength(1);
     // The GitHub ID is who asked; the login they have now and the one invited may differ.
-    expect(pending[0]).toMatchObject({ github_id: 2001, login: "RikVisser-dev", invited_login: "rikvisser-dev", request_id: invite_id, requested_at: expect.any(Number) });
+    expect(pending[0]).toMatchObject({ github_id: newcomer.id, login: "RikVisser-dev", invited_login: "rikvisser-dev", request_id: invite_id, requested_at: expect.any(Number) });
     expect(pending[0]!.devices.map((d) => d.device_id).sort()).toEqual([laptop.id, phone.id].sort());
     expect(pending[0]!.devices.find((d) => d.device_id === phone.id)?.endorsement_sig).toEqual(expect.any(String));
 
     const key = t.keys.get(1)!;
-    const approvePath = `/teams/${t.teamId}/pending/2001/approve`;
+    const approvePath = `/teams/${t.teamId}/pending/${newcomer.id}/approve`;
     // A device left out is refused.
     await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: [await envelope(t.teamId, 1, key, laptop, owner.device)] } }), 400);
     // Signed by a device that is not the caller's.
@@ -349,13 +351,13 @@ describe("teams", () => {
     // Without the request it reviewed.
     await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { envelopes: [] } }), 400);
     const good = [await envelope(t.teamId, 1, key, laptop, owner.device), await envelope(t.teamId, 1, key, phone, owner.device)];
-    expect(await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: good } }), 200)).toEqual({ github_id: 2001, role: "member" });
+    expect(await expectJson(api(owner.user, "POST", approvePath, { device: owner.device, body: { request_id: invite_id, envelopes: good } }), 200)).toEqual({ github_id: newcomer.id, role: "member" });
 
     expect(await expectJson(api(newcomer, "GET", "/teams"), 200)).toEqual([{ team_id: t.teamId, name: "Arakun", role: "member", epoch: 1, rotation_pending: false }]);
     const got = await expectJson<{ members: { github_id: number; role: string }[] }>(api(newcomer, "GET", `/teams/${t.teamId}`), 200);
     expect(got.members.map((m) => [m.github_id, m.role])).toEqual([
       [owner.user.id, "owner"],
-      [2001, "member"],
+      [newcomer.id, "member"],
     ]);
     expect(await expectJson(api(owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
     expect(await expectJson(api(newcomer, "GET", `/teams/${t.teamId}/envelopes`, { device: phone }), 200)).toEqual([{ ...good[1], made_at: expect.any(Number) }]);
@@ -370,13 +372,13 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
-    const rejectPath = `/teams/${t.teamId}/pending/2001/reject`;
+    const rejectPath = `/teams/${t.teamId}/pending/${u.id}/reject`;
     // Without the request it reviewed.
     await expectJson(api(t.owner.user, "POST", rejectPath), 400);
     expect((await api(t.owner.user, "POST", rejectPath, { body: { request_id: invite_id } })).status).toBe(204);
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
     await expectJson(api(t.owner.user, "POST", rejectPath, { body: { request_id: invite_id } }), 404);
-    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
+    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${u.id}/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
   });
 
   it("keeps the pending request when the admin's flag ends before rejection commits", async () => {
@@ -388,11 +390,11 @@ describe("teams", () => {
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
     const batch = env.DB.batch.bind(env.DB);
     vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
-      await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
+      await env.DB.prepare("DELETE FROM user_flags WHERE account_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
       return batch(statements);
     });
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${u.id}/reject`, { body: { request_id: invite_id } }), 403);
-    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(t.teamId, u.id).first("request_id")).toBe(invite_id);
+    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE team_id = ? AND account_id = ?").bind(t.teamId, u.id).first("request_id")).toBe(invite_id);
   });
 
   it("lets an approval that lost to another one write no envelope", async () => {
@@ -402,7 +404,7 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "twice" } }), 201);
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
-    const path = `/teams/${t.teamId}/pending/2002/approve`;
+    const path = `/teams/${t.teamId}/pending/${u.id}/approve`;
     const won = await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device);
     const lost = await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device);
     // The other approval commits after this one read the request, before its batch.
@@ -433,11 +435,11 @@ describe("teams", () => {
       return invite_id as string;
     };
     const reviewed = await ask();
-    const path = `/teams/${t.teamId}/pending/2003/approve`;
+    const path = `/teams/${t.teamId}/pending/${u.id}/approve`;
     const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device)];
     // Another admin rejects it, and the user accepts a new invite, before the
     // approval of the first request arrives.
-    const rejectPath = `/teams/${t.teamId}/pending/2003/reject`;
+    const rejectPath = `/teams/${t.teamId}/pending/${u.id}/reject`;
     expect((await api(t.owner.user, "POST", rejectPath, { body: { request_id: reviewed } })).status).toBe(204);
     const asked = await ask();
     const res = await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: reviewed, envelopes } }), 409);
@@ -456,7 +458,7 @@ describe("teams", () => {
     await expectJson(register(u, laptop), 201);
     const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "growing" } }), 201);
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: laptop }), 200);
-    const path = `/teams/${t.teamId}/pending/2004/approve`;
+    const path = `/teams/${t.teamId}/pending/${u.id}/approve`;
     const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, laptop, t.owner.device)];
     // The admin reviewed one device; a second one arrives before the approval.
     await expectJson(register(u, await makeDevice(), laptop), 201);
@@ -477,7 +479,7 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "late" } }), 201);
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
-    const path = `/teams/${t.teamId}/pending/2005/approve`;
+    const path = `/teams/${t.teamId}/pending/${u.id}/approve`;
     const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device)];
     // The flag goes after the handler checked it, before its batch commits.
     const batch = env.DB.batch.bind(env.DB);
@@ -485,16 +487,16 @@ describe("teams", () => {
     vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
       if (!raced && statements.length === 3) {
         raced = true;
-        await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
+        await env.DB.prepare("DELETE FROM user_flags WHERE account_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
       }
       return batch(statements);
     });
     await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: invite_id, envelopes } }), 403);
     expect(raced).toBe(true);
     vi.restoreAllMocks();
-    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE github_id = ?").bind(2005).first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE account_id = ?").bind(u.id).first("n")).toBe(0);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE device_id = ?").bind(d.id).first("n")).toBe(0);
-    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE github_id = ?").bind(2005).first("request_id")).toBe(invite_id);
+    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE account_id = ?").bind(u.id).first("request_id")).toBe(invite_id);
   });
 
   it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {
@@ -541,11 +543,12 @@ describe("teams", () => {
     // Never signed in, even with the flag an operator gave ahead of sign-in.
     onGitHub(2001, "stranger");
     onGitHub(2002, "early");
-    expect((await call("PUT", "/admin/users/2002/flags/teams", ADMIN)).status).toBe(200);
+    const { account_id: early } = await expectJson<{ account_id: number }>(call("PUT", "/admin/github/2002", ADMIN), 200);
+    expect((await call("PUT", `/admin/users/${early}/flags/teams`, ADMIN)).status).toBe(200);
     // Signed in without the flag, and signed in with it but blocked.
     const plain = await user(2003, "plain", false);
-    await user(2004, "blocked");
-    expect((await call("PUT", "/admin/users/2004/block", ADMIN)).status).toBe(204);
+    const blocked = await user(2004, "blocked");
+    expect((await call("PUT", `/admin/users/${blocked.id}/block`, ADMIN)).status).toBe(204);
     await user(2005, "ready");
 
     const expected = { stranger: "no_account", early: "no_account", plain: "not_enabled", blocked: "not_enabled", ready: "ready" };
@@ -556,7 +559,7 @@ describe("teams", () => {
     await expectJson(api(plain, "GET", "/invites"), 403);
     // The list reads the state now, not when the invite went out.
     await user(2001, "stranger", false);
-    expect((await call("PUT", "/admin/users/2003/flags/teams", ADMIN)).status).toBe(200);
+    expect((await call("PUT", `/admin/users/${plain.id}/flags/teams`, ADMIN)).status).toBe(200);
     expect(await states()).toMatchObject({ stranger: "not_enabled", plain: "ready" });
     expect((await expectJson<{ team_id: string }[]>(api(plain, "GET", "/invites"), 200)).map((i) => i.team_id)).toEqual([t.teamId]);
   });
@@ -580,7 +583,7 @@ describe("teams", () => {
     expect((await expectJson<{ invite_id: string }[]>(api(bob, "GET", "/invites"), 200)).map((i) => i.invite_id)).toEqual([created.invite_id]);
     await expectJson(api(bob, "POST", `/invites/${created.invite_id}/accept`, { device: bd }), 200);
     const pending = await expectJson<{ github_id: number }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
-    expect(pending.map((p) => p.github_id)).toEqual([2002]);
+    expect(pending.map((p) => p.github_id)).toEqual([bob.id]);
   });
 
   it("keeps one open invite per person when they are invited again under a new login", async () => {
@@ -647,7 +650,7 @@ describe("teams", () => {
     ]);
     // Only their own.
     expect(await expectJson(api(t.owner.user, "GET", "/pending"), 200)).toEqual([]);
-    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`, { body: { request_id: invite_id } })).status).toBe(204);
+    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${u.id}/reject`, { body: { request_id: invite_id } })).status).toBe(204);
     expect(await expectJson(api(u, "GET", "/pending"), 200)).toEqual([]);
   });
 
@@ -665,7 +668,7 @@ describe("teams", () => {
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
 
     expect((await api(u, "POST", path)).status).toBe(204);
-    const row = await env.DB.prepare("SELECT reminded_at FROM pending WHERE github_id = 2001").first<{ reminded_at: number }>();
+    const row = await env.DB.prepare("SELECT reminded_at FROM pending WHERE account_id = ?").bind(u.id).first<{ reminded_at: number }>();
     expect(row!.reminded_at).toBeGreaterThan(nowSeconds() - 60);
     const pending = await expectJson<{ reminded_at: number | null }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
     expect(pending.map((p) => p.reminded_at)).toEqual([row!.reminded_at]);
@@ -707,10 +710,10 @@ describe("teams", () => {
       ["GET", `${base}/invites`],
       ["DELETE", `${base}/invites/${ulid()}`],
       ["GET", `${base}/pending`],
-      ["POST", `${base}/pending/2001/approve`],
-      ["POST", `${base}/pending/2001/reject`],
+      ["POST", `${base}/pending/${u.id}/approve`],
+      ["POST", `${base}/pending/${u.id}/reject`],
       ["POST", `${base}/channels`],
-      ["DELETE", `${base}/members/2001`],
+      ["DELETE", `${base}/members/${u.id}`],
       ["DELETE", `${base}/members/${t.owner.user.id}`],
       ["GET", `${base}/channels/${t.channelId}/messages`],
       ["GET", `${base}/channels/${t.channelId}/ws`],
@@ -719,7 +722,7 @@ describe("teams", () => {
       expect(res.status, `${method} ${path}`).toBe(404);
     }
     await expectJson(api(u, "GET", "/users/" + t.owner.user.id + "/devices"), 404);
-    expect((await expectJson<{ github_id: number }[]>(api(u, "GET", "/devices"), 200)).map((p) => p.github_id)).toEqual([2001]);
+    expect((await expectJson<{ github_id: number }[]>(api(u, "GET", "/devices"), 200)).map((p) => p.github_id)).toEqual([u.id]);
     expect((await api(u, "POST", `${base}/remind`)).status).toBe(204);
   });
 
@@ -1027,8 +1030,8 @@ describe("members", () => {
     const t0 = nowSeconds();
     for (let i = 0; i < 24; i++) {
       await env.DB.batch([
-        env.DB.prepare("INSERT INTO users (github_id, login, created_at, last_seen_at) VALUES (?, ?, ?, ?)").bind(9000 + i, `filler-${i}`, t0, t0),
-        env.DB.prepare("INSERT INTO members (team_id, github_id, role, joined_at) VALUES (?, ?, 'member', ?)").bind(t.teamId, 9000 + i, t0),
+        env.DB.prepare("INSERT INTO accounts (id, login, created_at, last_seen_at) VALUES (?, ?, ?, ?)").bind(9000 + i, `filler-${i}`, t0, t0),
+        env.DB.prepare("INSERT INTO members (team_id, account_id, role, joined_at) VALUES (?, ?, 'member', ?)").bind(t.teamId, 9000 + i, t0),
       ]);
     }
     await expect(join(t)).rejects.toThrow(/expected 200, got 409.*at most 25 members/);

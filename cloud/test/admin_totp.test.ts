@@ -1,6 +1,6 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { ADMIN, call } from "./helpers";
+import { ADMIN, call, signIn } from "./helpers";
 
 const PATH = "/admin/operators/1001/totp";
 const SEALED = "A".repeat(70);
@@ -11,8 +11,8 @@ function send(method: string, path: string, body: unknown, headers = JSON_ADMIN)
   return call(method, path, headers, JSON.stringify(body));
 }
 
-async function log(): Promise<{ action: string; github_id: number; operator_login: string | null }[]> {
-  const rows = await env.DB.prepare("SELECT action, github_id, operator_login FROM admin_log ORDER BY id").all();
+async function log(): Promise<{ action: string; account_id: number | null; operator_login: string | null; detail: string | null }[]> {
+  const rows = await env.DB.prepare("SELECT action, account_id, operator_login, detail FROM admin_log ORDER BY id").all();
   return rows.results as never;
 }
 
@@ -26,7 +26,14 @@ describe("operator authenticator keys", () => {
     expect(again.status).toBe(409);
     expect(await again.json()).toEqual({ error: "a key exists" });
     expect(await (await call("GET", PATH, ADMIN)).json()).toEqual({ sealed: SEALED, last_step: 100 });
-    expect(await log()).toEqual([{ action: "operator.totp.add", github_id: 1001, operator_login: "octocat" }]);
+    // The operator has no account here: the log names their GitHub ID only.
+    expect(await log()).toEqual([{ action: "operator.totp.add", account_id: null, operator_login: "octocat", detail: '{"github_id":1001}' }]);
+  });
+
+  it("log the operator's account when their GitHub user has one", async () => {
+    const op = await signIn(1001, "octocat");
+    expect((await send("POST", PATH, { sealed: SEALED, step: 100 }, NAMED)).status).toBe(201);
+    expect((await log()).map((r) => r.account_id)).toEqual([op.account_id]);
   });
 
   it("are replaced with PUT and forgotten with DELETE", async () => {

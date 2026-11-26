@@ -31,7 +31,7 @@ function entry(id: number, over: Partial<LogEntry>): LogEntry {
     operator_id: 1001,
     operator_login: "octo-operator",
     action: "unblock",
-    github_id: 1002,
+    account_id: 1002,
     login: "octocat",
     detail: null,
     ...over,
@@ -52,7 +52,7 @@ const ALL: LogEntry[] = [
   entry(6, { action: "block", detail: { reason: null } }),
   entry(5, { action: "unblock" }),
   entry(4, { action: "plan.set", detail: { plan: "pro" } }),
-  entry(3, { action: "notice.create", github_id: null, login: null, operator_login: null, operator_id: null }),
+  entry(3, { action: "notice.create", account_id: null, login: null, operator_login: null, operator_id: null }),
   entry(2, { action: "notice.delete" }),
   entry(1, { action: "cloud.grant" }),
 ];
@@ -73,7 +73,7 @@ beforeEach(() => {
       if (url === "/api/log") return json({ entries: ALL, next: 5 });
       if (url === "/api/log?before=5") {
         return json({
-          entries: [entry(0, { action: "cloud.decline", github_id: 1003, login: "" }), entry(-1, { action: "future.thing" as LogEntry["action"] })],
+          entries: [entry(0, { action: "cloud.decline", account_id: 1003, login: "" }), entry(-1, { action: "future.thing" as LogEntry["action"] })],
           next: null,
         });
       }
@@ -112,7 +112,7 @@ describe("ActivityList", () => {
     await userEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("declined cloud access")).toBeTruthy();
     expect(screen.getByText("future.thing")).toBeTruthy();
-    expect(screen.getByText("GitHub ID 1003")).toBeTruthy();
+    expect(screen.getByText("Account 1003")).toBeTruthy();
     // The first page stays while the next one is added.
     expect(screen.getByText("granted the flag cloud")).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Load more" })).toBeNull());

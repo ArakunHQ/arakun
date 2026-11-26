@@ -13,7 +13,13 @@ one on the messages it receives.
 
 ## Words
 
-- **User**: a GitHub account, keyed by its numeric ID (`github_id`). Signs in with
+- **User**: an Arakun account, keyed by its account ID, a number. The API calls it
+  `github_id`, in paths, answers and the signed device text below: that is the name it
+  had when accounts were keyed by their GitHub ID, and clients read it under that
+  name. An account made before accounts had their own IDs kept its GitHub ID as its
+  account ID, so signatures made then still check. A new account's ID is not its
+  GitHub ID. The one `github_id` that is a GitHub user's is in the answer to an
+  invite, which names a GitHub user who may have no account yet. Signs in with
   `POST /auth/github` (see README.md) and holds a session.
 - **Device**: one install of the app for one user. Has two P-256 key pairs made on
   the device and never sent anywhere:
@@ -126,7 +132,7 @@ without it, `403` if it is not one of the caller's devices.
 1. An admin invites by GitHub login: `POST /teams/<team_id>/invites
    { "github_login": "rikvisser-dev" }` → `201 { invite_id, expires_at,
    github_id, login, invitee_state }`. The server asks GitHub which user has the login now and
-   keeps that user's numeric ID; the invite is theirs, whatever login they have
+   keeps that user's numeric GitHub ID; the invite is for the account linked to them, whatever login they have
    when they sign in. `login` is that user's login as GitHub spells it. `404` if
    no GitHub user has the login (an organization's login included), `502` if
    GitHub could not be asked, `429` after 30 invites in a minute by one admin.

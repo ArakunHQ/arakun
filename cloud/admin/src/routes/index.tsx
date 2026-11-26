@@ -5,6 +5,7 @@ import { Time } from "../components/Time";
 import { age, githubUrl } from "../format";
 import { requestsQuery, useDecline, useGrant, type RequestStatus } from "../queries";
 import type { CloudRequest } from "../types";
+import { Avatar } from "../components/Avatar";
 
 interface AccessSearch {
   /// Pending when it is left out.
@@ -57,7 +58,7 @@ function CloudAccess() {
       ) : (
         <ul className="requests">
           {requests.data.map((r) => (
-            <Request key={r.github_id} request={r} />
+            <Request key={r.account_id} request={r} />
           ))}
         </ul>
       )}
@@ -88,18 +89,18 @@ function Request({ request: r }: { request: CloudRequest }) {
   return (
     <li className="request" aria-label={r.login}>
       <div className="request-head">
-        <img className="avatar" src={`https://avatars.githubusercontent.com/u/${r.github_id}?s=64`} alt="" />
+        <Avatar githubId={r.github_id} size={64} />
         {url ? (
           <a className="request-login" href={url} rel="noreferrer">
             {r.login}
           </a>
         ) : (
           // Set up by an operator before its first sign-in: no login yet.
-          <span className="request-login">GitHub ID {r.github_id}</span>
+          <span className="request-login">Account {r.account_id}</span>
         )}
         {r.blocked && <span className="chip">blocked</span>}
         {r.has_flag && <span className="chip">has cloud access</span>}
-        <Link className="request-account" to="/users/$githubId" params={{ githubId: String(r.github_id) }}>
+        <Link className="request-account" to="/users/$accountId" params={{ accountId: String(r.account_id) }}>
           Account
         </Link>
       </div>
@@ -129,7 +130,7 @@ function Request({ request: r }: { request: CloudRequest }) {
             onClick={() => {
               // One error at a time: the one of the call that ran last.
               decline.reset();
-              grant.mutate(r.github_id);
+              grant.mutate(r.account_id);
             }}
           >
             Grant
@@ -143,7 +144,7 @@ function Request({ request: r }: { request: CloudRequest }) {
               disabled={busy}
               onConfirm={() => {
                 grant.reset();
-                decline.mutate(r.github_id);
+                decline.mutate(r.account_id);
               }}
             >
               Decline

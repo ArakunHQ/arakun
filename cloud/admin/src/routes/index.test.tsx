@@ -7,8 +7,9 @@ import type { CloudRequest } from "../types";
 const NOW = Math.floor(Date.now() / 1000);
 const DAY = 86400;
 
-function request(over: Partial<CloudRequest> & { github_id: number; login: string }): CloudRequest {
+function request(over: Partial<CloudRequest> & { account_id: number; login: string }): CloudRequest {
   return {
+    github_id: 583231,
     status: "pending",
     reason: "I want to build on a cloud machine",
     requested_at: NOW - 2 * DAY,
@@ -51,7 +52,7 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
     if (hold) await hold;
     const failure = act[2] === "grant" ? failGrant : failDecline;
     if (failure) return json({ error: failure }, 409);
-    const r = requests.find((q) => q.github_id === Number(act[1]))!;
+    const r = requests.find((q) => q.account_id === Number(act[1]))!;
     r.status = act[2] === "grant" ? "granted" : "declined";
     return json(r);
   }
@@ -68,15 +69,15 @@ beforeEach(() => {
   fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
   requests = [
-    request({ github_id: 1002, login: "octocat" }),
+    request({ account_id: 1002, login: "octocat" }),
     request({
-      github_id: 1003,
+      account_id: 1003,
       login: "newcomer",
       reason: null,
       github: { login: "newcomer", created_at: null, age_days: null, public_repos: null, followers: null, following: null },
     }),
     request({
-      github_id: 1004,
+      account_id: 1004,
       login: "declined-one",
       status: "declined",
       decided_at: NOW - DAY,
@@ -171,13 +172,13 @@ describe("Cloud access", () => {
   });
 
   it("shows no GitHub link for a login that is empty or not valid", async () => {
-    requests = [request({ github_id: 1007, login: "" }), request({ github_id: 1008, login: "a/b" })];
+    requests = [request({ account_id: 1007, login: "" }), request({ account_id: 1008, login: "a/b" })];
     renderRoute("/");
     const first = within(await screen.findByRole("listitem", { name: "" }));
-    expect(first.getByText("GitHub ID 1007")).toBeTruthy();
+    expect(first.getByText("Account 1007")).toBeTruthy();
     expect(first.queryByRole("link", { name: /GitHub ID/ })).toBeNull();
     const second = within(screen.getByRole("listitem", { name: "a/b" }));
-    expect(second.getByText("GitHub ID 1008")).toBeTruthy();
+    expect(second.getByText("Account 1008")).toBeTruthy();
     expect(document.querySelector('a[href^="https://github.com"]')).toBeNull();
   });
 

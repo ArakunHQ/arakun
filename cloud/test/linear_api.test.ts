@@ -16,7 +16,7 @@ type Workspace = Parameters<typeof saveWorkspace>[1];
 /// Saves a workspace the fake Linear knows the tokens of. The installer is
 /// signed in first: the row refers to the user.
 async function workspace(overrides: Partial<Workspace>): Promise<Workspace> {
-  await signIn(1, "ada");
+  const ada = await signIn(1, "ada");
   const w: Workspace = {
     organizationId: ORG,
     name: "Acme",
@@ -24,7 +24,7 @@ async function workspace(overrides: Partial<Workspace>): Promise<Workspace> {
     access: "A1",
     refresh: "R1",
     expiresAt: nowSeconds() + 3600,
-    installedBy: 1,
+    installedBy: ada.account_id,
     ...overrides,
   };
   linearFake.tokens.set(w.access, who);

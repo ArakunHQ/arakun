@@ -19,6 +19,7 @@ function ask(session: string, reason?: unknown): Promise<Response> {
   return call("POST", "/cloud/access", headers, reason === undefined ? undefined : JSON.stringify({ reason }));
 }
 
+/// Decides on the request of the account with that ID.
 function decide(id: number, decision: "grant" | "decline", by?: string): Promise<Response> {
   return call("PUT", `/admin/cloud/requests/${id}/${decision}`, ADMIN, by === undefined ? undefined : JSON.stringify({ by }));
 }
@@ -45,7 +46,7 @@ describe("asking for cloud access", () => {
     // GitHub was asked by ID, with the app's credentials.
     expect(github.profileCalls.map((r) => r.url)).toEqual(["https://api.github.com/user/2001"]);
     expect(github.profileCalls[0]!.headers.get("Authorization")).toBe(`Basic ${btoa("Iv-test:client-secret")}`);
-    const row = await env.DB.prepare("SELECT * FROM cloud_access_requests WHERE github_id = 2001").first();
+    const row = await env.DB.prepare("SELECT * FROM cloud_access_requests WHERE account_id = ?").bind(me.account_id).first();
     expect(row).toMatchObject({
       status: "pending",
       reason: "I want to try agents from my phone",
@@ -63,7 +64,9 @@ describe("asking for cloud access", () => {
     const me = await signIn(2002, "noprofile");
     github.outage = 503;
     expect((await ask(me.session)).status).toBe(201);
-    const row = await env.DB.prepare("SELECT gh_login, gh_created_at, gh_public_repos, reason FROM cloud_access_requests WHERE github_id = 2002").first();
+    const row = await env.DB.prepare("SELECT gh_login, gh_created_at, gh_public_repos, reason FROM cloud_access_requests WHERE account_id = ?")
+      .bind(me.account_id)
+      .first();
     expect(row).toEqual({ gh_login: "noprofile", gh_created_at: null, gh_public_repos: null, reason: null });
   });
 
@@ -75,7 +78,7 @@ describe("asking for cloud access", () => {
     expect(await again.json()).toMatchObject({ error: "already pending", status: "pending" });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM cloud_access_requests").first()).toEqual({ n: 1 });
 
-    expect((await decide(2003, "grant")).status).toBe(200);
+    expect((await decide(me.account_id, "grant")).status).toBe(200);
     const granted = await ask(me.session);
     expect(granted.status).toBe(409);
     expect(await granted.json()).toMatchObject({ error: "already granted", status: "granted" });
@@ -101,7 +104,7 @@ describe("asking for cloud access", () => {
 
   it("is refused to a blocked account", async () => {
     const me = await user(2005, "blocked");
-    expect((await call("PUT", "/admin/users/2005/block", ADMIN)).status).toBe(204);
+    expect((await call("PUT", `/admin/users/${me.account_id}/block`, ADMIN)).status).toBe(204);
     const res = await ask(me.session);
     expect(res.status).toBe(403);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM cloud_access_requests").first()).toEqual({ n: 0 });
@@ -120,7 +123,7 @@ describe("a decline", () => {
   it("lets the account ask again only after the cooldown", async () => {
     const me = await user(2101, "declined");
     expect((await ask(me.session)).status).toBe(201);
-    const res = await decide(2101, "decline", "karlo");
+    const res = await decide(me.account_id, "decline", "karlo");
     expect(res.status).toBe(200);
     const decided = (await res.json()) as { decided_at: number; retry_at: number };
     expect(decided).toMatchObject({ status: "declined", decided_by: "karlo", has_flag: false });
@@ -132,22 +135,24 @@ describe("a decline", () => {
     expect(await early.json()).toMatchObject({ error: "declined recently", status: "declined", retry_at: decided.retry_at });
 
     // The cooldown passes.
-    await env.DB.prepare("UPDATE cloud_access_requests SET decided_at = ? WHERE github_id = 2101")
-      .bind(nowSeconds() - DECLINE_COOLDOWN_DAYS * DAY - 1)
+    await env.DB.prepare("UPDATE cloud_access_requests SET decided_at = ? WHERE account_id = ?")
+      .bind(nowSeconds() - DECLINE_COOLDOWN_DAYS * DAY - 1, me.account_id)
       .run();
     expect((await ask(me.session, "I have history now")).status).toBe(201);
     expect(await access(me.session)).toMatchObject({ status: "pending", decided_at: null, retry_at: null });
-    const row = await env.DB.prepare("SELECT decided_by, reason FROM cloud_access_requests WHERE github_id = 2101").first();
+    const row = await env.DB.prepare("SELECT decided_by, reason FROM cloud_access_requests WHERE account_id = ?")
+      .bind(me.account_id)
+      .first();
     expect(row).toEqual({ decided_by: null, reason: "I have history now" });
   });
 
   it("takes only a pending request", async () => {
-    await user(2102, "nobody");
-    expect((await decide(2102, "decline")).status).toBe(404);
+    const nobody = await user(2102, "nobody");
+    expect((await decide(nobody.account_id, "decline")).status).toBe(404);
     const me = await user(2103, "granted");
     await ask(me.session);
-    await decide(2103, "grant");
-    const res = await decide(2103, "decline");
+    await decide(me.account_id, "grant");
+    const res = await decide(me.account_id, "decline");
     expect(res.status).toBe(409);
     expect(await access(me.session)).toMatchObject({ status: "granted" });
   });
@@ -157,22 +162,27 @@ describe("a grant", () => {
   it("sets the cloud flag, and revoking the flag lets the account ask again", async () => {
     const me = await user(2201, "granted");
     await ask(me.session, "please");
-    const res = await decide(2201, "grant", "karlo");
+    const res = await decide(me.account_id, "grant", "karlo");
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ github_id: 2201, status: "granted", decided_by: "karlo", has_flag: true, retry_at: null });
+    expect(await res.json()).toMatchObject({
+      account_id: me.account_id,
+      github_id: 2201,
+      status: "granted",
+      decided_by: "karlo",
+      has_flag: true,
+      retry_at: null,
+    });
     const flags = (await (await call("GET", "/me", as(me.session))).json()) as { flags: string[] };
     expect(flags.flags).toEqual([CLOUD_FLAG]);
     expect(await access(me.session)).toMatchObject({ status: "granted" });
 
     // A second grant changes nothing.
-    const first = (await env.DB.prepare("SELECT decided_at FROM cloud_access_requests WHERE github_id = 2201").first())!;
-    expect((await decide(2201, "grant", "someone else")).status).toBe(200);
-    expect(await env.DB.prepare("SELECT decided_at, decided_by FROM cloud_access_requests WHERE github_id = 2201").first()).toEqual({
-      ...first,
-      decided_by: "karlo",
-    });
+    const decidedAt = "SELECT decided_at, decided_by FROM cloud_access_requests WHERE account_id = ?";
+    const first = (await env.DB.prepare(decidedAt).bind(me.account_id).first())!;
+    expect((await decide(me.account_id, "grant", "someone else")).status).toBe(200);
+    expect(await env.DB.prepare(decidedAt).bind(me.account_id).first()).toEqual({ ...first, decided_by: "karlo" });
 
-    expect((await call("DELETE", `/admin/users/2201/flags/${CLOUD_FLAG}`, ADMIN)).status).toBe(200);
+    expect((await call("DELETE", `/admin/users/${me.account_id}/flags/${CLOUD_FLAG}`, ADMIN)).status).toBe(200);
     expect(await access(me.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null });
     expect((await ask(me.session)).status).toBe(201);
   });
@@ -180,21 +190,21 @@ describe("a grant", () => {
   it("turns a decline around", async () => {
     const me = await user(2202, "changed");
     await ask(me.session);
-    await decide(2202, "decline");
-    expect((await decide(2202, "grant")).status).toBe(200);
+    await decide(me.account_id, "decline");
+    expect((await decide(me.account_id, "grant")).status).toBe(200);
     expect(await access(me.session)).toMatchObject({ status: "granted", retry_at: null });
   });
 
   it("needs a request", async () => {
-    await user(2203, "unasked");
-    expect((await decide(2203, "grant")).status).toBe(404);
+    const unasked = await user(2203, "unasked");
+    expect((await decide(unasked.account_id, "grant")).status).toBe(404);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM user_flags").first()).toEqual({ n: 0 });
     expect((await decide(0, "grant")).status).toBe(400);
   });
 
   it("is seen as granted when the flag was given by hand", async () => {
     const me = await user(2204, "byhand");
-    await call("PUT", `/admin/users/2204/flags/${CLOUD_FLAG}`, ADMIN);
+    await call("PUT", `/admin/users/${me.account_id}/flags/${CLOUD_FLAG}`, ADMIN);
     expect(await access(me.session)).toMatchObject({ status: "granted" });
     expect((await ask(me.session)).status).toBe(409);
   });
@@ -202,6 +212,7 @@ describe("a grant", () => {
 
 describe("the operator's list", () => {
   it("shows pending first, oldest first, with the signals", async () => {
+    const ids: number[] = [];
     for (const [id, login] of [
       [2301, "first"],
       [2302, "second"],
@@ -209,19 +220,27 @@ describe("the operator's list", () => {
     ] as const) {
       const me = await user(id, login);
       await ask(me.session, `from ${login}`);
+      ids.push(me.account_id);
     }
-    await env.DB.prepare("UPDATE cloud_access_requests SET requested_at = requested_at - github_id").run();
-    await decide(2301, "decline");
+    const [first, second, third] = ids as [number, number, number];
+    // Each later one asked earlier.
+    for (const [i, id] of ids.entries()) {
+      await env.DB.prepare("UPDATE cloud_access_requests SET requested_at = requested_at - ? WHERE account_id = ?")
+        .bind((i + 1) * 100, id)
+        .run();
+    }
+    await decide(first, "decline");
 
     const res = await call("GET", "/admin/cloud/requests", ADMIN);
     expect(res.status).toBe(200);
-    const list = (await res.json()) as { github_id: number; status: string }[];
-    expect(list.map((r) => [r.github_id, r.status])).toEqual([
-      [2303, "pending"],
-      [2302, "pending"],
-      [2301, "declined"],
+    const list = (await res.json()) as { account_id: number; status: string }[];
+    expect(list.map((r) => [r.account_id, r.status])).toEqual([
+      [third, "pending"],
+      [second, "pending"],
+      [first, "declined"],
     ]);
     expect(list[0]).toEqual({
+      account_id: third,
       github_id: 2303,
       login: "third",
       status: "pending",
@@ -252,8 +271,8 @@ describe("the operator's list", () => {
     await ask(me.session);
     expect((await call("GET", "/admin/cloud/requests")).status).toBe(401);
     expect((await call("GET", "/admin/cloud/requests", as(me.session))).status).toBe(401);
-    expect((await call("PUT", "/admin/cloud/requests/2401/grant", as(me.session))).status).toBe(401);
-    expect((await call("PUT", "/admin/cloud/requests/2401/decline", as(me.session))).status).toBe(401);
+    expect((await call("PUT", `/admin/cloud/requests/${me.account_id}/grant`, as(me.session))).status).toBe(401);
+    expect((await call("PUT", `/admin/cloud/requests/${me.account_id}/decline`, as(me.session))).status).toBe(401);
     expect(await access(me.session)).toMatchObject({ status: "pending" });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM user_flags").first()).toEqual({ n: 0 });
   });
@@ -275,7 +294,7 @@ describe("the webhook", () => {
     const sent = JSON.parse(webhook.bodies[0]!) as { content: string; allowed_mentions: unknown };
     expect(sent.allowed_mentions).toEqual({ parse: [] });
     expect(sent.content).toContain("`hooked`");
-    expect(sent.content).toContain("2501");
+    expect(sent.content).toContain(`(account ${me.account_id})`);
     expect(sent.content).toContain("public repos: 12");
     expect(sent.content).not.toContain("example.com");
     expect(sent.content).not.toContain(me.session);

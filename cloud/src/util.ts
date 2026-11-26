@@ -40,9 +40,9 @@ export function b64url(bytes: Uint8Array): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/// A user's flags, sorted so the answer is stable.
-export function flagsQuery(db: D1Database, githubId: number): D1PreparedStatement {
-  return db.prepare("SELECT flag FROM user_flags WHERE github_id = ? ORDER BY flag").bind(githubId);
+/// An account's flags, sorted so the answer is stable.
+export function flagsQuery(db: D1Database, accountId: number): D1PreparedStatement {
+  return db.prepare("SELECT flag FROM user_flags WHERE account_id = ? ORDER BY flag").bind(accountId);
 }
 
 export function flagList(result: D1Result<unknown>): string[] {
@@ -115,12 +115,28 @@ export function ulid(): string {
   return time + Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => CROCKFORD[b & 31]).join("");
 }
 
-/// The spelling of a GitHub ID: a positive integer of at most 16 digits. Only
+/// The spelling of an account ID or a GitHub ID: a positive integer of at most 16 digits. Only
 /// a format check: Number() rounds one above Number.MAX_SAFE_INTEGER. The
-/// rounded value matches no user, since sign-in and the admin door take only
+/// rounded value matches no account, since sign-in and the admin door take only
 /// safe integers, so a lookup by it finds nothing; a caller that stores the
 /// ID checks Number.isSafeInteger, as the admin door does.
-export const GITHUB_ID = /^[1-9][0-9]{0,15}$/;
+export const NUMERIC_ID = /^[1-9][0-9]{0,15}$/;
+
+/// The GitHub user ID of the account in the SQL expression `account`, as a
+/// number, or null when it has no GitHub identity. For what the operator and
+/// the webhooks show: an avatar, a profile link. Never to find an account.
+export function GITHUB_ID_OF(account: string): string {
+  return `(SELECT CAST(i.subject AS INTEGER) FROM identities i WHERE i.provider = 'github' AND i.account_id = ${account})`;
+}
+
+/// The account linked to the GitHub user whose numeric ID is the SQL
+/// expression `githubId`, or null. Only for what names a GitHub user from
+/// outside, such as an invite by login; everything else names the account.
+/// Cast to an integer first: D1 binds a JS number as REAL, whose text is
+/// "4242.0", not the "4242" the subject holds.
+export function ACCOUNT_OF_GITHUB(githubId: string): string {
+  return `(SELECT i.account_id FROM identities i WHERE i.provider = 'github' AND i.subject = CAST(CAST(${githubId} AS INTEGER) AS TEXT))`;
+}
 
 /// The request's JSON body, or null if it is missing, too big or not JSON.
 export async function jsonBody(request: Request, maxBytes: number): Promise<unknown> {

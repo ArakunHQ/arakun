@@ -5,16 +5,17 @@ import { b64url, fromB64url, ulid, utf8 } from "../src/util";
 import { ADMIN, call, signIn } from "./helpers";
 
 export interface User {
+  /// The account ID, which the teams API calls `github_id`.
   id: number;
   login: string;
   session: string;
 }
 
-/// Signs in, and grants the `teams` flag unless told not to.
-export async function user(id: number, login: string, flag = true): Promise<User> {
-  const got = await signIn(id, login);
-  if (flag) await call("PUT", `/admin/users/${id}/flags/teams`, ADMIN);
-  return { id, login, session: got.session };
+/// Signs in as a GitHub user, and grants the `teams` flag unless told not to.
+export async function user(githubId: number, login: string, flag = true): Promise<User> {
+  const got = await signIn(githubId, login);
+  if (flag) await call("PUT", `/admin/users/${got.account_id}/flags/teams`, ADMIN);
+  return { id: got.account_id, login, session: got.session };
 }
 
 export interface Device {
@@ -280,8 +281,8 @@ export async function join(t: TeamSetup, login?: string): Promise<Member> {
   const [inv] = await expectJson<{ invite_id: string }[]>(api(m.user, "GET", "/invites"), 200);
   await expectJson(api(m.user, "POST", `/invites/${inv!.invite_id}/accept`, { device: m.device }), 200);
   const pending = await expectJson<{ github_id: number; request_id: string }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
-  const request_id = pending.find((p) => p.github_id === id)!.request_id;
+  const request_id = pending.find((p) => p.github_id === m.user.id)!.request_id;
   const envelopes = await Promise.all([...t.keys.keys()].map((e) => envelope(t.teamId, e, t.keys.get(e)!, m.device, t.owner.device)));
-  await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${id}/approve`, { device: t.owner.device, body: { request_id, envelopes } }), 200);
+  await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${m.user.id}/approve`, { device: t.owner.device, body: { request_id, envelopes } }), 200);
   return m;
 }

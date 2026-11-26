@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { Time } from "../components/Time";
-import { parseGithubId } from "../format";
+import { parseId } from "../format";
 import { usersQuery } from "../queries";
 import { useSearchBox } from "../useSearchBox";
 import type { UserRow } from "../types";
+import { Avatar } from "../components/Avatar";
 
 interface UsersSearch {
   q?: string;
@@ -34,7 +35,7 @@ function Users() {
   );
 
   const users = useQuery(usersQuery({ q, after }));
-  const id = q === undefined ? null : parseGithubId(q);
+  const id = q === undefined ? null : parseId(q);
   return (
     <>
       <h1>Users</h1>
@@ -43,12 +44,12 @@ function Users() {
           className="input"
           type="search"
           aria-label="Search users"
-          placeholder="Search by login or GitHub ID"
+          placeholder="Search by login, account ID or GitHub ID"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
         />
         {id !== null && (
-          <Link className="button" to="/users/$githubId" params={{ githubId: String(id) }}>
+          <Link className="button" to="/users/$accountId" params={{ accountId: String(id) }}>
             Open account {id}
           </Link>
         )}
@@ -64,7 +65,7 @@ function Users() {
       ) : (
         <ul className="rows">
           {users.data.users.map((u) => (
-            <UserItem key={u.github_id} user={u} />
+            <UserItem key={u.account_id} user={u} />
           ))}
         </ul>
       )}
@@ -86,10 +87,10 @@ function Users() {
 
 function UserItem({ user: u }: { user: UserRow }) {
   return (
-    <li className="row" aria-label={u.login || `GitHub ID ${u.github_id}`}>
-      <img className="avatar" src={`https://avatars.githubusercontent.com/u/${u.github_id}?s=64`} alt="" />
-      <Link className="request-login" to="/users/$githubId" params={{ githubId: String(u.github_id) }}>
-        {u.login || `GitHub ID ${u.github_id}`}
+    <li className="row" aria-label={u.login || `Account ${u.account_id}`}>
+      <Avatar githubId={u.github_id} size={64} />
+      <Link className="request-login" to="/users/$accountId" params={{ accountId: String(u.account_id) }}>
+        {u.login || `Account ${u.account_id}`}
       </Link>
       <span className="chip">{u.plan}</span>
       {u.blocked_at !== null && <span className="chip" data-tone="error">blocked</span>}

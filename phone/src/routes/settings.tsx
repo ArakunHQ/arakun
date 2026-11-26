@@ -18,8 +18,11 @@ import { mode, setPairMessage } from "../lib/start";
 import { toast } from "../lib/toast";
 import { forgetToken } from "../lib/token";
 
-type Notices = { done: boolean; input: boolean; error: boolean };
-const ALL_ON: Notices = { done: true, input: true, error: true };
+type Notices = { done: boolean; input: boolean; error: boolean; away_after_secs: number; min_turn_secs: number };
+// What the computer does for a field it did not send: older ones know no numbers.
+const DEFAULTS: Notices = { done: true, input: true, error: true, away_after_secs: 120, min_turn_secs: 30 };
+const AWAY: [number, string][] = [[0, "Always"], [60, "1 min"], [120, "2 min"], [300, "5 min"], [900, "15 min"]];
+const SHORTEST: [number, string][] = [[0, "Off"], [15, "15 s"], [30, "30 s"], [60, "1 min"], [300, "5 min"]];
 
 /** How this page reaches the computer, from the address it was opened at. */
 function wayIn(): string {
@@ -96,6 +99,24 @@ function Toggle({ icon, title, on, onFlip }: { icon: IconName; title: string; on
   );
 }
 
+/** One number out of a few: the title, then a chip for each choice. */
+function Choice({ title, value, choices, onPick }: { title: string; value: number; choices: [number, string][]; onPick: (n: number) => void }) {
+  return (
+    <div className="prow choice">
+      <span className="rbody">
+        <span className="rt">{title}</span>
+      </span>
+      <div className="chips" role="group" aria-label={title}>
+        {choices.map(([n, label]) => (
+          <button key={n} type="button" className={`chip${n === value ? " on" : ""}`} aria-pressed={n === value} onClick={() => onPick(n)}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** The account's signed-in devices, this phone marked. */
 function SignedInDevices() {
   const qc = useQueryClient();
@@ -156,19 +177,21 @@ export function Settings() {
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   // What the person just flipped, until the computer's own answer replaces it.
   const [flipped, setFlipped] = useState<Notices | null>(null);
-  const notices: Notices = flipped ?? { ...ALL_ON, ...(me?.notices || {}) };
+  const notices: Notices = flipped ?? { ...DEFAULTS, ...(me?.notices || {}) };
 
-  // One kind of notice on or off; the computer keeps the choice.
-  const setNotice = async (key: keyof Notices, on: boolean) => {
+  // One setting of notices; the computer keeps the choice. The one changed is
+  // sent with the three switches: a computer from before the away time and
+  // the shortest turn reads all three or answers 400.
+  const setNotice = async (patch: Partial<Notices>) => {
     if (!me) return;
     const before = notices;
-    const next = { ...before, [key]: on };
+    const next = { ...before, ...patch };
     setFlipped(next);
     try {
       const res = await api("/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notices: next }),
+        body: JSON.stringify({ notices: { done: next.done, input: next.input, error: next.error, ...patch } }),
       });
       if (!res.ok) throw new Error(String(res.status));
       setFlipped({ ...next, ...((await res.json()).notices || {}) });
@@ -215,9 +238,11 @@ export function Settings() {
   let notify: ReactNode[];
   if (ns === "on") {
     notify = [
-      <Toggle key="done" icon="check" title="Turn finished" on={notices.done} onFlip={(on) => setNotice("done", on)} />,
-      <Toggle key="input" icon="help" title="Needs permission or answer" on={notices.input} onFlip={(on) => setNotice("input", on)} />,
-      <Toggle key="error" icon="alert" title="Something went wrong" on={notices.error} onFlip={(on) => setNotice("error", on)} />,
+      <Toggle key="done" icon="check" title="Turn finished" on={notices.done} onFlip={(on) => setNotice({ done: on })} />,
+      <Toggle key="input" icon="help" title="Needs permission or answer" on={notices.input} onFlip={(on) => setNotice({ input: on })} />,
+      <Toggle key="error" icon="alert" title="Something went wrong" on={notices.error} onFlip={(on) => setNotice({ error: on })} />,
+      <Choice key="away" title="Only when I'm away for" value={notices.away_after_secs} choices={AWAY} onPick={(n) => setNotice({ away_after_secs: n })} />,
+      <Choice key="short" title="Turns shorter than this stay quiet" value={notices.min_turn_secs} choices={SHORTEST} onPick={(n) => setNotice({ min_turn_secs: n })} />,
     ];
   } else if (ns === "off") {
     notify = [

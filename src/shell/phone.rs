@@ -18,7 +18,7 @@ use crate::agent::AgentKind;
 use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::cloud;
 use crate::island::AlertKind;
-use crate::model::TabKind;
+use crate::model::{Environment, TabKind};
 use crate::phone::notify::{self, Kind, Notifier, Presence};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
@@ -180,6 +180,43 @@ impl Shell {
         match self.find_env(env_path).and_then(|e| e.remote.as_ref()) {
             Some(r) => super::servers::phone_session_id(&r.server, id).into(),
             None => SharedString::from(id.to_string()),
+        }
+    }
+
+    /// What phones call each session of `env`. Taken before the sessions go,
+    /// since the id of a server's session depends on its environment.
+    pub(super) fn phone_ids_of(env: &Environment) -> Vec<String> {
+        env.sessions
+            .iter()
+            .map(|s| match env.remote.as_ref() {
+                Some(r) => super::servers::phone_session_id(&r.server, &s.id),
+                None => s.id.to_string(),
+            })
+            .collect()
+    }
+
+    /// A session took a new id: phones that muted it keep it muted.
+    pub(super) fn rename_phone_session(&mut self, old: &str, new: &str) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        let changed = link.access.lock().unwrap().rename_muted(old, new);
+        if changed {
+            self.save_devices();
+        }
+    }
+
+    /// Sessions are deleted: no phone keeps them muted.
+    pub(super) fn forget_phone_sessions(&mut self, pids: &[String]) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        let changed = {
+            let mut access = link.access.lock().unwrap();
+            pids.iter().fold(false, |c, p| access.forget_session(p) | c)
+        };
+        if changed {
+            self.save_devices();
         }
     }
 
@@ -1557,6 +1594,9 @@ impl Shell {
                     }
                 }
             }
+            // Said by an app to the servers it follows. This app reads its
+            // own idle time, and a phone's would not be about this computer.
+            ClientMsg::Idle { .. } => {}
             // What the app asks of a server, to install there. A phone has
             // the Marketplace tab of this computer for that.
             ClientMsg::Market

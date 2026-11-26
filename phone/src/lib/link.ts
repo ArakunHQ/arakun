@@ -57,6 +57,8 @@ export interface Link {
   retryNow(): void;
   /** The session `id` was opened from a notification, which may be another computer's. */
   watchNotice(id: string): void;
+  /** Keeps what the computer just said about this phone, such as the muted list. */
+  setMe(patch: Partial<Me>): void;
   close(): void;
 }
 
@@ -308,6 +310,9 @@ export function createLink(opts: LinkOptions): Link {
       raw(msg);
     },
     fetch: api,
+    setMe(patch) {
+      if (state.me) set({ ...state, me: { ...state.me, ...patch } });
+    },
     reconnectNow,
     retryNow() {
       channel?.close();

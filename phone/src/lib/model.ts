@@ -60,7 +60,10 @@ export interface Me {
   host?: string;
   push_key?: string;
   notifying?: boolean;
-  notices?: { done: boolean; input: boolean; error: boolean };
+  /** The two numbers and `muted` are missing from an older computer: use the defaults. */
+  notices?: { done: boolean; input: boolean; error: boolean; away_after_secs?: number; min_turn_secs?: number };
+  /** Ids of the sessions whose notices are off. */
+  muted?: string[];
   [k: string]: unknown;
 }
 

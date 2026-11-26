@@ -123,6 +123,18 @@ struct SessionView: View {
                 }
                 .frame(maxWidth: 260)
             }
+            // A computer from before muting has no `/mute`: no switch for it.
+            if model.canMute {
+                ToolbarItem(placement: .topBarTrailing) {
+                    let muted = model.isMuted(id)
+                    Button { model.mute(session: id, muted: !muted) } label: {
+                        Image(systemName: muted ? "bell.slash" : "bell")
+                    }
+                    .foregroundStyle(muted ? Color.textFaint : Color.text)
+                    .disabled(!model.isLinked)
+                    .accessibilityLabel(muted ? "Unmute" : "Mute")
+                }
+            }
         }
         .sheet(isPresented: $showingChanges) { ChangesView(id: id) }
         .onAppear { if model.session?.id != id { model.open(id) } }

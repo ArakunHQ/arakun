@@ -29,6 +29,8 @@ const THIS_COMPUTER = "this computer";
 const queueFull = (machine: string) => `Too many requests are waiting for ${machine}. Try again when it has caught up.`;
 const sent = (machine: string) => `Sent to ${machine}. A session starts there now.`;
 const offline = (machine: string) => `${machine} is offline. The session starts when it is back, for up to 7 days.`;
+const replyWaits = (machine: string) => `${machine} is offline. Your message reaches the session when it is back.`;
+const stopWaits = (machine: string) => `${machine} is offline. The session there is stopped as soon as it is back.`;
 
 /// Whether `signature` is the hex HMAC-SHA256 of `text` under `secret`. The
 /// two are compared as SHA-256 hashes in constant time, as admin.ts compares
@@ -174,14 +176,23 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
     activity: row.activity_id,
     created: row.created_at,
   };
+  let online: boolean;
   try {
     // The text goes in the live frame and nowhere else.
-    await deliver(env, row.label, delivery, row.kind === "prompt" ? promptText(activity) : null);
+    ({ online } = await deliver(env, row.label, delivery, row.kind === "prompt" ? promptText(activity) : null));
   } catch (e) {
     if (!(e instanceof QueueFull)) throw e;
     await env.DB.prepare("DELETE FROM linear_deliveries WHERE id = ?").bind(row.id).run();
     await say("error", queueFull(row.machine ?? THIS_COMPUTER));
     return ok();
+  }
+  // A connected computer answers for itself. An offline one cannot, and
+  // Linear would show Arakun as starting until it is back. A stop ends the
+  // turn in Linear: nothing works on it meanwhile.
+  if (!online) {
+    const machine = row.machine ?? THIS_COMPUTER;
+    if (row.kind === "stop") await postActivity(env, hook.organizationId, hook.agentSessionId, "response", stopWaits(machine));
+    else await say("thought", replyWaits(machine));
   }
   await done();
   return ok();

@@ -433,6 +433,7 @@ describe("Linear's webhook", () => {
 });
 
 const ACT = "77777777-7777-4777-8777-777777777777";
+const ACT2 = "77777777-7777-4777-8777-888888888888";
 const SENT = { agentSessionId: SESSION, type: "thought", body: "Sent to Desk. A session starts there now." };
 const SOMEONE_ELSE = { agentSessionId: SESSION, type: "thought", body: "Only the person who delegated this can steer it." };
 
@@ -590,6 +591,25 @@ describe("follow-ups from Linear", () => {
     const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
     expect(kinds).toEqual(["created", "prompt"]);
     expect(await storedAll(me.label)).not.toContain("SECRET-FOLLOW-UP");
+  });
+
+  it("says so when a reply or a stop waits for an offline computer", async () => {
+    const { me, pc, owner } = await delegatedIssue();
+    await away(me.label, pc);
+    const reply = signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT, agentSessionId: SESSION }));
+    expect((await send(reply)).status).toBe(200);
+    const waits = { agentSessionId: SESSION, type: "thought", body: "Desk is offline. Your message reaches the session when it is back." };
+    expect(linearFake.activities()).toEqual([SENT, waits]);
+    // Linear's retry of the same reply says it once.
+    expect((await send(reply)).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, waits]);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", activityId: ACT2, signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
+    const stops = { agentSessionId: SESSION, type: "response", body: "Desk is offline. The session there is stopped as soon as it is back." };
+    expect(linearFake.activities()).toEqual([SENT, waits, stops]);
+    // Both still reach the computer.
+    const back = await connectedComputerAgain(me, owner.session);
+    const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
+    expect(kinds).toEqual(["created", "prompt", "stop"]);
   });
 
   it("the same follow-up twice is one delivery and one frame", async () => {

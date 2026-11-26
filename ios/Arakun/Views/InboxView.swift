@@ -172,7 +172,7 @@ struct InboxView: View {
                 ForEach(Array(sessions.enumerated()), id: \.element.id) { i, s in
                     if i > 0 { Rectangle().fill(highlight ? Color.amber.opacity(0.2) : Color.line).frame(height: 1).padding(.leading, 16) }
                     NavigationLink(value: s.id) {
-                        SessionRow(session: s)
+                        SessionRow(session: s, muted: model.isMuted(s.id))
                     }
                     .buttonStyle(RowStyle())
                 }
@@ -194,6 +194,8 @@ private struct RowStyle: ButtonStyle {
 
 struct SessionRow: View {
     let session: InboxSession
+    /// The computer sends no notices about it.
+    var muted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -204,6 +206,14 @@ struct SessionRow: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 8)
+                if muted {
+                    Image(systemName: "bell.slash")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 12, height: 12)
+                        .foregroundStyle(Color.textFaint)
+                        .accessibilityLabel("Muted")
+                }
                 // Redrawn each half minute, so an idle row's age keeps up.
                 TimelineView(.periodic(from: .now, by: 30)) { _ in
                     Text(session.updated.shortAgo)

@@ -256,6 +256,18 @@ pub(super) fn remote_question(v: &Value) -> Option<AskUserRequest> {
 }
 
 impl AskUserRequest {
+    /// A questionnaire for tests in other modules, which cannot set `rpc_id`.
+    #[cfg(test)]
+    pub(crate) fn for_test(questions: Vec<Question>) -> Self {
+        Self {
+            rpc_id: Value::Null,
+            tool_call_id: String::new(),
+            questions,
+            fields: Vec::new(),
+            session: None,
+        }
+    }
+
     /// What tells one of a server's questionnaires from another.
     pub(super) fn remote_key(&self) -> String {
         let mut key = self.tool_call_id.clone();

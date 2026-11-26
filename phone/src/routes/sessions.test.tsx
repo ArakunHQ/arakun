@@ -33,4 +33,11 @@ describe("sessions", () => {
     fireEvent.click(screen.getByRole("button", { name: "All" }));
     expect(titles(container)).toHaveLength(3);
   });
+
+  it("marks a muted session with a bell that is off", async () => {
+    const link = fakeLink({ inbox, me: { muted: ["2"] } as never });
+    const { container } = await renderScreen(<Sessions />, "/sessions", link);
+    const rows = [...container.querySelectorAll(".srow")];
+    expect(rows.map((r) => !!r.querySelector('[aria-label="Muted"]'))).toEqual([false, true, false]);
+  });
 });

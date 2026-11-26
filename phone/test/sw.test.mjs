@@ -13,7 +13,7 @@ const source = readFileSync(join(here, "..", "public", "sw.js"), "utf8");
 
 /// The worker with `windows` open; gives back how many notifications a push
 /// for `session` showed.
-async function push(windows, session) {
+async function push(windows, session, extra = {}, all = false) {
   const on = {};
   const shown = [];
   const self = {
@@ -24,9 +24,9 @@ async function push(windows, session) {
   };
   vm.runInNewContext(source, { self }, { filename: "sw.js" });
   let done;
-  on.push({ data: { json: () => ({ session, title: "t", body: "b" }) }, waitUntil: (p) => (done = p) });
+  on.push({ data: { json: () => ({ session, title: "t", body: "b", ...extra }) }, waitUntil: (p) => (done = p) });
   await done;
-  return shown.length;
+  return all ? shown : shown.length;
 }
 
 const win = (url, visibilityState = "visible") => ({ url, visibilityState });
@@ -54,4 +54,20 @@ test("a notification when the window shows another session that starts the same"
 
 test("a notification when the window is hidden", async () => {
   assert.equal(await push([win("https://h/#/s/abc", "hidden")], "abc"), 1);
+});
+
+test("the body starts with the environment and turn length on its own line", async () => {
+  const [n] = await push([], "abc", { env: "app", secs: 252 }, true);
+  assert.equal(n.opts.body, "app \u00b7 4m 12s\nb");
+  const [short] = await push([], "abc", { env: "app", secs: 42 }, true);
+  assert.equal(short.opts.body, "app \u00b7 42s\nb");
+});
+
+test("the environment alone, and no subtitle without one", async () => {
+  const [a] = await push([], "abc", { env: "app" }, true);
+  assert.equal(a.opts.body, "app\nb");
+  const [b] = await push([], "abc", { secs: 90 }, true);
+  assert.equal(b.opts.body, "b");
+  const [old] = await push([], "abc", {}, true);
+  assert.equal(old.opts.body, "b");
 });

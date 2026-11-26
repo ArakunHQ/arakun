@@ -2,6 +2,7 @@
 
 import { useReducer, useSyncExternalStore } from "react";
 import { Icon } from "../lib/icons";
+import { BetaCard } from "./BetaSignup";
 import { useLink } from "../lib/link";
 import { notifyState, subscribePush } from "../lib/push";
 import { toast } from "../lib/toast";
@@ -126,6 +127,7 @@ export function SetupCards() {
           onSkip={skip(HIDE_NOTIFY)}
         />
       ) : null}
+      <BetaCard />
     </>
   );
 }

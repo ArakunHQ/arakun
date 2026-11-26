@@ -2,7 +2,7 @@
 use arakun_core::{
     accept, account, agent, assets, browser, caret, clone_source, cloud, durable, explorer, fetch,
     frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
-    redact, schedule, server, signals, terminal, theme, ui, zoom,
+    redact, schedule, secrets, server, signals, terminal, theme, ui, zoom,
 };
 mod account_view;
 mod app_menu;
@@ -44,6 +44,7 @@ mod github_view;
 mod headless;
 mod history;
 mod http;
+mod idle;
 mod island_host;
 mod iso;
 mod iso_view;
@@ -155,6 +156,7 @@ fn main() {
         sandbox_socket: control::sandbox_socket_path,
         shim_dir: control::shim_dir,
         github_read_only: github::pr::READ_ONLY,
+        idle_for: idle::idle_for,
     });
     browser::handle_subprocess();
     if control::run_cli() {

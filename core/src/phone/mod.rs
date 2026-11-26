@@ -15,6 +15,7 @@
 
 pub mod e2e;
 pub mod identity;
+pub mod notify;
 pub mod push;
 mod quiet;
 pub mod relay;
@@ -332,6 +333,12 @@ pub enum ClientMsg {
     Visible {
         visible: bool,
     },
+    /// How long the person has been idle at the desktop app's computer, in
+    /// seconds. The app following this server says it on change and at least
+    /// every 30 s; phones never do. A server has no display to tell.
+    Idle {
+        secs: u64,
+    },
     /// A terminal in place `place`, under the id `term` the app picked: the
     /// login shell there, running `run` first when it says one. Its output
     /// follows as `term_output`, then `term_exit` once it ends.
@@ -444,6 +451,9 @@ pub struct Device {
     /// Which of them it wants.
     #[serde(default)]
     pub notices: Notices,
+    /// Sessions it asked to hear nothing about, by the id the phone sees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub muted: Vec<String>,
 }
 
 /// What a phone asks to be told about. Everything, until it says otherwise.
@@ -455,6 +465,21 @@ pub struct Notices {
     pub input: bool,
     /// A turn failed.
     pub error: bool,
+    /// How long the person is away from the computer before a notice goes
+    /// out. 0 sends at once.
+    #[serde(default = "default_away_after_secs")]
+    pub away_after_secs: u32,
+    /// A `done` for a shorter turn stays quiet. 0 tells of every turn.
+    #[serde(default = "default_min_turn_secs")]
+    pub min_turn_secs: u32,
+}
+
+fn default_away_after_secs() -> u32 {
+    120
+}
+
+fn default_min_turn_secs() -> u32 {
+    30
 }
 
 impl Default for Notices {
@@ -463,6 +488,30 @@ impl Default for Notices {
             done: true,
             input: true,
             error: true,
+            away_after_secs: default_away_after_secs(),
+            min_turn_secs: default_min_turn_secs(),
+        }
+    }
+}
+
+/// What `POST /push` changes in `Notices`: a field it leaves out stays as it was.
+#[derive(Deserialize)]
+struct NoticesChange {
+    done: Option<bool>,
+    input: Option<bool>,
+    error: Option<bool>,
+    away_after_secs: Option<u32>,
+    min_turn_secs: Option<u32>,
+}
+
+impl NoticesChange {
+    fn apply(&self, n: Notices) -> Notices {
+        Notices {
+            done: self.done.unwrap_or(n.done),
+            input: self.input.unwrap_or(n.input),
+            error: self.error.unwrap_or(n.error),
+            away_after_secs: self.away_after_secs.unwrap_or(n.away_after_secs),
+            min_turn_secs: self.min_turn_secs.unwrap_or(n.min_turn_secs),
         }
     }
 }
@@ -545,6 +594,9 @@ pub struct Settings {
     /// under another account they are dropped (`relay_owner`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_account: Option<u64>,
+    /// The sidebar's card that invites to the phone app beta was closed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub beta_card_closed: bool,
 }
 
 impl Default for Settings {
@@ -558,6 +610,7 @@ impl Default for Settings {
             relay_base: default_relay_base(),
             devices: Vec::new(),
             relay_account: None,
+            beta_card_closed: false,
         }
     }
 }
@@ -697,6 +750,49 @@ impl Access {
         }
     }
 
+    /// A phone mutes or unmutes one session. Only a device of the door it
+    /// asked through.
+    pub fn set_muted(&mut self, device: &str, door: Door, session: &str, muted: bool) -> bool {
+        match self.device_mut(device, door) {
+            Some(d) => {
+                d.muted.retain(|s| s != session);
+                if muted {
+                    d.muted.push(session.to_string());
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A session is gone: no device keeps it muted. Whether any changed.
+    pub fn forget_session(&mut self, session: &str) -> bool {
+        let mut changed = false;
+        for d in &mut self.devices {
+            let before = d.muted.len();
+            d.muted.retain(|s| s != session);
+            changed |= d.muted.len() != before;
+        }
+        changed
+    }
+
+    /// A session took a new id (it was continued with another agent): a
+    /// device that muted it keeps it muted. Whether any changed.
+    pub fn rename_muted(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for d in &mut self.devices {
+            if let Some(i) = d.muted.iter().position(|s| s == old) {
+                if d.muted.iter().any(|s| s == new) {
+                    d.muted.remove(i);
+                } else {
+                    d.muted[i] = new.to_string();
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// The device with this id that came in through `door`. The relay names
     /// ids itself, so one could equal the id of a device paired on the
     /// network: a request through one door must never change the other's.
@@ -797,6 +893,7 @@ impl Access {
             last_seen: now,
             push: None,
             notices: Notices::default(),
+            muted: Vec::new(),
         };
         self.devices.push(device.clone());
         (device, token)
@@ -856,6 +953,7 @@ impl Access {
             last_seen: now,
             push: None,
             notices: Notices::default(),
+            muted: Vec::new(),
         };
         self.devices.push(device.clone());
         (device, Seen::New)
@@ -880,7 +978,7 @@ impl Access {
 
 /// The way a device came in: through the relay, by its account, or on the
 /// network or Tailscale, with a token.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Door {
     Relay,
     Local,
@@ -890,6 +988,15 @@ impl Door {
     /// Whether `d` came in through this door: the relay's devices have no token.
     pub fn admits(self, d: &Device) -> bool {
         d.token_hash.is_empty() == (self == Door::Relay)
+    }
+
+    /// The door `d` came in through.
+    pub fn of(d: &Device) -> Door {
+        if Door::Relay.admits(d) {
+            Door::Relay
+        } else {
+            Door::Local
+        }
     }
 }
 
@@ -1426,6 +1533,7 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
                     let body = serde_json::json!({
                         "id": d.id, "name": d.name, "host": host_name(), "paired_at": d.paired_at,
                         "push_key": push_key, "notifying": d.push.is_some(), "notices": d.notices,
+                        "muted": d.muted,
                     });
                     (Reply::json(200, &body), Effect::None)
                 }
@@ -1453,7 +1561,7 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
             };
             let notices = match ask.get("notices") {
                 None => None,
-                Some(v) => match serde_json::from_value::<Notices>(v.clone()) {
+                Some(v) => match serde_json::from_value::<NoticesChange>(v.clone()) {
                     Ok(n) => Some(n),
                     Err(_) => return (Reply::error(400, "bad notices"), Effect::None),
                 },
@@ -1464,8 +1572,15 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
                 if let Some(sub) = sub {
                     a.subscribe(&device.id, door, sub);
                 }
-                if let Some(n) = notices {
-                    a.set_notices(&device.id, door, n);
+                if let Some(change) = notices {
+                    let current = a
+                        .devices
+                        .iter()
+                        .find(|d| d.id == device.id && door.admits(d))
+                        .map(|d| d.notices);
+                    if let Some(n) = current {
+                        a.set_notices(&device.id, door, change.apply(n));
+                    }
                 }
                 let d = a
                     .devices
@@ -1478,6 +1593,38 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
             };
             let body = serde_json::json!({ "notifying": notifying, "notices": notices });
             (Reply::json(200, &body), Effect::Subscribed)
+        }
+        // The phone mutes or unmutes one session's notices.
+        ("POST", "/mute") => {
+            let device = req.device(&mut access.lock().unwrap(), now);
+            let Some(device) = device else {
+                return (Reply::error(403, "not paired"), Effect::None);
+            };
+            #[derive(Deserialize)]
+            struct Mute {
+                session: String,
+                muted: bool,
+            }
+            let Some(ask) = body.and_then(|b| serde_json::from_slice::<Mute>(&b).ok()) else {
+                return (Reply::error(400, "bad request"), Effect::None);
+            };
+            if ask.session.is_empty() {
+                return (Reply::error(400, "bad request"), Effect::None);
+            }
+            let door = req.door();
+            let muted = {
+                let mut a = access.lock().unwrap();
+                a.set_muted(&device.id, door, &ask.session, ask.muted);
+                a.devices
+                    .iter()
+                    .find(|d| d.id == device.id && door.admits(d))
+                    .map(|d| d.muted.clone())
+                    .unwrap_or_default()
+            };
+            (
+                Reply::json(200, &serde_json::json!({ "muted": muted })),
+                Effect::Subscribed,
+            )
         }
         // The phone lets go of this computer: its token dies and its sockets close.
         ("POST", "/unpair") => {
@@ -2380,6 +2527,7 @@ mod tests {
             last_seen: 0,
             push: None,
             notices: Notices::default(),
+            muted: Vec::new(),
         }
     }
 
@@ -2441,6 +2589,122 @@ mod tests {
     }
 
     #[test]
+    fn device_without_muted_loads() {
+        let old = r#"{"id":"a","name":"n","token_hash":"h","paired_at":1,"last_seen":2}"#;
+        let d: Device = serde_json::from_str(old).unwrap();
+        assert!(d.muted.is_empty());
+    }
+
+    #[test]
+    fn post_mute_toggles_one_session() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (_, token) = access.lock().unwrap().admit("iPhone", 1);
+        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let auth = format!("Authorization: Bearer {token}\r\n");
+        let one = http(
+            &server,
+            "POST",
+            "/mute",
+            &auth,
+            r#"{"session":"a","muted":true}"#,
+        );
+        assert!(one.starts_with("HTTP/1.1 200"), "{one}");
+        let two = http(
+            &server,
+            "POST",
+            "/mute",
+            &auth,
+            r#"{"session":"b","muted":true}"#,
+        );
+        assert_eq!(body_of(&two)["muted"], serde_json::json!(["a", "b"]));
+        let again = http(
+            &server,
+            "POST",
+            "/mute",
+            &auth,
+            r#"{"session":"b","muted":true}"#,
+        );
+        assert_eq!(body_of(&again)["muted"], serde_json::json!(["a", "b"]));
+        let me = http(&server, "GET", "/me", &auth, "");
+        assert_eq!(body_of(&me)["muted"], serde_json::json!(["a", "b"]));
+        let off = http(
+            &server,
+            "POST",
+            "/mute",
+            &auth,
+            r#"{"session":"a","muted":false}"#,
+        );
+        assert_eq!(body_of(&off)["muted"], serde_json::json!(["b"]));
+        assert_eq!(
+            access.lock().unwrap().devices[0].muted,
+            vec!["b".to_string()]
+        );
+        let bad = http(&server, "POST", "/mute", &auth, r#"{"session":"a"}"#);
+        assert!(bad.starts_with("HTTP/1.1 400"), "{bad}");
+        assert!(
+            http(
+                &server,
+                "POST",
+                "/mute",
+                "",
+                r#"{"session":"a","muted":true}"#
+            )
+            .starts_with("HTTP/1.1 403")
+        );
+    }
+
+    #[test]
+    fn mute_changes_only_a_device_of_its_own_door() {
+        let mut lan = relay_device("same");
+        lan.token_hash = hash("token");
+        let access = Access::new(vec![lan, relay_device("same")], "pk".into());
+        let mut a = access.lock().unwrap();
+        assert!(a.set_muted("same", Door::Relay, "s", true));
+        assert!(a.devices[0].muted.is_empty());
+        assert_eq!(a.devices[1].muted, vec!["s".to_string()]);
+    }
+
+    #[test]
+    fn rename_muted_carries_the_mute_to_the_new_id() {
+        let mut a = relay_device("a");
+        a.muted = vec!["x".into(), "old".into()];
+        let mut b = relay_device("b");
+        b.muted = vec!["old".into(), "new".into()];
+        let access = Access::new(vec![a, b, relay_device("c")], "pk".into());
+        let mut g = access.lock().unwrap();
+        assert!(g.rename_muted("old", "new"));
+        assert_eq!(g.devices[0].muted, vec!["x".to_string(), "new".to_string()]);
+        assert_eq!(g.devices[1].muted, vec!["new".to_string()]);
+        assert!(g.devices[2].muted.is_empty());
+        assert!(!g.rename_muted("old", "new"));
+    }
+
+    #[test]
+    fn forget_session_unmutes() {
+        let mut a = relay_device("a");
+        a.muted = vec!["s".into(), "t".into()];
+        let mut b = relay_device("b");
+        b.muted = vec!["s".into()];
+        let access = Access::new(vec![a, b, relay_device("c")], "pk".into());
+        let mut g = access.lock().unwrap();
+        assert!(g.forget_session("s"));
+        assert_eq!(g.devices[0].muted, vec!["t".to_string()]);
+        assert!(g.devices[1].muted.is_empty());
+        assert!(!g.forget_session("s"), "nothing left to change");
+    }
+
+    #[test]
+    fn notices_default_when_missing() {
+        let old: Notices =
+            serde_json::from_str(r#"{"done":true,"input":true,"error":true}"#).unwrap();
+        assert_eq!(old.away_after_secs, 120);
+        assert_eq!(old.min_turn_secs, 30);
+        assert_eq!(old, Notices::default());
+        let d = Notices::default();
+        assert_eq!((d.away_after_secs, d.min_turn_secs), (120, 30));
+    }
+
+    #[test]
     fn a_request_changes_only_a_device_of_its_own_door() {
         // The relay named an id that a device paired on the network has too.
         let mut lan = relay_device("same");
@@ -2451,6 +2715,7 @@ mod tests {
             done: false,
             input: false,
             error: false,
+            ..Notices::default()
         };
         assert!(a.set_notices("same", Door::Relay, quiet));
         assert_eq!(
@@ -2754,7 +3019,13 @@ mod tests {
         // It picks what to hear about; the subscription stays as it was.
         assert_eq!(
             body_of(&me)["notices"],
-            serde_json::json!({ "done": true, "input": true, "error": true })
+            serde_json::json!({
+                "done": true,
+                "input": true,
+                "error": true,
+                "away_after_secs": 120,
+                "min_turn_secs": 30
+            })
         );
         let picked = http(
             &server,
@@ -2770,9 +3041,36 @@ mod tests {
             access.lock().unwrap().devices[0].notices,
             Notices {
                 done: false,
-                input: true,
-                error: true
+                ..Notices::default()
             }
+        );
+        // One setting alone changes only itself.
+        let away = http(
+            &server,
+            "POST",
+            "/push",
+            &auth,
+            r#"{"notices":{"away_after_secs":0}}"#,
+        );
+        assert!(away.starts_with("HTTP/1.1 200"), "{away}");
+        assert_eq!(body_of(&away)["notices"]["away_after_secs"], 0);
+        assert_eq!(
+            access.lock().unwrap().devices[0].notices,
+            Notices {
+                done: false,
+                away_after_secs: 0,
+                ..Notices::default()
+            }
+        );
+        assert!(
+            http(
+                &server,
+                "POST",
+                "/push",
+                &auth,
+                r#"{"notices":{"min_turn_secs":-1}}"#
+            )
+            .starts_with("HTTP/1.1 400")
         );
         assert!(
             http(
@@ -3028,6 +3326,16 @@ mod tests {
             }
         }
         assert!(heard);
+    }
+
+    #[test]
+    fn idle_reads_as_the_app_sends_it() {
+        // As `shell::servers::idle` writes it.
+        let sent = serde_json::json!({ "type": "idle", "secs": 75 });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(sent).unwrap(),
+            ClientMsg::Idle { secs: 75 }
+        );
     }
 
     #[test]

@@ -165,6 +165,8 @@ copy of it, rename it back, and start a version that can read it.
   line) or type a GitHub `o/r` to clone it and add it in one step. GitHub repositories
   are cloned with `gh` when it is installed, so private ones use its sign-in. The clone
   goes in the folder that already holds most of your repositories, or `~/code`.
+  With a server connected, the picker also offers to clone the URL on that server,
+  with its git and logins. The new folder opens in its project once the server has it.
   Each project gets its own 8×8 pixel-art icon, drawn from its path. "Edit icon…" in
   the project's menu lets you draw it pixel by pixel (mirrored or not), shuffle a new
   one, start from a classic drawing, or change its color.
@@ -532,8 +534,14 @@ after a week).
   added by hand, so the row says you signed up until the TestFlight or Google Play
   invite is on its way, then that you are in. **Change email** fixes the address
   while you wait.
-  The Android app gets notifications from every computer it has opened while they are
-  on (Account in its inbox's menu).
+  The Android app gets notices from every computer it has opened while they are on.
+  A computer sends a phone a notice only when you are away from it: by default, after
+  2 minutes without using it. A permission request or a question waits until you
+  leave, and goes only if the agent still waits. A turn shorter than 30 seconds sends
+  no notice. Change both under **Only when I'm away for** and **Turns shorter than
+  this stay quiet**: in the page's Settings tab, in Settings in the iOS app's inbox
+  menu, or in Account in the Android app's inbox menu. The bell in a session mutes
+  that session's notices on the phone.
   In the iOS and Android apps, the count of changed files on top of a session opens
   the files it changed, turn by turn, and each file its diff, read-only, as on the page.
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
@@ -758,6 +766,9 @@ after a week).
   Click the team's name for your other teams, **Start a team** and **Your devices**;
   "N invites" at the top opens invites to other teams; click the people at the top
   right for the team's page, which invites people by GitHub login and removes members.
+  An owner's **Change role** on a person makes them an owner, an admin or a member;
+  **Hand over** makes them an owner and you an admin. A team always keeps an owner, so
+  its only owner can't leave or step down until someone else is one.
   **Withdraw** takes back an invite nobody answered yet. An invite you got shows with
   **Accept** and **Decline**; after you accept, the waiting page has **Remind**, which
   tells the team's admins once an hour at most. "N waiting" at the top opens the people
@@ -991,12 +1002,14 @@ one for usage counts, and a button for feedback:
   full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
   at most once per launch. Arakun fetches them from PostHog only with usage counts
   on, in an anonymous request with the project token and no id. With usage counts
-  off, the feedback forms use the questions built into Arakun. Each answer you send
-  also tries to open a ticket in the Arakun team's private support inbox (PostHog
-  Support), with the email you left, if any, so the team can reply. If that fails,
-  the answer still arrives, just without a ticket. A person on the team may
-  turn a bug, feature or UX report into a public GitHub issue, without paths, links,
-  keys or emails.
+  off, the feedback forms use the questions built into Arakun. A support question
+  also opens a ticket in the Arakun team's private support inbox (PostHog Support),
+  with the email you left, if any, so the team can reply. Other feedback (a bug,
+  feature request, UX note or anything else) goes to the team's Linear, through
+  Arakun's cloud, as a customer request. Its issue has the text without paths,
+  links, keys or emails, and may become a public GitHub issue. Your text as you
+  wrote it and your email stay in Linear. If either fails, the answer still
+  arrives in PostHog.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn

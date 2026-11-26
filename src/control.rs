@@ -977,7 +977,9 @@ fn feedback_args(
         return Err(Stop::Usage);
     }
     let (kind, rest) = match rest.split_first() {
-        Some((kind, rest)) if crate::surveys::ids::KINDS.contains(&kind.as_str()) => (kind, rest),
+        Some((kind, rest)) if crate::surveys::ids::AGENT_KINDS.contains(&kind.as_str()) => {
+            (kind, rest)
+        }
         _ => return Err(Stop::Usage),
     };
     let rest = payload(rest)?;

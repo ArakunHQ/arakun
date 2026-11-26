@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::sessions::Notice;
 use crate::agent::{Entry, Setting, Thread, ThreadStatus};
 use crate::island::{self as isl, AlertKind, one_line};
 use crate::island_host::brief;
 use crate::island_host::proto::{FromIsland, ToIsland};
+use crate::phone::notify::Kind;
 
 /// How often the island hears from active sessions: elapsed times tick in seconds.
 const FEED_EVERY: Duration = Duration::from_secs(1);
@@ -652,23 +652,23 @@ impl Shell {
         &self,
         id: &SharedString,
         thread: &Entity<Thread>,
-        notice: Notice,
+        notice: Kind,
         title: &str,
         cx: &App,
     ) -> isl::Alert {
         let t = thread.read(cx);
         let model = model_label(t, None);
         let (kind, head, line) = match notice {
-            Notice::Finished => {
+            Kind::Done => {
                 let reply = last_text(t.entries()).map(brief).filter(|b| !b.is_empty());
                 (AlertKind::Finished, format!("{model} finished"), reply)
             }
-            Notice::Input => (
+            Kind::Input => (
                 AlertKind::Input,
                 format!("{model} needs your decision"),
                 waiting_on(t, brief),
             ),
-            Notice::Error => (
+            Kind::Error => (
                 AlertKind::Error,
                 format!("{model} failed"),
                 error_line(t, brief),

@@ -282,7 +282,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arakun"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "anyhow",
  "arakun-core",
@@ -305,7 +305,6 @@ dependencies = [
  "qrcode",
  "raw-window-handle",
  "rayon",
- "regex",
  "rhai",
  "ring",
  "rusqlite",
@@ -323,11 +322,12 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "x11rb 0.14.0",
+ "zbus",
 ]
 
 [[package]]
 name = "arakun-core"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "aes-gcm",
  "alacritty_terminal",
@@ -348,6 +348,7 @@ dependencies = [
  "pulldown-cmark",
  "qrcode",
  "raw-window-handle",
+ "regex",
  "ring",
  "rust-embed",
  "rustls",
@@ -364,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "arakun-server"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "arakun-core",
  "gpui_platform",

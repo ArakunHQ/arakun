@@ -209,6 +209,8 @@ impl Shell {
                         PickerEvent::Picked(path) => this.add_project(path.clone(), window, cx),
                         // Esc in its field steps back, as it does on the other steps.
                         PickerEvent::Dismissed => this.onboarding_back(window, cx),
+                        // The setup's picker is given no servers to offer.
+                        PickerEvent::CloneOnServer { .. } => {}
                     },
                 );
             if let Some(o) = self.onboarding.as_mut() {

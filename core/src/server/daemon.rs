@@ -25,7 +25,7 @@ use super::files;
 use super::local::{self, Reply, Request};
 use super::login::{self, SignIn};
 use super::pty::{self, Pty};
-use super::store::{self, Place, Record, Store};
+use super::store::{self, Deletion, Place, Record, Store};
 use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
@@ -36,7 +36,8 @@ use crate::clone_source;
 use crate::model::{Status, unix_now};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
-    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
+    self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, notify, push, tailscale,
+    wire,
 };
 
 /// Entry changes wait this long for more before they go out, so a streaming
@@ -95,13 +96,6 @@ impl Address {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Notice {
-    Finished,
-    Input,
-    Error,
-}
-
 struct Live {
     thread: Entity<Thread>,
     /// Something changed since the transcript was last saved.
@@ -158,6 +152,11 @@ pub struct Daemon {
     watching: HashMap<ClientId, Vec<String>>,
     /// Devices whose page left the screen: they still get updates, but a push too.
     hidden: HashSet<ClientId>,
+    /// What the apps following this server said of the person's idle time.
+    heard_idle: HeardIdle,
+    /// The desktop apps among the devices: what they follow says nothing
+    /// about whether the person looked.
+    desktops: Desktops,
     /// Places whose worktree is being deleted: nothing new starts in them.
     deleting: HashSet<PathBuf>,
     /// How many worktrees were deleted so far: a folder looked at before one
@@ -195,7 +194,11 @@ pub struct Daemon {
     reading_meta: bool,
     uploads: phone::Uploads,
     /// The last thing each session notified about, so one turn says it once.
-    notified: HashMap<String, Notice>,
+    notified: HashMap<String, notify::Kind>,
+    /// Phone notices waiting for the person to be away.
+    notifier: notify::Notifier,
+    /// Checks the waiting notices while there are any.
+    notice_timer: Option<Task<()>>,
     writer: Writer,
     /// The saved transcript a device read last, for the pages after the first.
     last_read: agent::saved::LastRead,
@@ -546,6 +549,7 @@ pub fn run(opts: Options) -> i32 {
                 cx,
             );
             daemon.check_relay_devices(cx);
+            daemon.finish_deletions(cx);
             daemon
         });
         cx.set_global(Keep(daemon));
@@ -910,6 +914,119 @@ fn summary(text: &str) -> String {
     agent::log::head(line, 80)
 }
 
+/// The notice a phone gets. Only a finished turn says how long it took.
+fn notice_payload(
+    kind: notify::Kind,
+    id: &str,
+    title: &str,
+    env: &str,
+    body: &str,
+    entries: &[Entry],
+) -> String {
+    let secs = (kind == notify::Kind::Done)
+        .then(|| notify::turn_secs(entries))
+        .flatten();
+    push::notice(kind.as_str(), id, title, body, env, secs)
+}
+
+/// How long an idle time an app told is trusted: it tells at least every 30 s.
+const IDLE_TRUSTED: Duration = Duration::from_secs(60);
+
+/// The idle times the apps following this server told it (`idle`), by
+/// client, with when each was heard. A server has no display of its own.
+#[derive(Default)]
+struct HeardIdle(HashMap<ClientId, (u64, Instant)>);
+
+impl HeardIdle {
+    fn heard(&mut self, client: ClientId, secs: u64, at: Instant) {
+        self.0.insert(client, (secs, at));
+    }
+
+    fn forget(&mut self, client: ClientId) {
+        self.0.remove(&client);
+    }
+
+    /// The lowest idle time heard in the last minute: whoever is at their
+    /// computer is not away. None when no app said one lately.
+    fn idle(&self, now: Instant) -> Option<Duration> {
+        self.0
+            .values()
+            .filter(|(_, at)| now.saturating_duration_since(*at) < IDLE_TRUSTED)
+            .map(|(secs, _)| *secs)
+            .min()
+            .map(Duration::from_secs)
+    }
+}
+
+/// The clients that are desktop apps following this server. An app follows
+/// every session it shows (`open` with `keep`) and never says it left the
+/// screen, so its watching is no sign the person saw a session. Only the
+/// desktop app opens with `keep` or tells its idle time; phones do neither.
+#[derive(Default)]
+struct Desktops(HashSet<ClientId>);
+
+impl Desktops {
+    fn heard(&mut self, client: ClientId, msg: &ClientMsg) {
+        if matches!(
+            msg,
+            ClientMsg::Open { keep: true, .. } | ClientMsg::Idle { .. }
+        ) {
+            self.0.insert(client);
+        }
+    }
+
+    fn forget(&mut self, client: ClientId) {
+        self.0.remove(&client);
+    }
+}
+
+/// Whether a phone has the session `id` on a screen it shows. Desktop apps
+/// don't count: they follow a session whether or not the person looks at it.
+fn phone_seen(
+    watching: &HashMap<ClientId, Vec<String>>,
+    hidden: &HashSet<ClientId>,
+    desktops: &Desktops,
+    id: &str,
+) -> bool {
+    watching.iter().any(|(client, w)| {
+        w.iter().any(|w| w == id) && !hidden.contains(client) && !desktops.0.contains(client)
+    })
+}
+
+/// Whether the person is at the computer, as the server can tell: what the
+/// apps following it said, else the host's idle time (none on a server), and
+/// no window to have focus.
+fn presence(heard: &HeardIdle, now: Instant) -> notify::Presence {
+    notify::Presence {
+        idle: heard.idle(now).or_else(|| (crate::host::get().idle_for)()),
+        focused: false,
+    }
+}
+
+/// The phones that get a session's notice now; the rest wait in `notifier`.
+fn offer_notice(
+    notifier: &mut notify::Notifier,
+    c: notify::Candidate,
+    devices: &[phone::Device],
+    looking: &HashSet<String>,
+    heard: &HeardIdle,
+    now: Instant,
+) -> Vec<notify::Delivery> {
+    notifier.offer(c, devices, looking, presence(heard, now), now)
+}
+
+/// The waiting notices that may go now. A device looking at a session drops
+/// them through `still`, so nobody is `looking` here.
+fn due_notices(
+    notifier: &mut notify::Notifier,
+    devices: &[phone::Device],
+    still: impl Fn(&str, notify::Kind) -> bool,
+    heard: &HeardIdle,
+    now: Instant,
+) -> Vec<notify::Delivery> {
+    notifier.tick(devices, &HashSet::new(), presence(heard, now), still, now)
+}
+
 fn error_text(t: &Thread) -> String {
     match t.status() {
         ThreadStatus::Error(msg) => {
@@ -1063,6 +1180,8 @@ impl Daemon {
             account,
             watching: HashMap::new(),
             hidden: HashSet::new(),
+            heard_idle: HeardIdle::default(),
+            desktops: Desktops::default(),
             deleting: HashSet::new(),
             deletions: 0,
             installed_for: HashSet::new(),
@@ -1082,6 +1201,8 @@ impl Daemon {
             meta: HashMap::new(),
             reading_meta: false,
             notified: HashMap::new(),
+            notifier: notify::Notifier::default(),
+            notice_timer: None,
             writer: parts.writer,
             last_read: Default::default(),
             said_commands: HashMap::new(),
@@ -1908,6 +2029,10 @@ impl Daemon {
                         place.pick(agent, *s, value);
                     }
                 }
+                // Before the old one goes: a phone that muted it keeps the new one muted.
+                if this.access.lock().unwrap().rename_muted(&id, &new) {
+                    this.save_devices();
+                }
                 this.drop_session(&id, cx);
                 this.attach(&new, thread.clone(), cx);
                 // Its adapter may have gone missing before anything listened.
@@ -2645,6 +2770,8 @@ impl Daemon {
     fn client_gone(&mut self, id: ClientId, cx: &mut Context<Self>) {
         self.stop_watching(id, cx);
         self.hidden.remove(&id);
+        self.heard_idle.forget(id);
+        self.desktops.forget(id);
         self.readers.remove(&id);
         self.asked.retain(|_, c| *c != id);
         self.rewinds.retain(|_, r| r.client != id);
@@ -2658,6 +2785,7 @@ impl Daemon {
 
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
         let gone = |session: &str| session_error(session, "that session is gone");
+        self.desktops.heard(client, &msg);
         match msg {
             ClientMsg::Open { session, keep } => {
                 let Some(record) = self.store.session(&session) else {
@@ -3182,6 +3310,8 @@ impl Daemon {
                     self.hidden.insert(client);
                 }
             }
+            // Only the desktop app says this; phones have no idle time to tell.
+            ClientMsg::Idle { secs } => self.heard_idle.heard(client, secs, Instant::now()),
             ClientMsg::AddPlace { path } => self.add_device_place(client, path, cx),
             ClientMsg::Clone { url } => {
                 let Some(source) = clone_source::parse_clone_source(&url) else {
@@ -3356,40 +3486,41 @@ impl Daemon {
                     let checked = cx
                         .background_executor()
                         .spawn(async move {
-                            removable(&p)?;
+                            let repo = removable(&p)?;
                             let branch = delete_branch.then(|| store::branch(&p)).flatten();
                             branch_agreed(branch.as_deref(), confirmed.as_deref())?;
-                            Ok::<_, String>(branch)
+                            Ok::<_, String>(Deletion {
+                                place: p,
+                                repo,
+                                branch,
+                            })
                         })
                         .await;
                     let done = match checked {
-                        Ok(branch) => {
-                            // A shell there would hold the folder open. Only
-                            // now: a refused deletion keeps its terminals.
-                            let hung_up = this.update(cx, |this, _| {
+                        Ok(deletion) => {
+                            // Written down before git starts: a server stopped
+                            // part way finishes it at its next start. A shell
+                            // there would hold the folder open. Only now: a
+                            // refused deletion keeps its terminals.
+                            let begun = this.update(cx, |this, _| {
+                                this.begin_deletion(deletion.clone())?;
                                 this.hang_up_terms_in(&path);
+                                Ok::<_, String>(())
                             });
-                            if hung_up.is_err() {
-                                return;
+                            match begun {
+                                Ok(Ok(())) => {
+                                    cx.background_executor()
+                                        .spawn(async move { finish_deletion(&deletion) })
+                                        .await
+                                }
+                                Ok(Err(e)) => Err(e),
+                                Err(_) => return,
                             }
-                            let p = path.clone();
-                            cx.background_executor()
-                                .spawn(async move { remove_worktree(&p, branch.as_deref()) })
-                                .await
                         }
                         Err(e) => Err(e),
                     };
                     let _ = this.update(cx, |this, cx| {
-                        this.deleting.remove(&path);
-                        // The folder is gone even when its branch stayed.
-                        let (deleted, error) = match done {
-                            Ok(branch_kept) => {
-                                let saved = this.forget_place(&path, cx);
-                                this.sync_inbox(cx);
-                                (true, deleted_warning(branch_kept, saved.err()))
-                            }
-                            Err(e) => (false, Some(e)),
-                        };
+                        let (deleted, error) = this.deletion_done(&path, done, cx);
                         this.transport
                             .send(client, env_deleted(&place, deleted, error.as_deref()));
                     });
@@ -3561,6 +3692,75 @@ impl Daemon {
         self.retire(id, cx);
     }
 
+    /// Notes, and saves, that the worktree in `d` is being deleted. Unsaved,
+    /// it is not started: a stop part way would leave it half done.
+    fn begin_deletion(&mut self, d: Deletion) -> Result<(), String> {
+        let place = d.place.clone();
+        self.store.begin_deletion(d);
+        self.store.save().map_err(|e| {
+            self.store.end_deletion(&place);
+            format!("could not save the server's state, so nothing was deleted: {e}")
+        })
+    }
+
+    /// The deletion of `place` is over: the place goes when its folder did,
+    /// with the note of the deletion in the same save. Says whether it was
+    /// deleted, and the error or the warning there is to tell.
+    fn deletion_done(
+        &mut self,
+        place: &Path,
+        done: Result<Option<String>, String>,
+        cx: &mut Context<Self>,
+    ) -> (bool, Option<String>) {
+        self.deleting.remove(place);
+        let noted = self.store.end_deletion(place);
+        match done {
+            // The folder is gone even when its branch stayed.
+            Ok(branch_kept) => {
+                let saved = self.forget_place(place, cx);
+                self.sync_inbox(cx);
+                (true, deleted_warning(branch_kept, saved.err()))
+            }
+            Err(e) => {
+                if noted {
+                    self.save_store();
+                }
+                (false, Some(e))
+            }
+        }
+    }
+
+    /// Finishes the deletions a stopped server left part way, as the user
+    /// asked for them. One that cannot finish is given up, and its place stays.
+    fn finish_deletions(&mut self, cx: &mut Context<Self>) {
+        for d in self.store.deleting.clone() {
+            // Until it is gone, or stays: no session starts there meanwhile.
+            self.deleting.insert(d.place.clone());
+            cx.spawn(async move |this, cx| {
+                let place = d.place.clone();
+                let done = cx
+                    .background_executor()
+                    .spawn(async move { finish_deletion(&d) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    let (deleted, said) = this.deletion_done(&place, done, cx);
+                    let place = place.display();
+                    match (deleted, said) {
+                        (true, None) => eprintln!("arakun server: finished deleting {place}"),
+                        (true, Some(w)) => {
+                            eprintln!("arakun server: finished deleting {place}. {w}")
+                        }
+                        (false, e) => eprintln!(
+                            "arakun server: could not finish deleting {place}, so it stays: {}",
+                            e.unwrap_or_default()
+                        ),
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
     /// Why the worktree at `place` cannot be deleted, if it cannot.
     fn deletable(&self, place: &Path, cx: &App) -> Result<(), String> {
         if self.store.place(place).is_none() {
@@ -3599,6 +3799,7 @@ impl Daemon {
             .filter(|s| s.place.starts_with(place))
             .map(|s| s.id.clone())
             .collect();
+        let mut muted = false;
         for id in ids {
             if let Some(live) = self.live.remove(&id) {
                 live.thread.update(cx, |t, _| t.shutdown());
@@ -3610,6 +3811,10 @@ impl Daemon {
             self.said_commands.remove(&id);
             self.writer.forget(self.store.transcript_path(&id));
             self.store.remove_session(&id);
+            muted |= self.access.lock().unwrap().forget_session(&id);
+        }
+        if muted {
+            self.save_devices();
         }
         let inside: Vec<PathBuf> = self
             .store
@@ -3794,10 +3999,6 @@ impl Daemon {
         }
     }
 
-    /// Pushes a notice to the devices that asked for them when a session
-    /// finishes a turn, wants an answer or fails, except to the ones looking
-    /// at that very session. Subscriptions the push service says are gone are
-    /// forgotten.
     /// Starts the install of the adapter a session is missing, the first time
     /// it asks. True when it started one.
     fn install_missing_adapter(
@@ -3823,6 +4024,9 @@ impl Daemon {
         true
     }
 
+    /// Offers a notice to the devices that asked for them when a session
+    /// finishes a turn, wants an answer or fails, except to the ones looking
+    /// at that very session. It goes now, or once the person is away.
     fn notify(
         &mut self,
         id: &str,
@@ -3831,28 +4035,18 @@ impl Daemon {
         cx: &mut Context<Self>,
     ) {
         let t = thread.read(cx);
-        let (kind, body): (Notice, String) = match ev {
+        let (kind, body): (notify::Kind, String) = match ev {
             ThreadEvent::Finished { stop_reason } => match stop_reason.as_str() {
                 "cancelled" => return,
-                "error" => (Notice::Error, error_text(t)),
-                _ => (Notice::Finished, "Finished its turn.".into()),
+                "error" => (notify::Kind::Error, error_text(t)),
+                _ => (notify::Kind::Done, notify::finished_body(t.entries())),
             },
-            ThreadEvent::NeedsPermission => {
-                let body = if let Some(p) = t.pending_permission() {
-                    if p.plan.is_some() {
-                        "Has a plan ready for your approval.".to_string()
-                    } else {
-                        format!("Needs permission: {}", p.title)
-                    }
-                } else if t.pending_question().is_some() {
-                    "Has a question for you.".into()
-                } else {
-                    "Needs your input.".into()
-                };
-                (Notice::Input, body)
-            }
+            ThreadEvent::NeedsPermission => (
+                notify::Kind::Input,
+                notify::input_body(t.entries(), t.pending_permission(), t.pending_question()),
+            ),
             ThreadEvent::StatusChanged if matches!(t.status(), ThreadStatus::Error(_)) => {
-                (Notice::Error, error_text(t))
+                (notify::Kind::Error, error_text(t))
             }
             ThreadEvent::StatusChanged => {
                 // Back at work: the next turn end or question notifies again.
@@ -3882,29 +4076,90 @@ impl Daemon {
             })
             .filter_map(|(client, _)| self.transport.device_of(*client))
             .collect();
-        let wanted = |d: &phone::Device| match kind {
-            Notice::Finished => d.notices.done,
-            Notice::Input => d.notices.input,
-            Notice::Error => d.notices.error,
+        let env = self
+            .store
+            .session(id)
+            .and_then(|s| s.place.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let secs = (kind == notify::Kind::Done)
+            .then(|| notify::turn_secs(t.entries()))
+            .flatten();
+        let c = notify::Candidate {
+            session: id.to_string(),
+            kind,
+            turn_secs: secs,
+            payload: notice_payload(kind, id, &title, &env, &body, t.entries()),
         };
-        let targets: Vec<(String, push::Subscription)> = self
-            .access
-            .lock()
-            .unwrap()
-            .devices
-            .iter()
-            .filter(|d| !looking.contains(&d.id) && wanted(d))
-            .filter_map(|d| d.push.clone().map(|s| (d.id.clone(), s)))
-            .collect();
-        if targets.is_empty() {
+        let now = offer_notice(
+            &mut self.notifier,
+            c,
+            &self.access.lock().unwrap().devices,
+            &looking,
+            &self.heard_idle,
+            Instant::now(),
+        );
+        self.push_notices(now, cx);
+        self.time_notices(cx);
+    }
+
+    /// Checks the waiting notices about every 15 s while there are any.
+    fn time_notices(&mut self, cx: &mut Context<Self>) {
+        if self.notice_timer.is_some() || !self.notifier.has_pending() {
             return;
         }
-        let kind = match kind {
-            Notice::Finished => "done",
-            Notice::Input => "input",
-            Notice::Error => "error",
+        self.notice_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(notify::CHECK_EVERY).await;
+                let more = this.update(cx, |this, cx| {
+                    this.tick_notices(Instant::now(), cx);
+                    let more = this.notifier.has_pending();
+                    if !more {
+                        this.notice_timer = None;
+                    }
+                    more
+                });
+                if !matches!(more, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Sends the waiting notices that may go at `now`.
+    fn tick_notices(&mut self, now: Instant, cx: &mut Context<Self>) {
+        let mut notifier = std::mem::take(&mut self.notifier);
+        let due = {
+            let access = self.access.lock().unwrap();
+            let app: &App = cx;
+            let still = |session: &str, kind| self.still_notice(session, kind, app);
+            due_notices(&mut notifier, &access.devices, still, &self.heard_idle, now)
         };
-        let payload = push::notice(kind, id, &title, &body);
+        self.notifier = notifier;
+        self.push_notices(due, cx);
+    }
+
+    /// Whether a session is still in the state its notice is about: still
+    /// waiting for an answer, or not at work again. One a phone has on
+    /// screen is seen; a desktop app following it is not a sign of that.
+    fn still_notice(&self, id: &str, kind: notify::Kind, cx: &App) -> bool {
+        let seen = phone_seen(&self.watching, &self.hidden, &self.desktops, id);
+        if seen || self.store.session(id).is_none() {
+            return false;
+        }
+        // A retired session is neither working nor asking anything.
+        let Some(live) = self.live.get(id) else {
+            return kind != notify::Kind::Input;
+        };
+        live.thread.read(cx).still(kind)
+    }
+
+    /// Pushes notices in the background. Subscriptions the push service says
+    /// are gone are forgotten.
+    fn push_notices(&self, notices: Vec<notify::Delivery>, cx: &mut Context<Self>) {
+        if notices.is_empty() {
+            return;
+        }
         let (vapid, access) = (self.vapid.clone(), self.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -3912,10 +4167,10 @@ impl Daemon {
                 .spawn(async move {
                     let now = unix_now();
                     let mut gone = Vec::new();
-                    for (device, sub) in targets {
-                        match push::send(&vapid, &sub, payload.as_bytes(), now) {
+                    for n in notices {
+                        match push::send(&vapid, &n.sub, n.payload.as_bytes(), now) {
                             Ok(()) => {}
-                            Err(push::Fail::Gone) => gone.push((device, sub)),
+                            Err(push::Fail::Gone) => gone.push((n.device, n.sub)),
                             Err(e) => eprintln!("arakun server: could not notify a device: {e}"),
                         }
                     }
@@ -4327,6 +4582,10 @@ impl Daemon {
         // the file back after it is deleted.
         self.writer.forget(self.store.transcript_path(id));
         self.store.remove_session(id);
+        // A phone's mute of it would outlive it otherwise.
+        if self.access.lock().unwrap().forget_session(id) {
+            self.save_devices();
+        }
     }
 }
 
@@ -4919,15 +5178,17 @@ const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// Removes the worktree at `place` and what is in it, then `branch` if given,
 /// as the app deletes an environment. Ok once the folder is gone; it carries
 /// a warning of what stayed, when something did.
-fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
-    // Git runs in the repository's own files, which hold every worktree's
-    // and are wherever they are kept (`--separate-git-dir`, bare).
-    let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
+///
+/// Git runs in `root`, the repository's shared git files, which hold every
+/// worktree's and are wherever they are kept (`--separate-git-dir`, bare).
+fn remove_worktree_in(
+    root: &Path,
+    place: &Path,
+    branch: Option<&str>,
+) -> Result<Option<String>, String> {
     // Its hooks and a big folder get the time adding one gets.
     let removed = run_bounded(
-        git(&root)
-            .args(["worktree", "remove", "--force"])
-            .arg(place),
+        git(root).args(["worktree", "remove", "--force"]).arg(place),
         WORKTREE_LIMIT,
         None,
     );
@@ -4943,16 +5204,52 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
     // worktree whose folder is away for now, on a mount that is not there.
     // A hook that never ends would keep the answer from the device.
     if let Some(b) = branch {
-        let deleted = run_bounded(
-            git(&root).args(["branch", "-D", "--", b]),
-            WORKTREE_LIMIT,
-            None,
-        );
-        if let Err(e) = deleted {
-            stayed.push(format!("The branch stayed: {e}"));
-        }
+        stayed.extend(delete_branch(root, b));
     }
     Ok((!stayed.is_empty()).then(|| stayed.join(" ")))
+}
+
+/// Deletes `branch` in the repository at `root`; what went wrong, if it stayed.
+fn delete_branch(root: &Path, branch: &str) -> Option<String> {
+    run_bounded(
+        git(root).args(["branch", "-D", "--", branch]),
+        WORKTREE_LIMIT,
+        None,
+    )
+    .err()
+    .map(|e| format!("The branch stayed: {e}"))
+}
+
+/// Does the deletion `d` describes, or what is left of it after a stop:
+/// the folder and its branch, or the branch alone once the folder went.
+/// Safe to run again: what is gone already is not asked for twice.
+fn finish_deletion(d: &Deletion) -> Result<Option<String>, String> {
+    if d.place.exists() {
+        // Checked again: the folder may be something else since.
+        if removable(&d.place)? != d.repo {
+            return Err("that folder is in another repository now".into());
+        }
+        // A branch switched to since may hold commits nobody chose to lose.
+        let branch = d
+            .branch
+            .as_deref()
+            .filter(|b| store::branch(&d.place).as_deref() == Some(*b));
+        return remove_worktree_in(&d.repo, &d.place, branch);
+    }
+    // The folder went before the stop: only the branch may be left.
+    let Some(b) = d.branch.as_deref() else {
+        return Ok(None);
+    };
+    let there = run_bounded(
+        // A full ref name never starts with a dash: no option is read from it.
+        git(&d.repo)
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{b}")),
+        WORKTREE_LIMIT,
+        None,
+    )
+    .is_ok();
+    Ok(there.then(|| delete_branch(&d.repo, b)).flatten())
 }
 
 /// Whether `checked_out`, the branch a deletion would take, is the one the
@@ -4969,11 +5266,12 @@ fn branch_agreed(checked_out: Option<&str>, confirmed: Option<&str>) -> Result<(
 }
 
 /// Whether the folder at `place` is a worktree a device may delete: never a
-/// repository's main folder, which holds the history of every worktree.
-fn removable(place: &Path) -> Result<(), String> {
+/// repository's main folder, which holds the history of every worktree. Ok
+/// with the repository's shared git files.
+fn removable(place: &Path) -> Result<PathBuf, String> {
     match git_dirs(place) {
         // Only a worktree has git files of its own beside the shared ones.
-        Some((own, common)) if own != common => Ok(()),
+        Some((own, common)) if own != common => Ok(common),
         Some(_) => Err("a repository's main folder is not deleted".into()),
         None => Err("that folder is not a git worktree".into()),
     }
@@ -5655,6 +5953,7 @@ mod tests {
                 auth: "a".into(),
             }),
             notices: Default::default(),
+            muted: Vec::new(),
         }
     }
 
@@ -5981,7 +6280,7 @@ mod tests {
         let made = worktree_in(&tmp.join("workspaces"), &app, "fix").unwrap();
         // The main folder holds the history: it stays.
         assert!(removable(&app).is_err());
-        assert_eq!(removable(&made), Ok(()));
+        assert!(removable(&made).is_ok());
         assert_eq!(remove_worktree(&made, Some("fix")), Ok(None));
         assert!(!made.exists());
         assert!(app.exists());
@@ -6077,7 +6376,7 @@ mod tests {
         // Only worktrees go, never the folder every one of them shares.
         assert!(removable(&main).unwrap_err().contains("main folder"));
         assert!(removable(&dir).unwrap_err().contains("not a git worktree"));
-        assert_eq!(removable(&keep), Ok(()));
+        assert!(removable(&keep).is_ok());
 
         // What is in a worktree goes with it, uncommitted or not.
         std::fs::write(keep.join("notes.txt"), "draft").unwrap();
@@ -6088,6 +6387,62 @@ mod tests {
         assert!(has("refs/heads/keep") && !has("refs/heads/drop"));
         // Gone already: nothing to remove.
         assert!(remove_worktree(&keep, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deletes the worktree at `place` as a device asks for it.
+    fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>, String> {
+        let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
+        remove_worktree_in(&root, place, branch)
+    }
+
+    #[test]
+    fn a_deletion_cut_short_is_finished_where_it_stopped() {
+        let dir = scratch("rm-finish");
+        let main = dir.join("app");
+        std::fs::create_dir_all(&main).unwrap();
+        repo_at(&main, &[]);
+        for b in ["before", "after", "moved"] {
+            git_in(
+                &main,
+                &["worktree", "add", "-q", "-b", b, &format!("../{b}")],
+            );
+        }
+        let has = |b: &str| run_git(git(&main).args(["rev-parse", "--verify", "-q", b])).is_ok();
+        let noted = |b: &str| {
+            let place = dir.join(b);
+            Deletion {
+                repo: removable(&place).unwrap(),
+                place,
+                branch: Some(b.into()),
+            }
+        };
+        let (before, after, moved) = (noted("before"), noted("after"), noted("moved"));
+
+        // Stopped before git ran: all of it is done now.
+        assert_eq!(finish_deletion(&before), Ok(None));
+        assert!(!before.place.exists() && !has("refs/heads/before"));
+        // Run again, there is nothing left to do.
+        assert_eq!(finish_deletion(&before), Ok(None));
+
+        // Stopped after the folder went: the branch goes too.
+        git_in(&main, &["worktree", "remove", "--force", "../after"]);
+        assert!(has("refs/heads/after"));
+        assert_eq!(finish_deletion(&after), Ok(None));
+        assert!(!has("refs/heads/after"));
+
+        // A branch switched to since stays, though the folder goes.
+        git_in(&moved.place, &["switch", "-q", "-c", "other"]);
+        assert_eq!(finish_deletion(&moved), Ok(None));
+        assert!(!moved.place.exists());
+        assert!(has("refs/heads/moved") && has("refs/heads/other"));
+
+        // A folder that is in another repository now is left alone.
+        let elsewhere = dir.join("before");
+        std::fs::create_dir(&elsewhere).unwrap();
+        repo_at(&elsewhere, &[]);
+        assert!(finish_deletion(&before).is_err());
+        assert!(elsewhere.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -6624,6 +6979,223 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         assert_eq!(device_setting("autonomyLevel"), None);
         assert_eq!(device_setting("fastMode"), None);
         assert_eq!(device_setting("nonsense"), None);
+    }
+
+    #[test]
+    fn a_finished_notice_carries_the_agents_words_and_the_place() {
+        let entries = vec![
+            Entry::User {
+                text: "go".into(),
+                at: 1,
+                elapsed_ms: Some(65_000),
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            },
+            Entry::Agent {
+                text: "Done: 3 files".into(),
+            },
+        ];
+        let body = notify::finished_body(&entries);
+        let n: serde_json::Value = serde_json::from_str(&notice_payload(
+            notify::Kind::Done,
+            "s1",
+            "Fix",
+            "app",
+            &body,
+            &entries,
+        ))
+        .unwrap();
+        assert_eq!(n["body"], "Done: 3 files");
+        assert_eq!(n["env"], "app");
+        assert_eq!(n["secs"], 65);
+        // Only a finished turn says how long it took.
+        let n: serde_json::Value = serde_json::from_str(&notice_payload(
+            notify::Kind::Error,
+            "s1",
+            "Fix",
+            "app",
+            "x",
+            &entries,
+        ))
+        .unwrap();
+        assert!(n.get("secs").is_none());
+    }
+
+    #[test]
+    fn without_idle_time_a_finished_turn_waits_the_away_time() {
+        // The server has no display: the host can't tell idle time.
+        assert_eq!((crate::host::get().idle_for)(), None);
+        let devices = vec![relay_device("p1", true)];
+        let mut notifier = notify::Notifier::default();
+        let made = Instant::now();
+        let finished = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Done,
+            turn_secs: Some(300),
+            payload: "notice".into(),
+        };
+        let nobody = HashSet::new();
+        let heard = HeardIdle::default();
+        let now = offer_notice(&mut notifier, finished, &devices, &nobody, &heard, made);
+        assert!(now.is_empty(), "no push at once");
+        let still = |_: &str, _: notify::Kind| true;
+        let early = due_notices(
+            &mut notifier,
+            &devices,
+            still,
+            &heard,
+            made + Duration::from_secs(60),
+        );
+        assert!(early.is_empty());
+        let sent = due_notices(
+            &mut notifier,
+            &devices,
+            still,
+            &heard,
+            made + Duration::from_secs(120),
+        );
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            (sent[0].device.as_str(), sent[0].payload.as_str()),
+            ("p1", "notice")
+        );
+        assert!(!notifier.has_pending());
+    }
+
+    fn finished(session: &str) -> notify::Candidate {
+        notify::Candidate {
+            session: session.into(),
+            kind: notify::Kind::Done,
+            turn_secs: Some(300),
+            payload: "notice".into(),
+        }
+    }
+
+    #[test]
+    fn idle_from_app_used() {
+        let devices = vec![relay_device("p1", true)];
+        let mut notifier = notify::Notifier::default();
+        let made = Instant::now();
+        let mut heard = HeardIdle::default();
+        heard.heard(7, 10, made);
+        let nobody = HashSet::new();
+        let now = offer_notice(
+            &mut notifier,
+            finished("s1"),
+            &devices,
+            &nobody,
+            &heard,
+            made,
+        );
+        // The person is at the desk: a finished turn needs no notice.
+        assert!(now.is_empty());
+        assert!(!notifier.has_pending());
+    }
+
+    #[test]
+    fn stale_idle_falls_back() {
+        let made = Instant::now();
+        let mut heard = HeardIdle::default();
+        heard.heard(7, 10, made);
+        assert_eq!(
+            heard.idle(made + Duration::from_secs(59)),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(heard.idle(made + Duration::from_secs(61)), None);
+        // Gone with its client too.
+        heard.forget(7);
+        assert_eq!(heard.idle(made), None);
+    }
+
+    #[test]
+    fn lowest_idle_wins() {
+        let made = Instant::now();
+        let mut heard = HeardIdle::default();
+        heard.heard(1, 10, made);
+        heard.heard(2, 500, made);
+        assert_eq!(heard.idle(made), Some(Duration::from_secs(10)));
+        // The newest word from a client replaces its last.
+        heard.heard(1, 900, made);
+        assert_eq!(heard.idle(made), Some(Duration::from_secs(500)));
+    }
+
+    #[test]
+    fn a_desktop_following_a_session_does_not_hold_back_its_question() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        let (desktop, phone_client) = (1, 2);
+        let mut watching: HashMap<ClientId, Vec<String>> = HashMap::new();
+        let hidden = HashSet::new();
+        let mut desktops = Desktops::default();
+        let mut heard = HeardIdle::default();
+        let made = Instant::now();
+        // The desktop app follows the session, as `shell::servers` opens it,
+        // and says the person is at the desk.
+        let open = read(r#"{"type":"open","session":"s1","keep":true}"#);
+        desktops.heard(desktop, &open);
+        watching.insert(desktop, vec!["s1".into()]);
+        let idle = read(r#"{"type":"idle","secs":5}"#);
+        desktops.heard(desktop, &idle);
+        let ClientMsg::Idle { secs } = idle else {
+            unreachable!()
+        };
+        heard.heard(desktop, secs, made);
+
+        let devices = vec![relay_device("p1", true)];
+        let mut notifier = notify::Notifier::default();
+        let asking = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Input,
+            turn_secs: None,
+            payload: "permission".into(),
+        };
+        let now = offer_notice(
+            &mut notifier,
+            asking,
+            &devices,
+            &HashSet::new(),
+            &heard,
+            made,
+        );
+        assert!(now.is_empty(), "at the desk, a question waits");
+        assert!(notifier.has_pending());
+
+        // The person walks away; the desktop still follows the session.
+        let later = made + Duration::from_secs(150);
+        heard.heard(desktop, 150, later);
+        let still = |s: &str, _: notify::Kind| !phone_seen(&watching, &hidden, &desktops, s);
+        let sent = due_notices(&mut notifier, &devices, still, &heard, later);
+        assert_eq!(
+            sent.len(),
+            1,
+            "the question goes out once the person is away"
+        );
+        assert_eq!(sent[0].payload, "permission");
+
+        // A phone that has the session on screen did see it.
+        let mut notifier = notify::Notifier::default();
+        let asking = notify::Candidate {
+            session: "s1".into(),
+            kind: notify::Kind::Input,
+            turn_secs: None,
+            payload: "permission".into(),
+        };
+        heard.heard(desktop, 5, later);
+        offer_notice(
+            &mut notifier,
+            asking,
+            &devices,
+            &HashSet::new(),
+            &heard,
+            later,
+        );
+        desktops.heard(phone_client, &read(r#"{"type":"open","session":"s1"}"#));
+        watching.insert(phone_client, vec!["s1".into()]);
+        let after = later + Duration::from_secs(150);
+        heard.heard(desktop, 150, after);
+        let still = |s: &str, _: notify::Kind| !phone_seen(&watching, &hidden, &desktops, s);
+        assert!(due_notices(&mut notifier, &devices, still, &heard, after).is_empty());
+        assert!(!notifier.has_pending());
     }
 
     #[test]

@@ -2415,11 +2415,7 @@ fn package_op(source: &str) -> String {
 /// Whether a field holds a key. Registry entries do not always mark one as
 /// secret, so its name counts too.
 fn looks_secret(input: &Input) -> bool {
-    let name = input.name.to_lowercase();
-    input.secret
-        || ["key", "token", "secret", "password", "auth", "credential"]
-            .iter()
-            .any(|w| name.contains(w))
+    input.secret || crate::secrets::may_name_secret(&input.name)
 }
 
 /// Lines in the virtual list: the featured strip, the lines of cards, "Load more".

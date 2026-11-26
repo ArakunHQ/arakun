@@ -43,6 +43,13 @@ declare namespace Cloudflare {
     /// A Discord webhook URL, from `wrangler secret put BETA_REQUESTS_WEBHOOK`:
     /// each new sign-up for a phone app beta is posted there. Unset = no post.
     BETA_REQUESTS_WEBHOOK?: string;
+    /// Counts the feedback each client IP sends (src/feedback.ts).
+    FEEDBACK_LIMIT: RateLimit;
+    /// A Linear API key that may create issues and customer requests, from
+    /// `wrangler secret put LINEAR_API_KEY`. Unset = no feedback to Linear.
+    LINEAR_API_KEY?: string;
+    /// The Linear team feedback is filed in (public, in wrangler.toml).
+    LINEAR_TEAM_ID?: string;
     /// Counts the messages pushed to each native app's token (src/push.ts).
     PUSH_LIMIT: RateLimit;
     /// Apple's push key for the iOS app: the .p8 file's text, from

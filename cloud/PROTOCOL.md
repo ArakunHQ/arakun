@@ -215,9 +215,16 @@ An envelope carries one epoch's team key to one device:
   `arakun-teams/v1/envelope|<team_id>|<epoch>|<device_id>|<eph_pub>|<nonce>|<ct>`.
   When it opens an envelope, the recipient checks that the sender is a device of a
   current owner or admin of the team, and refuses it otherwise. The server keeps an
-  envelope after its sender leaves, so a device can find one it refuses; it then
-  asks an admin, whose device seals that epoch again for it (an upload replaces an
-  envelope whose sender is no longer an admin's device).
+  envelope after its sender leaves or is demoted, so a device can find one it
+  refuses. Admins see where those are in
+  `GET /teams/<team_id>/envelopes/stale` → `[{ device_id, epoch }]`: each
+  envelope of a member's device whose sender is no longer a device of an owner or
+  admin, newest epoch first, at most 500. An admin's device that holds that epoch
+  seals it again for that device (an upload replaces an envelope whose sender is no
+  longer an admin's device), as long as the epoch is in the member's grant (from
+  their `first_key_epoch`) and the member's devices check out. The list is the
+  server's word: it only says which member devices to seal for, which the admin's
+  device checks as it would for any other.
 - `PUT /teams/<team_id>/envelopes` `{ "envelopes": [...] }` (admin) stores them →
   `200 { stored, epoch, rotation_pending }`. The optional `keyed_epoch` is the
   one the client saw when it made the envelopes; an upload carrying the current
@@ -272,6 +279,24 @@ Servers from before this rule accepted the newest epoch with envelopes during a
 rotation, so a device that had not read the team yet could still send with the
 old key. Arakun clients read the team at least every 20 seconds and stop sending
 when they see `rotation_pending`, so against such a server that window remains.
+
+## Roles
+
+An owner changes a member's role, their own included:
+`PUT /teams/<team_id>/members/<github_id>` `{ "role": "owner" | "admin" | "member" }`
+→ `200 { github_id, role }`. Setting the role a member has answers `200` too. `403` if
+the caller is not an owner, or stopped being one, lost the session or the flag
+while the change ran; nothing changes then. `404` if the person is not a member,
+`400` for another role. A team always keeps an owner: a change that would leave it
+without one answers `409`, checked as it is written, so two owners who step down at
+once cannot both pass. To hand a team over, an owner makes the other person an
+owner, then makes themselves an admin; a failure in between leaves two owners.
+
+A role change does not change the epoch: whoever is demoted stays a member and
+keeps every key. The envelopes their devices sealed while they were an admin are
+then refused by recipients that have not opened them yet, and an admin's device
+seals those epochs again (see Envelopes). A promoted admin's devices make keys,
+rotations and approvals from then on.
 
 ## Channels and messages
 
@@ -468,7 +493,9 @@ Such a server can:
   of every member the server lists, so honest admins seal the next key to its
   device, and that device, as an "admin", may make the key of a new epoch itself
   (the server can bump the epoch at any time). Recipients accept envelopes from
-  any device of an owner or admin the server lists.
+  any device of an owner or admin the server lists. A role change through
+  `PUT .../members/<github_id>` is such a row too: no owner's device signs it, so
+  clients take the server's word that an owner made it.
 - Drop, delay or hold back messages, envelopes, invites and members, and show
   different clients different lists.
 - Stall a rotation: a client does not seal a key to a user whose pinned first
@@ -497,7 +524,10 @@ Not in v1 either, and tracked as follow-ups:
 
 - a membership log signed by admin devices, which clients check before they
   trust a member, a role or an envelope's sender
-  ([#373](https://github.com/ArakunHQ/arakun/issues/373));
+  ([#373](https://github.com/ArakunHQ/arakun/issues/373)). With it a role change
+  would carry an entry signed by an owner's device in the same `PUT`, and a
+  recipient could accept an envelope whose sender was an admin when it was made,
+  instead of refusing it and waiting for an admin to seal it again;
 - removing a device: a revocation signed by another of the user's devices, which
   bumps the epoch in each of their teams; a cap that counts only active devices;
   and a way to leave a device or user out of a rotation on purpose

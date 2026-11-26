@@ -115,6 +115,9 @@ a.btn { text-decoration: none; }
 button.prow:active { background: var(--color-fill-hover); }
 .prow:has(.switch) { cursor: pointer; }
 /* A row with two buttons: the pick takes the room, the action sits at the end. */
+/* A row of choices under its title: the chips take the row's full width. */
+.prow.choice { flex-wrap: wrap; row-gap: 8px; }
+.prow.choice .chips { flex-basis: 100%; padding: 0; }
 .prow.mrow { padding: 0 14px 0 0; }
 .prow.mrow .mpick { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; text-align: left; padding: 12px 0 12px 14px; }
 .prow.mrow .mpick:active { background: var(--color-fill-hover); }

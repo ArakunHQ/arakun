@@ -553,6 +553,7 @@ impl Shell {
                     .min_h_0()
                     .overflow_y_scroll()
                     .when(!narrow, |d| d.children(self.render_switcher_offer(cx)))
+                    .when(!narrow, |d| d.children(self.render_beta_card(cx)))
                     .children(self.render_pinned_block(cx))
                     .children(self.render_rail_sections(cx)),
             )

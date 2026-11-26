@@ -894,7 +894,7 @@ impl Session {
         !self.hidden.iter().any(|h| path.starts_with(&h.path))
             && !path
                 .file_name()
-                .is_some_and(|n| hs::secret_file(&n.to_string_lossy()))
+                .is_some_and(|n| crate::secrets::secret_file(&n.to_string_lossy()))
     }
 
     /// The agent may write `path` through arakun's `fs/write_text_file`.

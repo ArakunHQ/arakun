@@ -86,23 +86,26 @@ impl Shell {
             .min_h_0()
             .overflow_y_scroll()
             .pb(crate::ui::sp(4.));
-        if !items.is_empty() {
+        let waiting = !items.is_empty();
+        let any_notice = !history.notices.is_empty();
+        if waiting {
             list = list.child(section("Waiting on you", items.len()));
             for (i, item) in items.into_iter().enumerate() {
                 list = list.child(self.session_row(i, item, cx));
             }
+        }
+        if waiting && any_notice {
             list = list.child(ui::menu_divider().my(px(6.)));
         }
-        list = list.child(section("Notices", history.notices.len()));
-        if history.notices.is_empty() {
+        if any_notice {
+            list = list.child(section("Notices", history.notices.len()));
+        } else if !waiting {
+            // A popover this small needs one quiet line, not a page's empty state.
             list = list.child(
-                ui::empty_state(
-                    "inbox",
-                    "No notices yet",
-                    "What the island tells you stays here, for when you were away.",
-                    None,
-                )
-                .py(crate::ui::sp(24.)),
+                ui::text(Type::Body, theme::text_muted(), "No notices yet.")
+                    .px(crate::ui::sp(10.))
+                    .pt(crate::ui::sp(12.))
+                    .pb(crate::ui::sp(8.)),
             );
         }
         let now = model::unix_now();
@@ -122,7 +125,7 @@ impl Shell {
             .min_h_0()
             .p_0()
             .gap_0()
-            .child(self.inbox_header(unseen, !history.notices.is_empty(), cx))
+            .child(self.inbox_header(unseen, any_notice, cx))
             .child(list.px(crate::ui::sp(4.)))
     }
 

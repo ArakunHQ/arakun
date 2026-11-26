@@ -211,28 +211,7 @@ pub const TOOLCHAINS: &[&str] = &[
     ".config/git",
 ];
 
-/// A file that looks like it holds a secret, wherever it is.
-pub fn secret_file(name: &str) -> bool {
-    let n = name.to_lowercase();
-    let (stem, ext) = n
-        .rsplit_once('.')
-        .filter(|(a, _)| !a.is_empty())
-        .unwrap_or((n.as_str(), ""));
-    // Words count in data files only, so password_reset.rs is code, not a secret.
-    let data = [
-        "", "json", "txt", "toml", "yaml", "yml", "ini", "conf", "cfg",
-    ]
-    .contains(&ext);
-    n == ".env"
-        || n.starts_with(".env.")
-        || n.ends_with(".env")
-        || [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".gpg", ".asc"].iter().any(|x| n.ends_with(x))
-        || ["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"].iter().any(|k| n.starts_with(k))
-        || [".netrc", ".npmrc", ".pypirc", ".git-credentials", "auth.json", "credentials", "credentials.json", "credentials.toml", ".modal.toml"].contains(&n.as_str())
-        || (data && ["secret", "password", "passwd", "wallet", "keypair", "apikey", "api_key", "api-key"].iter().any(|w| stem.contains(w)))
-        // token.json, gh-token.txt; not tokenizer.json.
-        || (data && stem.split(['-', '_', '.']).any(|w| w == "token" || w == "tokens"))
-}
+use crate::secrets::secret_file;
 
 /// Folders a secrets scan skips: packages and build output, never the user's.
 const SKIP: &[&str] = &[
@@ -273,12 +252,17 @@ pub fn scan_secrets(root: &Path) -> Vec<PathBuf> {
             budget -= 1;
             let name = e.file_name().to_string_lossy().into_owned();
             let Ok(t) = e.file_type() else { continue };
+            let path = e.path();
             if t.is_dir() {
                 if depth < 8 && !SKIP.contains(&name.as_str()) {
-                    stack.push((e.path(), depth + 1));
+                    stack.push((path, depth + 1));
                 }
-            } else if secret_file(&name) {
-                out.push(e.path());
+            } else if path
+                .strip_prefix(root)
+                .is_ok_and(crate::secrets::secret_path)
+            {
+                // By its folder too: everything under `.ssh/` or `.aws/`.
+                out.push(path);
             }
         }
     }
@@ -343,6 +327,7 @@ fn secret_name(name: &str) -> bool {
         || n.starts_with(".env")
         || n.ends_with(".env")
         || n.ends_with(".pem")
+        || crate::secrets::secret_file(name)
 }
 
 /// Environment variables the sandbox never gets: tokens, keys, and the
@@ -423,6 +408,8 @@ pub fn secret_var(name: &str, caps: &[Cap]) -> bool {
         || n.ends_with("_KEYS")
         || PREFIXES.iter().any(|p| n.starts_with(p))
         || EXACT.contains(&n.as_str())
+        // `DB_PASS`, `SMTP_PWD`: the names a value is a secret under.
+        || crate::secrets::names_secret(&n)
 }
 
 /// The environment a sandboxed command starts with.
@@ -970,7 +957,8 @@ pub fn sbpl_regex_escape(s: &str) -> String {
 
 /// Hides files under `root` named like secrets, also those made after the scan
 /// at launch: a new `.env`, a key the agent fetched. The commonest names of
-/// [`secret_file`]; the scan still finds the rest of what is there at launch.
+/// [`crate::secrets::secret_file`]; the scan still finds the rest of what is
+/// there at launch.
 pub fn sbpl_secret_names(root: &Path) -> String {
     let r = sbpl_regex_escape(&root.to_string_lossy());
     // As `secret_file` says them; a stem has no dot, so `password_reset.rs` and
@@ -1684,29 +1672,6 @@ mod tests {
         assert!(check_read(&d.join("ok/private"), &hidden).is_err());
         assert!(check_read(Path::new("/"), &[]).is_err());
         assert!(check_read(&d.join("missing"), &[]).is_err());
-        for n in [
-            ".env",
-            "prod.env",
-            ".env.local",
-            "id_ed25519",
-            "server.pem",
-            "gh-token.txt",
-            "token.json",
-            "my-wallet.json",
-            "auth.json",
-        ] {
-            assert!(secret_file(n), "{n}");
-        }
-        for n in [
-            "main.rs",
-            "token.rs",
-            "tokenizer.json",
-            "password_reset.rs",
-            "keyboard.c",
-            "Cargo.toml",
-        ] {
-            assert!(!secret_file(n), "{n}");
-        }
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -1754,6 +1719,8 @@ mod tests {
             "r2-site.env",
             "wbg-admin-password.txt",
             "cert.pem",
+            "id_ed25519",
+            "service-account.json",
         ] {
             assert!(secret_name(n), "{n}");
         }
@@ -2050,6 +2017,8 @@ mod tests {
             "AWS_SECRET_ACCESS_KEY",
             "XDG_RUNTIME_DIR",
             "MY_SERVICE_KEY",
+            "DB_PASS",
+            "SMTP_PWD",
             "DISPLAY",
             "PATH",
             "HOME",

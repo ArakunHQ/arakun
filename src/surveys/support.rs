@@ -1,6 +1,6 @@
-//! Opens a ticket in Arakun's PostHog Support inbox for each sent survey
-//! response, so the team can triage it and reply when there is an email.
-//! GitHub issues are made from there by a person, never by the app.
+//! Opens a ticket in Arakun's PostHog Support inbox for a support question,
+//! so the team can answer it, by email when there is one. The rest of the
+//! feedback goes to Linear instead (`linear`).
 //!
 //! It uses the public widget endpoint, the one posthog-js's support widget
 //! uses. It only runs after `send::submit` passed the feedback consent check,
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::ids;
 use super::model::Survey;
+use super::report::{self, Answers};
 
 /// The Support widget's public token: it can only open tickets in the
 /// widget's name, so it is safe in the binary, like `telemetry::KEY`. A build
@@ -21,9 +21,6 @@ const TOKEN: &str = match option_env!("ARAKUN_SUPPORT_TOKEN") {
     Some(t) => t,
     None => "gLqqXWN1Xsy-2WH195ZoU14jiFqa1-VmhPPE-dTials",
 };
-
-/// Longest message sent. Agent text is already capped lower.
-const MAX_MESSAGE: usize = 16 * 1024;
 
 /// Opens the ticket on a background thread. Best effort: a failure is
 /// dropped, as the `survey sent` event still carries the response.
@@ -54,224 +51,47 @@ pub fn open(s: &Survey, props: &Map<String, Value>) {
 
 /// The widget request: a new ticket (`ticket_id` null) with the response as
 /// its first message. `session` is a fresh id, since the app never reads the
-/// ticket back.
+/// ticket back. The inbox is private, so the answers go as typed.
 fn payload(s: &Survey, props: &Map<String, Value>, install: &str, session: &str) -> Value {
-    let email = email_answer(s, props);
     json!({
-        "message": message(s, props),
-        "traits": {"name": sender(props), "email": email},
+        "message": report::message(s, props, Answers::AsTyped),
+        "traits": {"name": report::sender(props), "email": report::email_answer(s, props)},
         "ticket_id": null,
         "widget_session_id": session,
         "distinct_id": install,
     })
 }
 
-/// Who the ticket is from, as the inbox shows it.
-fn sender(props: &Map<String, Value>) -> String {
-    match str_prop(props, "source") {
-        Some("agent") => match str_prop(props, "agent") {
-            Some(a) if !a.is_empty() => format!("{a} (agent in Arakun)"),
-            _ => "An agent in Arakun".into(),
-        },
-        _ => "Arakun user".into(),
-    }
-}
-
-/// The answer to the user survey's optional email question. It goes in the
-/// ticket's contact field only, never in the message.
-fn email_answer(s: &Survey, props: &Map<String, Value>) -> Option<String> {
-    if s.id != ids::USER.survey_id {
-        return None;
-    }
-    let key = format!("$survey_response_{}", ids::USER.questions[2].id);
-    str_prop(props, &key)
-        .map(str::trim)
-        .filter(|e| e.contains('@'))
-        .map(str::to_string)
-}
-
-/// The ticket's text. The Support inbox shows it as plain text, so it is
-/// laid out with line breaks and labels, never with Markdown.
-fn message(s: &Survey, props: &Map<String, Value>) -> String {
-    let mut head = Vec::new();
-    if let Some(kind) = str_prop(props, "kind") {
-        head.push(capitalized(kind));
-    }
-    head.push(match str_prop(props, "source") {
-        Some("popover") => format!("survey \"{}\"", s.name),
-        Some(src) => format!("{src} feedback"),
-        None => "feedback".into(),
-    });
-    head.push(format!("Arakun {}", env!("ARAKUN_VERSION")));
-    head.push(std::env::consts::OS.to_string());
-    let mut out = head.join(" · ");
-
-    let email_q = (s.id == ids::USER.survey_id).then(|| ids::USER.questions[2].id);
-    for q in &s.questions {
-        if Some(q.id.as_str()) == email_q {
-            continue;
-        }
-        let Some(answer) = props
-            .get(&format!("$survey_response_{}", q.id))
-            .and_then(answer_text)
-        else {
-            continue;
-        };
-        out.push_str(&format!("\n\n{}\n{answer}", label(&q.text)));
-    }
-    if let Some(e) = str_prop(props, "error_event") {
-        out.push_str(&format!("\n\nError event:\n{e}"));
-    }
-    if out.len() > MAX_MESSAGE {
-        let mut end = MAX_MESSAGE;
-        while !out.is_char_boundary(end) {
-            end -= 1;
-        }
-        out.truncate(end);
-        out.push('…');
-    }
-    out
-}
-
-/// A question as a label line: it keeps its own `?` or `:`, else ends in a
-/// `:`, in place of a `.` or `!`, so the answer below reads as its answer.
-fn label(question: &str) -> String {
-    let q = question.trim();
-    if q.ends_with(['?', ':']) {
-        q.to_string()
-    } else {
-        format!("{}:", q.trim_end_matches(['.', '!']))
-    }
-}
-
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(c) => c.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
-fn answer_text(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Array(a) => {
-            let parts: Vec<&str> = a.iter().filter_map(Value::as_str).collect();
-            (!parts.is_empty()).then(|| parts.join(", "))
-        }
-        _ => None,
-    }
-}
-
-fn str_prop<'a>(props: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    props.get(key).and_then(Value::as_str)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surveys::ids;
     use crate::surveys::model::Answer;
     use crate::surveys::send::response_props;
     use crate::surveys::store;
     use crate::telemetry::Source;
 
-    fn user_props(email: &str) -> (Survey, Map<String, Value>) {
+    #[test]
+    fn ticket_has_the_question_and_email_only_as_contact() {
         let s = store::fallback(&ids::USER);
         let answers = vec![
-            (0, Answer::Choice("Bug".into())),
-            (1, Answer::Text("The tab name resets.".into())),
-            (2, Answer::Text(email.into())),
+            (0, Answer::Choice("Help / support".into())),
+            (1, Answer::Text("How do I sync settings?".into())),
+            (2, Answer::Text("ann@example.com".into())),
         ];
         let p = response_props(&s, &answers, Source::User, &[]);
-        (s, p)
-    }
-
-    #[test]
-    fn user_ticket_has_answers_and_email_only_as_contact() {
-        let (s, p) = user_props("ann@example.com");
         let v = payload(&s, &p, "install", "session");
         let msg = v["message"].as_str().unwrap();
-        assert!(msg.starts_with("Bug · user feedback · Arakun "));
-        assert!(msg.contains("\n\nWhat's on your mind?\nThe tab name resets."));
+        assert!(
+            msg.starts_with("Support · user feedback · Arakun "),
+            "{msg}"
+        );
+        assert!(msg.contains("How do I sync settings?"));
         assert!(!msg.contains("ann@example.com"));
         assert_eq!(v["traits"]["email"], "ann@example.com");
         assert_eq!(v["traits"]["name"], "Arakun user");
         assert_eq!(v["ticket_id"], Value::Null);
         assert_eq!(v["distinct_id"], "install");
         assert_eq!(v["widget_session_id"], "session");
-    }
-
-    #[test]
-    fn text_that_is_not_an_email_is_not_a_contact() {
-        let (s, p) = user_props("later");
-        assert_eq!(payload(&s, &p, "i", "s")["traits"]["email"], Value::Null);
-    }
-
-    #[test]
-    fn agent_ticket_names_the_agent() {
-        let s = store::fallback(&ids::AGENT);
-        let answers = vec![
-            (0, Answer::Choice("UX".into())),
-            (1, Answer::Text("Hard to find the diff.".into())),
-        ];
-        let p = response_props(&s, &answers, Source::Agent, &[("agent", "claude".into())]);
-        let v = payload(&s, &p, "i", "s");
-        assert_eq!(v["traits"]["name"], "claude (agent in Arakun)");
-        assert!(
-            v["message"]
-                .as_str()
-                .unwrap()
-                .contains("Hard to find the diff.")
-        );
-    }
-
-    #[test]
-    fn error_ticket_links_the_error_and_rating() {
-        let s = store::fallback(&ids::ERROR);
-        let answers = vec![
-            (0, Answer::Text("Opening a tab".into())),
-            (1, Answer::Rating(4)),
-        ];
-        let p = response_props(
-            &s,
-            &answers,
-            Source::Error,
-            &[("error_event", "abc".into())],
-        );
-        let msg = payload(&s, &p, "i", "s")["message"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(msg.starts_with("Bug · error feedback"));
-        assert!(msg.contains("\n\nHow bad was it?\n4"));
-        assert!(msg.ends_with("\n\nError event:\nabc"));
-    }
-
-    #[test]
-    fn message_has_no_markdown() {
-        let (s, p) = user_props("");
-        let msg = message(&s, &p);
-        for mark in ["**", "`", "#", "> "] {
-            assert!(!msg.contains(mark), "{mark} in {msg}");
-        }
-    }
-
-    #[test]
-    fn question_without_mark_gets_a_colon() {
-        assert_eq!(label("Steps to reproduce"), "Steps to reproduce:");
-        assert_eq!(label("How bad was it? "), "How bad was it?");
-        assert_eq!(label("Tell us more."), "Tell us more:");
-        assert_eq!(label("Anything else!"), "Anything else:");
-    }
-
-    #[test]
-    fn long_message_is_cut_on_a_char_boundary() {
-        let (s, mut p) = user_props("");
-        let key = format!("$survey_response_{}", ids::USER.questions[1].id);
-        p.insert(key, "é".repeat(MAX_MESSAGE).into());
-        let msg = message(&s, &p);
-        assert!(msg.len() <= MAX_MESSAGE + '…'.len_utf8());
-        assert!(msg.ends_with('…'));
     }
 }

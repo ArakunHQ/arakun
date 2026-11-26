@@ -31,6 +31,7 @@ pub mod poll;
 pub mod redact;
 pub mod rotate;
 pub mod schedule;
+pub mod secrets;
 pub mod server;
 pub mod signals;
 pub mod terminal;

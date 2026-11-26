@@ -150,11 +150,21 @@ object WebPush {
     fun wantedBody(wanted: Wanted): String = buildJsonObject { put("notices", wanted.json()) }.toString()
 
     /** Which notices this phone wants; everything until the person says otherwise, as on the computer. */
-    data class Wanted(val done: Boolean = true, val input: Boolean = true, val error: Boolean = true) {
+    data class Wanted(
+        val done: Boolean = true,
+        val input: Boolean = true,
+        val error: Boolean = true,
+        /** How long the person must have been away from the computer before a notice comes; 0 sends them always. */
+        val awayAfterSecs: Int = 120,
+        /** A turn that finishes sooner than this sends no notice; 0 lets every one through. */
+        val minTurnSecs: Int = 30,
+    ) {
         fun json(): JsonObject = buildJsonObject {
             put("done", done)
             put("input", input)
             put("error", error)
+            put("away_after_secs", awayAfterSecs)
+            put("min_turn_secs", minTurnSecs)
         }
 
         fun wants(kind: String): Boolean = when (kind) {
@@ -169,6 +179,8 @@ object WebPush {
                 done = j["done"].boolOr(true),
                 input = j["input"].boolOr(true),
                 error = j["error"].boolOr(true),
+                awayAfterSecs = j["away_after_secs"].int?.takeIf { it >= 0 } ?: 120,
+                minTurnSecs = j["min_turn_secs"].int?.takeIf { it >= 0 } ?: 30,
             )
 
             private fun JsonElement.boolOr(default: Boolean): Boolean =
@@ -176,13 +188,71 @@ object WebPush {
         }
     }
 
+    /** One entry of a list of times to pick from. */
+    data class Choice(val secs: Int, val label: String)
+
+    /** "Only when I'm away for", as the phone page offers it. */
+    val AWAY_CHOICES = listOf(
+        Choice(0, "Always"), Choice(60, "1 min"), Choice(120, "2 min"), Choice(300, "5 min"), Choice(900, "15 min"),
+    )
+
+    /** "Turns shorter than this stay quiet", as the phone page offers it. */
+    val SHORTEST_CHOICES = listOf(
+        Choice(0, "Off"), Choice(15, "15 s"), Choice(30, "30 s"), Choice(60, "1 min"), Choice(300, "5 min"),
+    )
+
+    /**
+     * `choices`, with `secs` added when it is not one of them (set from another
+     * device), so a picker always shows what the computer keeps.
+     */
+    fun choicesKeeping(choices: List<Choice>, secs: Int): List<Choice> =
+        if (choices.any { it.secs == secs }) choices else choices + Choice(secs, "$secs s")
+
+    /** `POST /mute`: one session's notices off, or on again. */
+    fun muteBody(session: String, muted: Boolean): String = buildJsonObject {
+        put("session", session)
+        put("muted", muted)
+    }.toString()
+
+    /** The muted sessions in the computer's answer to `POST /mute`; null when it sent none. */
+    fun muteReply(j: JsonElement): List<String>? =
+        if (j["muted"] is kotlinx.serialization.json.JsonArray) j["muted"].array.mapNotNull { it.string } else null
+
+    /** The muted sessions in `GET /me`; none from a computer that knows no muting. */
+    fun mutedOf(me: JsonElement): List<String> = muteReply(me) ?: emptyList()
+
+    /** Whether the computer knows muting: one from before sends no `muted` in `GET /me`. */
+    fun knowsMuting(me: JsonElement): Boolean = muteReply(me) != null
+
+    /**
+     * The environment, and how long the turn took: `app`, `app · 4m 12s` from a minute
+     * up, `app · 42s` under it. Empty without an environment.
+     */
+    fun subtitle(env: String, secs: Long?): String {
+        if (env.isEmpty()) return ""
+        if (secs == null || secs < 0) return env
+        return if (secs >= 60) "$env \u00b7 ${secs / 60}m ${secs % 60}s" else "$env \u00b7 ${secs}s"
+    }
+
     /** What the computer says in a notice: `kind` is `done`, `input` or `error`. */
-    data class Notice(val kind: String, val session: String, val title: String, val body: String) {
+    data class Notice(
+        val kind: String,
+        val session: String,
+        val title: String,
+        val body: String,
+        /** The environment the session runs in; empty from an older computer. */
+        val env: String = "",
+        /** How long the turn took, sent with `done` only. */
+        val secs: Long? = null,
+    ) {
+        val subtitle: String get() = subtitle(env, secs)
+
         companion object {
             fun of(plain: ByteArray): Notice? {
                 val j = parseJson(plain)?.takeIf { it.isObject } ?: return null
                 val session = j["session"].string?.takeIf { it.isNotEmpty() } ?: return null
-                return Notice(j["kind"].str, session, j["title"].str, j["body"].str)
+                val secs = j["secs"].int?.takeIf { it >= 0 }?.toLong()
+                return Notice(j["kind"].str, session, j["title"].str, j["body"].str, j["env"].str, secs)
             }
         }
     }

@@ -13,12 +13,13 @@ use gpui::{App, AppContext as _, Context, SharedString, Task, Window};
 use serde_json::json;
 
 use super::Shell;
-use super::sessions::{Notice, summary};
+use super::sessions::summary;
 use crate::agent::AgentKind;
 use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::cloud;
 use crate::island::AlertKind;
-use crate::model::TabKind;
+use crate::model::{Environment, TabKind};
+use crate::phone::notify::{self, Kind, Notifier, Presence};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
     self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, push, tailscale, wire,
@@ -53,6 +54,10 @@ pub(super) struct PhoneLink {
     relay_problem: Option<String>,
     /// Signs the push notifications this computer sends.
     vapid: Arc<push::Vapid>,
+    /// Phone notices waiting for the person to be away.
+    notifier: Notifier,
+    /// Checks the waiting notices while there are any.
+    notice_timer: Option<Task<()>>,
     /// Where phones find this computer through Tailscale, as last worked out.
     remote: Address,
     _remote: Option<Task<()>>,
@@ -178,6 +183,43 @@ impl Shell {
         }
     }
 
+    /// What phones call each session of `env`. Taken before the sessions go,
+    /// since the id of a server's session depends on its environment.
+    pub(super) fn phone_ids_of(env: &Environment) -> Vec<String> {
+        env.sessions
+            .iter()
+            .map(|s| match env.remote.as_ref() {
+                Some(r) => super::servers::phone_session_id(&r.server, &s.id),
+                None => s.id.to_string(),
+            })
+            .collect()
+    }
+
+    /// A session took a new id: phones that muted it keep it muted.
+    pub(super) fn rename_phone_session(&mut self, old: &str, new: &str) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        let changed = link.access.lock().unwrap().rename_muted(old, new);
+        if changed {
+            self.save_devices();
+        }
+    }
+
+    /// Sessions are deleted: no phone keeps them muted.
+    pub(super) fn forget_phone_sessions(&mut self, pids: &[String]) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        let changed = {
+            let mut access = link.access.lock().unwrap();
+            pids.iter().fold(false, |c, p| access.forget_session(p) | c)
+        };
+        if changed {
+            self.save_devices();
+        }
+    }
+
     /// The environment and the session id there of what phones call `pid`.
     fn phone_session(&self, pid: &str) -> Option<(PathBuf, SharedString)> {
         let (id, server) = super::servers::split_phone_id(pid);
@@ -273,8 +315,7 @@ impl Shell {
             && link.account != account
         {
             self.save_devices();
-            self.stop_phone(cx);
-            self.start_phone(&phone::Settings::load(), window, cx);
+            self.restart_phone(&phone::Settings::load(), window, cx);
         }
         let session = account.map(|(_, s)| s);
         if self.signed_in.asked != session || self.signed_in.beta_asked != session {
@@ -396,12 +437,15 @@ impl Shell {
                     Err(e) => this.signed_in.beta_error = Some(e.to_string()),
                 }
                 this.sync_phone_view(cx);
+                // The rail's beta card reads the same answer.
+                this.fill_beta_card_email(cx);
+                cx.notify();
             });
         }));
     }
 
     /// Signs the account up for one beta; the operator admits by hand.
-    fn join_beta(
+    pub(super) fn join_beta(
         &mut self,
         platform: cloud::BetaPlatform,
         email: String,
@@ -417,6 +461,7 @@ impl Shell {
         self.signed_in.beta_joining = Some(platform);
         self.signed_in.beta_join_error = None;
         self.sync_phone_view(cx);
+        cx.notify();
         let session = account.session.clone();
         cx.spawn_in(window, async move |this, cx| {
             let (base, token) = (account.base, account.session);
@@ -452,6 +497,7 @@ impl Shell {
                     Err(e) => this.signed_in.beta_join_error = Some((platform, e.to_string())),
                 }
                 this.sync_phone_view(cx);
+                cx.notify();
             });
         })
         .detach();
@@ -459,7 +505,7 @@ impl Shell {
 
     /// What the Phone tab says of the phone app betas, and the account's
     /// email to offer.
-    fn beta_state(&self, cx: &App) -> (BetaState, Option<String>) {
+    pub(super) fn beta_state(&self, cx: &App) -> (BetaState, Option<String>) {
         let teams = self.teams.read(cx);
         if teams.account().is_none() {
             // A session the service has not answered about yet is not a sign-out.
@@ -806,8 +852,7 @@ impl Shell {
                 settings.save_soon();
                 self.list_signed_in(window, cx);
                 if self.phone.is_some() {
-                    self.stop_phone(cx);
-                    self.start_phone(&settings, window, cx);
+                    self.restart_phone(&settings, window, cx);
                 } else {
                     self.sync_phone_view(cx);
                 }
@@ -883,6 +928,26 @@ impl Shell {
                 })
                 .detach();
         }
+    }
+
+    /// Starts the phone link again with `settings`. Notices waiting for the
+    /// person to leave carry over to the new link.
+    fn restart_phone(
+        &mut self,
+        settings: &phone::Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let waiting = self
+            .phone
+            .as_mut()
+            .map(|link| std::mem::take(&mut link.notifier));
+        self.stop_phone(cx);
+        self.start_phone(settings, window, cx);
+        if let (Some(waiting), Some(link)) = (waiting, &mut self.phone) {
+            link.notifier = waiting;
+        }
+        self.time_notices(window, cx);
     }
 
     fn start_phone(
@@ -968,6 +1033,8 @@ impl Shell {
             account: signed_in,
             relay_problem,
             vapid,
+            notifier: Notifier::default(),
+            notice_timer: None,
             remote,
             _remote: watch,
             access,
@@ -1527,6 +1594,9 @@ impl Shell {
                     }
                 }
             }
+            // Said by an app to the servers it follows. This app reads its
+            // own idle time, and a phone's would not be about this computer.
+            ClientMsg::Idle { .. } => {}
             // What the app asks of a server, to install there. A phone has
             // the Marketplace tab of this computer for that.
             ClientMsg::Market
@@ -2000,18 +2070,22 @@ impl Shell {
         }
     }
 
-    /// Pushes a notice about a session to every phone that asked for them,
-    /// except the ones looking at that very session right now. Subscriptions
-    /// the push service says are gone are forgotten.
+    /// Offers a notice about a session to every phone that asked for them,
+    /// except the ones looking at that very session right now. It goes now,
+    /// or once the person is away from the computer.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn notify_phones(
         &mut self,
         id: &SharedString,
-        kind: Notice,
+        kind: Kind,
         title: &str,
         body: &str,
+        env: &str,
+        secs: Option<u64>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(link) = &self.phone else {
+        let Some(link) = &mut self.phone else {
             return;
         };
         // Phones with this session on screen see the change already.
@@ -2021,29 +2095,115 @@ impl Shell {
             .filter(|(client, watched)| *watched == id && !link.hidden.contains(client))
             .filter_map(|(client, _)| link.server.device_of(*client))
             .collect();
-        let wanted = |d: &phone::Device| match kind {
-            Notice::Finished => d.notices.done,
-            Notice::Input => d.notices.input,
-            Notice::Error => d.notices.error,
+        let c = notify::Candidate {
+            session: id.to_string(),
+            kind,
+            turn_secs: secs,
+            payload: push::notice(kind.as_str(), id, title, body, env, secs),
         };
-        let targets: Vec<(String, push::Subscription)> = link
-            .access
-            .lock()
-            .unwrap()
-            .devices
-            .iter()
-            .filter(|d| !looking.contains(&d.id) && wanted(d))
-            .filter_map(|d| d.push.clone().map(|s| (d.id.clone(), s)))
-            .collect();
-        if targets.is_empty() {
+        let now = link.notifier.offer(
+            c,
+            &link.access.lock().unwrap().devices,
+            &looking,
+            presence(window),
+            Instant::now(),
+        );
+        self.push_notices(now, cx);
+        self.time_notices(window, cx);
+    }
+
+    /// The person opened the session on the computer: its waiting notices
+    /// are moot.
+    pub(super) fn phone_seen(&mut self, env_path: &Path, id: &str) {
+        let pid = self.phone_id(env_path, id);
+        if let Some(link) = &mut self.phone {
+            link.notifier.seen(&pid);
+        }
+    }
+
+    /// Checks the waiting notices about every 15 s while there are any.
+    fn time_notices(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        if link.notice_timer.is_some() || !link.notifier.has_pending() {
             return;
         }
-        let kind = match kind {
-            Notice::Finished => "done",
-            Notice::Input => "input",
-            Notice::Error => "error",
+        let timer = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(notify::CHECK_EVERY).await;
+                let more = this.update_in(cx, |this, window, cx| this.tick_notices(window, cx));
+                if !matches!(more, Ok(true)) {
+                    break;
+                }
+            }
+        });
+        if let Some(link) = &mut self.phone {
+            link.notice_timer = Some(timer);
+        }
+    }
+
+    /// Sends the waiting notices that may go now. False once none wait.
+    fn tick_notices(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let Some(link) = &mut self.phone else {
+            return false;
         };
-        let payload = push::notice(kind, id, title, body);
+        let mut notifier = std::mem::take(&mut link.notifier);
+        let access = link.access.clone();
+        let due = {
+            let app: &App = cx;
+            let still = |pid: &str, kind| self.phone_still(pid, kind, app);
+            // A phone looking at the session drops it through `still`.
+            let devices = &access.lock().unwrap().devices;
+            notifier.tick(
+                devices,
+                &HashSet::new(),
+                presence(window),
+                still,
+                Instant::now(),
+            )
+        };
+        let more = notifier.has_pending();
+        if let Some(link) = &mut self.phone {
+            link.notifier = notifier;
+            if !more {
+                link.notice_timer = None;
+            }
+        }
+        self.push_notices(due, cx);
+        more
+    }
+
+    /// Whether the session phones call `pid` is still in the state its
+    /// notice is about: still waiting for an answer, or not at work again.
+    /// One a phone has on screen is seen.
+    fn phone_still(&self, pid: &str, kind: Kind, cx: &App) -> bool {
+        let Some(link) = &self.phone else {
+            return false;
+        };
+        let looked_at = link
+            .watching
+            .iter()
+            .any(|(client, watched)| watched == pid && !link.hidden.contains(client));
+        let Some((env_path, id)) = self.phone_session(pid).filter(|_| !looked_at) else {
+            return false;
+        };
+        // A retired session is neither working nor asking anything.
+        let Some(thread) = self.phone_thread(&env_path, &id) else {
+            return kind != Kind::Input;
+        };
+        thread.read(cx).still(kind)
+    }
+
+    /// Pushes notices in the background. Subscriptions the push service says
+    /// are gone are forgotten.
+    fn push_notices(&self, notices: Vec<notify::Delivery>, cx: &mut Context<Self>) {
+        let Some(link) = &self.phone else {
+            return;
+        };
+        if notices.is_empty() {
+            return;
+        }
         let (vapid, access) = (link.vapid.clone(), link.access.clone());
         cx.spawn(async move |this, cx| {
             let gone = cx
@@ -2051,10 +2211,10 @@ impl Shell {
                 .spawn(async move {
                     let now = crate::model::unix_now();
                     let mut gone = Vec::new();
-                    for (device, sub) in targets {
-                        match push::send(&vapid, &sub, payload.as_bytes(), now) {
+                    for n in notices {
+                        match push::send(&vapid, &n.sub, n.payload.as_bytes(), now) {
                             Ok(()) => {}
-                            Err(push::Fail::Gone) => gone.push((device, sub)),
+                            Err(push::Fail::Gone) => gone.push((n.device, n.sub)),
                             Err(e) => eprintln!("arakun: could not notify a phone: {e}"),
                         }
                     }
@@ -2072,6 +2232,15 @@ impl Shell {
             }
         })
         .detach();
+    }
+}
+
+/// Whether the person is at the computer: how long since they last used it,
+/// when the desktop can tell, and whether this window has focus.
+fn presence(window: &Window) -> Presence {
+    Presence {
+        idle: (arakun_core::host::get().idle_for)(),
+        focused: window.is_window_active(),
     }
 }
 

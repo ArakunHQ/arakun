@@ -23,6 +23,7 @@ mod active;
 pub(crate) mod agent_cli;
 mod arrange;
 mod automations;
+mod beta_card;
 mod branches;
 mod browsers;
 mod checks;
@@ -535,6 +536,7 @@ pub struct Shell {
     phone: Option<phone::PhoneLink>,
     /// The account's signed-in devices, for the Phone tab's relay section.
     signed_in: phone::SignedIn,
+    beta_card: beta_card::BetaCard,
     /// The account `relay_owner_changed` last settled the relay's devices for.
     relay_owner_seen: Option<crate::phone::AccountNow>,
     phone_view: Entity<crate::phone_view::PhoneView>,
@@ -758,6 +760,9 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                // Back at the window: what it shows was seen, so a notice
+                // waiting for the person to leave would come too late.
+                this.phone_seen_on_screen();
                 // The system's settings may have changed while Arakun was behind.
                 crate::ui::contrast::follow_system(cx);
                 crate::ui::motion::follow_system(cx);
@@ -1164,6 +1169,7 @@ impl Shell {
             _extensions_view: extensions_sub,
             phone: None,
             signed_in: Default::default(),
+            beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,
             phone_view,
             _phone_view: phone_sub,
@@ -1840,8 +1846,9 @@ impl Shell {
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();
         let (why, then) = why.unzip();
+        let servers = self.clone_servers();
         let picker = cx.new(|cx| {
-            let picker = FolderPicker::new(existing, window, cx);
+            let picker = FolderPicker::new(existing, window, cx).servers(servers, cx);
             match why {
                 Some(why) => picker.because(why),
                 None => picker,
@@ -1860,6 +1867,11 @@ impl Shell {
                     {
                         then(this, window, cx);
                     }
+                }
+                PickerEvent::CloneOnServer { server, url } => {
+                    let (server, url) = (server.clone(), url.clone());
+                    this.close_modal(window, cx);
+                    this.servers_clone_from_picker(&server, &url, cx);
                 }
                 PickerEvent::Dismissed => this.close_modal(window, cx),
             },
@@ -1913,6 +1925,12 @@ impl Shell {
             return;
         }
         let project = self.projects.remove(pi);
+        let pids: Vec<String> = project
+            .environments
+            .iter()
+            .flat_map(Self::phone_ids_of)
+            .collect();
+        self.forget_phone_sessions(&pids);
         let sessions = project
             .environments
             .into_iter()
@@ -2716,6 +2734,8 @@ impl Shell {
                             env.sessions = kept;
                             moved.extend::<Vec<_>>(gone);
                         }
+                        // A worktree is local: phones call its sessions by id.
+                        this.forget_phone_sessions(&own_ids);
                         this.forget_sessions(moved, cx);
                         sessions::discard_session_files(own_ids.clone(), session_ids.clone(), cx);
                     }
@@ -2739,6 +2759,14 @@ impl Shell {
             return;
         }
         // Their sessions stop, and their transcripts go from disk.
+        let pids: Vec<String> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .filter(|e| paths.contains(&e.path))
+            .flat_map(Self::phone_ids_of)
+            .collect();
+        self.forget_phone_sessions(&pids);
         let sessions = self
             .projects
             .iter_mut()

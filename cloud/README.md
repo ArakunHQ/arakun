@@ -54,6 +54,7 @@ cloud/
                         and the operator's side of them
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
+  src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the
                         install, the links, the routes, the delivery accept and the
@@ -344,6 +345,15 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler secret put FCM_SERVICE_ACCOUNT --env production < service-account.json
    ```
 
+   Optionally, a Linear API key that turns the app's feedback into customer
+   requests in the team `LINEAR_TEAM_ID` names (Linear → Settings → Security &
+   access → Personal API keys, with access to create issues and customers).
+   Without it, `/feedback` answers 503 and feedback stays in PostHog only:
+
+   ```sh
+   npx wrangler secret put LINEAR_API_KEY --env production
+   ```
+
 4. Deploy:
 
    ```sh
@@ -528,7 +538,8 @@ A blocked account can still sign in and read `/me`; `GET /machines` answers it
 `403 { "error": "blocked", "reason": … }` with the reason given. The teams API
 answers it `403 { "error": "blocked" }`, and a channel closes its socket at the next
 message there. Its teams stay as they are: block a team's only owner and nobody can
-approve a join or make the next key until the block is lifted.
+change a role, and while no admin is left, nobody can approve a join or make the
+next key until the block is lifted.
 
 Each object checks its sockets' sessions and account in D1 every 15 minutes, and at
 once when the Worker asks after a sign-out, a block, a plan change or a forgotten
@@ -966,7 +977,7 @@ burst or daily limits.
 
 ### Limits
 
-`LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1015 at the top level and 1016 in
+`LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1017 at the top level and 1018 in
 `[env.production]`) counts, per account, the calls
 that ask Linear: `POST /linear/link` and `POST /linear/sessions/<id>/activity`. It is
 about 30 a minute, and a call over it answers `429 too many requests`. If the limit
@@ -1097,6 +1108,8 @@ devices: `400` without it, `403` if it is someone else's.
 | `POST /teams/<team_id>/pending/<github_id>/reject` `{request_id}` | admin | `204`; `409` if the request changed. |
 | `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |
 | `GET /teams/<team_id>/envelopes` | member, device | `200 [Envelope + made_at]`, the device's own; `made_at` is when the epoch's key first reached the team. |
+| `GET /teams/<team_id>/envelopes/stale` | admin | `200 [{device_id, epoch}]`: members' envelopes whose sender is no longer an owner's or admin's device, newest epoch first, at most 500. |
+| `PUT /teams/<team_id>/members/<github_id>` `{role}` | owner | `200 {github_id, role}`; `role` is `owner`, `admin` or `member`, the caller's own included. `404` if not a member, `409` if the team would have no owner. `403` if the caller lost the owner role, the session or the flag meanwhile. |
 | `DELETE /teams/<team_id>/members/<github_id>` | admin, or the member themselves | `200 {epoch, rotation_pending: true}`. Their sockets close. `409` for the last owner. |
 | `POST /teams/<team_id>/channels` `{channel_id, name_ct}` | admin | `201 {channel_id}`. `409` for an ID in use or past 500 channels. |
 | `PUT /teams/<team_id>/channels/<channel_id>` `{name_ct}` | admin | `200 {channel_id}`: the name sealed again with the newest key, or a new name. `409` if that key changed meanwhile. |

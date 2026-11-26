@@ -121,10 +121,10 @@ fun InboxScreen(model: AppModel) {
                 item(key = "search") { SearchField(query) }
                 if (model.connection.hasBanner) item(key = "banner") { ConnectionBanner(model) }
                 if (waiting.isNotEmpty()) {
-                    item(key = "needs") { Group("Needs you", c.amberInk, waiting, highlight = true, open = model::open) }
+                    item(key = "needs") { Group("Needs you", c.amberInk, waiting, highlight = true, muted = model.muted, open = model::open) }
                 }
                 items(projects, key = { "p:" + it.first }) { (project, sessions) ->
-                    Group(project.ifEmpty { "Sessions" }, c.textFaint, sessions, highlight = false, open = model::open)
+                    Group(project.ifEmpty { "Sessions" }, c.textFaint, sessions, highlight = false, muted = model.muted, open = model::open)
                 }
                 if (model.isLinked && model.inbox.isEmpty()) {
                     item(key = "empty") { Empty(mood) }
@@ -289,7 +289,14 @@ private fun SearchField(query: TextFieldState) {
 }
 
 @Composable
-private fun Group(title: String, color: Color, sessions: List<InboxSession>, highlight: Boolean, open: (String) -> Unit) {
+private fun Group(
+    title: String,
+    color: Color,
+    sessions: List<InboxSession>,
+    highlight: Boolean,
+    muted: List<String>,
+    open: (String) -> Unit,
+) {
     val c = Palette.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.padding(horizontal = 4.dp)) {
@@ -310,7 +317,7 @@ private fun Group(title: String, color: Color, sessions: List<InboxSession>, hig
                             .background(if (highlight) Brand.amber.copy(alpha = 0.2f) else c.line),
                     )
                 }
-                SessionRow(s) { open(s.id) }
+                SessionRow(s, muted = s.id in muted) { open(s.id) }
             }
         }
     }
@@ -330,7 +337,7 @@ fun rememberNow(period: Long): Long {
 }
 
 @Composable
-fun SessionRow(session: InboxSession, onClick: () -> Unit) {
+fun SessionRow(session: InboxSession, muted: Boolean = false, onClick: () -> Unit) {
     val c = Palette.current
     val now = rememberNow(30_000)
     Column(
@@ -345,6 +352,13 @@ fun SessionRow(session: InboxSession, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // The computer sends no notices about it.
+            if (muted) {
+                BrandIcon(
+                    R.drawable.ic_notification_off01, 14.dp, c.textFaint,
+                    Modifier.padding(top = 3.dp).semantics { contentDescription = "Muted" },
+                )
+            }
             Text(shortAgo(session.updated, now), style = mono(11.5f), color = c.textFaint, modifier = Modifier.padding(top = 3.dp))
         }
         session.asks?.let { asks ->

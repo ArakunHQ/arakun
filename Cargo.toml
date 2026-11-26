@@ -1,6 +1,6 @@
 [package]
 name = "arakun"
-version = "0.22.0"
+version = "0.23.0"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
@@ -14,16 +14,14 @@ gpui.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
 anyhow.workspace = true
 image.workspace = true
-# `arakun dev` screenshots its virtual X display (src/dev.rs)
-x11rb = "0.14"
+# `arakun dev` screenshots its virtual X display (src/dev.rs); screensaver: idle time on X11 (src/idle.rs)
+x11rb = { version = "0.14", features = ["screensaver"] }
 # projects, environments, explorer
 serde.workspace = true
 serde_json.workspace = true
 # Cloudflare's API: one client that keeps its connections (src/cloudflare).
 ureq.workspace = true
 ignore.workspace = true
-# @bot redacts keys and tokens from its answers (src/arakun_teams/bot_guard.rs); gpui already pulls it in
-regex = "1"
 unicode-segmentation.workspace = true
 futures.workspace = true
 pulldown-cmark.workspace = true
@@ -63,6 +61,11 @@ sysinfo = { version = "0.31.4", default-features = false, features = ["system"] 
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Idle time on Wayland, from the desktop over the session bus (src/idle.rs). gpui
+# already pulls it in through ashpd; keep it at that version.
+zbus = "=5.19.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
 # arakun-helper (src/bin) is CEF's child process on Windows. The browser tabs are in
@@ -117,6 +120,8 @@ serde_json = "1"
 ureq = "3"
 ignore = "0.4"
 unicode-segmentation = "1"
+# gpui already pulls it in
+regex = "1"
 futures = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 base64 = "0.23"
@@ -141,6 +146,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_System_Time",
+    # Idle time: GetLastInputInfo against GetTickCount64 (src/idle.rs)
+    "Win32_System_SystemInformation",
+    "Win32_UI_Input_KeyboardAndMouse",
     # High contrast (core/src/ui/contrast.rs)
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",

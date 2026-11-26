@@ -116,6 +116,7 @@ mod tests {
             target: target.into(),
             name: target.into(),
             project: PathBuf::from(project),
+            server: None,
         }
     }
 

@@ -634,8 +634,19 @@ after a week).
   until you turn it on. It needs an Arakun sign-in, "Reach this computer from
   anywhere" on in the Phone tab, and Arakun installed in the Linear workspace by a
   Linear admin (the page links to the install). **Add a mapping** sends a Linear
-  team or project of the workspace to a project on this computer; projects on a
-  server can't be mapped. A Linear project's mapping wins over its team's.
+  team or project of the workspace to a project on this computer, or to the main
+  folder of a repository on one of your paired servers (shown as "app on box"). A
+  Linear project's mapping wins over its team's.
+
+  *On a server.* A mapping to a server's project runs there, not here, so it works
+  while this computer is off. Arakun sends that server its own mappings, the switch,
+  and the Linear key of each mapped workspace you connected, over the server's
+  end-to-end encrypted link, whenever they change and whenever the server connects.
+  The server keeps them in its folder and tells Arakun's server what it takes (see
+  "Issues delegated in Linear" under the server). Removing the last mapping, or
+  turning the switch off, sends the server empty settings, and it forgets the key.
+  The server needs its own sign-in to the same account and the relay. A server too
+  old for this says so in the Computers tab.
 
   *What starts.* When you assign an issue to Arakun in Linear, or mention Arakun on
   it, Arakun's server hands the issue to this computer. The computer checks that the
@@ -705,7 +716,8 @@ after a week).
   server, to prove which Linear user you are, and the server does not store it. You
   connect the workspace in view by turning the switch on, and another workspace
   with its **Connect** button while the switch is on. Its key is sent once the
-  workspace has a mapping, and again only if the server loses the link. Otherwise
+  workspace has a mapping, and again only if the server loses the link. A server
+  with a mapping to its project gets the key too, and keeps it. Otherwise
   only the relay label of this computer, the Linear organization id of the
   workspace and the ids of its mapped teams and projects go for the setup. Once a
   session runs, what the issue hears goes through Arakun's server to the issue:
@@ -719,7 +731,8 @@ after a week).
   workspace. The switch and the mappings (ids, names and project paths, no keys) are
   kept in `~/.local/share/arakun/linear/delegation.json`
   (`%LOCALAPPDATA%\arakun\linear\delegation.json` on Windows), with the workspaces
-  you connected. The runs are kept next to it in
+  you connected, and `servers.json` next to it lists the servers that hold Linear
+  settings, so one whose last mapping went is told to forget them. The runs are kept next to it in
   `~/.local/share/arakun/linear/runs.json`
   (`%LOCALAPPDATA%\arakun\linear\runs.json` on Windows): which deliveries were
   handled, each run with its ids, paths, the issue's identifier and state, and the

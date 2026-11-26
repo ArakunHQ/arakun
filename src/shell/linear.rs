@@ -67,6 +67,7 @@ impl Shell {
             LinearEvent::DelegationChanged | LinearEvent::WorkspacesChanged => {
                 self.push_linear_host(cx);
                 self.sync_linear(window, cx);
+                self.linear_push_servers(cx);
             }
             LinearEvent::OpenPhoneTab => self.open_phone_tab(window, cx),
             LinearEvent::SignInToArakun => self.open_account_sign_in(window, cx),

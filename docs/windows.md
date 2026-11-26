@@ -139,6 +139,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Linear sign-ins (who signed in; the personal API keys are in the Credential Manager) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
 | Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
+| Linear: the servers that hold Linear settings | `%LOCALAPPDATA%\arakun\linear\servers.json` |
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `%LOCALAPPDATA%\arakun\linear\runs.json` |
 | Doop sign-ins (their keys and tokens are in the Credential Manager), canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |

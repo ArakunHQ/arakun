@@ -1891,7 +1891,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let index = match self.projects.iter().position(|p| p.path == path) {
+        let known = self.projects.iter().position(|p| p.path == path);
+        let index = match known {
             Some(i) => i,
             None => {
                 let mut project = state::new_project(&path);
@@ -1915,6 +1916,10 @@ impl Shell {
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
         self.push_linear_host(cx);
+        // A mapping broken when the project went can be sent again.
+        if known.is_none() {
+            self.sync_linear(window, cx);
+        }
         self.save(cx);
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
@@ -1956,6 +1961,8 @@ impl Shell {
         self.servers_tab_closed(cx);
         self.sync_ci_roots(cx);
         self.push_linear_host(cx);
+        // Its Linear targets must stop coming here.
+        self.sync_linear(window, cx);
         self.save(cx);
         self.sync_poll(window, cx);
         cx.notify();
@@ -2787,6 +2794,8 @@ impl Shell {
         if self.projects.len() != before {
             self.sync_ci_roots(cx);
             self.push_linear_host(cx);
+            // The targets of a project that went must stop coming here.
+            self.sync_linear(window, cx);
             self.sync_poll(window, cx);
         }
         self.rail_pick.retain(|p| !paths.contains(p));

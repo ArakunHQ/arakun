@@ -305,7 +305,8 @@ impl Shell {
             return Err(format!("not a directory: {}", dir.display()));
         }
         let root = crate::git::main_root(dir).unwrap_or_else(|_| dir.to_path_buf());
-        let pi = match self.projects.iter().position(|p| p.path == root) {
+        let known = self.projects.iter().position(|p| p.path == root);
+        let pi = match known {
             Some(pi) => pi,
             None => {
                 self.projects.push(state::new_project(&root));
@@ -321,6 +322,10 @@ impl Shell {
         self.refresh_project(pi, cx);
         self.sync_ci_roots(cx);
         self.push_linear_host(cx);
+        // A mapping broken when the project went can be sent again.
+        if known.is_none() {
+            self.sync_linear(window, cx);
+        }
         self.sync_poll(window, cx);
         self.save(cx);
         cx.notify();

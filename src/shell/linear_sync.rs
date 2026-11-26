@@ -85,7 +85,13 @@ pub fn run(
         .iter()
         .map(|(w, _)| (w.clone(), links.iter().any(|l| l.organization_id == *w)))
         .collect();
+    // A workspace whose call was refused: the rest of its calls are skipped,
+    // and the other workspaces still go.
+    let mut refused: Option<String> = None;
     for step in plan(d, &workspaces, local) {
+        if refused.as_deref() == Some(step.workspace()) {
+            continue;
+        }
         let sends = match &step {
             Step::Link { .. } => true,
             Step::Routes { routes, .. } => !routes.teams.is_empty() || !routes.projects.is_empty(),
@@ -116,9 +122,19 @@ pub fn run(
                 &routes.projects,
             ),
         };
-        if let Err(e) = done {
-            ran.error = Some(e);
-            break;
+        match done {
+            Ok(()) => {}
+            // A refusal is about this workspace (a bad key, a link taken
+            // over). A limit, a sign-out or no network would hit the
+            // next one too.
+            Err(e @ cloud::Error::Status { status, .. }) if status != 429 => {
+                refused = Some(step.workspace().to_string());
+                ran.error = Some(e);
+            }
+            Err(e) => {
+                ran.error = Some(e);
+                break;
+            }
         }
     }
     ran
@@ -305,6 +321,14 @@ pub enum Step {
     Link { workspace: String },
     /// Set what `workspace` sends this computer.
     Routes { workspace: String, routes: Routes },
+}
+
+impl Step {
+    pub fn workspace(&self) -> &str {
+        match self {
+            Step::Link { workspace } | Step::Routes { workspace, .. } => workspace,
+        }
+    }
 }
 
 /// The calls that bring the server in line with `d`. `workspaces` holds each
@@ -698,6 +722,35 @@ mod tests {
         assert_eq!(got.len(), 3);
         assert!(got.iter().all(|r| !r.contains("lin_api_w2")), "{got:?}");
         assert!(got[1].contains("lin_api_w1"));
+    }
+
+    #[test]
+    fn one_workspace_refused_does_not_stop_the_next() {
+        let (base, rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w2", "linear_user_id": "u2", "installed": true}]}"#,
+            ),
+            (400, r#"{"error": "bad key"}"#),
+            (200, r#"{"ok": true}"#),
+        ]);
+        let d = on(vec![team("w1", "t1", "/p/a"), team("w2", "t2", "/p/a")]);
+        let ran = run(
+            &base,
+            "s",
+            "k1",
+            &d,
+            &[key("w1"), key("w2")],
+            &[p("/p/a")],
+            || true,
+        );
+        assert_eq!(ran.error.as_ref().map(outcome), Some(Sync::Failed));
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got[1].starts_with("POST /linear/link ") && got[1].contains("lin_api_w1"));
+        // w1's routes are skipped; w2's still go.
+        assert!(got[2].starts_with("PUT /linear/routes "), "{}", got[2]);
+        assert!(got[2].contains(r#""teams":["t2"]"#), "{}", got[2]);
     }
 
     /// A switch that reads on `n` times, then off.

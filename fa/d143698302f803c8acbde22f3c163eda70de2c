@@ -1,0 +1,65 @@
+cloud/admin/vitest.config.ts
+  s_0f76e381f21594::t_9eb6bfe410ad7d 19-20
+cloud/admin/src/routes/sign-in.test.tsx
+  s_0f76e381f21594::t_6610802fee2c7d 1-73
+cloud/admin/test/session.test.ts
+  s_0f76e381f21594::t_9eb6bfe410ad7d 3-15,102-111,114-123
+  s_0f76e381f21594::t_d814011158023b 33,35,112-113
+  s_0f76e381f21594::t_65e66704459de9 124
+cloud/admin/worker/env.d.ts
+  s_0f76e381f21594::t_e27ce011291065 14-15,17
+cloud/admin/worker/session.ts
+  s_0f76e381f21594::t_d3b4a5dd0f5e50 7-10,40-49,51-52,56-58,66,84-111
+  s_0f76e381f21594::t_37df2a9c1c056f 112
+cloud/admin/README.md
+  s_0f76e381f21594::t_9bd118c8eb89d9 4,19-21
+cloud/wrangler.toml
+  s_0f76e381f21594::t_e27ce011291065 55
+cloud/admin/src/routes/sign-in.tsx
+  s_0f76e381f21594::t_3051fdee22b985 2,6,8,13,16,24,28-34,36,44-56,62-95,97-140
+  s_0f76e381f21594::t_2a729367a70e4f 3
+  s_0f76e381f21594::t_3ec2d6c5fbe96e 96,141-152
+cloud/admin/src/routes/__root.tsx
+  s_0f76e381f21594::t_2a729367a70e4f 15
+  s_0f76e381f21594::t_51e1d242cd4c95 38
+cloud/admin/wrangler.toml
+  s_0f76e381f21594::t_e27ce011291065 25-26,33-34,43-51,88-95
+cloud/admin/scripts/dev-cookie.mjs
+  s_0f76e381f21594::t_df759eb082384d 41-42
+  s_0f76e381f21594::t_8c6b6e2b4a51ac 3-7
+cloud/admin/src/signIn.ts
+  s_0f76e381f21594::t_2a729367a70e4f 1-8
+cloud/admin/test/totp.test.ts
+  s_0f76e381f21594::t_e406f0a11f87e4 1-60
+cloud/admin/worker/index.ts
+  s_0f76e381f21594::t_e27ce011291065 1,12
+cloud/admin/test/auth.test.ts
+  s_0f76e381f21594::t_fc95834caec664 52,55,278-283,334-342,344
+  s_0f76e381f21594::t_2a43a9e067d96b 3-4,46-51,53-54,56-67,108,112-117,120-128,167,277,284-333,343,345-348,361-363
+cloud/admin/scripts/totp-secret.mjs
+  s_0f76e381f21594::t_df759eb082384d 1-39
+cloud/admin/worker/totp.ts
+  s_0f76e381f21594::t_4fedd7836c53a2 1-75
+cloud/admin/worker/auth.ts
+  s_0f76e381f21594::t_e27ce011291065 145-148
+  s_0f76e381f21594::t_23b13d9c985228 6-9,14-16,35-40,100,102-137
+cloud/README.md
+  s_0f76e381f21594::t_58c3eb16f2356e 623-639,668,675,692,696-697,706,730,749-768
+  s_0f76e381f21594::t_85a29452b59f61 769
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fad143698302f803c8acbde22f3c163eda70de2c",
+  "prompts": {},
+  "sessions": {
+    "s_0f76e381f21594": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c890cf2a-6429-4e0c-9770-88f8fbc4b779",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

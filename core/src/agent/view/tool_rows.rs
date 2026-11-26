@@ -1,12 +1,18 @@
 //! Tool calls in the transcript: their labels, rows and the output they show when opened.
 
+use super::arakun_cmd;
 use super::*;
 use std::borrow::Cow;
 
+#[derive(Default)]
 pub(super) struct ToolLabel {
     pub(super) action: &'static str,
     pub(super) target: String,
     pub(super) file: bool,
+    /// An `arakun` command, shown with this icon in front of what it does.
+    pub(super) arakun: Option<&'static str>,
+    /// The target is words, set in the text font rather than mono.
+    pub(super) prose: bool,
 }
 
 /// A tool call read as action and target: `Read src/main.rs`, `Ran cargo test`.
@@ -50,6 +56,7 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
             action: if running { "Running agent" } else { "Agent" },
             target: title,
             file: false,
+            ..Default::default()
         };
     }
     match t.kind.as_str() {
@@ -59,6 +66,7 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
                 action: "Read",
                 target,
                 file,
+                ..Default::default()
             }
         }
         "edit" => {
@@ -70,6 +78,7 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
                 action: if creating { "Write" } else { "Edit" },
                 target,
                 file,
+                ..Default::default()
             }
         }
         "delete" => {
@@ -78,12 +87,14 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
                 action: "Delete",
                 target,
                 file,
+                ..Default::default()
             }
         }
         "move" => ToolLabel {
             action: "Move",
             target: strip(&title, &["Move", "move"]),
             file: false,
+            ..Default::default()
         },
         "search" => ToolLabel {
             action: "Search",
@@ -92,32 +103,57 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
                 &["Search", "search", "Grep", "grep", "Find", "find"],
             ),
             file: false,
+            ..Default::default()
         },
-        "execute" => ToolLabel {
-            action: if asking {
+        "execute" => {
+            let ran = if asking {
                 "Run"
             } else if running {
                 "Running"
             } else {
                 "Ran"
-            },
-            target: input("command").unwrap_or_else(|| strip(&title, &["Run", "Bash"])),
-            file: false,
-        },
+            };
+            let command = input("command").unwrap_or_else(|| strip(&title, &["Run", "Bash"]));
+            // A permission question names the command as typed: the user
+            // decides on what will run, not on our reading of it.
+            match (!asking).then(|| arakun_cmd::parse(&command)).flatten() {
+                // `arakun shrink` only trims the output: the row is the command it ran.
+                Some(call) if call.shell => ToolLabel {
+                    action: ran,
+                    target: call.target,
+                    ..Default::default()
+                },
+                Some(call) => ToolLabel {
+                    action: call.action,
+                    target: call.target,
+                    arakun: Some(call.icon),
+                    prose: !call.mono,
+                    ..Default::default()
+                },
+                None => ToolLabel {
+                    action: ran,
+                    target: command,
+                    ..Default::default()
+                },
+            }
+        }
         "fetch" => ToolLabel {
             action: "Fetch",
             target: input("url").unwrap_or(title),
             file: false,
+            ..Default::default()
         },
         "think" => ToolLabel {
             action: "Think",
             target: title,
             file: false,
+            ..Default::default()
         },
         "switch_mode" => ToolLabel {
             action: "Mode",
             target: title,
             file: false,
+            ..Default::default()
         },
         _ => ToolLabel {
             action: "",
@@ -127,6 +163,7 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
                 title
             },
             file: false,
+            ..Default::default()
         },
     }
 }
@@ -454,6 +491,13 @@ impl ThreadView {
             .min_w_0()
             .when(expandable, |d| d.cursor_pointer())
             .when_some(status_icon, |d, i| d.child(i))
+            .when_some(label.arakun, |d, name| {
+                d.child(icon(name, 14.).text_color(if failed {
+                    red()
+                } else {
+                    theme::text_subtle()
+                }))
+            })
             .when(!label.action.is_empty(), |d| {
                 d.child(
                     div()
@@ -472,7 +516,10 @@ impl ThreadView {
                     .min_w_0()
                     .px(crate::ui::sp(4.))
                     .rounded(crate::ui::rad(4.))
-                    .when(label.file, |d| d.bg(theme::fill_hover()))
+                    .when(label.file || label.arakun.is_some(), |d| {
+                        d.bg(theme::fill_hover())
+                    })
+                    .when(label.target.is_empty(), |d| d.hidden())
                     .when_some(file, |d, file| {
                         d.cursor_pointer()
                             .hover(|s| {
@@ -484,7 +531,11 @@ impl ThreadView {
                                 cx.emit(ThreadViewEvent::OpenFile(file.clone(), None));
                             }))
                     })
-                    .font_family(theme::FONT_MONO)
+                    .font_family(if label.prose {
+                        theme::FONT_SANS
+                    } else {
+                        theme::FONT_MONO
+                    })
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(target_color)
                     .when(label.file, |d| {

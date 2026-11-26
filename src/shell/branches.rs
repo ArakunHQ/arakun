@@ -23,7 +23,7 @@ impl Shell {
         });
         self.note_active_tab(cx);
         self.sync_branches_view(cx);
-        self.branches_view.update(cx, |v, cx| {
+        self.views.branches.update(cx, |v, cx| {
             v.refresh_if_stale(cx);
             v.focus(window, cx);
         });
@@ -37,8 +37,8 @@ impl Shell {
             return 0;
         }
         let root = self.project().path.clone();
-        self.branches_view.update(cx, |v, cx| v.watch(root, cx));
-        self.branches_view.read(cx).alarms()
+        self.views.branches.update(cx, |v, cx| v.watch(root, cx));
+        self.views.branches.read(cx).alarms()
     }
 
     /// Opens the Branches tab with `branch` selected.
@@ -50,13 +50,14 @@ impl Shell {
     ) {
         self.open_branches_tab(window, cx);
         self.pin_preview(cx);
-        self.branches_view.update(cx, |v, cx| v.reveal(branch, cx));
+        self.views.branches.update(cx, |v, cx| v.reveal(branch, cx));
     }
 
     /// Hands the Branches tab the visible project and what runs in each environment.
     pub(super) fn sync_branches_view(&self, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.branches_view
+            self.views
+                .branches
                 .update(cx, |v, cx| v.set_project(None, Vec::new(), cx));
             return;
         }
@@ -85,7 +86,7 @@ impl Shell {
             })
             .collect();
         let root = project.path.clone();
-        self.branches_view.update(cx, |v, cx| {
+        self.views.branches.update(cx, |v, cx| {
             v.set_project(Some(root), envs, cx);
             v.refresh_if_stale(cx);
         });

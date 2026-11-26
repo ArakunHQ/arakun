@@ -357,7 +357,7 @@ impl Shell {
     /// narrows to the titles it matches and opens every project.
     fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
         let layout = crate::tab_layout::current();
-        let held = self.tree_held.as_ref();
+        let held = self.rail.tree_held.as_ref();
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             if let Some(q) = query {
@@ -384,7 +384,7 @@ impl Shell {
             sort_rows(&mut rows, project.sort.unwrap_or(layout.sort), held);
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
-            let user = self.tree_open.get(&project.path).copied();
+            let user = self.rail.tree_open.get(&project.path).copied();
             let open = if query.is_some() {
                 true
             } else {
@@ -436,7 +436,7 @@ impl Shell {
     pub(super) fn tree_menu_sort(&self) -> Option<Sort> {
         let all = crate::tab_layout::current().sort;
         let picked = self.tree_sort_picked();
-        if !self.tree_sort_select || picked.is_empty() {
+        if !self.rail.tree_sort_select || picked.is_empty() {
             return Some(all);
         }
         let first = self.projects[picked[0]].sort;
@@ -452,7 +452,7 @@ impl Shell {
     pub(super) fn set_tree_sort(&mut self, sort: Sort, cx: &mut Context<Self>) {
         self.drop_pick();
         let picked = self.tree_sort_picked();
-        if self.tree_sort_select && !picked.is_empty() {
+        if self.rail.tree_sort_select && !picked.is_empty() {
             for pi in picked {
                 self.projects[pi].sort = Some(sort);
             }
@@ -466,7 +466,7 @@ impl Shell {
     /// The tree menu's Applies to. All projects takes every project back to
     /// the one order; what was dragged by hand stays for Manual.
     pub(super) fn set_tree_sort_scope(&mut self, select: bool, cx: &mut Context<Self>) {
-        self.tree_sort_select = select;
+        self.rail.tree_sort_select = select;
         if !select && !self.tree_sort_picked().is_empty() {
             for p in &mut self.projects {
                 p.sort = None;
@@ -547,8 +547,8 @@ impl Shell {
             None => self.save(cx),
         }
         // The pointer is still over the tree: hold the rows where they are now.
-        if self.tree_held.take().is_some() {
-            self.tree_held = Some(self.tree_places(cx));
+        if self.rail.tree_held.take().is_some() {
+            self.rail.tree_held = Some(self.tree_places(cx));
         }
         cx.notify();
     }
@@ -557,12 +557,13 @@ impl Shell {
     /// the pick or takes it out, Shift picks the rows from the last one
     /// clicked. Picking here drops a pick made in the projects list.
     fn click_tree_pick(&mut self, id: SharedString, shift: bool, cx: &mut Context<Self>) {
-        self.rail_pick.clear();
-        self.rail_pick_anchor = None;
+        self.rail.pick.clear();
+        self.rail.pick_anchor = None;
         if shift {
             let order = self.tree_order(cx);
             // From the open session when nothing was clicked yet.
             let anchor = self
+                .rail
                 .tree_pick_anchor
                 .clone()
                 .or_else(|| self.active_session_id());
@@ -570,26 +571,27 @@ impl Shell {
             // the next Shift+click.
             let anchor = anchor.filter(|a| order.contains(a));
             for id in pick_range(&order, anchor.as_ref(), &id) {
-                if !self.tree_pick.contains(&id) {
-                    self.tree_pick.push(id);
+                if !self.rail.tree_pick.contains(&id) {
+                    self.rail.tree_pick.push(id);
                 }
             }
-            self.tree_pick_anchor = anchor.or(Some(id));
+            self.rail.tree_pick_anchor = anchor.or(Some(id));
         } else {
-            match self.tree_pick.iter().position(|p| *p == id) {
+            match self.rail.tree_pick.iter().position(|p| *p == id) {
                 Some(i) => {
-                    self.tree_pick.remove(i);
+                    self.rail.tree_pick.remove(i);
                 }
-                None => self.tree_pick.push(id.clone()),
+                None => self.rail.tree_pick.push(id.clone()),
             }
-            self.tree_pick_anchor = Some(id);
+            self.rail.tree_pick_anchor = Some(id);
         }
         cx.notify();
     }
 
     /// The picked sessions that still exist: their project, environment and id.
     fn tree_picked(&self) -> Vec<(usize, usize, SharedString)> {
-        self.tree_pick
+        self.rail
+            .tree_pick
             .iter()
             .filter_map(|id| {
                 let (pi, ei) = self.session_place(id)?;
@@ -679,7 +681,7 @@ impl Shell {
             .get(pi)
             .and_then(|p| p.environments.get(ei))
             .and_then(|e| e.sessions.get(si))
-            .is_some_and(|s| self.tree_pick.contains(&s.id));
+            .is_some_and(|s| self.rail.tree_pick.contains(&s.id));
         let target = if on_pick && self.tree_picked().len() > 1 {
             MenuTarget::TreePicked
         } else {
@@ -885,7 +887,7 @@ impl Shell {
         let layout = crate::tab_layout::current();
         let open_id = self.active_session_id();
         let query = menu
-            .then(|| self.tree_filter.read(cx).text().trim().to_lowercase())
+            .then(|| self.rail.tree_filter.read(cx).text().trim().to_lowercase())
             .filter(|q| !q.is_empty());
         let mut list = div()
             .id("session-tree")
@@ -903,7 +905,7 @@ impl Shell {
             // The rows hold their places while the pointer is over the
             // tree, and take the order's again once it leaves.
             .on_hover(cx.listener(|this, over: &bool, _, cx| {
-                this.tree_held = over.then(|| this.tree_places(cx));
+                this.rail.tree_held = over.then(|| this.tree_places(cx));
                 cx.notify();
             }));
         if heading {
@@ -970,7 +972,7 @@ impl Shell {
         };
         self.menu = None;
         self.drop_pick();
-        self.tree_open.insert(path, true);
+        self.rail.tree_open.insert(path, true);
         if pi != self.active_project {
             self.select_project(pi, window, cx);
         }
@@ -1026,9 +1028,9 @@ impl Shell {
                     cx.stop_propagation();
                     // The pointer is on the tree's own heading: let go of
                     // the rows, or the order picked would wait for it to leave.
-                    this.tree_held = None;
+                    this.rail.tree_held = None;
                     // On Select projects while any project has its own order.
-                    this.tree_sort_select = !this.tree_sort_picked().is_empty();
+                    this.rail.tree_sort_select = !this.tree_sort_picked().is_empty();
                     this.open_composer_menu(MenuTarget::TreeSort, ev.position(), cx)
                 })),
             )
@@ -1128,7 +1130,7 @@ impl Shell {
                     ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.tree_open.insert(path.clone(), !open);
+                this.rail.tree_open.insert(path.clone(), !open);
                 cx.notify();
             }))
             .on_mouse_down(
@@ -1168,13 +1170,13 @@ impl Shell {
             manual: _,
         } = row;
         let env_path = self.projects[pi].environments[ei].path.clone();
-        let picked = self.tree_pick.contains(&id);
+        let picked = self.rail.tree_pick.contains(&id);
         let dragged =
             super::drag::DraggedSession::row(env_path.clone(), id.clone(), title.clone(), agent);
         let shell = cx.entity();
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the end of the row gives up.
-        let under_pointer = self.tree_hover.as_ref().is_some_and(|h| h.2 == id);
+        let under_pointer = self.rail.tree_hover.as_ref().is_some_and(|h| h.2 == id);
         // Not on the open session: archiving it there is too easy by accident.
         let archive_shown = can_archive && under_pointer && !selected;
         let hovered = id.clone();
@@ -1308,9 +1310,14 @@ impl Shell {
             })
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
                 if *over {
-                    this.tree_hover = Some((pi, ei, hovered.clone()));
-                } else if this.tree_hover.as_ref().is_some_and(|h| h.2 == hovered) {
-                    this.tree_hover = None;
+                    this.rail.tree_hover = Some((pi, ei, hovered.clone()));
+                } else if this
+                    .rail
+                    .tree_hover
+                    .as_ref()
+                    .is_some_and(|h| h.2 == hovered)
+                {
+                    this.rail.tree_hover = None;
                 } else {
                     return;
                 }

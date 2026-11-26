@@ -515,7 +515,7 @@ impl Shell {
                     .collect::<Vec<_>>()
             }),
         )
-        .track_scroll(&self.explorer_scroll)
+        .track_scroll(&self.panel.explorer_scroll)
         .flex_1()
         .min_h_0()
         .py(crate::ui::sp(6.))
@@ -828,7 +828,7 @@ impl Shell {
                 });
                 let review_path = subtitle.to_string();
                 let target = tab.target_line.filter(|_| !is_diff);
-                let commented = self.commented_lines(&review_path);
+                let commented = self.commented_lines(&review_path, cx);
                 let drafting = self
                     .review_draft
                     .as_ref()

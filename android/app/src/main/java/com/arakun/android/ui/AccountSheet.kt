@@ -191,12 +191,12 @@ private fun Notifications(model: AppModel) {
         }
         if (Push.on) {
             listOf(
-                Triple("Turn finished", w.done) { on: Boolean -> w.copy(done = on) },
-                Triple("Needs permission or answer", w.input) { on: Boolean -> w.copy(input = on) },
-                Triple("Something went wrong", w.error) { on: Boolean -> w.copy(error = on) },
-            ).forEach { (title, on, change) ->
+                NoticeSwitch("Turn finished", "When an agent is done and waits for you.", w.done) { w.copy(done = it) },
+                NoticeSwitch("Needs permission or answer", "When an agent asks to run a tool or asks you a question.", w.input) { w.copy(input = it) },
+                NoticeSwitch("Something went wrong", "When a turn stops on an error.", w.error) { w.copy(error = it) },
+            ).forEach { n ->
                 Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
-                SwitchRow(title, null, on) { model.want(change(it)) }
+                SwitchRow(n.title, n.detail, n.on) { model.want(n.change(it)) }
             }
             Box(Modifier.padding(start = 14.dp).fillMaxWidth().height(1.dp).background(c.line))
             ChoiceRow("Only when I'm away for", WebPush.AWAY_CHOICES, w.awayAfterSecs) { model.want(w.copy(awayAfterSecs = it)) }
@@ -265,6 +265,9 @@ private fun ChoiceRow(title: String, choices: List<WebPush.Choice>, value: Int, 
         }
     }
 }
+
+/** One kind of notice: what it is called, when it comes, and the choice with it flipped. */
+private class NoticeSwitch(val title: String, val detail: String, val on: Boolean, val change: (Boolean) -> WebPush.Wanted)
 
 /** A row that is all one switch, so the whole row is the target. */
 @Composable

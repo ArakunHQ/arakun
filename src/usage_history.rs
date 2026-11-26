@@ -275,14 +275,31 @@ struct Cached {
     tail: Option<ClaudeTail>,
 }
 
-static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
+#[derive(Default)]
+struct Cache {
+    files: HashMap<PathBuf, Cached>,
+    /// Goes up whenever a file is read again or goes away, so a scan that
+    /// changed nothing can say so instead of copying every record.
+    generation: u64,
+}
+
+// Held for the whole scan: the scan is its only user, and a second scan
+// beside it would find the cache empty and read every file again.
+static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
 fn home() -> PathBuf {
     crate::platform::home()
 }
 
 /// Everything both agents logged, oldest first. Blocking: run it off the main thread.
+#[cfg(test)]
 pub fn scan() -> Vec<Record> {
+    scan_changed(None).1.unwrap_or_default()
+}
+
+/// Like `scan`, with the cache's generation. The records are `None` when
+/// they are the same as for the scan that returned `seen`.
+pub fn scan_changed(seen: Option<u64>) -> (u64, Option<Vec<Record>>) {
     let mut files: Vec<(PathBuf, AgentKind)> = Vec::new();
     let claude = home().join(".claude/projects");
     for dir in read_dir(&claude) {
@@ -320,9 +337,14 @@ pub fn scan() -> Vec<Record> {
     files.dedup_by(|a, b| a.0 == b.0);
 
     let mut slot = CACHE.lock().unwrap();
-    let cache = slot.get_or_insert_with(HashMap::new);
+    let Cache {
+        files: cache,
+        generation,
+    } = slot.get_or_insert_with(Cache::default);
     let present: HashSet<&PathBuf> = files.iter().map(|(f, _)| f).collect();
+    let before = cache.len();
     cache.retain(|p, _| present.contains(p));
+    let mut changed = cache.len() != before;
     for (file, agent) in &files {
         let Ok(meta) = std::fs::metadata(file) else {
             continue;
@@ -372,6 +394,7 @@ pub fn scan() -> Vec<Record> {
                 entry.keys.clear();
             }
             read_claude_from(file, &mut tail, &mut entry.records, &mut entry.keys);
+            changed = true;
             entry.modified = stamp;
             entry.len = meta.len();
             entry.tail = Some(tail);
@@ -396,6 +419,7 @@ pub fn scan() -> Vec<Record> {
             | AgentKind::Antigravity
             | AgentKind::WorkersAi => (Vec::new(), Vec::new()),
         };
+        changed = true;
         cache.insert(
             file.clone(),
             Cached {
@@ -408,12 +432,18 @@ pub fn scan() -> Vec<Record> {
             },
         );
     }
-    let mut seen = HashSet::new();
+    if changed {
+        *generation += 1;
+    }
+    if seen == Some(*generation) {
+        return (*generation, None);
+    }
+    let mut keys_seen = HashSet::new();
     let mut out = Vec::new();
     for c in cache.values() {
         for (i, r) in c.records.iter().enumerate() {
             if let Some(key) = c.keys.get(i)
-                && !seen.insert(key.clone())
+                && !keys_seen.insert(key.clone())
             {
                 continue;
             }
@@ -421,7 +451,7 @@ pub fn scan() -> Vec<Record> {
         }
     }
     out.sort_by_key(|r| r.at);
-    out
+    (*generation, Some(out))
 }
 
 fn devin_dir() -> PathBuf {
@@ -529,11 +559,18 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// How many of a transcript's first bytes are kept to tell an append from a
+/// rewrite.
+const HEAD: u64 = 256;
+
 /// How far a Claude transcript was read, and what reading it so far found.
 #[derive(Default)]
 struct ClaudeTail {
     /// Bytes read, up to the end of the last whole line.
     offset: u64,
+    /// The file's first bytes (up to [`HEAD`]) among those read. Different
+    /// ones next time mean it was rewritten, not appended to.
+    head: Vec<u8>,
     seen: HashSet<String>,
     /// A title the user gave beats the one Claude Code wrote.
     custom: Option<String>,
@@ -551,17 +588,27 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
 
 /// Reads `path` from `tail.offset` and adds what it finds to `records` and
 /// `keys`. A last line without its newline is still being written: it is left
-/// for the next read.
+/// for the next read. A file whose start changed was rewritten: it is read
+/// from the start again, in place of what was read before.
 fn read_claude_from(
     path: &Path,
     tail: &mut ClaudeTail,
     records: &mut Vec<Record>,
     keys: &mut Vec<String>,
 ) {
-    use std::io::{Seek as _, SeekFrom};
+    use std::io::{Read as _, Seek as _, SeekFrom};
     let Ok(mut file) = std::fs::File::open(path) else {
         return;
     };
+    let mut head = Vec::new();
+    if (&mut file).take(HEAD).read_to_end(&mut head).is_err() {
+        return;
+    }
+    if tail.offset > 0 && !head.starts_with(&tail.head) {
+        *tail = ClaudeTail::default();
+        records.clear();
+        keys.clear();
+    }
     if file.seek(SeekFrom::Start(tail.offset)).is_err() {
         return;
     }
@@ -645,6 +692,12 @@ fn read_claude_from(
             title: String::new(),
         });
         keys.push(key);
+    }
+    if (tail.head.len() as u64) < HEAD {
+        let read = head
+            .len()
+            .min(usize::try_from(tail.offset).unwrap_or(usize::MAX));
+        tail.head = head[..read].to_vec();
     }
     // A title can arrive after the responses it names.
     if let Some(title) = tail.custom.clone().or_else(|| tail.ai.clone()) {
@@ -878,6 +931,39 @@ mod tests {
         read_claude_from(&path, &mut tail, &mut records, &mut keys);
         assert_eq!(keys, ["m1:r", "m2:r", "m3:r"]);
         assert_eq!(tail.offset, std::fs::metadata(&path).unwrap().len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transcript_rewritten_longer_is_read_again_from_the_start() {
+        let dir =
+            std::env::temp_dir().join(format!("arakun-history-rewrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let line = |id: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-10-25T10:00:00Z","sessionId":"s","requestId":"r","cwd":"/p","message":{{"id":"{id}","model":"claude-opus-5-5","usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#
+            )
+        };
+        let (mut tail, mut records, mut keys) = (ClaudeTail::default(), Vec::new(), Vec::new());
+        std::fs::write(&path, format!("{}\n", line("m1"))).unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(keys, ["m1:r"]);
+        // Replaced by something longer that does not start the same way: an
+        // offset past the old end would miss its first line.
+        std::fs::write(&path, format!("{}\n{}\n", line("m2"), line("m3"))).unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(keys, ["m2:r", "m3:r"]);
+        assert_eq!(records.len(), 2);
+        // A plain append still reads only what was added.
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write as _;
+        writeln!(f, "{}", line("m4")).unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(keys, ["m2:r", "m3:r", "m4:r"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

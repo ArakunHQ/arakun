@@ -5,14 +5,10 @@ use super::*;
 use crate::ui::Typography as _;
 
 impl Shell {
-    pub(super) fn render_home(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_home(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let project = self.project().name.clone();
         let face = self.home_face.read(cx);
-        let caret = self
-            .composer_layout
-            .borrow()
-            .as_ref()
-            .and_then(|l| l.position_for_index(self.env().draft.head()));
+        let caret = self.composer.read(cx).caret_position();
         face.caret.set(caret);
         let alpha = face.ui_alpha();
         div().relative().flex().flex_col().size_full().child(
@@ -51,7 +47,7 @@ impl Shell {
                     div()
                         .flex_none()
                         .opacity(alpha)
-                        .child(self.render_composer(true, window, cx)),
+                        .child(self.render_composer(true, cx)),
                 )
                 .when(self.setup_tips, |d| {
                     d.child(self.render_setup_tips(cx).opacity(alpha))
@@ -203,20 +199,18 @@ impl Shell {
         .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
         let view = match alone {
             Alone::GitHub => {
-                self.github_view
+                self.views
+                    .github
                     .update(cx, |v, cx| v.set_card_corners(gpui::Corners::default(), cx));
-                self.github_view.clone().into_any_element()
+                self.views.github.clone().into_any_element()
             }
             Alone::Servers => {
                 self.sync_this_computer(cx);
-                self.servers_view.clone().into_any_element()
+                self.views.servers.clone().into_any_element()
             }
             Alone::Teams => self.teams_view.clone().into_any_element(),
-            Alone::Linear => self.linear_view.clone().into_any_element(),
-            Alone::Usage => {
-                self.usage_shown.set(true);
-                self.usage_view.clone().into_any_element()
-            }
+            Alone::Linear => self.views.linear.clone().into_any_element(),
+            Alone::Usage => self.views.usage.clone().into_any_element(),
         };
         self.render_alone("view-alone", back, view, window)
     }

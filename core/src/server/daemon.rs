@@ -905,13 +905,7 @@ fn stop_turn(thread: &Entity<Thread>, cx: &mut App) -> usize {
 
 /// The first line of a prompt, cut to a title's length.
 fn summary(text: &str) -> String {
-    let text = agent::attach::title_text(text);
-    let line = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    agent::log::head(line, 80)
+    agent::attach::title(text, 80)
 }
 
 /// The notice a phone gets. Only a finished turn says how long it took.
@@ -7208,6 +7202,10 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         );
         let long = "x".repeat(100);
         assert_eq!(summary(&long), format!("{}…", "x".repeat(80)));
+        assert_eq!(
+            summary("ghp_abcdefghijklmnopqrstuvwxyz0123456789\nrotate the key"),
+            "rotate the key"
+        );
     }
 
     #[test]

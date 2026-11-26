@@ -19,8 +19,8 @@ impl Shell {
 
     pub(super) fn subnav_lines(&self, view: View, cx: &App) -> Vec<Line> {
         match view {
-            View::Extensions => self.extensions_view.read(cx).nav(),
-            View::Cloudflare => self.cloudflare_view.read(cx).nav(),
+            View::Extensions => self.views.extensions.read(cx).nav(),
+            View::Cloudflare => self.views.cloudflare.read(cx).nav(),
             _ => Vec::new(),
         }
     }
@@ -28,15 +28,15 @@ impl Shell {
     /// What narrows the page of `view`, in a row under its tabs.
     pub(super) fn subnav_filters(&self, view: View, cx: &App) -> Vec<Line> {
         match view {
-            View::Extensions => self.extensions_view.read(cx).filters(),
+            View::Extensions => self.views.extensions.read(cx).filters(),
             _ => Vec::new(),
         }
     }
 
     /// What a click on one of `view`'s pages does.
     pub(super) fn subnav_pick(&self, view: View) -> Pick {
-        let extensions = self.extensions_view.downgrade();
-        let cloudflare = self.cloudflare_view.downgrade();
+        let extensions = self.views.extensions.downgrade();
+        let cloudflare = self.views.cloudflare.downgrade();
         Rc::new(move |key: &SharedString, _, cx: &mut App| {
             let key = key.to_string();
             match view {

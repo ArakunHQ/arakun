@@ -1,7 +1,8 @@
 //! arakun-pilot: the user's pull request agent on Cloudflare (~/arakun/pilot-cf).
 //! It reviews other people's pull requests and fixes the user's own, then
 //! leaves items (Spanish summaries) at `GET /items`. Arakun reads them every
-//! minute, shows them at the top of the GitHub tab and tells the Worker
+//! minute (every five while its window is behind), shows them at the top of
+//! the GitHub tab and tells the Worker
 //! (`POST /items/<id>/done`) when the user dealt with one.
 //!
 //! Off unless `client.json` (`{"url": "...", "token": "..."}`) exists. With
@@ -10,7 +11,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, EventEmitter, Task};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -18,6 +19,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::pr::{ItemKind, ItemRef};
 
 const POLL: Duration = Duration::from_secs(60);
+/// The read's gap while the window is in the background, as the GitHub
+/// inbox's: notices still come, only less often.
+const POLL_IDLE: Duration = Duration::from_secs(300);
 /// The only repository the Worker works on (SPEC.md): a task's `pr` is a
 /// number in it.
 pub const REPO: &str = "ArakunHQ/arakun";
@@ -791,14 +795,36 @@ pub struct Pilot {
     board: Option<super::board::Board>,
     /// Why the last board read failed; `Missing` while the Worker has none.
     board_problem: Option<super::board::BoardProblem>,
+    window_active: bool,
+    /// When the last read started.
+    last_start: Option<Instant>,
     _poll: Task<()>,
 }
 
 impl EventEmitter<PilotEvent> for Pilot {}
 
+/// One read of the Worker: the handled ids it was told, its items and its
+/// board.
+type Reads = (
+    Vec<String>,
+    Result<Vec<Item>, String>,
+    Result<super::board::Board, super::board::BoardProblem>,
+);
+
+/// Whether the poll reads now. It keeps reading while the GitHub tab is
+/// hidden: the notices of new items are for then.
+fn poll_due(window_active: bool, since_start: Option<Duration>) -> bool {
+    // A tick that comes a little early still counts.
+    window_active || since_start.is_none_or(|e| e + POLL / 2 >= POLL_IDLE)
+}
+
 impl Pilot {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::refresh);
+        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, |this, cx| {
+            if poll_due(this.window_active, this.last_start.map(|t| t.elapsed())) {
+                this.refresh(cx);
+            }
+        });
         let book = load_book();
         Self {
             config: None,
@@ -812,7 +838,19 @@ impl Pilot {
             last_read: None,
             board: None,
             board_problem: None,
+            window_active: true,
+            last_start: None,
             _poll: poll,
+        }
+    }
+
+    /// The window came to the front or went behind. Coming back, a read
+    /// older than the usual gap is done again now.
+    pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        let back = active && !self.window_active;
+        self.window_active = active;
+        if back && self.last_start.is_none_or(|t| t.elapsed() >= POLL) {
+            self.refresh(cx);
         }
     }
 
@@ -889,39 +927,25 @@ impl Pilot {
             self.again = true;
             return;
         }
-        let (config, config_problem) = match read_config() {
-            Ok(c) => (c, None),
-            Err(e) => (None, Some(e)),
-        };
-        if config_problem != self.config_problem {
-            self.config_problem = config_problem;
-            cx.notify();
-        }
-        if config != self.config {
-            self.last_read = None;
-            // Another Worker (or none) knows other items.
-            self.items.clear();
-            self.problem = None;
-            self.board = None;
-            self.board_problem = None;
-            self.config = config.clone();
-            cx.notify();
-        }
-        // A board file stands in for the Worker even without settings.
-        let fixture = std::env::var_os(super::board::FIXTURE_ENV).is_some();
-        if config.is_none() && !fixture {
-            return;
-        }
         self.busy = true;
+        self.last_start = Some(Instant::now());
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
-            let (told, read, board) = cx
+            // The settings file is read here too, off the main thread.
+            let found = cx
                 .background_spawn(crate::guard::task(async move {
+                    let settings = read_config();
+                    let config = settings.clone().ok().flatten();
+                    // A board file stands in for the Worker even without settings.
+                    let fixture = std::env::var_os(super::board::FIXTURE_ENV).is_some();
+                    if config.is_none() && !fixture {
+                        return Some((settings, None));
+                    }
                     // The board and the items side by side: a slow one
                     // doesn't hold the other up.
                     // The handled ids the Worker missed go out beside them:
                     // the book hides those cards whatever the read says.
-                    std::thread::scope(|s| {
+                    let reads = std::thread::scope(|s| {
                         let board = s.spawn(|| super::board::fetch(config.as_ref()));
                         let (told, read) = match &config {
                             None => (Vec::new(), Ok(Vec::new())),
@@ -937,52 +961,85 @@ impl Pilot {
                             ))
                         });
                         (told, read, board)
-                    })
+                    });
+                    Some((settings, Some(reads)))
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
-                let before = this.book.clone();
-                for id in &told {
-                    this.book.told(id);
-                }
-                match board {
-                    Ok(b) => {
-                        this.board = Some(b);
-                        this.board_problem = None;
+                if let Some((settings, reads)) = found {
+                    this.take_settings(settings, cx);
+                    if let Some(reads) = reads {
+                        this.take_reads(reads, cx);
                     }
-                    Err(super::board::BoardProblem::Missing) => {
-                        this.board = None;
-                        this.board_problem = Some(super::board::BoardProblem::Missing);
-                    }
-                    Err(e) => this.board_problem = Some(e),
                 }
-                match read {
-                    Ok(read) => {
-                        this.problem = None;
-                        if this.config.is_some() {
-                            this.last_read = Some(crate::model::unix_now());
-                        }
-                        let quiet = std::mem::take(&mut this.fresh_book);
-                        let pops = this.book.absorb(&mut this.items, read, quiet);
-                        if !pops.is_empty() {
-                            cx.emit(PilotEvent::New(pops));
-                        }
-                    }
-                    Err(e) => this.problem = Some(e),
-                }
-                // Most reads change nothing: the file is written only when
-                // something new was seen or told.
-                if this.book != before {
-                    store_book(&this.book);
-                }
-                cx.notify();
                 if std::mem::take(&mut this.again) {
                     this.refresh(cx);
                 }
             });
         })
         .detach();
+    }
+
+    /// What the settings file said: other settings start over.
+    fn take_settings(&mut self, settings: Result<Option<Config>, String>, cx: &mut Context<Self>) {
+        let (config, config_problem) = match settings {
+            Ok(c) => (c, None),
+            Err(e) => (None, Some(e)),
+        };
+        if config_problem != self.config_problem {
+            self.config_problem = config_problem;
+            cx.notify();
+        }
+        if config != self.config {
+            self.last_read = None;
+            // Another Worker (or none) knows other items.
+            self.items.clear();
+            self.problem = None;
+            self.board = None;
+            self.board_problem = None;
+            self.config = config;
+            cx.notify();
+        }
+    }
+
+    /// What the Worker said.
+    fn take_reads(&mut self, (told, read, board): Reads, cx: &mut Context<Self>) {
+        let before = self.book.clone();
+        for id in &told {
+            self.book.told(id);
+        }
+        match board {
+            Ok(b) => {
+                self.board = Some(b);
+                self.board_problem = None;
+            }
+            Err(super::board::BoardProblem::Missing) => {
+                self.board = None;
+                self.board_problem = Some(super::board::BoardProblem::Missing);
+            }
+            Err(e) => self.board_problem = Some(e),
+        }
+        match read {
+            Ok(read) => {
+                self.problem = None;
+                if self.config.is_some() {
+                    self.last_read = Some(crate::model::unix_now());
+                }
+                let quiet = std::mem::take(&mut self.fresh_book);
+                let pops = self.book.absorb(&mut self.items, read, quiet);
+                if !pops.is_empty() {
+                    cx.emit(PilotEvent::New(pops));
+                }
+            }
+            Err(e) => self.problem = Some(e),
+        }
+        // Most reads change nothing: the file is written only when
+        // something new was seen or told.
+        if self.book != before {
+            store_book(&self.book);
+        }
+        cx.notify();
     }
 
     /// The user dealt with `id`: its card goes, and the Worker is told.
@@ -1289,6 +1346,16 @@ mod tests {
         let mut ask = item("b", "", Kind::NeedsYou, false);
         ask.pregunta = "¿Le contesto a Rik que no?".into();
         assert_eq!(ask.notice().1, "¿Le contesto a Rik que no?");
+    }
+
+    #[test]
+    fn a_window_behind_reads_every_five_minutes() {
+        assert!(poll_due(true, Some(POLL)));
+        assert!(poll_due(false, None));
+        assert!(!poll_due(false, Some(POLL)));
+        assert!(!poll_due(false, Some(4 * POLL)));
+        // The fifth tick, a moment early.
+        assert!(poll_due(false, Some(POLL_IDLE - Duration::from_millis(5))));
     }
 
     #[test]

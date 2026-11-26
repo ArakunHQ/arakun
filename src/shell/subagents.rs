@@ -109,6 +109,18 @@ fn checks_label(state: ci::State) -> Option<(&'static str, Tone)> {
     }
 }
 
+/// The Session tab's subagent state, kept apart from the rest of the shell.
+#[derive(Default)]
+pub(super) struct Subagents {
+    /// The user left the Session tab, so a new subagent or pull request
+    /// doesn't bring it back until restart.
+    pub dismissed: bool,
+    /// The subagent whose transcript the Session tab shows.
+    pub view: Option<SubagentView>,
+    /// Redraws the Session tab each second while a subagent in it runs.
+    pub tick: Option<Task<()>>,
+}
+
 /// A subagent's transcript open in the panel.
 pub(super) struct SubagentView {
     /// The session tab it belongs to.
@@ -169,9 +181,9 @@ impl Shell {
     /// The Workspace panel is on screen at its Session tab.
     pub(super) fn subagents_shown(&self) -> bool {
         self.has_projects()
-            && self.customize.is_none()
+            && self.panel.customize.is_none()
             && self.panel_shown()
-            && self.panel_tab == PanelTab::Session
+            && self.panel.tab == PanelTab::Session
     }
 
     /// Opens the Workspace panel at its Session tab, or goes back to its
@@ -182,7 +194,7 @@ impl Shell {
             return;
         }
         self.show_subagents_tab(cx);
-        self.subagents_dismissed = false;
+        self.subagents.dismissed = false;
         self.sync_subagent_tick(cx);
         cx.notify();
     }
@@ -190,10 +202,10 @@ impl Shell {
     /// Switches the Workspace panel's tab. Leaving Session means a new
     /// subagent or pull request should not pull the panel back to it.
     pub(super) fn set_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
-        if self.panel_tab == PanelTab::Session && tab != PanelTab::Session {
-            self.subagents_dismissed = true;
+        if self.panel.tab == PanelTab::Session && tab != PanelTab::Session {
+            self.subagents.dismissed = true;
         }
-        self.panel_tab = tab;
+        self.panel.tab = tab;
         if tab == PanelTab::Session {
             self.sync_subagent_tick(cx);
         }
@@ -203,12 +215,12 @@ impl Shell {
     /// Shows the Workspace panel at its Session tab, in Customize's place
     /// if that is open.
     fn show_subagents_tab(&mut self, cx: &mut Context<Self>) {
-        if self.customize.is_some() {
+        if self.panel.customize.is_some() {
             self.close_customize(cx);
         }
-        self.panel_tab = PanelTab::Session;
-        if !self.panel_open {
-            self.panel_open = true;
+        self.panel.tab = PanelTab::Session;
+        if !self.panel.open {
+            self.panel.open = true;
             self.save(cx);
         }
     }
@@ -224,7 +236,7 @@ impl Shell {
         self.show_subagents_tab(cx);
         match subagent {
             Some(id) => self.show_subagent(session, &id, window, cx),
-            None => self.subagent_view = None,
+            None => self.subagents.view = None,
         }
         self.sync_subagent_tick(cx);
         cx.notify();
@@ -244,9 +256,9 @@ impl Shell {
             .active_session_id()
             .is_some_and(|a| a.as_ref() == session);
         if active
-            && !self.subagents_dismissed
-            && self.customize.is_none()
-            && self.panel_tab == PanelTab::Sessions
+            && !self.subagents.dismissed
+            && self.panel.customize.is_none()
+            && self.panel.tab == PanelTab::Sessions
         {
             self.show_subagents_tab(cx);
         }
@@ -299,7 +311,8 @@ impl Shell {
             return;
         };
         if self
-            .subagent_view
+            .subagents
+            .view
             .as_ref()
             .is_some_and(|v| v.session == session && v.id == id)
         {
@@ -329,7 +342,7 @@ impl Shell {
                 ),
             },
         );
-        self.subagent_view = Some(SubagentView {
+        self.subagents.view = Some(SubagentView {
             session,
             id,
             view,
@@ -339,10 +352,10 @@ impl Shell {
 
     /// Keeps the elapsed times of running subagents counting while the tab shows them.
     pub(super) fn sync_subagent_tick(&mut self, cx: &mut Context<Self>) {
-        if self.subagent_tick.is_some() || !self.subagents_running(cx) {
+        if self.subagents.tick.is_some() || !self.subagents_running(cx) {
             return;
         }
-        self.subagent_tick = Some(cx.spawn(async move |this, cx| {
+        self.subagents.tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let going = this.update(cx, |this, cx| {
@@ -350,7 +363,7 @@ impl Shell {
                     if going {
                         cx.notify();
                     } else {
-                        this.subagent_tick = None;
+                        this.subagents.tick = None;
                     }
                     going
                 });
@@ -375,7 +388,7 @@ impl Shell {
         // The tick stops while the tab is out of sight, and reopening the
         // panel or switching sessions doesn't pass through `set_panel_tab`:
         // drawing the tab with a subagent running starts it again.
-        if self.subagent_tick.is_none()
+        if self.subagents.tick.is_none()
             && thread
                 .as_ref()
                 .is_some_and(|t| t.read(cx).running_subagents() > 0)
@@ -386,7 +399,8 @@ impl Shell {
             });
         }
         let opened = self
-            .subagent_view
+            .subagents
+            .view
             .as_ref()
             .filter(|v| Some(&v.session) == session.as_ref())
             .and_then(|v| {
@@ -410,7 +424,7 @@ impl Shell {
                 .child(
                     icon_button("subagent-back", "arrow-left01", 14., "Back to the session")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.subagent_view = None;
+                            this.subagents.view = None;
                             cx.notify();
                         })),
                 )

@@ -29,7 +29,7 @@ impl Shell {
                 self.focus_terminal(window, cx);
             }
         } else if self.has_projects() {
-            window.focus(&self.composer_focus, cx);
+            self.focus_composer(window, cx);
         }
         self.save(cx);
         cx.notify();
@@ -494,7 +494,7 @@ impl Shell {
             if empty {
                 self.dock_open = false;
                 self.save(cx);
-                window.focus(&self.composer_focus, cx);
+                self.focus_composer(window, cx);
             } else {
                 self.focus_terminal(window, cx);
             }

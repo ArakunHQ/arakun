@@ -53,9 +53,10 @@ fn modified(id: &str) -> Option<SystemTime> {
 impl Shell {
     pub(super) fn watch_headless(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            // Every meta file is read and parsed on each scan. In the
-            // background one in five seconds keeps the sidebar and the
-            // phone's statuses close; coming to the front scans within one.
+            // Each scan reads the folder and checks every meta file, parsing
+            // the ones that changed. In the background one in five seconds
+            // keeps the sidebar and the phone's statuses close; coming to the
+            // front scans within one.
             let mut skipped = 0;
             let mut has_active = false;
             loop {

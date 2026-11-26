@@ -434,9 +434,6 @@ pub struct Environment {
     /// Terminals opened here since arakun started; the next one's number.
     pub terminals_opened: usize,
     pub changes: Vec<git::Change>,
-    pub draft: crate::draft::Draft,
-    /// Images waiting in the composer, sent along with the draft.
-    pub draft_images: Vec<PathBuf>,
     pub agent: AgentKind,
     /// Native Droid settings picked on the New session tab, for the next session.
     pub draft_settings: Vec<(crate::agent::Setting, String)>,
@@ -970,8 +967,6 @@ impl Environment {
             active_terminal: 0,
             terminals_opened: 0,
             changes: Vec::new(),
-            draft: Default::default(),
-            draft_images: Vec::new(),
             agent: default_agent(),
             draft_settings: Vec::new(),
             claude_settings: Vec::new(),
@@ -1116,7 +1111,7 @@ impl Project {
     }
 
     /// Brings the environment list in line with `git worktree list`, keeping the
-    /// state (tabs, terminals, drafts) of worktrees that still exist.
+    /// state (tabs, terminals) of worktrees that still exist.
     pub fn sync_worktrees(&mut self, trees: Vec<git::Worktree>) {
         let active = self
             .environments

@@ -80,7 +80,7 @@ impl Shell {
         .on_action(cx.listener(|this, _: &TogglePin, window, cx| {
             // In the composer, with no tree row under the pointer, the key is
             // the composer's: on macOS Option+P types π.
-            if this.tree_hover.is_none() && this.composer_focus.is_focused(window) {
+            if this.rail.tree_hover.is_none() && this.composer_focus.is_focused(window) {
                 cx.propagate();
                 return;
             }
@@ -154,7 +154,7 @@ impl Shell {
             return;
         };
         match &tab.kind {
-            TabKind::Session { .. } | TabKind::NewSession => window.focus(&self.composer_focus, cx),
+            TabKind::Session { .. } | TabKind::NewSession => self.focus_composer(window, cx),
             TabKind::Notes => window.focus(&self.notes_input.focus_handle(cx), cx),
             TabKind::Browser { .. } => self.ensure_active_browser(true, window, cx),
             TabKind::File { .. } | TabKind::Diff { .. } => window.focus(&self.focus, cx),
@@ -162,27 +162,14 @@ impl Shell {
             TabKind::Tasks => self
                 .tasks_view
                 .update(cx, |v, cx| v.focus_input(window, cx)),
-            TabKind::Runs => self.runs_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Memory => self.memory_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Cloudflare => self.cloudflare_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "coderlabs")]
             TabKind::Site => self.site_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "team")]
             TabKind::Team => self.team_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::PostHog => self.posthog_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Linear => self.linear_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Doop => self.doop_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Servers => self.servers_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Teams => self.teams_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Isometric => self.iso_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "coderlabs")]
             TabKind::Canvas => self.canvas_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Extensions => self.extensions_view.update(cx, |v, cx| v.focus(window, cx)),
+            kind => self.views.focus(kind, window, cx),
         }
     }
 

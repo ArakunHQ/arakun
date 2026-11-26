@@ -137,7 +137,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Archive after merge (Settings › Branches), and the merges archived | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
-| Linear sign-ins (personal API keys) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
+| Linear sign-ins (who signed in; the personal API keys are in the Credential Manager) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
 | Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
 | Doop sign-ins, canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
@@ -161,7 +161,7 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
 | A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
 
-On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
+On Linux those sessions live in the keyring (the Secret Service); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
 
 ## Differences from Linux

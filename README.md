@@ -1316,7 +1316,7 @@ Stored logins and Teams on Linux need a Secret Service on the session bus, such 
 gnome-keyring, KWallet or KeePassXC; Arakun talks to it over D-Bus, with no
 `secret-tool` needed. Teams does not work without one, since it keeps the session and
 the device keys there. Without one, Arakun keeps its other keys and tokens in
-`secrets.json` in its data folder, which only you can read, and tells you so once.
+`secrets.json` in its data folder (`~/.local/share/arakun`), which only you can read, and tells you so once.
 
 ## Build from source
 

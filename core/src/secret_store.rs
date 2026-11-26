@@ -59,7 +59,10 @@ static NOTICE: AtomicBool = AtomicBool::new(false);
 
 /// The keyring account for `name`. A test Arakun with a state file of its own
 /// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own secrets, so it never
-/// signs the person's own Arakun out or takes its keys.
+/// signs the person's own Arakun out or takes its keys. Only for a store
+/// whose file is next to the state too: a store whose file every profile
+/// shares uses `name` as it is, or a test Arakun would move the person's own
+/// secret to an entry only it finds.
 pub fn account(name: &str) -> String {
     account_in(name, std::env::var_os("ARAKUN_STATE").as_deref())
 }
@@ -94,15 +97,11 @@ pub fn account_for(name: &str, state: Option<&str>) -> String {
     }
 }
 
-/// The file secrets go to when there is no keyring. Next to the state, so a
-/// test Arakun keeps its own.
+/// The file secrets go to when there is no keyring. One for every profile:
+/// a store whose own file is shared names its secrets the same in every
+/// profile, and [`account`] tells the others apart.
 fn fallback_path() -> PathBuf {
-    let dir = std::env::var_os("ARAKUN_STATE")
-        .map(PathBuf::from)
-        .and_then(|state| state.parent().map(Path::to_path_buf))
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or_else(crate::platform::app_dir);
-    dir.join("secrets.json")
+    crate::platform::app_dir().join("secrets.json")
 }
 
 fn os() -> Store<'static, Os> {

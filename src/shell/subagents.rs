@@ -109,6 +109,18 @@ fn checks_label(state: ci::State) -> Option<(&'static str, Tone)> {
     }
 }
 
+/// The Session tab's subagent state, kept apart from the rest of the shell.
+#[derive(Default)]
+pub(super) struct Subagents {
+    /// The user left the Session tab, so a new subagent or pull request
+    /// doesn't bring it back until restart.
+    pub dismissed: bool,
+    /// The subagent whose transcript the Session tab shows.
+    pub view: Option<SubagentView>,
+    /// Redraws the Session tab each second while a subagent in it runs.
+    pub tick: Option<Task<()>>,
+}
+
 /// A subagent's transcript open in the panel.
 pub(super) struct SubagentView {
     /// The session tab it belongs to.
@@ -182,7 +194,7 @@ impl Shell {
             return;
         }
         self.show_subagents_tab(cx);
-        self.subagents_dismissed = false;
+        self.subagents.dismissed = false;
         self.sync_subagent_tick(cx);
         cx.notify();
     }
@@ -191,7 +203,7 @@ impl Shell {
     /// subagent or pull request should not pull the panel back to it.
     pub(super) fn set_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
         if self.panel.tab == PanelTab::Session && tab != PanelTab::Session {
-            self.subagents_dismissed = true;
+            self.subagents.dismissed = true;
         }
         self.panel.tab = tab;
         if tab == PanelTab::Session {
@@ -224,7 +236,7 @@ impl Shell {
         self.show_subagents_tab(cx);
         match subagent {
             Some(id) => self.show_subagent(session, &id, window, cx),
-            None => self.subagent_view = None,
+            None => self.subagents.view = None,
         }
         self.sync_subagent_tick(cx);
         cx.notify();
@@ -244,7 +256,7 @@ impl Shell {
             .active_session_id()
             .is_some_and(|a| a.as_ref() == session);
         if active
-            && !self.subagents_dismissed
+            && !self.subagents.dismissed
             && self.panel.customize.is_none()
             && self.panel.tab == PanelTab::Sessions
         {
@@ -299,7 +311,8 @@ impl Shell {
             return;
         };
         if self
-            .subagent_view
+            .subagents
+            .view
             .as_ref()
             .is_some_and(|v| v.session == session && v.id == id)
         {
@@ -329,7 +342,7 @@ impl Shell {
                 ),
             },
         );
-        self.subagent_view = Some(SubagentView {
+        self.subagents.view = Some(SubagentView {
             session,
             id,
             view,
@@ -339,10 +352,10 @@ impl Shell {
 
     /// Keeps the elapsed times of running subagents counting while the tab shows them.
     pub(super) fn sync_subagent_tick(&mut self, cx: &mut Context<Self>) {
-        if self.subagent_tick.is_some() || !self.subagents_running(cx) {
+        if self.subagents.tick.is_some() || !self.subagents_running(cx) {
             return;
         }
-        self.subagent_tick = Some(cx.spawn(async move |this, cx| {
+        self.subagents.tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let going = this.update(cx, |this, cx| {
@@ -350,7 +363,7 @@ impl Shell {
                     if going {
                         cx.notify();
                     } else {
-                        this.subagent_tick = None;
+                        this.subagents.tick = None;
                     }
                     going
                 });
@@ -375,7 +388,7 @@ impl Shell {
         // The tick stops while the tab is out of sight, and reopening the
         // panel or switching sessions doesn't pass through `set_panel_tab`:
         // drawing the tab with a subagent running starts it again.
-        if self.subagent_tick.is_none()
+        if self.subagents.tick.is_none()
             && thread
                 .as_ref()
                 .is_some_and(|t| t.read(cx).running_subagents() > 0)
@@ -386,7 +399,8 @@ impl Shell {
             });
         }
         let opened = self
-            .subagent_view
+            .subagents
+            .view
             .as_ref()
             .filter(|v| Some(&v.session) == session.as_ref())
             .and_then(|v| {
@@ -410,7 +424,7 @@ impl Shell {
                 .child(
                     icon_button("subagent-back", "arrow-left01", 14., "Back to the session")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.subagent_view = None;
+                            this.subagents.view = None;
                             cx.notify();
                         })),
                 )

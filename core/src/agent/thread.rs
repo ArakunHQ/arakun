@@ -206,6 +206,13 @@ fn is_zero(n: &u64) -> bool {
 const TERMINAL_KEEP: usize = 64 * 1024;
 
 impl ToolCall {
+    /// Shows "Answered" for the call's output: agents echo a form's answers
+    /// into it, and a password must not show again.
+    pub fn hide_answer(&mut self) {
+        self.content.clear();
+        self.raw_output = Some("Answered".to_string());
+    }
+
     /// Adds what a command printed, then drops whole lines from the start once
     /// the output is twice `TERMINAL_KEEP`, so the cost of cutting is spread
     /// over many appends.
@@ -4132,9 +4139,19 @@ impl Thread {
         if let Some(code) = meta["terminal_exit"]["exit_code"].as_i64() {
             t.exit_code = Some(code);
         }
+        if self.native.secret_answered.contains(&id) {
+            self.mask_answered(ix);
+        }
         self.fill_replaced(ix);
         self.entries_changed(ix, cx);
         self.mirror_subagent(ix, cx);
+    }
+
+    /// What a tool call that asked for a password says back, as "Answered".
+    pub(super) fn mask_answered(&mut self, ix: usize) {
+        if let Some(Entry::Tool(t)) = self.entries.get_mut(ix) {
+            t.hide_answer();
+        }
     }
 
     /// A write that replaces a whole file comes without the text it replaces,
@@ -5144,6 +5161,17 @@ mod tests {
         };
         recount(&mut t);
         Entry::Tool(t)
+    }
+
+    #[test]
+    fn answered_password_hides_the_echo() {
+        let Entry::Tool(mut t) = write("q", Path::new("a"), None, "hunter2") else {
+            unreachable!()
+        };
+        t.raw_output = Some("User answered: hunter2".into());
+        t.hide_answer();
+        assert!(t.content.is_empty());
+        assert_eq!(t.raw_output.as_deref(), Some("Answered"));
     }
 
     #[test]

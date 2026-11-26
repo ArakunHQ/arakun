@@ -123,6 +123,7 @@ impl TabViews {
                     this.check_limit_alerts(cx);
                     this.phone_usage_changed(cx);
                 }
+                UsageEvent::Open(place) => this.open_usage_place(place, window, cx),
             }),
             // New scene and Change in the Isometric tab start sessions.
             cx.subscribe_in(&iso, window, |this, _, ev, window, cx| match ev {

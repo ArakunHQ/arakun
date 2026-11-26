@@ -54,7 +54,6 @@ pub(crate) mod pages;
 mod palette;
 mod panel;
 mod panes;
-mod paste;
 mod phone;
 mod pinned;
 mod posthog;
@@ -371,8 +370,13 @@ pub struct Shell {
     _home_face: Subscription,
     rail_mascot: Entity<crate::mascot::Mascot>,
     focus: FocusHandle,
-    /// The composer's focus, caret, scroll, history and completion.
-    composer: composer::Composer,
+    /// The composer: each environment's draft, its caret, history and completion.
+    composer: Entity<composer::Composer>,
+    /// The composer's focus, kept here to focus it without reading the entity.
+    composer_focus: FocusHandle,
+    /// The composer's events, and its focus: focusing it claims its tab,
+    /// leaving it lets the tab go.
+    _composer: [Subscription; 3],
     _activation: Subscription,
     /// Where the window is, saved with the state so it reopens there.
     window_state: Option<state::WindowState>,
@@ -478,10 +482,6 @@ pub struct Shell {
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
     /// The project check's state per session id.
     checks: std::collections::HashMap<String, checks::CheckLoop>,
-    /// Large pastes waiting in each environment's composer, sent with the draft.
-    pastes: std::collections::HashMap<std::path::PathBuf, Vec<paste::Paste>>,
-    /// Annotations and review comments waiting in each environment's composer.
-    notes: std::collections::HashMap<std::path::PathBuf, Vec<crate::agent::notes::ChatNote>>,
     review_draft: Option<notes::ReviewDraft>,
     /// The session card being dragged.
     lifted: Option<SharedString>,
@@ -508,11 +508,8 @@ pub struct Shell {
     bar_area: Rc<Cell<Bounds<Pixels>>>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
-    /// Other sessions' conversations waiting in each environment's composer.
-    attached: std::collections::HashMap<std::path::PathBuf, Vec<drag::AttachedContext>>,
     /// Dropped sessions still being read for each environment's composer.
     dropping: std::collections::HashMap<std::path::PathBuf, usize>,
-    saved_prompts: Vec<crate::prompts::SavedPrompt>,
     /// The agent whose models the model menu shows; `None` is the composer's.
     menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
@@ -677,8 +674,20 @@ impl Shell {
             this.sync_polled_shown(window, cx);
         });
         let focus = cx.focus_handle();
-        let composer = composer::Composer::new(window, cx);
-        let (projects, active_project, layout, strip) = state::restore(state::load());
+        let (projects, active_project, layout, strip, drafts) = state::restore(state::load());
+        let composer = cx.new(|cx| composer::Composer::new(drafts, cx));
+        let composer_focus = composer.read(cx).focus.clone();
+        let composer_subs = [
+            cx.subscribe_in(&composer, window, |this, _, ev, window, cx| {
+                this.on_composer_event(ev, window, cx)
+            }),
+            cx.on_focus(&composer_focus, window, |this, window, cx| {
+                this.claim_composer_tab(window, cx)
+            }),
+            cx.on_blur(&composer_focus, window, |this, window, cx| {
+                this.spy_from_composer(window, cx)
+            }),
+        ];
         crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
             std::iter::once(&p.path)
                 .chain(p.environments.iter().map(|e| &e.path))
@@ -807,7 +816,7 @@ impl Shell {
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
-            window.focus(&composer.focus, cx);
+            window.focus(&composer_focus, cx);
         }
         crate::mascot::set_animated(layout.arcade);
         crate::ui::motion::apply(cx);
@@ -857,6 +866,8 @@ impl Shell {
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
             focus,
             composer,
+            composer_focus,
+            _composer: composer_subs,
             _activation: activation,
             window_state: layout.window,
             _bounds: cx
@@ -921,8 +932,6 @@ impl Shell {
             canvas_view,
             fix_loops: std::collections::HashMap::new(),
             checks: std::collections::HashMap::new(),
-            pastes: std::collections::HashMap::new(),
-            notes: std::collections::HashMap::new(),
             review_draft: None,
             lifted: None,
             lifted_tab: None,
@@ -937,9 +946,7 @@ impl Shell {
             bar_area: Rc::default(),
             slide: None,
             drop_menu: None,
-            attached: std::collections::HashMap::new(),
             dropping: std::collections::HashMap::new(),
-            saved_prompts: crate::prompts::load(),
             menu_agent: None,
             menu_cursor: None,
             effort_hover: None,
@@ -966,7 +973,7 @@ impl Shell {
                 cx.on_app_quit(|this, cx| {
                     // A draft typed in the last moments may not be saved yet.
                     // Replaces any save still queued, so none can land over it.
-                    state::queue(this.state_bytes());
+                    state::queue(this.state_bytes(cx));
                     if let Err(e) = state::write_queued() {
                         eprintln!("arakun: could not save state: {e}");
                     }
@@ -1032,6 +1039,7 @@ impl Shell {
         this.restore_servers(window, cx);
         this.start_updates(window, cx);
         this.report_unreadable(cx);
+        this.watch_secret_store(cx);
         this
     }
 
@@ -1189,7 +1197,8 @@ impl Shell {
         self.active_project = pi;
         self.projects[pi].active_env = ei;
         self.env_menu_open = false;
-        self.composer.completion = None;
+        let env = self.env().path.clone();
+        self.composer.update(cx, |c, _| c.show_env(&env));
         self.sync_teams_project(cx);
         self.refresh_visible(cx);
         if self.panel.tab == PanelTab::Explorer {
@@ -1209,7 +1218,15 @@ impl Shell {
                 .chain(p.environments.iter().map(|e| &e.path))
                 .map(|path| (path.clone(), p.sandbox))
         }));
-        state::queue(self.state_bytes());
+        let envs: std::collections::HashSet<&std::path::Path> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .map(|e| e.path.as_path())
+            .collect();
+        self.composer
+            .update(cx, |c, _| c.retain_drafts(|env| envs.contains(env)));
+        state::queue(self.state_bytes(cx));
         cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write_queued() {
                 eprintln!("arakun: could not save state: {e}");
@@ -1253,6 +1270,29 @@ impl Shell {
         }
     }
 
+    /// Says once, ever, that secrets went to a private file because there is
+    /// no keyring. They are kept on background threads, so this looks every
+    /// few seconds, and stops once it has said it.
+    fn watch_secret_store(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if this.upgrade().is_none() {
+                    break;
+                }
+                let Some(body) = crate::secret_store::take_notice() else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    let title = "Keys are kept in a private file";
+                    this.notify(crate::island::AlertKind::Warning, title, body, None, cx);
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
     /// Notes where the window is, for the next save.
     fn track_window(&mut self, window: &Window, cx: &App) {
         let display = window
@@ -1268,7 +1308,7 @@ impl Shell {
         ));
     }
 
-    fn state_bytes(&self) -> Vec<u8> {
+    fn state_bytes(&self, cx: &App) -> Vec<u8> {
         let layout = state::Layout {
             dock_open: self.dock_open,
             dock_height: self.dock_height,
@@ -1291,7 +1331,14 @@ impl Shell {
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
         };
-        state::snapshot_with(&self.projects, &self.strip, self.active_project, layout)
+        let composer = self.composer.read(cx);
+        state::snapshot_with(
+            &self.projects,
+            &self.strip,
+            self.active_project,
+            layout,
+            &|env| composer.saved(env),
+        )
     }
 
     /// Re-reads a project's worktrees, then the status of every environment.
@@ -1636,7 +1683,7 @@ impl Shell {
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
         self.save(cx);
-        window.focus(&self.composer.focus, cx);
+        self.focus_composer(window, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
         // The setup goes on to its next step, or ends when the project
@@ -2040,7 +2087,7 @@ impl Shell {
         }
         self.select_env(pi, ei, window, cx);
         // It opens on its New session tab, ready for the first prompt.
-        window.focus(&self.composer.focus, cx);
+        self.focus_composer(window, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -3159,9 +3206,10 @@ impl Shell {
     fn toggle_rail(&mut self, cx: &mut Context<Self>) {
         if self.sidebar.style.collapse == crate::sidebar::Collapse::Never {
             // Otherwise the key looks broken.
-            self.composer.flash =
-                Some("The sidebar always shows: Customize sidebar → When hidden.".into());
-            cx.notify();
+            self.flash(
+                "The sidebar always shows: Customize sidebar → When hidden.",
+                cx,
+            );
             return;
         }
         self.rail.open = !self.rail.open;
@@ -3366,7 +3414,7 @@ impl Shell {
         if let Some(focus) = self.onboarding_focus() {
             window.focus(focus, cx);
         } else if self.has_projects() {
-            window.focus(&self.composer.focus, cx);
+            self.focus_composer(window, cx);
         } else {
             window.focus(&self.focus, cx);
         }
@@ -3415,7 +3463,8 @@ impl Shell {
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_teams_project(cx);
-        self.composer.completion = None;
+        let env = self.env().path.clone();
+        self.composer.update(cx, |c, _| c.show_env(&env));
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -3718,7 +3767,7 @@ impl Shell {
             None => self.strip.add(Tab::new_session(&path)),
         };
         self.note_active_tab(cx);
-        window.focus(&self.composer.focus, cx);
+        self.focus_composer(window, cx);
         cx.notify();
     }
 }
@@ -3875,7 +3924,7 @@ impl Shell {
                                         div().absolute().top(px(-top)).right(px(40.)).child(mascot),
                                     )
                                 })
-                                .child(self.render_composer(false, window, cx)),
+                                .child(self.render_composer(false, cx)),
                         )
                     })
                     .into_any_element()
@@ -3967,7 +4016,7 @@ impl Shell {
                 self.sync_usage_view(cx);
                 self.views.usage.clone().into_any_element()
             }
-            _ if focused => self.render_home(window, cx).into_any_element(),
+            _ if focused => self.render_home(cx).into_any_element(),
             _ => div()
                 .flex()
                 .flex_col()
@@ -3999,7 +4048,7 @@ impl Shell {
         if k.key != "tab" || m.control || m.alt || m.platform || m.function {
             return;
         }
-        if self.composer.focus.is_focused(window) || types_tab(&window.context_stack()) {
+        if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
             return;
         }
         let step = |window: &mut Window, cx: &mut Context<Self>| {

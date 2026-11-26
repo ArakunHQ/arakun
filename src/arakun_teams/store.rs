@@ -24,41 +24,8 @@ const DEVICE_ACCOUNT: &str = "teams-device";
 /// still holds the device of everyone who used the default server then.
 const FORMER_DEFAULT_URL: &str = "https://teams.arakun.dev";
 
-/// The keyring account for `name`. A test Arakun with a state file of its own
-/// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
-/// device, so it never signs the person's own Arakun out or takes its keys.
-pub fn account(name: &str) -> String {
-    account_in(name, std::env::var_os("ARAKUN_STATE").as_deref())
-}
-
-fn account_in(name: &str, state: Option<&std::ffi::OsStr>) -> String {
-    // A path that is not UTF-8 still names a test Arakun. Read as unset, it
-    // would give that one the person's own session to use and to clear.
-    let state = state.map(|s| s.to_string_lossy());
-    account_for(name, state.as_deref().map(profile).as_deref())
-}
-
-/// `ARAKUN_STATE` as it names this profile's credentials. A relative path
-/// is read from the working directory, like the state file itself, so two
-/// folders with `state.json` don't share one device and session. An
-/// absolute path stays as given, so the names already in use don't change.
-fn profile(state: &str) -> String {
-    let path = Path::new(state);
-    if path.is_absolute() {
-        return state.to_string();
-    }
-    std::path::absolute(path)
-        .ok()
-        .and_then(|p| p.to_str().map(str::to_string))
-        .unwrap_or_else(|| state.to_string())
-}
-
-fn account_for(name: &str, state: Option<&str>) -> String {
-    match state.filter(|s| !s.is_empty()) {
-        Some(state) => format!("{name}@{state}"),
-        None => name.to_string(),
-    }
-}
+pub use crate::secret_store::account;
+use crate::secret_store::{account_for, profile};
 
 /// A compact, filesystem- and keyring-safe name. Neither a change of GitHub
 /// login nor a new session changes it. Two states in one folder stay separate.
@@ -1016,39 +983,6 @@ mod tests {
         std::fs::rename(&old.path, &scope.file).unwrap();
         assert!(f.load(&scope, no_lookup).is_err());
         assert_eq!(std::fs::read(&scope.file).unwrap(), b"unreadable");
-    }
-
-    #[test]
-    fn a_test_arakun_keeps_its_own_keyring_entries() {
-        assert_eq!(account_for("teams-session", None), "teams-session");
-        assert_eq!(account_for("teams-session", Some("")), "teams-session");
-        assert_eq!(
-            account_for("teams-device", Some("/tmp/dev/state.json")),
-            "teams-device@/tmp/dev/state.json"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_state_path_that_is_not_utf8_still_keeps_its_own_entries() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let state = std::ffi::OsStr::from_bytes(b"/tmp/dev\xff/state.json");
-        assert!(state.to_str().is_none());
-        assert_eq!(
-            account_in("teams-session", Some(state)),
-            "teams-session@/tmp/dev\u{fffd}/state.json"
-        );
-        assert_eq!(account_in("teams-session", None), "teams-session");
-    }
-
-    #[test]
-    fn a_relative_state_names_its_own_folder() {
-        let absolute = std::env::temp_dir().join("dev").join("state.json");
-        let absolute = absolute.to_str().unwrap();
-        assert_eq!(profile(absolute), absolute);
-        let here = std::env::current_dir().unwrap().join("state.json");
-        assert_eq!(profile("state.json"), here.to_str().unwrap());
-        assert_eq!(profile(""), "");
     }
 
     #[test]

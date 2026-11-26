@@ -41,6 +41,7 @@ use crate::theme;
 use crate::ui::{hover_icon, icon};
 
 mod anim;
+mod arakun_cmd;
 mod cards;
 mod diffs;
 mod find_bar;
@@ -119,7 +120,13 @@ fn waiting_on(content: &[Entry], cwd: &Path) -> Option<(String, Option<String>)>
             Some(tool_rows::Wait::Sleep(_)) => ("waiting on a timer".to_string(), None),
             _ => {
                 let label = tool_rows::tool_label(t, cwd, true, false);
-                let cmd = label.target.lines().next().unwrap_or("").trim();
+                // `arakun check` and the like say it all in their action.
+                let cmd = if label.target.trim().is_empty() {
+                    label.action.to_lowercase()
+                } else {
+                    label.target.lines().next().unwrap_or("").trim().to_string()
+                };
+                let cmd = cmd.as_str();
                 (
                     "waiting on".to_string(),
                     Some(crate::redact::text(cmd).into_owned()),
@@ -276,6 +283,8 @@ struct AskState {
     picked: Vec<Vec<usize>>,
     /// A free-text answer per question.
     inputs: Vec<Entity<TextInput>>,
+    /// Per input, whether a password question's field shows what was typed.
+    revealed: Vec<bool>,
     _subs: Vec<Subscription>,
 }
 
@@ -1198,20 +1207,31 @@ impl ThreadView {
 
     /// Keeps the answer state in step with the questionnaire the thread is waiting on.
     fn sync_ask(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let pending = self
-            .thread
-            .read(cx)
-            .pending_question()
-            .map(|q| (q.tool_call_id.clone(), q.questions.len()));
+        let pending = self.thread.read(cx).pending_question().map(|q| {
+            let secret: Vec<bool> = q.questions.iter().map(|q| q.secret).collect();
+            (q.tool_call_id.clone(), secret)
+        });
         match pending {
             None => {
                 if self.ask.take().is_some() {
                     self.remeasure_last();
                 }
             }
-            Some((id, n)) if self.ask.as_ref().is_none_or(|a| a.tool_call_id != id) => {
-                let inputs: Vec<Entity<TextInput>> = (0..n)
-                    .map(|_| cx.new(|cx| TextInput::new("Or type an answer…", cx)))
+            Some((id, secret)) if self.ask.as_ref().is_none_or(|a| a.tool_call_id != id) => {
+                let n = secret.len();
+                // Redacted mode masks every answer, not only a password.
+                let inputs: Vec<Entity<TextInput>> = secret
+                    .iter()
+                    .map(|&secret| {
+                        cx.new(|cx| {
+                            let input = TextInput::new("Or type an answer…", cx);
+                            if secret {
+                                input.secret()
+                            } else {
+                                input.redacted()
+                            }
+                        })
+                    })
                     .collect();
                 let subs = inputs
                     .iter()
@@ -1227,6 +1247,7 @@ impl ThreadView {
                     tool_call_id: id,
                     picked: vec![Vec::new(); n],
                     inputs,
+                    revealed: vec![false; n],
                     _subs: subs,
                 });
                 self.remeasure_last();
@@ -1334,6 +1355,20 @@ impl ThreadView {
             return;
         };
         let (Some(on), Some(input)) = (state.revealed.get_mut(field), state.inputs.get(field))
+        else {
+            return;
+        };
+        *on = !*on;
+        let on = *on;
+        input.update(cx, |i, cx| i.set_revealed(on, cx));
+        cx.notify();
+    }
+
+    fn toggle_ask_reveal(&mut self, question: usize, cx: &mut Context<Self>) {
+        let Some(ask) = self.ask.as_mut() else {
+            return;
+        };
+        let (Some(on), Some(input)) = (ask.revealed.get_mut(question), ask.inputs.get(question))
         else {
             return;
         };

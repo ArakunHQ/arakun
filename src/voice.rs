@@ -529,6 +529,7 @@ mod tests {
             question: question.into(),
             options: options.iter().map(|o| o.to_string()).collect(),
             multi,
+            secret: false,
         }
     }
 

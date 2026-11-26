@@ -320,6 +320,20 @@ impl ExtensionsView {
         self.set_kind(Kind::Arakun, cx);
     }
 
+    /// Opens Claude Code's installed MCP servers, plugins or skills, where the
+    /// Usage tab sends a finding about them.
+    pub fn show_claude(&mut self, place: &crate::usage_where::Place, cx: &mut Context<Self>) {
+        use crate::usage_where::Place;
+        let kind = match place {
+            Place::Servers => Kind::Servers,
+            Place::Plugins => Kind::Plugins,
+            Place::Skills => Kind::Skills,
+            Place::File(_) | Place::Nothing => return,
+        };
+        self.which = Which::Claude;
+        self.set_kind(kind, cx);
+    }
+
     /// Turns an extension tab on or off, as its switch here does.
     pub fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
         if self.views.set(view, on) {

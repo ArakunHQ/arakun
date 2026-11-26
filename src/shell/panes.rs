@@ -80,7 +80,7 @@ impl Shell {
         .on_action(cx.listener(|this, _: &TogglePin, window, cx| {
             // In the composer, with no tree row under the pointer, the key is
             // the composer's: on macOS Option+P types π.
-            if this.rail.tree_hover.is_none() && this.composer.focus.is_focused(window) {
+            if this.rail.tree_hover.is_none() && this.composer_focus.is_focused(window) {
                 cx.propagate();
                 return;
             }
@@ -154,7 +154,7 @@ impl Shell {
             return;
         };
         match &tab.kind {
-            TabKind::Session { .. } | TabKind::NewSession => window.focus(&self.composer.focus, cx),
+            TabKind::Session { .. } | TabKind::NewSession => self.focus_composer(window, cx),
             TabKind::Notes => window.focus(&self.notes_input.focus_handle(cx), cx),
             TabKind::Browser { .. } => self.ensure_active_browser(true, window, cx),
             TabKind::File { .. } | TabKind::Diff { .. } => window.focus(&self.focus, cx),

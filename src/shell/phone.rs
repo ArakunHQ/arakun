@@ -1333,7 +1333,7 @@ impl Shell {
                 let Some(link) = &mut self.phone else { return };
                 let saved =
                     link.uploads
-                        .piece(&upload, &name, part, of, &data, super::paste::save_image);
+                        .piece(&upload, &name, part, of, &data, super::composer::save_image);
                 if let Some(path) = saved {
                     let name = path
                         .file_name()

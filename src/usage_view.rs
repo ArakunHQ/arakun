@@ -30,6 +30,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind};
 use crate::usage_history::{self, Record};
+use crate::usage_where;
 
 /// The logs are stat-ed this often while the tab is on screen; only changed
 /// files are read again.
@@ -242,7 +243,7 @@ impl Summary {
 
 /// What the tab asks the shell to do (its buttons reach the dialogs and
 /// terminals only the shell can open).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum UsageEvent {
     /// Open the Factory account dialog (connect or manage the API key).
     OpenAccount,
@@ -250,6 +251,8 @@ pub enum UsageEvent {
     ClaudeSignIn,
     /// The plan windows changed; the rail card shows them too.
     PlanUpdated,
+    /// Open where a "Where tokens go" finding is fixed.
+    Open(usage_where::Place),
 }
 
 pub struct UsageView {
@@ -291,6 +294,12 @@ pub struct UsageView {
     _account_sub: Option<Subscription>,
     /// None until the first scan of the logs is done.
     records: Option<Vec<Record>>,
+    /// Where Claude Code's tokens went in that range, once read.
+    where_report: Option<(Range, usage_where::Report)>,
+    /// The transcripts are read for `where_report`.
+    where_busy: bool,
+    /// Every finding shows, not only the first few.
+    where_all: bool,
     /// The scan generation `records` came from (see `usage_history`).
     generation: Option<u64>,
     /// When the last scan started.
@@ -486,6 +495,9 @@ impl UsageView {
             account: None,
             _account_sub: None,
             records: None,
+            where_report: None,
+            where_busy: false,
+            where_all: false,
             generation: None,
             scanned: None,
             busy: false,
@@ -544,8 +556,40 @@ impl UsageView {
                     }
                 }
                 if changed {
+                    v.rescan_where(cx);
                     cx.notify();
                 }
+            });
+        })
+        .detach();
+    }
+
+    /// Reads where the range's Claude Code tokens went, off the main thread.
+    /// Unchanged transcripts come from `usage_where`'s cache.
+    fn rescan_where(&mut self, cx: &mut Context<Self>) {
+        if self.where_busy {
+            return;
+        }
+        self.where_busy = true;
+        let range = self.range;
+        let since = now().saturating_sub(range.days() * 24 * 3600);
+        cx.spawn(async move |this, cx| {
+            let report = cx
+                .background_spawn(crate::guard::task(
+                    async move { Some(usage_where::scan(since)) },
+                ))
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                v.where_busy = false;
+                // None: the scan panicked; keep what shows.
+                if let Some(report) = report {
+                    v.where_report = Some((range, report));
+                }
+                // The range changed while it read: read it again for the new one.
+                if v.range != range {
+                    v.rescan_where(cx);
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -1767,7 +1811,7 @@ fn connect_hint(
         )
         .child(
             ui::button(id, button, ButtonKind::Outline, true)
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(event))),
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(event.clone()))),
         )
 }
 
@@ -1995,6 +2039,7 @@ impl Render for UsageView {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.range = r;
+                    this.rescan_where(cx);
                     cx.notify();
                 })),
             );
@@ -2301,8 +2346,6 @@ impl UsageView {
             Group::Session => "Session",
         };
         let breakdown = div()
-            .flex_1()
-            .min_w(px(380.))
             .flex()
             .flex_col()
             .gap(crate::ui::sp(10.))
@@ -2438,12 +2481,195 @@ impl UsageView {
                     .flex_wrap()
                     .items_start()
                     .gap(crate::ui::sp(40.))
-                    .child(breakdown)
+                    // "Where tokens go" fills the space under the breakdown,
+                    // beside the taller side column.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(380.))
+                            .flex()
+                            .flex_col()
+                            .gap(crate::ui::sp(40.))
+                            .child(breakdown)
+                            .when_some(self.where_section(cx), |d, w| d.child(w)),
+                    )
                     .child(side),
             )
             .into_any_element()
     }
+
+    /// "Where tokens go": what Claude Code loads with every message that no
+    /// session used, and the rest of `usage_where`'s findings, largest first,
+    /// each with a button that opens where to change it.
+    fn where_section(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.agent_filter.is_some_and(|a| a != AgentKind::Claude) {
+            return None;
+        }
+        let head = div()
+            .flex()
+            .items_baseline()
+            .gap(crate::ui::sp(10.))
+            .child(ui::heading("Where tokens go"))
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child("Claude Code · estimates from the transcripts on this computer"),
+            );
+        let mut out = div().flex().flex_col().gap(crate::ui::sp(12.)).child(head);
+        let note = |text: String| {
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(text)
+        };
+        let Some((_, r)) = &self.where_report else {
+            return Some(
+                out.child(note("Reading Claude Code transcripts…".into()))
+                    .into_any_element(),
+            );
+        };
+        if r.sessions == 0 {
+            return Some(
+                out.child(note("No Claude Code sessions in this range.".into()))
+                    .into_any_element(),
+            );
+        }
+
+        // What the findings rest on, in one line.
+        let mut facts = Vec::new();
+        if let Some(p) = r.projects.iter().max_by_key(|p| p.sessions) {
+            facts.push(format!(
+                "First message ~{} in {}",
+                usage_where::count(p.first),
+                self.project_of(&p.cwd)
+            ));
+        }
+        facts.push(format!(
+            "{} of {} past half their context",
+            r.past_half,
+            plural(r.sessions as usize, "session")
+        ));
+        if let Some(t) = r.tools.first() {
+            facts.push(format!(
+                "Noisiest tool results: {} ~{}",
+                t.tool,
+                usage_where::count(t.tokens)
+            ));
+        }
+        out = out.child(note(facts.join(" · ")));
+
+        if r.findings.is_empty() {
+            return Some(
+                out.child(note("Nothing stands out to fix.".into()))
+                    .into_any_element(),
+            );
+        }
+        let hidden = r.findings.len().saturating_sub(WHERE_ROWS);
+        let shown = if self.where_all {
+            r.findings.len()
+        } else {
+            WHERE_ROWS
+        };
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme::border_subtle());
+        for (i, f) in r.findings.iter().take(shown).enumerate() {
+            let open = match &f.place {
+                usage_where::Place::File(_) => Some("Open file"),
+                usage_where::Place::Plugins => Some("Plugins"),
+                usage_where::Place::Servers => Some("MCP servers"),
+                usage_where::Place::Skills => Some("Skills"),
+                usage_where::Place::Nothing => None,
+            };
+            let place = f.place.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(16.))
+                    .py(crate::ui::sp(10.))
+                    .border_b_1()
+                    .border_color(theme::border_subtle())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(crate::ui::sp(2.))
+                            .child(
+                                div()
+                                    .text_size(px(ui::TEXT_SM))
+                                    .text_color(theme::text())
+                                    .child(f.title.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(f.suggestion.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child(format!("~{} tokens", usage_where::count(f.tokens))),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(px(110.))
+                            .flex()
+                            .justify_end()
+                            .when_some(open, |d, label| {
+                                d.child(
+                                    ui::button(
+                                        ("usage-where-open", i),
+                                        label,
+                                        ButtonKind::Outline,
+                                        true,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            cx.emit(UsageEvent::Open(place.clone()));
+                                        },
+                                    )),
+                                )
+                            }),
+                    ),
+            );
+        }
+        out = out.child(list).when(hidden > 0, |d| {
+            let label = if self.where_all {
+                "Show less".to_string()
+            } else {
+                format!("Show {hidden} more")
+            };
+            d.child(
+                div()
+                    .id("usage-where-all")
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(theme::content()))
+                    .child(label)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.where_all = !this.where_all;
+                        cx.notify();
+                    })),
+            )
+        });
+        Some(out.into_any_element())
+    }
 }
+
+/// Findings "Where tokens go" shows before "Show more".
+const WHERE_ROWS: usize = 5;
 
 /// Whether the proxy on screen is now another one (or gone): a key typed in
 /// the field belonged to the old one.

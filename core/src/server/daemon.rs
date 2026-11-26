@@ -2525,13 +2525,52 @@ impl Daemon {
                         meta.insert(path.clone(), m.clone());
                     }
                 }
+                let gone: Vec<PathBuf> = meta
+                    .iter()
+                    .filter(|(_, m)| m.gone)
+                    .map(|(p, _)| p.clone())
+                    .collect();
                 if meta != this.meta {
                     this.meta = meta;
+                    this.sync_inbox(cx);
+                }
+                let mut forgot = false;
+                for place in gone {
+                    forgot |= this.forget_gone(&place, cx);
+                }
+                if forgot {
                     this.sync_inbox(cx);
                 }
             });
         })
         .detach();
+    }
+
+    /// A place whose folder was removed outside Arakun leaves the list, as
+    /// one Arakun deletes does; otherwise it shows as a project of its own,
+    /// with no repository to go under. One that is being deleted or cloned
+    /// into, or where a session works or waits, stays until that is over.
+    /// Says whether it went.
+    fn forget_gone(&mut self, place: &Path, cx: &mut Context<Self>) -> bool {
+        // A place inside one forgotten before this went with it.
+        if self.store.place(place).is_none()
+            || self.being_deleted(place)
+            || self.cloning.has(place)
+            || self.busy_in(place, cx).is_some()
+        {
+            return false;
+        }
+        match self.forget_place(place, cx) {
+            Ok(()) => eprintln!(
+                "arakun server: {} was removed, so it leaves the list",
+                place.display()
+            ),
+            Err(e) => eprintln!(
+                "arakun server: {} was removed, but the list could not be saved: {e}",
+                place.display()
+            ),
+        }
+        true
     }
 
     /// What git said of `path` last.
@@ -2558,7 +2597,7 @@ impl Daemon {
             .iter()
             .map(|p| {
                 let name = p.name();
-                let PlaceMeta { branch, repo } = self.meta_of(&p.path);
+                let PlaceMeta { branch, repo, .. } = self.meta_of(&p.path);
                 // Worktrees of one repository are one project, named for it.
                 let project = repo
                     .as_ref()
@@ -3842,7 +3881,15 @@ impl Daemon {
             return Err("it is being deleted already".into());
         }
         // Whether git calls it a worktree is asked to the side, after this.
-        // A folder inside it added on its own goes with it, sessions and all.
+        match self.busy_in(place, cx) {
+            Some(why) => Err(why.into()),
+            None => Ok(()),
+        }
+    }
+
+    /// Why a session in `place` or a folder inside it keeps it, if one does.
+    /// A folder inside it added on its own goes with it, sessions and all.
+    fn busy_in(&self, place: &Path, cx: &App) -> Option<&'static str> {
         let live = self
             .store
             .sessions
@@ -3853,10 +3900,7 @@ impl Daemon {
                 let t = l.thread.read(cx);
                 (status_of(t), t.in_background())
             });
-        match busy_reason(live) {
-            Some(why) => Err(why.into()),
-            None => Ok(()),
-        }
+        busy_reason(live)
     }
 
     /// The place is gone from disk: it leaves the list, with its sessions,
@@ -4930,15 +4974,32 @@ fn without_login(url: &str) -> String {
 struct PlaceMeta {
     branch: Option<String>,
     repo: Option<(PathBuf, Option<String>)>,
+    /// The folder was removed outside Arakun ([`gone`]).
+    gone: bool,
 }
 
 impl PlaceMeta {
     fn read(path: &Path) -> PlaceMeta {
+        if gone(path) {
+            return PlaceMeta {
+                gone: true,
+                ..PlaceMeta::default()
+            };
+        }
         PlaceMeta {
             branch: store::branch(path),
             repo: store::repo(path),
+            gone: false,
         }
     }
+}
+
+/// Whether the folder at `path` was removed: it is not there, and the folder
+/// it was in is. When that one is missing too, it is more likely a disk that
+/// is not mounted now, and the place stays.
+fn gone(path: &Path) -> bool {
+    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+        && path.parent().is_some_and(Path::is_dir)
 }
 
 /// The clones under way, by the real path ([`real_dest`]) of the folder each
@@ -6231,6 +6292,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_removed_folder_is_gone_but_not_one_on_a_missing_disk() {
+        let dir = scratch("gone");
+        let env = dir.join("env");
+        std::fs::create_dir(&env).unwrap();
+        assert!(!gone(&env), "it is there");
+        assert!(!PlaceMeta::read(&env).gone);
+
+        std::fs::remove_dir(&env).unwrap();
+        assert!(gone(&env), "removed, and the folder it was in is there");
+        assert!(PlaceMeta::read(&env).gone);
+
+        // Its parent is missing too, as on a disk that is not mounted.
+        assert!(!gone(&dir.join("unmounted").join("env")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A repository at `dir` with one commit; `init` says how git makes it.

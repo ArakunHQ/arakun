@@ -1748,7 +1748,9 @@ for two minutes and pairs one device. There are two ways to use it:
   server's environment to archive it there (the sessions that ask for attention
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
-  you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
+  you ask. A repository's main folder is never deleted. An environment whose folder you
+  remove on the server yourself leaves the list with its sessions within a few seconds,
+  unless a session there is still working or waiting for an answer. A phone paired with this app sees and works in the
   servers' sessions too. A terminal in a server's environment is a shell in that folder
   on the server, and the project commands from Settings run there too. It keeps running
   while the connection is down and picks up where it was once it is back; one no app

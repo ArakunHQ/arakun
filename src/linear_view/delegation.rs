@@ -76,6 +76,9 @@ fn help_text(workspace: &str) -> String {
     )
 }
 
+/// Under the switch while it is on: how to reach a session from Linear.
+const TALK_TEXT: &str = "Reply in the issue to send its session a message. It waits for the current turn, unless it starts with ! (or /interrupt): then the turn stops and the session works on your message at once. Stop in Linear ends the session's work.";
+
 fn connect_text(workspace: &str) -> String {
     format!(
         "{workspace} is not connected to Arakun yet. Connecting sends your Linear key for {workspace} to Arakun, to prove the Linear user is you. It is not stored there."
@@ -351,6 +354,9 @@ impl LinearView {
             )
             .when(notes.help, |d| {
                 d.child(ui::text(Type::Body, theme::text_muted(), help_text(&name)))
+            })
+            .when(on, |d| {
+                d.child(ui::text(Type::Body, theme::text_muted(), TALK_TEXT))
             })
             .children(blocker)
             .children(connect)

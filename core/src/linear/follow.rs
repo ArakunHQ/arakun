@@ -96,6 +96,42 @@ pub enum FollowUp {
     Busy,
     Unreadable,
     Send,
+    /// The reply starts with an interrupt marker: the turn at work is
+    /// cancelled, and the rest of the reply goes as the next message.
+    Interrupt,
+    /// Only an interrupt marker, with nothing after it to send.
+    NoDirections,
+}
+
+/// What starts a reply that interrupts the turn at work. Linear's agent
+/// sessions only have a reply and a stop, so the person says it in the text.
+/// `/interrupt` must stand alone, so a word such as `/interrupts` is text.
+pub const INTERRUPT_MARKERS: [&str; 2] = ["!", "/interrupt"];
+
+/// The rest of a reply that starts with an interrupt marker, trimmed, or
+/// None for a plain reply. A reply that starts with an image (`![`) is plain.
+pub fn interrupting(text: &str) -> Option<&str> {
+    let t = text.trim_start();
+    let rest = if let Some(rest) = t.strip_prefix('!') {
+        if rest.starts_with('[') {
+            return None;
+        }
+        rest
+    } else {
+        let marker = INTERRUPT_MARKERS[1];
+        let head = t.get(..marker.len())?;
+        let rest = &t[marker.len()..];
+        if !head.eq_ignore_ascii_case(marker) || rest.starts_with(|c: char| !c.is_whitespace()) {
+            return None;
+        }
+        rest
+    };
+    Some(rest.trim())
+}
+
+/// The message a reply sends: without its interrupt marker, if it has one.
+pub fn message(text: &str) -> &str {
+    interrupting(text).unwrap_or(text)
 }
 
 /// A run that started takes a reply, even one that ended: the person may
@@ -114,7 +150,11 @@ pub fn follow_up(
         // Busy with an ended run means another run: this one is not active.
         Some(RunState::Done | RunState::Interrupted) if issue_busy => FollowUp::Busy,
         Some(_) => match text {
-            Some(t) if !t.trim().is_empty() => FollowUp::Send,
+            Some(t) if !t.trim().is_empty() => match interrupting(t) {
+                None => FollowUp::Send,
+                Some("") => FollowUp::NoDirections,
+                Some(_) => FollowUp::Interrupt,
+            },
             _ => FollowUp::Unreadable,
         },
     }
@@ -128,6 +168,16 @@ pub fn after_reply(state: RunState) -> Option<RunState> {
         RunState::Done | RunState::Interrupted => Some(RunState::Running),
         RunState::Waiting | RunState::Running | RunState::Asked => None,
     }
+}
+
+/// Whether a run still ignores its session's events until a cancelled turn
+/// ends, once a reply was passed on. `winding_down`: this reply interrupted
+/// a turn that is still stopping. A stop marks its run Done first, so a
+/// stopped run at work is an earlier interrupt's cancel that has not ended
+/// yet: a reply after it keeps the guard. A stop's guard goes, since the
+/// reply starts a new turn on purpose.
+pub fn stopped_after_reply(stopped: bool, state: RunState, winding_down: bool) -> bool {
+    winding_down || (stopped && matches!(state, RunState::Running | RunState::Asked))
 }
 
 /// What waits on a person in the session a reply is for.
@@ -252,6 +302,21 @@ pub fn passed_line(computer: &str, pending: Pending, busy: bool) -> String {
     }
 }
 
+/// What Linear hears once an interrupting reply cancelled the turn at work
+/// and went to the session in its place.
+pub fn interrupted_line(computer: &str) -> String {
+    format!("Interrupted the session on {computer}. It works on your new message now.")
+}
+
+/// An interrupt marker with no message after it: nothing was interrupted.
+pub fn no_directions_line(computer: &str) -> String {
+    format!(
+        "Your message had only the interrupt marker, so the session on {computer} goes on as \
+         it was. To interrupt it, write your new directions after the marker, as in \
+         \"! Use the other API.\""
+    )
+}
+
 pub fn not_started_line(computer: &str) -> String {
     format!(
         "This has not started yet on {computer}. Your message will not be passed on; send it \
@@ -358,6 +423,107 @@ mod tests {
                 FollowUp::Send
             );
         }
+    }
+
+    #[test]
+    fn a_reply_with_an_interrupt_marker_interrupts() {
+        for text in [
+            "! Use the other API.",
+            "!Use the other API.",
+            "  ! Use the other API.  ",
+            "/interrupt Use the other API.",
+            "/INTERRUPT\nUse the other API.",
+        ] {
+            assert_eq!(interrupting(text), Some("Use the other API."), "{text:?}");
+            assert_eq!(message(text), "Use the other API.", "{text:?}");
+        }
+        // At work, ended, or asking: each takes an interrupt.
+        for state in [
+            RunState::Running,
+            RunState::Asked,
+            RunState::Done,
+            RunState::Interrupted,
+        ] {
+            assert_eq!(
+                follow_up(Some(state), true, false, Some("! Use the other API.")),
+                FollowUp::Interrupt,
+                "{state:?}"
+            );
+        }
+        for state in [RunState::Running, RunState::Asked] {
+            assert_eq!(
+                follow_up(Some(state), true, true, Some("! Use the other API.")),
+                FollowUp::Interrupt
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_reply_does_not_interrupt() {
+        for text in [
+            "Use the other API.",
+            "Use the other API!",
+            "Why does /interrupt exist?",
+            "/interrupts are fine here.",
+            "![screenshot](https://uploads.linear.app/a.png) This is broken.",
+        ] {
+            assert_eq!(interrupting(text), None, "{text:?}");
+            assert_eq!(message(text), text);
+            assert_eq!(
+                follow_up(Some(RunState::Running), true, false, Some(text)),
+                FollowUp::Send,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupt_without_directions_changes_nothing() {
+        for text in ["!", " ! ", "/interrupt", "/interrupt \n "] {
+            assert_eq!(interrupting(text), Some(""), "{text:?}");
+            assert_eq!(
+                follow_up(Some(RunState::Running), true, false, Some(text)),
+                FollowUp::NoDirections,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_interrupt_is_refused_as_a_reply_would_be() {
+        let text = Some("! Use the other API.");
+        assert_eq!(follow_up(None, true, false, text), FollowUp::NoRun);
+        assert_eq!(
+            follow_up(Some(RunState::Waiting), true, true, text),
+            FollowUp::NotStarted
+        );
+        assert_eq!(
+            follow_up(Some(RunState::Running), false, false, text),
+            FollowUp::NoRun
+        );
+        // Another run works on the issue: an ended run is not revived.
+        assert_eq!(
+            follow_up(Some(RunState::Done), true, true, text),
+            FollowUp::Busy
+        );
+    }
+
+    #[test]
+    fn only_an_interrupt_still_stopping_keeps_the_guard() {
+        for state in ALL {
+            // This reply interrupted a turn that is still stopping.
+            for stopped in [false, true] {
+                assert!(stopped_after_reply(stopped, state, true), "{state:?}");
+            }
+            // Nothing was stopping: a reply starts a clean turn.
+            assert!(!stopped_after_reply(false, state, false), "{state:?}");
+        }
+        // An earlier interrupt still winds down: a reply after it waits too.
+        assert!(stopped_after_reply(true, RunState::Running, false));
+        assert!(stopped_after_reply(true, RunState::Asked, false));
+        // A stop marked it Done: the reply revives it and the guard goes.
+        assert!(!stopped_after_reply(true, RunState::Done, false));
+        assert!(!stopped_after_reply(true, RunState::Interrupted, false));
     }
 
     fn reply(activity: Option<&str>, body: Option<&str>) -> Delivery {
@@ -625,6 +791,16 @@ mod tests {
             reply_no_sign_in_line("rik-mac"),
             "rik-mac is not signed in to this Linear workspace, so it could not read your \
              message. Sign in in Arakun's Linear tab, then send it again."
+        );
+        assert_eq!(
+            interrupted_line("rik-mac"),
+            "Interrupted the session on rik-mac. It works on your new message now."
+        );
+        assert_eq!(
+            no_directions_line("rik-mac"),
+            "Your message had only the interrupt marker, so the session on rik-mac goes on as \
+             it was. To interrupt it, write your new directions after the marker, as in \
+             \"! Use the other API.\""
         );
         assert_eq!(
             not_started_line("rik-mac"),

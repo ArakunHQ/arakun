@@ -25,9 +25,10 @@ use crate::linear::events::{
     to_report, turn_reply,
 };
 use crate::linear::follow::{
-    FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, no_session_line,
-    not_started_line, passed_line, pending_in, release_stops, reply_no_sign_in_line,
-    reply_off_line, reply_source, run_state, skips_question, stop, unread_line,
+    FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
+    message, no_directions_line, no_session_line, not_started_line, passed_line, pending_in,
+    release_stops, reply_no_sign_in_line, reply_off_line, reply_source, run_state, skips_question,
+    stop, stopped_after_reply, unread_line,
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
@@ -553,9 +554,14 @@ impl Daemon {
             FollowUp::NotStarted => (ReportKind::Thought, not_started_line(&computer())),
             FollowUp::Busy => (ReportKind::Thought, busy_line(&computer())),
             FollowUp::Unreadable => (ReportKind::Thought, unread_line(&computer())),
-            FollowUp::Send => {
-                let text = text.unwrap_or_default();
-                match self.linear_pass_on(agent_session, text, cx) {
+            FollowUp::NoDirections => (ReportKind::Thought, no_directions_line(&computer())),
+            FollowUp::Send | FollowUp::Interrupt => {
+                let interrupt = decided == FollowUp::Interrupt;
+                let text = message(text.as_deref().unwrap_or_default()).to_string();
+                match self.linear_pass_on(agent_session, text, interrupt, cx) {
+                    Some((_, true)) if interrupt => {
+                        (ReportKind::Thought, interrupted_line(&computer()))
+                    }
                     Some((pending, busy)) => {
                         (ReportKind::Thought, passed_line(&computer(), pending, busy))
                     }
@@ -574,6 +580,7 @@ impl Daemon {
         &mut self,
         agent_session: &str,
         text: String,
+        interrupt: bool,
         cx: &mut Context<Self>,
     ) -> Option<(crate::linear::follow::Pending, bool)> {
         let sid = self
@@ -599,17 +606,25 @@ impl Daemon {
             if t.queue_paused() {
                 t.resume_queue(cx);
             }
-            t.send(text, cx);
-            waits
+            if interrupt {
+                t.interrupt_with(text, cx);
+            } else {
+                t.send(text, cx);
+            }
+            // The cancelled turn still winds down: its end is not the run's.
+            (
+                waits,
+                interrupt && waits.1 && t.is_busy() && t.is_cancelling(),
+            )
         });
+        let (waits, winding_down) = waits;
         if let Some(s) = self.store.session_mut(&sid) {
             s.updated = unix_now();
         }
         self.inbox_changed(cx);
         let mut revived = false;
         if let Some(run) = self.linear_run.runs.by_agent_session(agent_session) {
-            // A new turn on purpose: a stop's cancel is behind it.
-            run.stopped = false;
+            run.stopped = stopped_after_reply(run.stopped, run.state, winding_down);
             if let Some(to) = after_reply(run.state) {
                 run.state = to;
                 run.asked = None;

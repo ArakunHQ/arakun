@@ -733,9 +733,13 @@ after a week).
   waits in the session's queue when the agent is busy, and it never answers a
   permission prompt. A reply while a question is pending skips the question and
   sends the reply, unless the question asks for a secret. A reply to a finished session continues it, unless another
-  session from Linear is working on the same issue by then. A stop in Linear
-  cancels the turn. A stop that arrives while a reply or a new delegation for the
-  same issue is still being read is applied after the work it follows. A stop
+  session from Linear is working on the same issue by then. To interrupt instead,
+  start the reply with `!` (or `/interrupt`), as in `! Use the other API.`: the
+  turn at work is cancelled, the rest of the reply goes to the session as the next
+  message, the run goes on, and the issue hears `Interrupted the session on
+  {computer}. It works on your new message now.` A reply that is only the marker
+  changes nothing. A stop in Linear cancels the turn and ends the run. A stop that
+  arrives while a reply or a new delegation for the same issue is still being read is applied after the work it follows. A stop
   works even with the switch off, or when this computer is no longer signed in to
   that Linear workspace.
 
@@ -1927,8 +1931,9 @@ arakun-server service install   # keep it running; see Keep it running
   the app does: it reads the issue with the workspace's Linear key the app gave it,
   checks the mapping, makes a worktree on the issue's branch under
   `~/arakun-workspaces/`, and starts a session there with the project's agent that
-  ends in a draft pull request. At most three run at once; the rest wait. Replies and
-  stops from Linear reach the session, and the issue hears what it does. It needs the
+  ends in a draft pull request. At most three run at once; the rest wait. Replies
+  and stops from Linear reach the session (a reply that starts with `!` interrupts
+  the turn), and the issue hears what it does. It needs the
   sign-in (`login`) and the relay. `linear-runs.json` in its folder holds the
   deliveries handled, each run, and the reports Linear has not taken yet (dropped
   after a day). A server that stops mid-session tells the issue when it starts again;

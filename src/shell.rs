@@ -547,8 +547,6 @@ pub struct Shell {
     servers_view: Entity<crate::servers_view::ServersView>,
     _servers_view: Subscription,
     usage_view: Entity<UsageView>,
-    /// Set while a frame is built when it shows the Usage view.
-    usage_shown: std::cell::Cell<bool>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
@@ -1178,7 +1176,6 @@ impl Shell {
             _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
-            usage_shown: std::cell::Cell::new(false),
             gallery_view,
             customize: None,
             customize_tab: CustomizeTab::Colors,
@@ -2494,14 +2491,27 @@ impl Shell {
         self.tab_shown(window, |k| matches!(k, TabKind::Memory))
     }
 
+    fn usage_shown(&self, window: &Window) -> bool {
+        if self.has_projects() {
+            self.tab_shown(window, |k| matches!(k, TabKind::Usage))
+        } else {
+            // With no project the tab shows in the welcome's place.
+            window.is_window_active()
+                && self.terminal_alone.is_none()
+                && self.alone == Some(home::Alone::Usage)
+        }
+    }
+
     /// Tells the tabs that poll files whether they are on screen: they only
     /// poll then.
     fn sync_polled_shown(&mut self, window: &Window, cx: &mut Context<Self>) {
         let cloudflare = self.cloudflare_shown(window);
         let memory = self.memory_shown(window);
+        let usage = self.usage_shown(window);
         self.cloudflare_view
             .update(cx, |v, _| v.set_shown(cloudflare));
         self.memory_view.update(cx, |v, cx| v.set_shown(memory, cx));
+        self.usage_view.update(cx, |v, cx| v.set_shown(usage, cx));
     }
 
     /// Tells the Teams tab whether it is on screen: only then does a message
@@ -4219,7 +4229,6 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Canvas) => self.canvas_view.clone().into_any_element(),
             Some(TabKind::Usage) => {
-                self.usage_shown.set(true);
                 self.sync_usage_view(cx);
                 self.usage_view.clone().into_any_element()
             }
@@ -4375,6 +4384,7 @@ impl Render for Shell {
         }
         if self.cloudflare_view.read(cx).is_shown() != self.cloudflare_shown(window)
             || self.memory_view.read(cx).is_shown() != self.memory_shown(window)
+            || self.usage_view.read(cx).is_shown() != self.usage_shown(window)
         {
             cx.defer_in(window, |this, window, cx| {
                 this.sync_polled_shown(window, cx)
@@ -4430,9 +4440,6 @@ impl Render for Shell {
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
-        self.usage_view
-            .read(cx)
-            .set_on_screen(self.usage_shown.take());
 
         let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));

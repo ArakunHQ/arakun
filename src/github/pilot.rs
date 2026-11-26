@@ -5,12 +5,15 @@
 //! the GitHub tab and tells the Worker
 //! (`POST /items/<id>/done`) when the user dealt with one.
 //!
-//! Off unless `client.json` (`{"url": "...", "token": "..."}`) exists. With
-//! `admin_token` in it too, the palette can hand the agent new work
-//! (`POST /tasks`).
+//! Off unless `client.json` (`{"url": "..."}`) exists. Its read token is in
+//! the keyring (`secret_store`). With an admin token there too, the palette
+//! can hand the agent new work (`POST /tasks`). A file written by hand, or
+//! from before the keyring, may hold `token` and `admin_token`: they move to
+//! the keyring the first time the file is read.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, EventEmitter, Task};
@@ -113,28 +116,195 @@ pub fn load_config() -> Option<Config> {
 
 /// The settings: Ok(None) when there is no file (pilot is off), Err when
 /// there is one that can't be used, so a typo in it says so instead of
-/// looking like pilot was never set up.
+/// looking like pilot was never set up. The tokens come from the keyring,
+/// so never call this on the UI thread: the keyring may wait for the person
+/// to unlock it.
 pub fn read_config() -> Result<Option<Config>, String> {
-    let path = config_file();
-    match std::fs::read(&path) {
-        Ok(bytes) => parse_config(&bytes)
-            .map(Some)
-            .ok_or_else(|| config_problem(&bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("couldn't read {}: {e}", path.display())),
+    read_config_at(&config_file(), &Keyring, &Accounts::here())
+}
+
+const FIX: &str = "connect again with \u{201c}arakun-pilot settings\u{2026}\u{201d}";
+
+/// What `client.json` holds. The tokens are there only in a file from
+/// before the keyring, or one written by hand, until they are moved.
+#[derive(Deserialize)]
+struct Stored {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    admin_token: Option<String>,
+}
+
+fn read_config_at(
+    path: &Path,
+    vault: &dyn Vault,
+    accounts: &Accounts,
+) -> Result<Option<Config>, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("couldn't read {}: {e}", path.display())),
+    };
+    let Ok(stored) = serde_json::from_slice::<Stored>(&bytes) else {
+        return Err(config_problem(&bytes));
+    };
+    let url = stored.url.trim().trim_end_matches('/').to_string();
+    if !(url.starts_with("https://") || local_http(&url)) {
+        return Err(config_problem(&bytes));
+    }
+    let in_file = |t: Option<String>| t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let (file_token, file_admin) = (in_file(stored.token), in_file(stored.admin_token));
+    if file_token.is_some() || file_admin.is_some() {
+        move_to_keyring(path, vault, accounts, &file_token, &file_admin);
+    }
+    let from_ring = |account: &str, what: &str| {
+        vault
+            .get(account)
+            .map(|t| t.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
+            .map_err(|e| format!("the keyring could not give its {what} ({e})"))
+    };
+    let token = match file_token {
+        Some(t) => t,
+        None => from_ring(&accounts.token, "token")?
+            .ok_or_else(|| format!("its settings have no token; {FIX}"))?,
+    };
+    // A keyring that fails on the admin token fails the read, so a form
+    // saved after it doesn't drop a token it could not see.
+    let admin_token = match file_admin {
+        Some(t) => Some(t),
+        None => from_ring(&accounts.admin, "admin token")?,
+    };
+    Ok(Some(Config {
+        url,
+        token,
+        admin_token,
+    }))
+}
+
+/// Moves the tokens a file still holds to the keyring, then takes them out
+/// of the file. A token the keyring refuses stays in the file and is still
+/// used.
+fn move_to_keyring(
+    path: &Path,
+    vault: &dyn Vault,
+    accounts: &Accounts,
+    token: &Option<String>,
+    admin: &Option<String>,
+) {
+    let _held = CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut moved = Vec::new();
+    for (key, secret, account, label) in [
+        ("token", token, &accounts.token, TOKEN_LABEL),
+        ("admin_token", admin, &accounts.admin, ADMIN_LABEL),
+    ] {
+        let Some(secret) = secret else { continue };
+        match vault.set(account, label, secret) {
+            Ok(()) => moved.push((key, secret)),
+            Err(e) => eprintln!("arakun: could not move arakun-pilot's {key} to the keyring: {e}"),
+        }
+    }
+    if moved.is_empty() {
+        return;
+    }
+    // Read again under the lock: a save may have written new settings since.
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(serde_json::Value::Object(mut file)) = serde_json::from_slice(&bytes) else {
+        return;
+    };
+    let mut changed = false;
+    for (key, secret) in moved {
+        // Only the value that was moved: a newer one stays, to move next time.
+        if file.get(key).and_then(|v| v.as_str()).map(str::trim) == Some(secret.as_str()) {
+            file.remove(key);
+            changed = true;
+        }
+    }
+    if changed && let Err(e) = write_settings(path, &serde_json::Value::Object(file)) {
+        eprintln!("arakun: {e}");
+    }
+}
+
+/// Writes `json` to the settings file, readable only by this user.
+pub(super) fn write_settings(path: &Path, json: &serde_json::Value) -> std::io::Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(json).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    crate::durable::write_private(path, &bytes)
+}
+
+/// One reader or writer of the settings file and its tokens at a time.
+pub(super) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) const TOKEN_LABEL: &str = "arakun: arakun-pilot token";
+pub(super) const ADMIN_LABEL: &str = "arakun: arakun-pilot admin token";
+
+/// The keyring entries of the two tokens.
+pub(super) struct Accounts {
+    pub token: String,
+    pub admin: String,
+}
+
+impl Accounts {
+    pub fn here() -> Self {
+        Self::for_state(std::env::var_os("ARAKUN_STATE").as_deref())
+    }
+
+    /// The tokens go with `client.json`. A test Arakun keeps that file in
+    /// its state's folder, so its tokens are named by that folder: two
+    /// state files in one folder share the file, and so the tokens. Without
+    /// `ARAKUN_STATE` the file is the shared one, and so are the names.
+    fn for_state(state: Option<&std::ffi::OsStr>) -> Self {
+        let folder = state.map(|s| {
+            let state = crate::secret_store::profile(&s.to_string_lossy());
+            Path::new(&state)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(state)
+        });
+        let name = |n: &str| crate::secret_store::account_for(n, folder.as_deref());
+        Self {
+            token: name("arakun-pilot-token"),
+            admin: name("arakun-pilot-admin-token"),
+        }
+    }
+}
+
+/// Where the tokens are kept: the keyring, or a fake one in the tests.
+pub(super) trait Vault {
+    fn get(&self, account: &str) -> Result<Option<String>, String>;
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String>;
+    fn forget(&self, account: &str);
+}
+
+pub(super) struct Keyring;
+
+impl Vault for Keyring {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        crate::secret_store::get(account)
+    }
+
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String> {
+        crate::secret_store::set(account, label, secret)
+    }
+
+    fn forget(&self, account: &str) {
+        crate::secret_store::forget(account)
     }
 }
 
 /// Why settings that don't parse can't be used, in the user's words. It
-/// names the part that is wrong, never its value: that may be a token.
+/// names the part that is wrong, never its value: that may be a token. A
+/// missing token is not one: it is in the keyring.
 fn config_problem(bytes: &[u8]) -> String {
-    let fix = "connect again with \u{201c}arakun-pilot settings\u{2026}\u{201d}";
+    let fix = FIX;
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return format!("its settings file isn't valid JSON; {fix}");
     };
     let text = |key: &str| v.get(key).and_then(|t| t.as_str()).map(str::trim);
     let url = text("url").unwrap_or_default();
-    let token = text("token").unwrap_or_default();
     let admin_ok = matches!(
         v.get("admin_token"),
         None | Some(serde_json::Value::Null | serde_json::Value::String(_))
@@ -142,8 +312,6 @@ fn config_problem(bytes: &[u8]) -> String {
     let url = url.trim_end_matches('/');
     if url.is_empty() {
         format!("its settings have no address; {fix}")
-    } else if token.is_empty() {
-        format!("its settings have no token; {fix}")
     } else if !admin_ok {
         format!("its admin token isn't text; {fix}")
     } else if !(url.starts_with("https://") || local_http(url)) {
@@ -1106,7 +1274,7 @@ impl Pilot {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -1155,7 +1323,6 @@ mod tests {
     #[test]
     fn a_broken_settings_file_says_what_is_missing() {
         assert!(config_problem(b"{oops").contains("isn't valid JSON"));
-        assert!(config_problem(br#"{"url": "https://p.dev"}"#).contains("no token"));
         assert!(config_problem(br#"{"token": "t"}"#).contains("no address"));
         assert!(config_problem(br#"{"url": "http://p.dev", "token": "t"}"#).contains("https://"));
         let wrong_type = br#"{"url": "https://p.dev", "token": "t", "admin_token": 123}"#;
@@ -1642,5 +1809,147 @@ mod tests {
             "2026-11-15T12%3A00%3A00%2B00%3A00"
         );
         assert_eq!(encode("a/b c"), "a%2Fb%20c");
+    }
+
+    /// A keyring in memory. `locked` refuses everything, as one that stayed
+    /// locked does.
+    #[derive(Default)]
+    pub(in crate::github) struct Fake {
+        pub entries: std::cell::RefCell<std::collections::HashMap<String, String>>,
+        pub locked: bool,
+    }
+
+    impl Vault for Fake {
+        fn get(&self, account: &str) -> Result<Option<String>, String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.entries.borrow().get(account).cloned())
+        }
+
+        fn set(&self, account: &str, _label: &str, secret: &str) -> Result<(), String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            self.entries
+                .borrow_mut()
+                .insert(account.to_string(), secret.to_string());
+            Ok(())
+        }
+
+        fn forget(&self, account: &str) {
+            self.entries.borrow_mut().remove(account);
+        }
+    }
+
+    pub(in crate::github) fn accounts() -> Accounts {
+        Accounts::for_state(None)
+    }
+
+    pub(in crate::github) fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-pilot-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("client.json")
+    }
+
+    fn write(path: &Path, json: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, json).unwrap();
+    }
+
+    #[test]
+    fn tokens_in_an_old_file_move_to_the_keyring() {
+        let (ring, path) = (Fake::default(), scratch("move"));
+        write(
+            &path,
+            r#"{"url": "https://p.dev/", "token": " t ", "admin_token": "a", "note": "mine"}"#,
+        );
+        let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
+        assert_eq!(
+            (cfg.url.as_str(), cfg.token.as_str()),
+            ("https://p.dev", "t")
+        );
+        assert_eq!(cfg.admin_token.as_deref(), Some("a"));
+        assert_eq!(ring.entries.borrow()["arakun-pilot-token"], "t");
+        assert_eq!(ring.entries.borrow()["arakun-pilot-admin-token"], "a");
+        let left: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            left,
+            serde_json::json!({ "url": "https://p.dev/", "note": "mine" })
+        );
+        // Read again, the tokens come from the keyring.
+        let again = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
+        assert_eq!(again, cfg);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_keyring_that_refuses_leaves_the_tokens_in_the_file() {
+        let path = scratch("refuse");
+        let ring = Fake {
+            locked: true,
+            ..Fake::default()
+        };
+        let old = r#"{"url": "https://p.dev", "token": "t"}"#;
+        write(&path, old);
+        // The file's token is still used; the admin token can't be read.
+        let e = read_config_at(&path, &ring, &accounts()).unwrap_err();
+        assert!(e.contains("keyring") && e.contains("admin token"), "{e}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        let both = r#"{"url": "https://p.dev", "token": "t", "admin_token": "a"}"#;
+        write(&path, both);
+        let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
+        assert_eq!(cfg.token, "t");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), both);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_file_without_a_token_in_the_keyring_says_so() {
+        let (ring, path) = (Fake::default(), scratch("none"));
+        write(&path, r#"{"url": "https://p.dev"}"#);
+        let e = read_config_at(&path, &ring, &accounts()).unwrap_err();
+        assert!(e.contains("no token"), "{e}");
+        ring.put("arakun-pilot-token", "t");
+        let cfg = read_config_at(&path, &ring, &accounts()).unwrap().unwrap();
+        assert_eq!((cfg.token.as_str(), cfg.admin_token), ("t", None));
+        let locked = Fake {
+            locked: true,
+            ..Fake::default()
+        };
+        let e = read_config_at(&path, &locked, &accounts()).unwrap_err();
+        assert!(e.contains("keyring could not give its token"), "{e}");
+        write(&path, r#"{"url": "http://p.dev"}"#);
+        let e = read_config_at(&path, &ring, &accounts()).unwrap_err();
+        assert!(e.contains("https://"), "{e}");
+        assert_eq!(
+            read_config_at(&scratch("gone"), &ring, &accounts()),
+            Ok(None)
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    impl Fake {
+        fn put(&self, account: &str, secret: &str) {
+            self.entries
+                .borrow_mut()
+                .insert(account.into(), secret.into());
+        }
+    }
+
+    #[test]
+    fn a_test_arakun_names_the_tokens_by_its_state_folder() {
+        assert_eq!(accounts().token, "arakun-pilot-token");
+        let dir = std::env::temp_dir().join("dev");
+        let state = dir.join("state.json");
+        let a = Accounts::for_state(Some(state.as_os_str()));
+        let folder = dir.to_str().unwrap();
+        assert_eq!(a.token, format!("arakun-pilot-token@{folder}"));
+        assert_eq!(a.admin, format!("arakun-pilot-admin-token@{folder}"));
+        // Another state file in the same folder shares client.json, and so
+        // the tokens.
+        let other = Accounts::for_state(Some(dir.join("other.json").as_os_str()));
+        assert_eq!(other.token, a.token);
     }
 }

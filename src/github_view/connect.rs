@@ -44,13 +44,16 @@ pub struct PilotDialog {
 impl EventEmitter<PilotDialogEvent> for PilotDialog {}
 
 impl PilotDialog {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // read_config, not load_config: a broken file must open as itself,
-        // with Disconnect and why it can't be used.
-        let (saved, broken) = match pilot::read_config() {
-            Ok(saved) => (saved, None),
-            Err(e) => (None, Some(e)),
-        };
+    /// `saved` is the settings pilot read last, and `broken` why the file
+    /// there can't be used: a broken file opens as itself, with Disconnect.
+    /// They come from pilot's last read, not the file: its tokens are in the
+    /// keyring, which must not be asked on the UI thread.
+    pub fn new(
+        saved: Option<Config>,
+        broken: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let url = cx.new(|cx| {
             let mut input = TextInput::new("https://pilot.example.workers.dev", cx).mono();
             if let Some(s) = &saved {
@@ -234,14 +237,27 @@ impl PilotDialog {
             cx.notify();
             return;
         }
-        match pilot_setup::remove() {
-            Ok(_) => cx.emit(PilotDialogEvent::Changed),
-            Err(e) => {
-                self.confirm_remove = false;
-                self.error = Some(format!("Couldn't remove the settings: {e}").into());
-                cx.notify();
-            }
-        }
+        // Off the UI thread: forgetting the tokens asks the keyring.
+        self.busy = true;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(crate::guard::task(async move { pilot_setup::remove() }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(_) => cx.emit(PilotDialogEvent::Changed),
+                    Err(e) => {
+                        this.confirm_remove = false;
+                        this.error = Some(format!("Couldn't remove the settings: {e}").into());
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 }
 

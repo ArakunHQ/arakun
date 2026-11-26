@@ -80,7 +80,9 @@ impl Host {
 /// How sending the opt-in to Arakun went.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sync {
+    /// No sync has run, or none can: nothing is said.
     #[default]
+    Unknown,
     Idle,
     Sending,
     Failed,
@@ -98,6 +100,16 @@ enum Page {
 fn page_for(sessions: &[Session], page: Page) -> Page {
     if sessions.is_empty() {
         Page::Accounts
+    } else {
+        page
+    }
+}
+
+/// The page once the shell says what it knows: without the flag the opt-in
+/// page goes, even while it is open.
+fn page_after_host(page: Page, host: &Host) -> Page {
+    if !host.flagged && page == Page::Delegation {
+        Page::Main
     } else {
         page
     }
@@ -253,7 +265,7 @@ impl LinearView {
                 Host::default()
             },
             installed: HashMap::new(),
-            sync: Sync::Idle,
+            sync: Sync::Unknown,
             delegation: Delegation::load(),
             delegation_error: None,
             places: Loadable::default(),
@@ -289,8 +301,9 @@ impl LinearView {
         if host == self.host {
             return;
         }
-        if !host.flagged && self.page == Page::Delegation {
-            self.page = Page::Main;
+        let page = page_after_host(self.page, &host);
+        if page != self.page {
+            self.page = page;
             self.adding = None;
         }
         self.host = host;
@@ -733,6 +746,23 @@ mod tests {
         assert_eq!(page_for(&[], Page::Main), Page::Accounts); // nobody signed in: the form
         assert_eq!(page_for(&[session()], Page::Main), Page::Main);
         assert_eq!(page_for(&[session()], Page::Accounts), Page::Accounts); // opened by hand: stays
+    }
+
+    #[test]
+    fn the_opt_in_page_goes_with_the_flag() {
+        let flagged = Host::for_fixture();
+        let unflagged = Host {
+            flagged: false,
+            ..flagged.clone()
+        };
+        assert_eq!(page_after_host(Page::Delegation, &unflagged), Page::Main);
+        assert_eq!(
+            page_after_host(Page::Delegation, &flagged),
+            Page::Delegation
+        );
+        // Other pages don't depend on the flag.
+        assert_eq!(page_after_host(Page::Accounts, &unflagged), Page::Accounts);
+        assert_eq!(page_after_host(Page::Main, &unflagged), Page::Main);
     }
 
     #[test]

@@ -124,6 +124,29 @@ pub fn run(
     ran
 }
 
+/// What a sync needs: the Arakun account's server and session, and this
+/// computer's relay label. No `Debug`: it holds the session.
+pub(super) struct Gate {
+    pub base: String,
+    pub session: String,
+    pub label: String,
+}
+
+/// Whether a sync may run: only signed in, with the `linear` flag, and with
+/// the relay set up. Otherwise nothing about Linear is sent.
+pub(super) fn may_sync(
+    account: Option<crate::arakun_teams::Account>,
+    flagged: bool,
+    label: Option<String>,
+) -> Option<Gate> {
+    let account = account.filter(|_| flagged)?;
+    Some(Gate {
+        base: account.base,
+        session: account.session,
+        label: label?,
+    })
+}
+
 impl Shell {
     /// What the Linear page needs to know of this window.
     pub(super) fn linear_host(&self, cx: &Context<Self>) -> Host {
@@ -182,10 +205,20 @@ impl Shell {
             return;
         }
         let teams = self.teams.read(cx);
-        let Some(account) = teams.account().filter(|_| teams.linear_enabled()) else {
-            return;
-        };
-        let Some(label) = phone::Settings::load().relay_label() else {
+        let gate = may_sync(
+            teams.account(),
+            teams.linear_enabled(),
+            phone::Settings::load().relay_label(),
+        );
+        let Some(Gate {
+            base,
+            session,
+            label,
+        }) = gate
+        else {
+            // Nothing was checked, so the page must not say it is up to date.
+            self.linear_view
+                .update(cx, |v, cx| v.set_sync(Sync::Unknown, cx));
             return;
         };
         self.linear_sync.owed = true;
@@ -204,9 +237,8 @@ impl Shell {
             .filter(|p| !p.is_remote())
             .map(|p| p.path.clone())
             .collect();
-        let session = account.session.clone();
+        let token = session.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let (base, token) = (account.base, account.session);
             let ran = cx
                 .background_spawn(async move {
                     run(&base, &token, &label, &d, &keys, &local, || {
@@ -234,7 +266,7 @@ impl Shell {
         if self.teams.read(cx).account().map(|a| a.session) != Some(session) {
             self.linear_sync.owed = true;
             self.linear_view
-                .update(cx, |v, cx| v.set_sync(Sync::Idle, cx));
+                .update(cx, |v, cx| v.set_sync(Sync::Unknown, cx));
             self.sync_linear(window, cx);
             return;
         }
@@ -752,6 +784,31 @@ mod tests {
                 ("w1".to_string(), "a".to_string()),
                 ("w2".to_string(), "b".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn a_sync_needs_the_account_the_flag_and_the_label() {
+        let account = || {
+            Some(crate::arakun_teams::Account {
+                base: "https://a.dev".into(),
+                session: "s".into(),
+                github_id: 1,
+                login: "rik".into(),
+            })
+        };
+        let label = || Some("k1".to_string());
+        assert!(may_sync(None, true, label()).is_none()); // signed out
+        assert!(may_sync(account(), false, label()).is_none()); // no flag
+        assert!(may_sync(account(), true, None).is_none()); // no relay label
+        let gate = may_sync(account(), true, label()).unwrap();
+        assert_eq!(
+            (
+                gate.base.as_str(),
+                gate.session.as_str(),
+                gate.label.as_str()
+            ),
+            ("https://a.dev", "s", "k1")
         );
     }
 

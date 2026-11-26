@@ -52,12 +52,19 @@ pub(super) struct Notes {
 /// key, so that must be on screen first, blocker or not. While on, a
 /// workspace the person has not agreed for asks first, unless the server
 /// has a link for it already (`installed` is known): then no key goes.
-pub(super) fn notes(host: &Host, installed: Option<bool>, on: bool, consented: bool) -> Notes {
+/// The sync line shows only once a sync can run and has.
+pub(super) fn notes(
+    host: &Host,
+    installed: Option<bool>,
+    on: bool,
+    consented: bool,
+    sync: Sync,
+) -> Notes {
     let connect = on && !consented && installed.is_none();
     Notes {
         help: !on,
         blocker: blocker(host, installed),
-        sync: on && !connect,
+        sync: on && !connect && host.signed_in && host.relay_on && sync != Sync::Unknown,
         connect,
     }
 }
@@ -127,6 +134,8 @@ pub(super) fn choices<'a>(
 
 pub(super) fn sync_line(sync: Sync) -> &'static str {
     match sync {
+        // `notes` draws no line for it.
+        Sync::Unknown => "",
         Sync::Idle => "Up to date.",
         Sync::Sending => "Sending…",
         Sync::Failed => {
@@ -304,6 +313,7 @@ impl LinearView {
             installed,
             on,
             self.delegation.consents(&workspace),
+            self.sync,
         );
         let blocker = notes.blocker.map(|b| self.render_blocker(b, cx));
         let connect = notes.connect.then(|| self.render_connect(&name, cx));
@@ -342,7 +352,7 @@ impl LinearView {
             .when(notes.sync, |d| {
                 let color = match self.sync {
                     Sync::Failed | Sync::Limited => theme::attention().into(),
-                    Sync::Idle | Sync::Sending => theme::text_faint(),
+                    Sync::Unknown | Sync::Idle | Sync::Sending => theme::text_faint(),
                 };
                 d.child(ui::text(Type::Caption, color, sync_line(self.sync)))
             })
@@ -765,13 +775,13 @@ mod tests {
         ];
         for (host, installed) in states {
             for consented in [false, true] {
-                let off = notes(&host, installed, false, consented);
+                let off = notes(&host, installed, false, consented, Sync::Idle);
                 assert!(
                     off.help && !off.sync && !off.connect,
                     "{host:?} {installed:?}"
                 );
                 assert_eq!(off.blocker, blocker(&host, installed));
-                let on = notes(&host, installed, true, true);
+                let on = notes(&host, installed, true, true, Sync::Idle);
                 assert!(!on.help && !on.connect, "{host:?} {installed:?}");
                 assert_eq!(on.blocker, blocker(&host, installed));
             }
@@ -781,14 +791,35 @@ mod tests {
     #[test]
     fn an_unconsented_workspace_asks_before_its_key_goes() {
         let ok = ok();
-        let card = |installed, consented| notes(&ok, installed, true, consented).connect;
+        let card =
+            |installed, consented| notes(&ok, installed, true, consented, Sync::Idle).connect;
         assert!(!card(None, true)); // agreed already
         assert!(card(None, false));
         // The server has a link for it: no key goes, so nothing to ask.
         assert!(!card(Some(true), false));
         assert!(!card(Some(false), false));
         // The card stands in place of the sync line.
-        assert!(!notes(&ok, None, true, false).sync);
+        assert!(!notes(&ok, None, true, false, Sync::Idle).sync);
+    }
+
+    #[test]
+    fn the_sync_line_shows_only_once_a_sync_can_run_and_has() {
+        let ok = ok();
+        let line = |host: &Host, on, sync| notes(host, Some(true), on, true, sync).sync;
+        assert!(line(&ok, true, Sync::Idle));
+        assert!(line(&ok, true, Sync::Failed));
+        assert!(!line(&ok, true, Sync::Unknown)); // nothing has run
+        assert!(!line(&ok, false, Sync::Idle)); // off
+        let signed_out = Host {
+            signed_in: false,
+            ..ok.clone()
+        };
+        let no_relay = Host {
+            relay_on: false,
+            ..ok.clone()
+        };
+        assert!(!line(&signed_out, true, Sync::Idle));
+        assert!(!line(&no_relay, true, Sync::Idle));
     }
 
     #[test]

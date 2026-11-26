@@ -2,7 +2,7 @@
 //!
 //! `app_dir/linear/delegation.json` holds ids, names and paths, never a token.
 //! The switch is off until the person turns it on.
-// Running a delivery uses `project_for`, so it is still marked dead_code.
+// Running a delivery (Task 5) uses `target_for`, so it is still marked dead_code.
 
 use std::path::{Path, PathBuf};
 
@@ -156,6 +156,39 @@ pub fn project_for<'a>(
         .or_else(|| d.find(workspace, Kind::Team, team))
 }
 
+/// Why a delegated issue does not start on this computer.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The person has not let Linear start sessions here.
+    Off,
+    /// Neither the issue's team nor its project is mapped here.
+    Unmapped,
+    /// The mapped Arakun project is no longer open here.
+    ProjectGone,
+}
+
+/// The guard before a delegated issue starts: the switch is on, the issue's
+/// project or team is mapped, and that mapping's project is still here.
+#[allow(dead_code)]
+pub fn target_for<'a>(
+    d: &'a Delegation,
+    workspace: &str,
+    team: &str,
+    project: Option<&str>,
+    local: &[PathBuf],
+) -> Result<&'a Mapping, Refusal> {
+    if !d.enabled {
+        return Err(Refusal::Off);
+    }
+    let m = project_for(d, workspace, team, project).ok_or(Refusal::Unmapped)?;
+    // No fallback to the team's mapping: the person chose this project for it.
+    if broken(m, local) {
+        return Err(Refusal::ProjectGone);
+    }
+    Ok(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +317,56 @@ mod tests {
         let d = Delegation::load_from(&file);
         assert!(d.enabled && d.consented.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_guard_refuses_when_off() {
+        let mut d = on(vec![team("w1", "t1", "/p/a")]);
+        d.enabled = false;
+        assert_eq!(
+            target_for(&d, "w1", "t1", None, &[p("/p/a")]),
+            Err(Refusal::Off)
+        );
+    }
+    #[test]
+    fn the_guard_refuses_an_unmapped_issue() {
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        assert_eq!(
+            target_for(&d, "w1", "t2", Some("x1"), &[p("/p/a")]),
+            Err(Refusal::Unmapped)
+        );
+    }
+    #[test]
+    fn the_guard_takes_the_project_mapping_over_the_team() {
+        let d = on(vec![team("w1", "t1", "/p/a"), project("w1", "x1", "/p/b")]);
+        let local = [p("/p/a"), p("/p/b")];
+        assert_eq!(
+            target_for(&d, "w1", "t1", Some("x1"), &local).map(|m| &m.project),
+            Ok(&p("/p/b"))
+        );
+        assert_eq!(
+            target_for(&d, "w1", "t1", Some("x2"), &local).map(|m| &m.project),
+            Ok(&p("/p/a"))
+        );
+    }
+    #[test]
+    fn the_guard_never_matches_another_workspace() {
+        let d = on(vec![team("w2", "t1", "/p/a"), project("w2", "x1", "/p/a")]);
+        assert_eq!(
+            target_for(&d, "w1", "t1", Some("x1"), &[p("/p/a")]),
+            Err(Refusal::Unmapped)
+        );
+    }
+    #[test]
+    fn the_guard_refuses_when_the_project_is_gone() {
+        // The project mapping wins even when gone: its team's is not a fallback.
+        let d = on(vec![
+            team("w1", "t1", "/p/a"),
+            project("w1", "x1", "/p/gone"),
+        ]);
+        assert_eq!(
+            target_for(&d, "w1", "t1", Some("x1"), &[p("/p/a")]),
+            Err(Refusal::ProjectGone)
+        );
     }
 }

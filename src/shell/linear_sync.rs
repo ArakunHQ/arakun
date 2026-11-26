@@ -50,8 +50,12 @@ pub fn keys(sessions: &[Session]) -> Vec<(String, String)> {
         if keys.iter().any(|(w, _)| *w == s.workspace_id) {
             continue;
         }
-        let Credential::ApiKey { key } = &s.credential;
-        keys.push((s.workspace_id.clone(), key.clone()));
+        // The same rule as reading a delegated issue, so both act as one person.
+        let Some(first) = linear::session_for(sessions, &s.workspace_id) else {
+            continue;
+        };
+        let Credential::ApiKey { key } = &first.credential;
+        keys.push((first.workspace_id.clone(), key.clone()));
     }
     keys
 }

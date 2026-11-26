@@ -10,6 +10,7 @@ pub(crate) mod fixture;
 pub mod issues;
 pub mod places;
 pub mod prompt;
+pub mod runs;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -121,6 +122,13 @@ pub fn remove_session(id: &str) -> Result<(), String> {
     let mut store = Store::read_from(&store_file());
     store.remove(id);
     store.write_to(&store_file())
+}
+
+/// The sign-in that speaks for a Linear organization: the first one saved.
+/// The server link and the reads for a delegated issue both use it, so they
+/// act as the same person.
+pub fn session_for<'a>(sessions: &'a [Session], organization: &str) -> Option<&'a Session> {
+    sessions.iter().find(|s| s.workspace_id == organization)
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +279,16 @@ mod tests {
             credential: Credential::ApiKey { key: "k".into() },
             added_at: 1,
         }
+    }
+
+    #[test]
+    fn the_first_sign_in_speaks_for_an_organization() {
+        let mut other = session("w2#u1", "Other");
+        other.workspace_id = "w2".into();
+        let s = [other, session("w1#u1", "First"), session("w1#u2", "Second")];
+        assert_eq!(session_for(&s, "w1").unwrap().name, "First");
+        assert_eq!(session_for(&s, "w2").unwrap().name, "Other");
+        assert!(session_for(&s, "w3").is_none());
     }
 
     #[test]

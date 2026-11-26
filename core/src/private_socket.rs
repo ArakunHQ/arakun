@@ -85,9 +85,10 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
 }
 
 /// Replaces the file's DACL with one entry, full access for the current user,
-/// and stops it inheriting from its folder.
+/// and stops it inheriting from its folder. For sockets, and for logs other
+/// users must not read (`durable::open_private_log`).
 #[cfg(windows)]
-fn owner_only(path: &Path) -> io::Result<()> {
+pub(crate) fn owner_only(path: &Path) -> io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt as _;
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
@@ -160,7 +161,7 @@ fn owner_only(path: &Path) -> io::Result<()> {
             LocalFree(sd);
             return Err(err);
         }
-        // The socket is a reparse point: open it, not what it would point at.
+        // A socket is a reparse point: open it, not what it would point at.
         let file = std::fs::OpenOptions::new()
             .access_mode(READ_CONTROL | WRITE_DAC)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)

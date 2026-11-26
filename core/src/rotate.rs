@@ -34,11 +34,9 @@ fn rotate(path: &Path, max: u64) {
     }
 }
 
+/// Logs hold what agents read and print, so only this user may read them.
 fn open(path: &Path) -> io::Result<File> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    File::options().create(true).append(true).open(path)
+    crate::durable::open_private_log(path, false)
 }
 
 /// Appends `bytes` with one write, so lines from two writers never

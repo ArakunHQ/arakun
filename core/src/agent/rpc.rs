@@ -154,6 +154,19 @@ fn trace_enabled() -> bool {
     std::env::var_os("ARAKUN_ACP_TRACE").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
+/// Prints one ACP message for `ARAKUN_ACP_TRACE`. Prompts and tool output
+/// pass through here, so the secrets in them are taken out first, by the
+/// same rules as crash reports and telemetry.
+fn trace_line(arrow: &str, line: &str) {
+    eprintln!("{arrow} {}", traced(line));
+}
+
+/// What the trace prints of `line`: without its secrets, then cut, so a cut
+/// never leaves half a key that no longer reads as one.
+fn traced(line: &str) -> String {
+    clip(&crate::secrets::redact(line, "<secret>"), 4000).to_string()
+}
+
 fn clip(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
         Some((i, _)) => &s[..i],
@@ -259,7 +272,7 @@ impl Connection {
                                 continue;
                             }
                             if trace {
-                                eprintln!("<- {}", clip(line, 4000));
+                                trace_line("<-", line);
                             }
                             let Ok(msg) = serde_json::from_str::<Value>(line) else {
                                 continue;
@@ -321,7 +334,7 @@ impl Connection {
                         let (pending, events) = (pending.clone(), events.clone());
                         Arc::new(move |msg: Value| {
                             if trace {
-                                eprintln!("<- {}", clip(&msg.to_string(), 4000));
+                                trace_line("<-", &msg.to_string());
                             }
                             dispatch(msg, &pending, &events);
                         })
@@ -360,7 +373,7 @@ impl Connection {
         }
         let line = msg.to_string();
         if self.trace {
-            eprintln!("-> {}", clip(&line, 4000));
+            trace_line("->", &line);
         }
         self.writer.send(line).is_ok()
     }
@@ -485,6 +498,20 @@ mod tests {
     use super::*;
     use futures::StreamExt as _;
     use futures::executor::block_on;
+
+    #[test]
+    fn the_trace_hides_secrets_in_prompts_and_tool_output() {
+        let key = "sk-ant-api03-0123456789abcdefghijABCDEFGHIJ";
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "method": "session/prompt",
+            "params": {"prompt": [{"type": "text", "text": format!("use ANTHROPIC_API_KEY={key}")}]},
+        });
+        let out = traced(&msg.to_string());
+        assert!(!out.contains(key), "{out}");
+        assert!(out.contains("<secret>"), "{out}");
+        assert!(out.contains("\"method\":\"session/prompt\""), "{out}");
+    }
 
     #[test]
     fn lossy_lines_read_past_bytes_that_arent_utf8() {

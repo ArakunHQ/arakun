@@ -570,6 +570,8 @@ struct InboxItem {
     id: SharedString,
     status: Status,
     title: SharedString,
+    /// The Linear issue it was started for.
+    linear: Option<SharedString>,
     place: SharedString,
     updated: u64,
 }

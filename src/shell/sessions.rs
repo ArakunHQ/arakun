@@ -165,6 +165,25 @@ impl Shell {
         Some(&mut env.sessions[i])
     }
 
+    /// Marks a session as started for a Linear issue. The mark outlives the
+    /// title, which the agent may replace with its own.
+    pub(super) fn mark_session_linear(
+        &mut self,
+        env_path: &Path,
+        session_id: &SharedString,
+        identifier: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let mark = model::linear_mark(identifier);
+        if let Some(s) = self.session_mut(env_path, session_id)
+            && s.linear != mark
+        {
+            s.linear = mark;
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
     /// The sessions in the panes on screen: the active tab and the split's other one.
     pub(super) fn sessions_on_screen(&self) -> Vec<(PathBuf, SharedString)> {
         let other = self
@@ -1400,6 +1419,7 @@ impl Shell {
         let mut session = Session::new(id.clone(), old.title.clone(), agent);
         (session.added, session.removed) = (old.added, old.removed);
         session.ci_run = old.ci_run;
+        session.linear = old.linear.clone();
         #[cfg(feature = "coderlabs")]
         {
             session.task = old.task.clone();

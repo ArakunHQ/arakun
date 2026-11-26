@@ -512,6 +512,7 @@ impl Shell {
             let line = failed_line("Arakun could not start it.");
             return self.linear_fail(&start, line, window, cx);
         };
+        self.mark_session_linear(&env_path, &session, &detail.issue.identifier, cx);
         if let Some(run) = self.linear_runs.by_agent_session(&start.agent_session) {
             run.session = Some(session.to_string());
             run.environment = Some(env_path);

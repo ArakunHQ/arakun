@@ -189,6 +189,22 @@ fn pick_range(
     }
 }
 
+/// What a session's row says: the identifier of the Linear issue it was
+/// started for, if any, then its title. The first title is
+/// `ENG-412: <issue title>`; with the identifier before it, the title drops
+/// its own copy so the row doesn't say it twice.
+pub(super) fn row_title(title: &str, linear: Option<&str>) -> (Option<String>, String) {
+    let Some(issue) = linear.filter(|l| !l.is_empty()) else {
+        return (None, title.to_string());
+    };
+    let rest = title
+        .strip_prefix(issue)
+        .and_then(|r| r.strip_prefix(": ").or_else(|| r.strip_prefix(' ')))
+        .map(str::trim_start)
+        .filter(|r| !r.is_empty());
+    (Some(issue.to_string()), rest.unwrap_or(title).to_string())
+}
+
 /// One session in the tree.
 struct Row {
     pi: usize,
@@ -197,6 +213,8 @@ struct Row {
     si: usize,
     id: SharedString,
     title: SharedString,
+    /// The Linear issue it was started for.
+    linear: Option<SharedString>,
     agent: crate::agent::AgentKind,
     state: RowState,
     pr: Option<u64>,
@@ -336,6 +354,7 @@ impl Shell {
                     si,
                     id: s.id.clone(),
                     title: s.title.clone(),
+                    linear: s.linear.clone(),
                     agent: s.agent,
                     state: RowState::of(s.shown_status(), ci),
                     pr,
@@ -361,7 +380,13 @@ impl Shell {
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             if let Some(q) = query {
-                rows.retain(|r| r.title.to_lowercase().contains(q));
+                // The issue too: the agent may have retitled the session.
+                rows.retain(|r| {
+                    r.title.to_lowercase().contains(q)
+                        || r.linear
+                            .as_ref()
+                            .is_some_and(|l| l.to_lowercase().contains(q))
+                });
             }
             rows
         };
@@ -1159,6 +1184,7 @@ impl Shell {
             si,
             id,
             title,
+            linear,
             agent,
             state,
             pr,
@@ -1185,6 +1211,7 @@ impl Shell {
         } else {
             title
         };
+        let (issue, title) = row_title(&title, linear.as_deref());
         // The age shows only under the pointer, so the title has the row's
         // whole width the rest of the time.
         let age = under_pointer.then(|| model::age(updated));
@@ -1194,9 +1221,13 @@ impl Shell {
         // comes back under the pointer, to be read before it is opened.
         let dimmed = !tab && !selected && !under_pointer && !state.stays_lit();
         let two_lines = layout.titles == LongTitles::TwoLines;
+        let named = match &issue {
+            Some(issue) => format!("{issue} {title}"),
+            None => title.clone(),
+        };
         let label = match state.word() {
-            Some(word) => format!("{title}, {word}"),
-            None => title.to_string(),
+            Some(word) => format!("{named}, {word}"),
+            None => named,
         };
         let project = &self.projects[pi];
         let logo: Hsla = gpui::rgb(project.logo).into();
@@ -1250,6 +1281,16 @@ impl Shell {
                         .child(ui::project_icon(project.icon, 1.25, logo)),
                 )
             })
+            // The issue a session from Linear was started for, before its
+            // title: the agent may have replaced the title that said so.
+            .children(issue.map(|issue| {
+                div()
+                    .flex_none()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .when(dimmed, |d| d.opacity(DIMMED))
+                    .child(issue)
+            }))
             .child(
                 div()
                     .flex_1()
@@ -1362,6 +1403,36 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_from_linear_says_its_issue_once() {
+        let mark = Some("ENG-412");
+        let got = row_title;
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            got("ENG-412: Fix the tab", mark),
+            (some("ENG-412"), "Fix the tab".into())
+        );
+        assert_eq!(
+            got("ENG-412 Fix the tab", mark),
+            (some("ENG-412"), "Fix the tab".into())
+        );
+        assert_eq!(
+            got("A title the agent chose", mark),
+            (some("ENG-412"), "A title the agent chose".into())
+        );
+        assert_eq!(got("Anything", None), (None, "Anything".into()));
+        // One issue's identifier can start another's.
+        assert_eq!(
+            got("ENG-41: Other issue", Some("ENG-4")),
+            (some("ENG-4"), "ENG-41: Other issue".into())
+        );
+        // Nothing left after the identifier: the title stays as it was.
+        assert_eq!(
+            got("ENG-412: ", mark),
+            (some("ENG-412"), "ENG-412: ".into())
+        );
+    }
 
     #[test]
     fn a_row_says_its_session_before_its_checks() {
@@ -1480,6 +1551,7 @@ mod tests {
             si: 0,
             id: id.to_string().into(),
             title: title.to_string().into(),
+            linear: None,
             agent: crate::agent::AgentKind::Claude,
             state: RowState::Idle,
             pr: None,

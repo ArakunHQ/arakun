@@ -84,7 +84,7 @@ impl Shell {
     }
 
     pub(super) fn is_picked(&self, path: &Path) -> bool {
-        self.rail_pick.iter().any(|p| p == path)
+        self.rail.pick.iter().any(|p| p == path)
     }
 
     /// A click on row `ei` of project `pi`. Ctrl (Cmd) adds or takes it out,
@@ -115,16 +115,17 @@ impl Shell {
                 .collect();
             // From the open row when nothing was clicked yet.
             let anchor = self
-                .rail_pick_anchor
+                .rail
+                .pick_anchor
                 .clone()
                 .or_else(|| Some(self.env().path.clone()));
             // An anchor not in the list (the main checkout, a row gone) picks
             // the row alone, which then anchors the next Shift+click.
             let anchor = anchor.filter(|a| order.contains(a));
-            self.rail_pick = range(&order, anchor.as_deref(), &path);
-            self.rail_pick_anchor = anchor.or(Some(path));
+            self.rail.pick = range(&order, anchor.as_deref(), &path);
+            self.rail.pick_anchor = anchor.or(Some(path));
         } else if modifiers.secondary(cx) {
-            if self.rail_pick.is_empty() {
+            if self.rail.pick.is_empty() {
                 // The open row is part of it, as in a file manager; not the
                 // main checkout, which most of these leave alone.
                 let open = self.env().path.clone();
@@ -135,18 +136,18 @@ impl Shell {
                         .iter()
                         .any(|&i| self.projects[pi].environments[i].path == open)
                 {
-                    self.rail_pick.push(open);
+                    self.rail.pick.push(open);
                 }
             }
-            if let Some(i) = self.rail_pick.iter().position(|p| *p == path) {
-                self.rail_pick.remove(i);
+            if let Some(i) = self.rail.pick.iter().position(|p| *p == path) {
+                self.rail.pick.remove(i);
             } else {
-                self.rail_pick.push(path.clone());
+                self.rail.pick.push(path.clone());
             }
-            self.rail_pick_anchor = Some(path);
+            self.rail.pick_anchor = Some(path);
         } else {
             self.drop_pick();
-            self.rail_pick_anchor = Some(path);
+            self.rail.pick_anchor = Some(path);
             match opens {
                 Some(id) => self.open_session_at(pi, ei, id, window, cx),
                 None => self.select_env(pi, ei, window, cx),
@@ -160,11 +161,11 @@ impl Shell {
     /// session's worktree, which may be listed only there (all its sessions
     /// wait or run). No range: the Active list is in another order.
     pub(super) fn toggle_pick(&mut self, path: &Path, cx: &mut Context<Self>) {
-        match self.rail_pick.iter().position(|p| p == path) {
+        match self.rail.pick.iter().position(|p| p == path) {
             Some(i) => {
-                self.rail_pick.remove(i);
+                self.rail.pick.remove(i);
             }
-            None => self.rail_pick.push(path.to_path_buf()),
+            None => self.rail.pick.push(path.to_path_buf()),
         }
         cx.notify();
     }
@@ -182,17 +183,18 @@ impl Shell {
             .into_iter()
             .map(|ei| self.projects[pi].environments[ei].path.as_path())
             .collect();
-        self.rail_pick
+        self.rail
+            .pick
             .iter()
             .any(|p| !listed.contains(&p.as_path()))
     }
 
     /// Returns whether anything was picked.
     pub(super) fn drop_pick(&mut self) -> bool {
-        self.rail_pick_anchor = None;
-        self.tree_pick_anchor = None;
-        let sessions = !std::mem::take(&mut self.tree_pick).is_empty();
-        !std::mem::take(&mut self.rail_pick).is_empty() || sessions
+        self.rail.pick_anchor = None;
+        self.rail.tree_pick_anchor = None;
+        let sessions = !std::mem::take(&mut self.rail.tree_pick).is_empty();
+        !std::mem::take(&mut self.rail.pick).is_empty() || sessions
     }
 
     /// The picked rows that still exist, as (project, environment).

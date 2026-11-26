@@ -80,7 +80,7 @@ impl Shell {
         .on_action(cx.listener(|this, _: &TogglePin, window, cx| {
             // In the composer, with no tree row under the pointer, the key is
             // the composer's: on macOS Option+P types π.
-            if this.tree_hover.is_none() && this.composer.focus.is_focused(window) {
+            if this.rail.tree_hover.is_none() && this.composer.focus.is_focused(window) {
                 cx.propagate();
                 return;
             }

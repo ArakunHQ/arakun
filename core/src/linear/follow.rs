@@ -230,6 +230,28 @@ pub fn reply_no_sign_in_line(computer: &str) -> String {
     )
 }
 
+/// What Linear hears once a reply reached its session. Linear shows the
+/// agent as starting after a person's message until the agent says
+/// something, so this goes at once. `pending` is what still waits on the
+/// person after a question was skipped; `busy` means the turn before it has
+/// not ended. Never the reply's text.
+pub fn passed_line(computer: &str, pending: Pending, busy: bool) -> String {
+    let passed = format!("Passed your message to the session on {computer}.");
+    match pending {
+        Pending::Permission => format!(
+            "{passed} It reads it once you answer its permission request in Arakun or on your \
+             phone."
+        ),
+        Pending::Secret => {
+            format!("{passed} It reads it once you give it what it asked for in Arakun.")
+        }
+        Pending::Question | Pending::Nothing if busy => {
+            format!("{passed} It reads it when its current turn ends.")
+        }
+        Pending::Question | Pending::Nothing => passed,
+    }
+}
+
 pub fn not_started_line(computer: &str) -> String {
     format!(
         "This has not started yet on {computer}. Your message will not be passed on; send it \
@@ -557,6 +579,28 @@ mod tests {
         // Released ones are no longer in flight, so they now run at once.
         assert!(!hold_stop(&in_flight, "as-1"));
         assert!(release_stops(&mut held, &mut in_flight, "as-1").is_empty());
+    }
+
+    #[test]
+    fn a_passed_reply_says_what_it_waits_behind() {
+        let line = |p, busy| passed_line("rik-mac", p, busy);
+        let passed = "Passed your message to the session on rik-mac.";
+        assert_eq!(line(Pending::Nothing, false), passed);
+        assert_eq!(
+            line(Pending::Nothing, true),
+            format!("{passed} It reads it when its current turn ends.")
+        );
+        assert_eq!(
+            line(Pending::Permission, true),
+            format!(
+                "{passed} It reads it once you answer its permission request in Arakun or on \
+                 your phone."
+            )
+        );
+        assert_eq!(
+            line(Pending::Secret, true),
+            format!("{passed} It reads it once you give it what it asked for in Arakun.")
+        );
     }
 
     #[test]

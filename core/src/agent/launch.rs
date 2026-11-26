@@ -945,6 +945,7 @@ pub fn resolve(
                     env.push(("CLAUDE_CODE_EXECUTABLE".to_string(), cli.into_os_string()));
                 }
                 env.extend(claude_extra_model_env());
+                env.extend(claude_todo_tools_env(std::env::var_os(CLAUDE_TODO_TOOLS)));
                 LaunchSpec {
                     program: bin,
                     args: Vec::new(),
@@ -1077,6 +1078,16 @@ fn claude_extra_model_env() -> Vec<(String, OsString)> {
     ]
 }
 
+const CLAUDE_TODO_TOOLS: &str = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+
+/// Claude Code leaves out TaskCreate, TaskUpdate and TaskList for models newer than
+/// Opus 4.7 unless this is set, and without them there is no task list to show in
+/// the conversation. A value of the user's own wins, so they can still turn it off.
+fn claude_todo_tools_env(user: Option<OsString>) -> Option<(String, OsString)> {
+    user.is_none()
+        .then(|| (CLAUDE_TODO_TOOLS.to_string(), OsString::from("1")))
+}
+
 /// Whether the installed adapter is the pinned [`CLAUDE_ACP_PACKAGE`] version.
 fn claude_adapter_current() -> bool {
     adapter_current(&agents_dir(), CLAUDE_ACP_PACKAGE)
@@ -1202,6 +1213,15 @@ fn npm_install(npm: &Path, dir: &Path, package: &str, kind: AgentKind) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_todo_tools_are_on_unless_the_user_set_them() {
+        assert_eq!(
+            claude_todo_tools_env(None),
+            Some((CLAUDE_TODO_TOOLS.to_string(), OsString::from("1")))
+        );
+        assert_eq!(claude_todo_tools_env(Some("0".into())), None);
+    }
 
     #[test]
     fn adapter_install_says_what_where_and_how() {

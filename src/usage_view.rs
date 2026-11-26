@@ -31,7 +31,8 @@ use crate::theme;
 use crate::ui::{self, ButtonKind};
 use crate::usage_history::{self, Record};
 
-/// The logs are stat-ed this often; only changed files are read again.
+/// The logs are stat-ed this often while the tab is on screen; only changed
+/// files are read again.
 const POLL: Duration = Duration::from_secs(30);
 /// The plan panel re-reads its cache this often; `plan::refresh` limits the
 /// actual network fetches on its own.
@@ -290,6 +291,13 @@ pub struct UsageView {
     _account_sub: Option<Subscription>,
     /// None until the first scan of the logs is done.
     records: Option<Vec<Record>>,
+    /// The scan generation `records` came from (see `usage_history`).
+    generation: Option<u64>,
+    /// When the last scan started.
+    scanned: Option<Instant>,
+    /// A scan runs.
+    busy: bool,
+    /// The refresh control spins: the user asked for the scan that runs.
     scanning: bool,
     range: Range,
     measure: Measure,
@@ -305,34 +313,14 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
-    /// Whether the view is on screen, for the poll's background task.
-    shown: std::sync::Arc<Shown>,
+    /// Whether the tab is on screen in a window in front, as the shell says.
+    /// The logs are read and named seats probed only then; the plan poll
+    /// reads it off the UI thread.
+    shown: std::sync::Arc<AtomicBool>,
     _poll: [Task<()>; 3],
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
-
-/// Whether the Usage view is on screen, readable off the UI thread.
-#[derive(Default)]
-struct Shown {
-    /// Whether the shell's last frame showed the view. A window that is not
-    /// drawn keeps the last value, so `drawn` counts too.
-    on_screen: AtomicBool,
-    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
-    /// while it is on screen, so an older time means it is not.
-    drawn: std::sync::Mutex<Option<Instant>>,
-}
-
-impl Shown {
-    fn now(&self) -> bool {
-        self.on_screen.load(Ordering::Relaxed)
-            && self
-                .drawn
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_some_and(|at| at.elapsed() < 2 * POLL)
-    }
-}
 
 /// What the seats block shows (see `agent::seats`).
 #[derive(Clone, Default, PartialEq)]
@@ -363,9 +351,15 @@ impl SeatsInfo {
 
 impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let shown = std::sync::Arc::new(Shown::default());
+        let shown = std::sync::Arc::new(AtomicBool::new(false));
         let probe_ok = shown.clone();
-        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::rescan);
+        // Walking `~/.claude/projects` stats thousands of files: only while
+        // someone looks. `set_shown` reads them when the tab comes back.
+        let poll = crate::poll::poll_every(cx, POLL, POLL, |this, cx| {
+            if this.is_shown() {
+                this.rescan(false, cx);
+            }
+        });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
                 // Reading a named seat sends it a message, which can start its
@@ -376,7 +370,7 @@ impl UsageView {
                         // Asked once the refresh has its turn: the tab may
                         // have closed while another refresh ran.
                         let all = plan::seats_probing_if(&seats::Store::open().names(), || {
-                            probe_ok.now()
+                            probe_ok.load(Ordering::Relaxed)
                         });
                         (
                             SeatsInfo::read(all),
@@ -492,6 +486,9 @@ impl UsageView {
             account: None,
             _account_sub: None,
             records: None,
+            generation: None,
+            scanned: None,
+            busy: false,
             scanning: false,
             range: Range::Month,
             measure: Measure::Cost,
@@ -509,21 +506,46 @@ impl UsageView {
     }
 
     /// Reads the agents' logs again off the main thread; unchanged files come
-    /// from the cache.
-    fn rescan(&mut self, cx: &mut Context<Self>) {
-        if self.scanning {
+    /// from the cache. The refresh control spins only when the user `asked`,
+    /// and a scan that found nothing new draws nothing.
+    fn rescan(&mut self, asked: bool, cx: &mut Context<Self>) {
+        if asked && !self.scanning {
+            self.scanning = true;
+            cx.notify();
+        }
+        if self.busy {
             return;
         }
-        self.scanning = true;
-        cx.notify();
+        self.busy = true;
+        self.scanned = Some(Instant::now());
+        let seen = self.generation;
         cx.spawn(async move |this, cx| {
-            let records = cx
-                .background_spawn(crate::guard::task(async move { usage_history::scan() }))
+            let found = cx
+                .background_spawn(crate::guard::task(async move {
+                    Some(usage_history::scan_changed(seen))
+                }))
                 .await;
             let _ = this.update(cx, |v, cx| {
-                v.scanning = false;
-                v.records = Some(records);
-                cx.notify();
+                v.busy = false;
+                let mut changed = std::mem::take(&mut v.scanning);
+                match found {
+                    Some((generation, Some(records))) => {
+                        v.generation = Some(generation);
+                        v.records = Some(records);
+                        changed = true;
+                    }
+                    Some((_, None)) => {}
+                    // The scan panicked: show what there is rather than wait.
+                    None => {
+                        if v.records.is_none() {
+                            v.records = Some(Vec::new());
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -544,10 +566,20 @@ impl UsageView {
         }
     }
 
-    /// Tells the view whether the shell's frame shows it. Named seats are
-    /// read only while it does: a read sends the seat a message.
-    pub fn set_on_screen(&self, shown: bool) {
-        self.shown.on_screen.store(shown, Ordering::Relaxed);
+    pub fn is_shown(&self) -> bool {
+        self.shown.load(Ordering::Relaxed)
+    }
+
+    /// The shell says whether this tab is on screen in a window in front.
+    /// Named seats are read only while it is: a read sends the seat a
+    /// message. Coming back, the logs are read again unless the last read is
+    /// more recent than a poll.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        let back = shown && !self.is_shown();
+        self.shown.store(shown, Ordering::Relaxed);
+        if back && self.scanned.is_none_or(|at| at.elapsed() >= POLL) {
+            self.rescan(false, cx);
+        }
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1940,7 +1972,6 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        *self.shown.drawn.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         let all: &[Record] = self.records.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {
@@ -1972,7 +2003,7 @@ impl Render for UsageView {
             "usage-refresh",
             self.scanning,
             None,
-            cx.listener(|this, _, _, cx| this.rescan(cx)),
+            cx.listener(|this, _, _, cx| this.rescan(true, cx)),
         );
         let header = div()
             .flex()

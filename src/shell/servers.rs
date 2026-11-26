@@ -1513,6 +1513,14 @@ impl Shell {
         }
         link.git_asks
             .fail(id, "The server was removed before it answered.");
+        // Only one paired by link has a token: one of the account has none.
+        if link
+            .saved
+            .iter()
+            .any(|s| s.id == *id && s.way == servers::Way::Direct)
+        {
+            servers::forget_token(id);
+        }
         link.saved.retain(|s| s.id != *id);
         servers::save(&link.saved);
         if link.balance.servers.contains_key(id) {
@@ -2999,6 +3007,8 @@ impl Shell {
                 // so it would sit in the list as a server nothing talks to,
                 // and take the pairing now under way for done.
                 if link.pairing.as_deref() != Some(id) || !link.conns.contains_key(id) {
+                    // Its token went to the keyring all the same.
+                    servers::forget_token(id);
                     return;
                 }
                 link.pairing = None;
@@ -3007,6 +3017,18 @@ impl Shell {
                 link.error = None;
                 link.saved.push(saved);
                 servers::save(&link.saved);
+            }
+            Event::TokenKept => {
+                match link.saved.iter_mut().find(|s| s.id == id) {
+                    Some(s) if !s.token.is_empty() => {
+                        s.token.clear();
+                        servers::save(&link.saved);
+                    }
+                    Some(_) => {}
+                    // Forgotten while its token was on its way to the keyring.
+                    None => servers::forget_token(id),
+                }
+                return;
             }
             Event::Status(status) => {
                 let pairing = link.pairing.as_deref() == Some(id);

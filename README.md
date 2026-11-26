@@ -1781,9 +1781,10 @@ for two minutes and pairs one device. There are two ways to use it:
   clone goes into `~/code`. Clone takes https and ssh addresses, not plain http, and
   gives up after 20 minutes. Add offers a folder the server already has, as
   `arakun-server add` does. The app keeps what pairing gave it in `servers.json`
-  next to its state, which only your user can read: a server's address and token,
-  or, for one reached through the account, only its label on the relay (the sign-in
-  stays in the system keyring). A server paired through the relay before accounts
+  next to its state, which only your user can read: a server's address, with the token
+  pairing gave in the system keyring (one kept in the file by an older version moves
+  there the next time the server is dialed), or, for one reached through the account,
+  only its label on the relay (the sign-in stays in the system keyring). A server paired through the relay before accounts
   stays in the file as it was and says it was paired by link, which the relay no longer
   takes: sign in here and run `arakun-server login` on the server with the same GitHub
   account, or pair it again over Tailscale. Once your account lists it, it is kept as

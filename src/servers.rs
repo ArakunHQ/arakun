@@ -8,9 +8,10 @@
 //! `shell::servers`) is what it is for.
 //!
 //! What pairing gave is kept in `servers.json` next to the state, readable by
-//! this user only: with the token in it, anyone could start agents on the server.
-//! A server reached through the account has no token there: the sign-in is
-//! the keyring's.
+//! this user only. The token pairing gave goes to the keyring: with it,
+//! anyone could start agents on the server. A file from before still holds
+//! it, until the server is next dialed. A server reached through the account
+//! has no token at all: the sign-in is the keyring's.
 //! What each server last listed is kept in `servers-inbox.json`, so its
 //! environments are back at start before the server answers, or when it can't.
 
@@ -39,7 +40,10 @@ pub struct Saved {
     #[serde(default)]
     pub device: String,
     /// What the server lets this app in with. Empty through the account.
-    #[serde(default)]
+    /// It is kept in the keyring (`servers::token`): here it is only while a file
+    /// from before holds it, until it is moved, or when the keyring refused
+    /// it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
     /// The server's user removed this app from its devices: it is not dialed
     /// again until it is forgotten here and connected anew, or the server
@@ -237,6 +241,64 @@ pub fn save(servers: &[Saved]) {
     }
 }
 
+/// The keyring entry of server `id`'s token. Per test Arakun, as the file
+/// is: a test Arakun's servers are its own.
+fn token_account(id: &str) -> String {
+    crate::secret_store::account(&format!("server-token:{id}"))
+}
+
+/// Where the servers' tokens are kept: the keyring, or a fake one in the
+/// tests. Its calls may wait for the person to unlock the keyring, so they
+/// run on a server's connection thread, never on the UI thread.
+pub trait Vault: Send + Sync {
+    fn get(&self, account: &str) -> Result<Option<String>, String>;
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String>;
+    fn forget(&self, account: &str);
+}
+
+pub struct Keyring;
+
+impl Vault for Keyring {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        crate::secret_store::get(account)
+    }
+
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String> {
+        crate::secret_store::set(account, label, secret)
+    }
+
+    fn forget(&self, account: &str) {
+        crate::secret_store::forget(account)
+    }
+}
+
+/// Puts `saved`'s token in the keyring. Once it is there, the file can go
+/// without it.
+pub fn keep_token(vault: &dyn Vault, saved: &Saved) -> Result<(), String> {
+    let label = format!("arakun: token for the server {}", saved.name);
+    vault.set(&token_account(&saved.id), &label, &saved.token)
+}
+
+/// The token `saved` comes in with: the one it holds (a file from before,
+/// or one just paired), else the keyring's. None when there is neither.
+pub fn token(vault: &dyn Vault, saved: &Saved) -> Result<Option<String>, String> {
+    if !saved.token.is_empty() {
+        return Ok(Some(saved.token.clone()));
+    }
+    vault
+        .get(&token_account(&saved.id))
+        .map(|t| t.filter(|t| !t.is_empty()))
+}
+
+/// Forgets server `id`'s token, on a thread of its own: this is called on
+/// the UI thread, and the keyring may wait for an unlock.
+pub fn forget_token(id: &str) {
+    let account = token_account(id);
+    let _ = std::thread::Builder::new()
+        .name("arakun-forget-token".into())
+        .spawn(move || Keyring.forget(&account));
+}
+
 fn inbox_file() -> PathBuf {
     file().with_file_name("servers-inbox.json")
 }
@@ -316,6 +378,68 @@ pub fn save_inboxes(inboxes: &HashMap<String, Value>) -> futures::channel::onesh
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// A keyring in memory. `locked` refuses everything, as one that stayed
+    /// locked does.
+    #[derive(Default)]
+    pub(super) struct Fake {
+        pub entries: Mutex<HashMap<String, String>>,
+        pub locked: bool,
+    }
+
+    impl Vault for Fake {
+        fn get(&self, account: &str) -> Result<Option<String>, String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.entries.lock().unwrap().get(account).cloned())
+        }
+
+        fn set(&self, account: &str, _label: &str, secret: &str) -> Result<(), String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            self.entries
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), secret.to_string());
+            Ok(())
+        }
+
+        fn forget(&self, account: &str) {
+            self.entries.lock().unwrap().remove(account);
+        }
+    }
+
+    #[test]
+    fn the_file_keeps_no_token_once_it_is_in_the_keyring() {
+        let vault = Fake::default();
+        let mut s = direct();
+        keep_token(&vault, &s).unwrap();
+        s.token.clear();
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("token"), "{json}");
+        assert_eq!(token(&vault, &s).unwrap().as_deref(), Some("k2"));
+        // One from before still holds it, and that one is used.
+        let old: Saved = serde_json::from_str(
+            &json.replace(r#""device":"d2""#, r#""device":"d2","token":"k3""#),
+        )
+        .unwrap();
+        assert_eq!(token(&vault, &old).unwrap().as_deref(), Some("k3"));
+        // Neither: nothing lets the app in.
+        let other = Saved {
+            id: "c3".into(),
+            ..s.clone()
+        };
+        assert_eq!(token(&vault, &other).unwrap(), None);
+        let locked = Fake {
+            locked: true,
+            ..Fake::default()
+        };
+        assert!(token(&locked, &s).is_err());
+        assert!(keep_token(&locked, &direct()).is_err());
+    }
 
     #[test]
     fn a_link_says_where_and_with_what() {

@@ -329,6 +329,19 @@ sees the project's skills.
   be sandboxed yet. A sandboxed
   agent can still change what you later run outside it: the project's files, and its
   own settings such as `~/.claude.json`.
+- **Agents don't get your tokens.** Every agent, sandboxed or not, starts without the
+  variables of Arakun's environment that look like secrets: names with `TOKEN`,
+  `SECRET`, `PASSWORD`, `CREDENTIAL`, `API_KEY` or `PRIVATE` in them or ending in
+  `KEY`, and ones of other tools such as `GH_*`, `GITHUB_*`, `AWS_*`, `CLOUDFLARE_*`,
+  `STRIPE_*`, `HF_*`, `DOCKER_*` and `NETRC`. Model providers' keys and settings
+  (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `GEMINI_*` and the like) and `ARAKUN_*`
+  stay, and so do `AWS_*` for Bedrock in Claude Code and OpenCode. An agent outside
+  the sandbox also keeps the addresses of your sockets and display (`SSH_AUTH_SOCK`,
+  `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY`), so `git push` over SSH and sign-ins still
+  work; the sandbox drops them with the sockets it hides. Without `GH_TOKEN`, `gh` in
+  a session uses the login from `gh auth login`. To give a project's agents a variable
+  anyway, name it under **Pass to agents** in Settings › Project (for example
+  `GH_TOKEN NPM_TOKEN`). Terminals keep the whole environment.
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that
   session. Sandboxed sessions can't use it: it would lend them your local SSH

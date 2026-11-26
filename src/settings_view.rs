@@ -64,6 +64,11 @@ pub enum SettingsEvent {
         project: std::path::PathBuf,
         on: bool,
     },
+    /// The variables a project's agents get even though they look like secrets.
+    ProjectPassEnv {
+        project: std::path::PathBuf,
+        names: Vec<String>,
+    },
     /// The branch a project's new environments start from; `None` for origin's default.
     ProjectBase {
         project: std::path::PathBuf,
@@ -94,6 +99,8 @@ pub struct ProjectSettings {
     pub check: Option<String>,
     pub base: Option<String>,
     pub sandbox: bool,
+    /// The names in Pass to agents, separated by spaces.
+    pub pass_env: String,
     /// The project lives on a server: its commands are not saved here.
     pub remote: bool,
 }
@@ -104,6 +111,18 @@ enum ProjectField {
     Setup,
     Check,
     Base,
+}
+
+/// The variable names typed in Pass to agents: separated by spaces or commas,
+/// each once.
+fn pass_env_names(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in text.split(|c: char| c.is_whitespace() || c == ',') {
+        if !name.is_empty() && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
@@ -241,7 +260,7 @@ impl Section {
                 "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => {
-                "The open project's commands, base branch and sandbox, on this computer."
+                "The open project's commands, base branch, sandbox and what its agents get, on this computer."
             }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
@@ -285,7 +304,7 @@ impl Section {
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
                  base branch start from origin main default sandbox seatbelt bubblewrap isolate \
-                 security secrets"
+                 security secrets pass to agents variables env token gh_token keys"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -507,9 +526,10 @@ pub struct SettingsDialog {
     setup_input: Entity<TextInput>,
     check_input: Entity<TextInput>,
     base_input: Entity<TextInput>,
+    pass_input: Entity<TextInput>,
     /// The sidebar's width, which the Tabs and sessions part sets too.
     pub rail_w: f32,
-    _subs: [Subscription; 8],
+    _subs: [Subscription; 9],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -605,6 +625,16 @@ impl SettingsDialog {
             }
             i
         });
+        let pass_input = cx.new(|cx| {
+            let mut i = TextInput::new("GH_TOKEN NPM_TOKEN", cx).mono();
+            if let Some(p) = project.as_ref().filter(|p| !p.pass_env.is_empty()) {
+                i.set_text(p.pass_env.clone(), cx);
+            }
+            i
+        });
+        let pass_sub = cx.subscribe_in(&pass_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_pass_input(ev, cx)
+        });
         let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
             this.on_project_input(ProjectField::Setup, ev, cx)
         });
@@ -679,12 +709,14 @@ impl SettingsDialog {
             setup_input,
             check_input,
             base_input,
+            pass_input,
             look,
             rail_w: crate::state::RAIL_W,
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
                 sub, key_sub, voice_sub, namer_sub, teams_sub, setup_sub, check_sub, base_sub,
+                pass_sub,
             ],
         }
     }
@@ -722,6 +754,28 @@ impl SettingsDialog {
                 check: field == ProjectField::Check,
                 command: value,
             },
+        });
+    }
+
+    /// Saves the names in Pass to agents as they are typed.
+    fn on_pass_input(&mut self, ev: &InputEvent, cx: &mut Context<Self>) {
+        match ev {
+            InputEvent::Changed => {}
+            InputEvent::Cancel => return cx.emit(SettingsEvent::Dismissed),
+            _ => return,
+        }
+        let Some(project) = self.project.as_mut().filter(|p| !p.remote) else {
+            return;
+        };
+        let names = pass_env_names(self.pass_input.read(cx).text());
+        let joined = names.join(" ");
+        if project.pass_env == joined {
+            return;
+        }
+        project.pass_env = joined;
+        cx.emit(SettingsEvent::ProjectPassEnv {
+            project: project.path.clone(),
+            names,
         });
     }
 
@@ -2260,6 +2314,12 @@ impl SettingsDialog {
                     field(self.base_input.clone(), 420.).into_any_element(),
                 )
                 .into_any_element(),
+                stacked_row(
+                    "Pass to agents",
+                    "Agents don't get Arakun's own variables that look like secrets, such as GH_TOKEN or a cloud key, sandboxed or not. Their own provider keys stay. Name the variables this project's agents need, separated by spaces. Terminals keep them all. Applies to sessions started afterwards.",
+                    field(self.pass_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
                 // Windows has no sandbox to put them in.
                 if cfg!(windows) {
                     row(
@@ -2924,6 +2984,16 @@ mod tests {
     fn searching_for_links_finds_general() {
         assert!(Section::General.matches("open links"));
         assert!(Section::General.matches("external browser"));
+    }
+
+    #[test]
+    fn pass_to_agents_takes_names_once() {
+        assert_eq!(
+            pass_env_names(" GH_TOKEN, NPM_TOKEN\tGH_TOKEN,,"),
+            ["GH_TOKEN", "NPM_TOKEN"]
+        );
+        assert!(pass_env_names("  ").is_empty());
+        assert!(Section::Project.matches("gh_token"));
     }
 
     #[test]

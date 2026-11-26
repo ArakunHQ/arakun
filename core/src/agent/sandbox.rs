@@ -23,31 +23,89 @@ use crate::headless::sandbox::{
 };
 
 /// The folders of every project and environment, as the shell last saved
-/// them: whether its agents run sandboxed, and for a sandboxed one its
-/// repository's shared Git folder.
+/// them: whether its agents run sandboxed, the variables they get anyway, and
+/// for a sandboxed one its repository's shared Git folder.
 static PROJECTS: RwLock<Vec<Folder>> = RwLock::new(Vec::new());
 
 struct Folder {
     path: PathBuf,
     sandbox: bool,
+    pass: Vec<String>,
     git: Option<PathBuf>,
 }
 
-/// Each folder with its project's choice: `true` runs its agents sandboxed.
-pub fn set_projects(folders: impl IntoIterator<Item = (PathBuf, bool)>) {
+/// A project's folder and its choices for its agents.
+pub struct ProjectFolder {
+    pub path: PathBuf,
+    /// Its agents run sandboxed.
+    pub sandbox: bool,
+    /// Variables its agents get even though they look like secrets
+    /// (Settings › Project › Pass to agents).
+    pub pass: Vec<String>,
+}
+
+/// Each folder with its project's choices.
+pub fn set_projects(folders: impl IntoIterator<Item = ProjectFolder>) {
     let folders = folders
         .into_iter()
-        .map(|(p, sandbox)| {
-            let path = crate::platform::canonicalize(&p).unwrap_or(p);
-            // Only a sandboxed project's repository is looked up: an untrusted
-            // one elsewhere must not stop that project's sessions.
-            let git = sandbox
-                .then(|| git_dirs(&path).ok().flatten().map(|(common, _)| common))
-                .flatten();
-            Folder { path, sandbox, git }
-        })
+        .map(
+            |ProjectFolder {
+                 path: p,
+                 sandbox,
+                 pass,
+             }| {
+                let path = crate::platform::canonicalize(&p).unwrap_or(p);
+                // Only a sandboxed project's repository is looked up: an untrusted
+                // one elsewhere must not stop that project's sessions.
+                let git = sandbox
+                    .then(|| git_dirs(&path).ok().flatten().map(|(common, _)| common))
+                    .flatten();
+                Folder {
+                    path,
+                    sandbox,
+                    pass,
+                    git,
+                }
+            },
+        )
         .collect();
     *PROJECTS.write().unwrap() = folders;
+}
+
+/// The variables the project of `cwd` passes to its agents. The deepest
+/// folder answers, like [`wanted`].
+pub fn passed(cwd: &Path) -> Vec<String> {
+    let folders = PROJECTS.read().unwrap();
+    if folders.iter().all(|f| f.pass.is_empty()) {
+        return Vec::new();
+    }
+    let cwd = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    folders
+        .iter()
+        .filter(|f| cwd.starts_with(&f.path))
+        .max_by_key(|f| f.path.components().count())
+        .map(|f| f.pass.clone())
+        .unwrap_or_default()
+}
+
+/// The variables of arakun's own environment an agent of `kind` in `cwd`
+/// doesn't get: other tools' tokens and keys, sandboxed or not. `set` are the
+/// ones its launch sets itself, which stay.
+pub fn scrubbed(kind: AgentKind, cwd: &Path, sandboxed: bool, set: &[String]) -> Vec<String> {
+    scrub(kind, sandboxed, &passed(cwd), set)
+}
+
+fn scrub(kind: AgentKind, sandboxed: bool, pass: &[String], set: &[String]) -> Vec<String> {
+    let mut gone: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .filter(|k| {
+            !set.contains(k)
+                && !pass.iter().any(|p| p.eq_ignore_ascii_case(k))
+                && foreign_secret(k, kind, sandboxed)
+        })
+        .collect();
+    gone.sort();
+    gone
 }
 
 /// The session in `cwd` belongs to a project with the sandbox on: `cwd` is in
@@ -427,9 +485,11 @@ const AGENT_VARS: &[&str] = &[
 ];
 
 /// An inherited variable the agent doesn't get: a token or key of another tool,
-/// or the address of a host socket. AWS keys stay for Bedrock, which Claude Code
+/// and in the sandbox the address of a host socket too. Outside it the agent can
+/// reach those sockets anyway, and `gh`'s keyring login, `git push` over SSH and
+/// a browser sign-in need them. AWS keys stay for Bedrock, which Claude Code
 /// and OpenCode can use.
-fn foreign_secret(name: &str, kind: AgentKind) -> bool {
+fn foreign_secret(name: &str, kind: AgentKind, sandboxed: bool) -> bool {
     let n = name.to_uppercase();
     if AGENT_VARS.iter().any(|p| n.starts_with(p)) {
         return false;
@@ -440,7 +500,7 @@ fn foreign_secret(name: &str, kind: AgentKind) -> bool {
     {
         return false;
     }
-    hs::secret_var(name, &[])
+    hs::secret_var(name, &[]) && (sandboxed || !hs::host_address(name))
 }
 
 /// One agent's sandbox in an app session. Its folder goes when it does.
@@ -479,6 +539,8 @@ pub struct Session {
     pub socket: PathBuf,
     /// Read-only extras outside (a resolv.conf under /run).
     pub extra_ro: Vec<PathBuf>,
+    /// Variables the project passes to its agents ([`passed`]).
+    pub pass: Vec<String>,
 }
 
 impl Drop for Session {
@@ -636,6 +698,7 @@ impl Session {
             empty,
             socket,
             extra_ro,
+            pass: passed(cwd),
         })
     }
 
@@ -644,12 +707,8 @@ impl Session {
         // The agent inherits arakun's environment; `env` drops other tools'
         // credentials from it first (GH_TOKEN, a cloud key), inside.
         let mut inner = vec!["/usr/bin/env".to_string()];
-        let mut gone: Vec<String> = std::env::vars_os()
-            .filter_map(|(k, _)| k.into_string().ok())
-            .filter(|k| !spec.env.iter().any(|(s, _)| s == k) && foreign_secret(k, self.kind))
-            .collect();
-        gone.sort();
-        for k in gone {
+        let set: Vec<String> = spec.env.iter().map(|(k, _)| k.clone()).collect();
+        for k in scrub(self.kind, true, &self.pass, &set) {
             inner.extend(["-u".to_string(), k]);
         }
         inner.push(spec.program.to_string_lossy().into_owned());
@@ -920,6 +979,14 @@ mod tests {
         PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn folder(path: &Path, sandbox: bool) -> ProjectFolder {
+        ProjectFolder {
+            path: path.to_path_buf(),
+            sandbox,
+            pass: Vec::new(),
+        }
+    }
+
     /// `script` run by `sh` in `dir` on the host, with git as a test sets it up.
     #[cfg(unix)]
     fn host_sh(dir: &Path, script: &str) -> bool {
@@ -988,14 +1055,14 @@ mod tests {
         assert!(host_sh(&proj, "git status --porcelain=v2 > /dev/null"));
         assert!(fired(), "the planted fsmonitor should run for unpinned git");
         // Sandboxed, arakun's git stays on the repository and runs nothing.
-        set_projects([(proj.clone(), true), (env_a.clone(), true)]);
+        set_projects([folder(&proj, true), folder(&env_a, true)]);
         std::fs::write(proj.join("new.txt"), "x").unwrap();
         let changes = crate::git::status(&proj).unwrap();
         assert!(changes.iter().any(|c| c.path == "new.txt"));
         assert!(crate::git::diff(&proj, "new.txt", true).is_ok());
         assert!(!fired());
         // Not sandboxed: a main checkout's `commondir` stops git, as it was not git's.
-        set_projects([(proj.clone(), false)]);
+        set_projects([folder(&proj, false)]);
         let e = crate::git::status(&proj).unwrap_err().to_string();
         assert!(e.contains("commondir"), "{e}");
         assert!(!fired());
@@ -1006,13 +1073,13 @@ mod tests {
         std::fs::write(&own, "../../../evil\n").unwrap();
         assert!(host_sh(&env_a, "git status --porcelain=v2 > /dev/null"));
         assert!(fired(), "the planted fsmonitor should run for unpinned git");
-        set_projects([(proj.clone(), true), (env_a.clone(), true)]);
+        set_projects([folder(&proj, true), folder(&env_a, true)]);
         assert!(crate::git::status(&env_a).is_err());
         assert!(!fired());
         std::fs::write(&own, "../..\n").unwrap();
         assert!(crate::git::status(&env_a).is_ok());
         // A worktree the shell doesn't list, of the same repository, is pinned too.
-        set_projects([(proj.clone(), true)]);
+        set_projects([folder(&proj, true)]);
         assert!(matches!(git_pin(&env_a), GitPin::Pinned { .. }));
         // A repository the agent made inside, with a filter in its own config
         // that `git status` would run to see whether it is dirty.
@@ -1165,6 +1232,7 @@ mod tests {
             empty: "/home/u/.local/share/arakun/sandbox/claude-1/empty".into(),
             socket: "/run/user/1/arakun/sandbox/control.sock".into(),
             extra_ro: Vec::new(),
+            pass: Vec::new(),
         }
     }
 
@@ -1263,23 +1331,39 @@ mod tests {
 
     #[test]
     fn other_tools_credentials_stay_out() {
-        assert!(foreign_secret("GH_TOKEN", AgentKind::Claude));
-        assert!(foreign_secret("GITHUB_TOKEN", AgentKind::Codex));
-        assert!(foreign_secret("STRIPE_SECRET_KEY", AgentKind::OpenCode));
-        assert!(foreign_secret("SSH_AUTH_SOCK", AgentKind::Claude));
-        assert!(foreign_secret("AWS_SECRET_ACCESS_KEY", AgentKind::Codex));
-        assert!(!foreign_secret(
-            "AWS_SECRET_ACCESS_KEY",
-            AgentKind::OpenCode
-        ));
-        assert!(!foreign_secret("ANTHROPIC_API_KEY", AgentKind::Claude));
-        assert!(!foreign_secret(
-            "CLAUDE_CODE_OAUTH_TOKEN",
-            AgentKind::Claude
-        ));
-        assert!(!foreign_secret("OPENAI_API_KEY", AgentKind::Codex));
-        assert!(!foreign_secret("PATH", AgentKind::Claude));
-        assert!(!foreign_secret("HOME", AgentKind::Claude));
+        // Sandboxed or not, the same tokens and keys go.
+        for sandboxed in [true, false] {
+            let gone = |name: &str, kind| foreign_secret(name, kind, sandboxed);
+            assert!(gone("GH_TOKEN", AgentKind::Claude));
+            assert!(gone("GITHUB_TOKEN", AgentKind::Codex));
+            assert!(gone("STRIPE_SECRET_KEY", AgentKind::OpenCode));
+            assert!(gone("CLOUDFLARE_API_TOKEN", AgentKind::Claude));
+            assert!(gone("AWS_SECRET_ACCESS_KEY", AgentKind::Codex));
+            assert!(gone("DB_PASS", AgentKind::Claude));
+            assert!(gone("SSH_PRIVATE_KEY", AgentKind::Claude));
+            assert!(gone("NETRC", AgentKind::Claude));
+            assert!(!gone("AWS_SECRET_ACCESS_KEY", AgentKind::OpenCode));
+            assert!(!gone("ANTHROPIC_API_KEY", AgentKind::Claude));
+            assert!(!gone("CLAUDE_CODE_OAUTH_TOKEN", AgentKind::Claude));
+            assert!(!gone("OPENAI_API_KEY", AgentKind::Codex));
+            assert!(!gone("ARAKUN_SOCKET", AgentKind::Claude));
+            assert!(!gone("PATH", AgentKind::Claude));
+            assert!(!gone("HOME", AgentKind::Claude));
+        }
+        // The addresses of host sockets and the display go only with the
+        // sockets the sandbox hides.
+        for name in [
+            "SSH_AUTH_SOCK",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "TMUX",
+        ] {
+            assert!(foreign_secret(name, AgentKind::Claude, true), "{name}");
+            assert!(!foreign_secret(name, AgentKind::Claude, false), "{name}");
+        }
         let s = session(Runner::Seatbelt("/usr/bin/sandbox-exec".into()));
         let spec = s.wrap(LaunchSpec {
             program: "/bin/agent".into(),
@@ -1290,6 +1374,38 @@ mod tests {
         let at = spec.args.iter().position(|a| a == "/usr/bin/env").unwrap();
         assert_eq!(spec.args[spec.args.len() - 2..], ["/bin/agent", "--acp"]);
         assert!(spec.args[at..].iter().all(|a| a != "PATH"));
+    }
+
+    #[test]
+    fn a_project_passes_what_it_names() {
+        let _g = projects_lock();
+        // A name no other test uses: the environment is the process's.
+        let name = "ARAKUN147_TEST_TOKEN";
+        // SAFETY: no other thread reads or writes this variable.
+        unsafe { std::env::set_var(name, "x") };
+        let proj = std::env::temp_dir().join("arakun-sbx-pass");
+        let env_a = proj.join("env-a");
+        set_projects([
+            ProjectFolder {
+                path: proj.clone(),
+                sandbox: false,
+                pass: vec!["arakun147_test_token".into()],
+            },
+            folder(&env_a, false),
+        ]);
+        assert_eq!(passed(&proj.join("src")), ["arakun147_test_token"]);
+        // The environment's own folder answers for itself, with nothing passed.
+        assert!(passed(&env_a).is_empty());
+        for sandboxed in [true, false] {
+            let gone = |cwd: &Path| scrubbed(AgentKind::Claude, cwd, sandboxed, &[]);
+            assert!(!gone(&proj).iter().any(|k| k == name));
+            assert!(gone(&env_a).iter().any(|k| k == name));
+            // One the launch sets itself stays.
+            let set = [name.to_string()];
+            assert!(!scrubbed(AgentKind::Claude, &env_a, sandboxed, &set).contains(&set[0]));
+        }
+        set_projects([]);
+        unsafe { std::env::remove_var(name) };
     }
 
     #[test]
@@ -1464,21 +1580,21 @@ mod tests {
             git_dirs(&wt).unwrap().map(|(_, own)| own),
             Some(main_real.join(".git/worktrees/env-a"))
         );
-        set_projects([(main.clone(), true)]);
+        set_projects([folder(&main, true)]);
         assert!(wanted(&wt).unwrap() && wanted(&main.join("src")).unwrap());
         // Metadata it can't trust stops the launch rather than skipping the sandbox,
         // unless the shell listed the folder as one of the project's environments.
         assert!(wanted(&forged).is_err());
-        set_projects([(main.clone(), true), (forged.clone(), true)]);
+        set_projects([folder(&main, true), folder(&forged, true)]);
         assert!(wanted(&forged).unwrap());
-        set_projects([(main.clone(), true)]);
+        set_projects([folder(&main, true)]);
         // A project opened at a worktree covers the main checkout too.
-        set_projects([(wt.clone(), true)]);
+        set_projects([folder(&wt, true)]);
         assert!(wanted(&main).unwrap());
         assert!(!wanted(&d).unwrap());
         // A project without the sandbox answers for its own folders, broken
         // metadata or not, even beside one with it.
-        set_projects([(main.clone(), true), (forged.clone(), false)]);
+        set_projects([folder(&main, true), folder(&forged, false)]);
         assert!(!wanted(&forged).unwrap());
         set_projects([]);
         assert!(!wanted(&wt).unwrap());

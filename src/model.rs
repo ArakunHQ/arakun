@@ -1090,6 +1090,8 @@ pub struct Project {
     pub check_declined: bool,
     /// Its agents run in a sandbox (`agent::sandbox`).
     pub sandbox: bool,
+    /// Variables its agents get even though they look like secrets.
+    pub pass_env: Vec<String>,
     /// The branch new environments start from; None for origin's default branch.
     pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.

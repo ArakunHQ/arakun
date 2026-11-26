@@ -301,6 +301,9 @@ pub struct ProjectState {
     /// Its agents run in a sandbox.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sandbox: bool,
+    /// Variables its agents get even though they look like secrets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pass_env: Vec<String>,
     /// The branch new environments start from; None for origin's default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
@@ -1032,6 +1035,7 @@ pub fn snapshot_with(
                 check: p.check.clone(),
                 check_declined: p.check_declined,
                 sandbox: p.sandbox,
+                pass_env: p.pass_env.clone(),
                 base: p.base.clone(),
                 notes: p.notes.clone(),
                 monos: p.monos.clone(),
@@ -1366,6 +1370,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) 
                 check: p.check,
                 check_declined: p.check_declined,
                 sandbox: p.sandbox,
+                pass_env: p.pass_env,
                 base: p.base,
                 notes: p.notes,
                 monos: p.monos,
@@ -1474,6 +1479,7 @@ pub fn new_project(path: &Path) -> Project {
         check: None,
         check_declined: false,
         sandbox: false,
+        pass_env: Vec::new(),
         base: None,
         notes: Vec::new(),
         monos: Vec::new(),

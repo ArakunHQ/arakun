@@ -1471,6 +1471,10 @@ fn run_bash(
             c.arg("-c")
                 .arg(command)
                 .env("PATH", launch::child_path_env());
+            // Its commands don't get other tools' tokens and keys, like any agent's.
+            for k in super::sandbox::scrubbed(super::AgentKind::WorkersAi, cwd, false, &[]) {
+                c.env_remove(k);
+            }
             c
         }
     };

@@ -78,8 +78,28 @@ pub fn images(text: &str, cwd: &Path) -> Vec<PathBuf> {
 /// A prompt without its image mentions, and the images, to show them as
 /// pictures instead of paths.
 pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
+    split_mentions(text, |m| mentioned_image(m, cwd))
+}
+
+/// The image file a mention written as `mention` names, when it is one.
+pub fn mentioned_image(mention: &str, cwd: &Path) -> Option<PathBuf> {
+    resolve(mention, cwd).filter(|p| is_image_file(p))
+}
+
+/// The mentions in `text` that name images by their extension, as written.
+/// For a server's session, whose files are not here to look at.
+pub fn image_mentions(text: &str) -> Vec<String> {
+    split_mentions(text, |m| mime_type(Path::new(m)).map(|_| m.to_string())).1
+}
+
+/// A prompt without the mentions `image` takes, and what it made of them.
+/// Split as [`split_images`] does, whatever the images are read from.
+pub fn split_mentions<T: PartialEq>(
+    text: &str,
+    mut image: impl FnMut(&str) -> Option<T>,
+) -> (String, Vec<T>) {
     let mut out = String::with_capacity(text.len());
-    let mut found: Vec<PathBuf> = Vec::new();
+    let mut found: Vec<T> = Vec::new();
     let mut rest = text;
     while let Some(at) = rest.find('@') {
         let starts_token = at == 0 || rest[..at].ends_with(char::is_whitespace);
@@ -95,9 +115,8 @@ pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
             }
         };
         let image = (starts_token && !path.is_empty())
-            .then(|| resolve(path, cwd))
-            .flatten()
-            .filter(|p| is_image_file(p));
+            .then(|| image(path))
+            .flatten();
         match image {
             Some(p) => {
                 out.push_str(&rest[..at]);

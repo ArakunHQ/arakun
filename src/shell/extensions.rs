@@ -22,7 +22,7 @@ impl Shell {
         self.note_active_tab(cx);
         let dir = self.env().path.clone();
         let targets = self.server_targets();
-        self.extensions_view.update(cx, |v, cx| {
+        self.views.extensions.update(cx, |v, cx| {
             v.set_servers(targets, cx);
             v.set_dir(dir, cx);
             v.refresh_if_stale(cx);

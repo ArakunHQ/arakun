@@ -405,7 +405,8 @@ impl Shell {
         let repo = self.visible_repo();
         let repos = self.project_repos();
         let branches: Vec<String> = if has {
-            self.branches_view
+            self.views
+                .branches
                 .read(cx)
                 .branch_list()
                 .into_iter()
@@ -468,7 +469,7 @@ impl Shell {
                 .read(cx)
                 .config()
                 .map(|c| palette::cloud::PilotSeed {
-                    pull: self.github_view.read(cx).own_open_pull(cx),
+                    pull: self.views.github.read(cx).own_open_pull(cx),
                     admin: c.admin_token.is_some(),
                 }),
         }
@@ -1019,7 +1020,8 @@ impl Shell {
         }
         let current = self.env().branch.to_string();
         let ahead: std::collections::HashMap<String, (u64, u64)> = self
-            .branches_view
+            .views
+            .branches
             .read(cx)
             .branch_ahead()
             .into_iter()
@@ -1027,7 +1029,7 @@ impl Shell {
             .collect();
         let ci = self.ci.read(cx);
         let ci_repo = ci.repo(&self.projects[self.active_project].path);
-        for (name, pr) in self.branches_view.read(cx).branch_list() {
+        for (name, pr) in self.views.branches.read(cx).branch_list() {
             let failed = ci_repo
                 .and_then(|r| r.branch_state(&name))
                 .is_some_and(|(s, _)| s == crate::ci::State::Failed);
@@ -1507,7 +1509,7 @@ impl Shell {
             Target::Pull(item) => {
                 self.open_github_tab(window, cx);
                 let item2 = item.clone();
-                self.github_view.update(cx, |v, cx| v.reveal(&item2, cx));
+                self.views.github.update(cx, |v, cx| v.reveal(&item2, cx));
             }
             Target::Run { id, .. } => self.open_runs_tab(Some(id), window, cx),
             Target::Rerun { root, id } => self.ci.update(cx, |ci, cx| ci.act(&root, id, false, cx)),

@@ -203,17 +203,18 @@ impl Shell {
         .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
         let view = match alone {
             Alone::GitHub => {
-                self.github_view
+                self.views
+                    .github
                     .update(cx, |v, cx| v.set_card_corners(gpui::Corners::default(), cx));
-                self.github_view.clone().into_any_element()
+                self.views.github.clone().into_any_element()
             }
             Alone::Servers => {
                 self.sync_this_computer(cx);
-                self.servers_view.clone().into_any_element()
+                self.views.servers.clone().into_any_element()
             }
             Alone::Teams => self.teams_view.clone().into_any_element(),
-            Alone::Linear => self.linear_view.clone().into_any_element(),
-            Alone::Usage => self.usage_view.clone().into_any_element(),
+            Alone::Linear => self.views.linear.clone().into_any_element(),
+            Alone::Usage => self.views.usage.clone().into_any_element(),
         };
         self.render_alone("view-alone", back, view, window)
     }

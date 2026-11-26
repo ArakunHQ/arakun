@@ -332,7 +332,8 @@ impl Shell {
         cx.background_spawn(crate::guard::task(async { onboarding::set_done() }))
             .detach();
         for view in onboarding::views_set_up(o.fresh, o.github, o.pair_phone) {
-            self.extensions_view
+            self.views
+                .extensions
                 .update(cx, |v, cx| v.set_view(view, true, cx));
         }
         if self.has_projects() {

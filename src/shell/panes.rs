@@ -162,27 +162,14 @@ impl Shell {
             TabKind::Tasks => self
                 .tasks_view
                 .update(cx, |v, cx| v.focus_input(window, cx)),
-            TabKind::Runs => self.runs_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Memory => self.memory_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Cloudflare => self.cloudflare_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "coderlabs")]
             TabKind::Site => self.site_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "team")]
             TabKind::Team => self.team_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::PostHog => self.posthog_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Linear => self.linear_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Doop => self.doop_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Servers => self.servers_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Teams => self.teams_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Isometric => self.iso_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "coderlabs")]
             TabKind::Canvas => self.canvas_view.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Extensions => self.extensions_view.update(cx, |v, cx| v.focus(window, cx)),
+            kind => self.views.focus(kind, window, cx),
         }
     }
 

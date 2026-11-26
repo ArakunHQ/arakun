@@ -76,6 +76,7 @@ mod subagents;
 mod subnav;
 mod survey_card;
 mod switching;
+mod tab_views;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -93,30 +94,20 @@ use crate::account::Account;
 use crate::account_view::{self, AccountDialog, AccountDialogEvent};
 use crate::agent::AgentKind;
 use crate::attach_picker::{AttachEvent, AttachPicker};
-use crate::branches_view::BranchesView;
 use crate::ci::{self, Ci};
-use crate::cloudflare_view::CloudflareView;
 #[cfg(feature = "coderlabs")]
 use crate::coderspace::CoderSpace;
 use crate::customize_view::{CustomizeEvent, CustomizeTab, CustomizeView};
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
-use crate::doop_view::DoopView;
 use crate::explorer;
-use crate::extensions_view::ExtensionsView;
-use crate::gallery_view::GalleryView;
 use crate::git;
 use crate::github::GitHub;
-use crate::github_view::GitHubView;
 use crate::highlight;
 use crate::input::{InputEvent, TextInput};
-use crate::linear_view::LinearView;
-use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
     self, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
 };
 use crate::picker::{FolderPicker, PickerEvent};
-use crate::posthog_view::PostHogView;
-use crate::runs_view::RunsView;
 use crate::settings_view::{SettingsDialog, SettingsEvent};
 #[cfg(feature = "coderlabs")]
 use crate::site_view::SiteView;
@@ -128,7 +119,6 @@ use crate::team_view::{TeamEvent, TeamView};
 use crate::terminal::{Terminal, TerminalEvent, TerminalView};
 use crate::theme;
 use crate::ui::{self, hover_icon, icon, icon_button};
-use crate::usage_view::UsageView;
 use composer::Completion;
 
 gpui::actions!(
@@ -503,13 +493,8 @@ pub struct Shell {
     #[cfg(feature = "coderlabs")]
     _tasks: [Subscription; 3],
     ci: Entity<Ci>,
-    runs_view: Entity<RunsView>,
-    memory_view: Entity<MemoryView>,
-    _memory_view: Subscription,
-    /// New scene and Change in the Isometric tab start sessions.
-    _iso_view: Subscription,
-    cloudflare_view: Entity<CloudflareView>,
-    _cloudflare_view: [Subscription; 2],
+    /// The views of the one-page tabs, with their subscriptions.
+    views: tab_views::TabViews,
     #[cfg(feature = "coderlabs")]
     site_view: Entity<SiteView>,
     #[cfg(feature = "coderlabs")]
@@ -518,20 +503,9 @@ pub struct Shell {
     team_view: Entity<TeamView>,
     #[cfg(feature = "team")]
     _team_view: Subscription,
-    posthog_view: Entity<PostHogView>,
-    _posthog_view: Subscription,
-    linear_view: Entity<LinearView>,
-    _linear_view: Subscription,
-    doop_view: Entity<DoopView>,
-    _doop_view: Subscription,
-    branches_view: Entity<BranchesView>,
     github: Entity<GitHub>,
-    github_view: Entity<GitHubView>,
     pilot: Entity<crate::github::pilot::Pilot>,
-    _github: [Subscription; 5],
-    extensions_view: Entity<ExtensionsView>,
-    _extensions_view: [Subscription; 2],
-    _branches_view: Subscription,
+    _github: [Subscription; 4],
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
     /// The account's signed-in devices, for the Phone tab's relay section.
@@ -539,23 +513,15 @@ pub struct Shell {
     beta_card: beta_card::BetaCard,
     /// The account `relay_owner_changed` last settled the relay's devices for.
     relay_owner_seen: Option<crate::phone::AccountNow>,
-    phone_view: Entity<crate::phone_view::PhoneView>,
-    _phone_view: Subscription,
     /// The connections to the machines running `arakun server`, once the
     /// Computers tab was opened.
     servers: Option<servers::ServersLink>,
-    servers_view: Entity<crate::servers_view::ServersView>,
-    _servers_view: Subscription,
-    usage_view: Entity<UsageView>,
-    gallery_view: Entity<GalleryView>,
-    iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
     canvas_view: Entity<crate::canvas_view::CanvasView>,
     /// The Customize panel, while it is open in the workspace panel's place.
     customize: Option<(Entity<CustomizeView>, Subscription)>,
     /// The tab Customize shows: on Sidebar, the rail is being arranged.
     customize_tab: CustomizeTab,
-    _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
     /// The project check's state per session id.
@@ -627,7 +593,7 @@ pub struct Shell {
     limit_alerts: std::collections::HashMap<String, u8>,
     /// The first limit check only notes the levels; later ones notify.
     limits_seen: bool,
-    _runs: [Subscription; 3],
+    _runs: [Subscription; 2],
     /// The Dynamic Island, while it is on and the compositor has layer-shell.
     island: Option<island::IslandLink>,
     #[cfg(feature = "team")]
@@ -874,78 +840,17 @@ impl Shell {
             }),
         ];
         let ci = cx.new(Ci::new);
-        let runs_view = cx.new(|cx| RunsView::new(ci.clone(), cx));
         let runs_subs = [
             cx.observe(&ci, |this, _, cx| {
                 this.branch_pr_read(cx);
                 cx.notify()
             }),
-            cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| {
-                this.on_runs_event(ev, window, cx)
-            }),
             cx.subscribe_in(&ci, window, |this, _, ev, window, cx| {
                 this.on_ci_event(ev, window, cx)
             }),
         ];
-        let memory_view = cx.new(MemoryView::new);
-        let memory_sub = cx.subscribe_in(
-            &memory_view,
-            window,
-            |this, _, ev: &MemoryEvent, window, cx| match ev {
-                MemoryEvent::Edit(path) => this.edit_in_terminal(path, None, window, cx),
-            },
-        );
-        let usage_view = cx.new(UsageView::new);
-        let gallery_view = cx.new(GalleryView::new);
-        let iso_view = cx.new(crate::iso_view::IsoView::new);
-        let iso_sub = cx.subscribe_in(
-            &iso_view,
-            window,
-            |this, _, ev: &crate::iso_view::IsoEvent, window, cx| match ev {
-                crate::iso_view::IsoEvent::Ask { title, prompt } => {
-                    let env = this.env().path.clone();
-                    this.start_session_in(
-                        &env,
-                        model::default_agent(),
-                        title.clone().into(),
-                        prompt.clone(),
-                        true,
-                        window,
-                        cx,
-                    );
-                }
-            },
-        );
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
-        let usage_sub = cx.subscribe_in(
-            &usage_view,
-            window,
-            |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
-                crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
-                crate::usage_view::UsageEvent::ClaudeSignIn => {
-                    if let Some(cmd) = crate::agent::login_command(AgentKind::Claude) {
-                        this.spawn_terminal_command(Some(cmd), true, window, cx);
-                    }
-                }
-                crate::usage_view::UsageEvent::PlanUpdated => {
-                    this.check_limit_alerts(cx);
-                    this.phone_usage_changed(cx);
-                }
-            },
-        );
-        let cloudflare_view = cx.new(CloudflareView::new);
-        let cloudflare_sub = [
-            cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
-                this.on_cloudflare_event(ev, window, cx)
-            }),
-            // Open, its pages are tabs the shell draws: their counts follow the view.
-            cx.observe(&cloudflare_view, |this, _, cx| {
-                if this.shows_subnav_view(crate::sidebar::View::Cloudflare) {
-                    cx.notify();
-                }
-            }),
-        ];
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
@@ -963,38 +868,11 @@ impl Shell {
                 TeamEvent::Reload => this.sync_team(window, cx),
             },
         );
-        let posthog_view = cx.new(PostHogView::new);
-        let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
-            this.on_posthog_event(ev, window, cx)
-        });
-        let linear_view = cx.new(|cx| LinearView::new(window, cx));
-        let linear_sub = cx.subscribe_in(&linear_view, window, |this, _, ev, window, cx| {
-            this.on_linear_event(ev, window, cx)
-        });
-        let doop_view = cx.new(DoopView::new);
-        let doop_sub = cx.subscribe_in(&doop_view, window, |this, _, ev, window, cx| {
-            this.on_doop_event(ev, window, cx)
-        });
-        let branches_view = cx.new(BranchesView::new);
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
-        let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
-        let extensions_sub = [
-            cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
-                this.on_extensions_event(ev, window, cx)
-            }),
-            cx.observe(&extensions_view, |this, _, cx| {
-                if this.shows_subnav_view(crate::sidebar::View::Extensions) {
-                    cx.notify();
-                }
-            }),
-        ];
-        let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
-            this.on_branches_event(ev, window, cx)
-        });
         let github = cx.new(GitHub::new);
         let pilot = cx.new(crate::github::pilot::Pilot::new);
-        let github_view = cx.new(|cx| GitHubView::new(github.clone(), pilot.clone(), cx));
+        let tab_views = tab_views::TabViews::new(&ci, &github, &pilot, views, window, cx);
         let github_subs = [
             cx.observe(&pilot, |_, _, cx| cx.notify()),
             cx.subscribe_in(&pilot, window, |this, _, ev, window, cx| {
@@ -1002,21 +880,10 @@ impl Shell {
             }),
             // The rail badge counts what the model holds.
             cx.observe(&github, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&github_view, window, |this, _, ev, window, cx| {
-                this.on_github_view_event(ev, window, cx)
-            }),
             cx.subscribe_in(&github, window, |this, _, ev, window, cx| {
                 this.on_github_event(ev, window, cx)
             }),
         ];
-        let phone_view = cx.new(crate::phone_view::PhoneView::new);
-        let phone_sub = cx.subscribe_in(&phone_view, window, |this, _, ev, window, cx| {
-            this.on_phone_event(ev, window, cx)
-        });
-        let servers_view = cx.new(crate::servers_view::ServersView::new);
-        let servers_sub = cx.subscribe_in(&servers_view, window, |this, _, ev, window, cx| {
-            this.on_servers_event(ev, window, cx)
-        });
         if projects.is_empty() {
             window.focus(&focus, cx);
         } else {
@@ -1139,12 +1006,7 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             _tasks: tasks_subs,
             ci,
-            runs_view,
-            memory_view,
-            _memory_view: memory_sub,
-            _iso_view: iso_sub,
-            cloudflare_view,
-            _cloudflare_view: cloudflare_sub,
+            views: tab_views,
             #[cfg(feature = "coderlabs")]
             site_view,
             #[cfg(feature = "coderlabs")]
@@ -1153,35 +1015,16 @@ impl Shell {
             team_view,
             #[cfg(feature = "team")]
             _team_view: team_sub,
-            posthog_view,
-            _posthog_view: posthog_sub,
-            linear_view,
-            _linear_view: linear_sub,
-            doop_view,
-            _doop_view: doop_sub,
-            branches_view,
-            _branches_view: branches_sub,
             github,
-            github_view,
             pilot,
             _github: github_subs,
-            extensions_view,
-            _extensions_view: extensions_sub,
             phone: None,
             signed_in: Default::default(),
             beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,
-            phone_view,
-            _phone_view: phone_sub,
             servers: None,
-            servers_view,
-            _servers_view: servers_sub,
-            _usage_view: usage_sub,
-            usage_view,
-            gallery_view,
             customize: None,
             customize_tab: CustomizeTab::Colors,
-            iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
             fix_loops: std::collections::HashMap::new(),
@@ -2437,7 +2280,7 @@ impl Shell {
         self.show_view_tab("Memory", TabKind::Memory, |k| matches!(k, TabKind::Memory));
         self.note_active_tab(cx);
         let dir = self.env().path.clone();
-        self.memory_view.update(cx, |v, cx| {
+        self.views.memory.update(cx, |v, cx| {
             v.set_dir(&dir, cx);
             v.focus(window, cx);
         });
@@ -2454,7 +2297,7 @@ impl Shell {
             self.show_alone(Some(home::Alone::Usage), cx);
         }
         self.sync_usage_view(cx);
-        self.usage_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.usage.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -2510,10 +2353,13 @@ impl Shell {
         let cloudflare = self.cloudflare_shown(window);
         let memory = self.memory_shown(window);
         let usage = self.usage_shown(window);
-        self.cloudflare_view
+        self.views
+            .cloudflare
             .update(cx, |v, _| v.set_shown(cloudflare));
-        self.memory_view.update(cx, |v, cx| v.set_shown(memory, cx));
-        self.usage_view.update(cx, |v, cx| v.set_shown(usage, cx));
+        self.views
+            .memory
+            .update(cx, |v, cx| v.set_shown(memory, cx));
+        self.views.usage.update(cx, |v, cx| v.set_shown(usage, cx));
     }
 
     /// Tells the Teams tab whether it is on screen: only then does a message
@@ -2611,7 +2457,7 @@ impl Shell {
             matches!(k, TabKind::Gallery)
         });
         self.note_active_tab(cx);
-        self.gallery_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.gallery.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -2626,7 +2472,7 @@ impl Shell {
         });
         self.note_active_tab(cx);
         let root = self.env().path.clone();
-        self.iso_view.update(cx, |v, cx| {
+        self.views.iso.update(cx, |v, cx| {
             v.set_root(root, cx);
             v.focus(window, cx);
         });
@@ -2682,7 +2528,7 @@ impl Shell {
             }
             places.push((p.path.clone(), name));
         }
-        self.usage_view.update(cx, |v, cx| {
+        self.views.usage.update(cx, |v, cx| {
             v.set_account(self.account.clone(), cx);
             v.set_context(titles, places, cx);
         });
@@ -2868,7 +2714,7 @@ impl Shell {
     fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = self.github_item(&url, cx) {
             self.open_github_tab(window, cx);
-            self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+            self.views.github.update(cx, |v, cx| v.reveal(&item, cx));
         } else {
             self.open_page(url, window, cx);
         }
@@ -3056,7 +2902,7 @@ impl Shell {
             })
         };
         let views_on = {
-            let ext = self.extensions_view.read(cx);
+            let ext = self.views.extensions.read(cx);
             crate::sidebar::View::EXTENSIONS
                 .iter()
                 .copied()
@@ -3136,7 +2982,8 @@ impl Shell {
                     cx.notify();
                 }
                 SettingsEvent::SidebarView(view, on) => {
-                    this.extensions_view
+                    this.views
+                        .extensions
                         .update(cx, |v, cx| v.set_view(*view, *on, cx));
                 }
                 SettingsEvent::ProjectCommand {
@@ -4165,15 +4012,15 @@ impl Shell {
             }
             Some(TabKind::Runs) => {
                 self.sync_runs_view(cx);
-                self.runs_view.clone().into_any_element()
+                self.views.runs.clone().into_any_element()
             }
             Some(TabKind::Memory) => {
                 let dir = env.path.clone();
-                self.memory_view.update(cx, |v, cx| v.set_dir(&dir, cx));
-                self.memory_view.clone().into_any_element()
+                self.views.memory.update(cx, |v, cx| v.set_dir(&dir, cx));
+                self.views.memory.clone().into_any_element()
             }
             Some(TabKind::Cloudflare) => {
-                self.with_subnav(index, self.cloudflare_view.clone().into_any_element(), cx)
+                self.with_subnav(index, self.views.cloudflare.clone().into_any_element(), cx)
             }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Site) => self.site_view.clone().into_any_element(),
@@ -4182,37 +4029,39 @@ impl Shell {
             Some(TabKind::PostHog) => {
                 // Follows the visible project, also when it changes under an open tab.
                 let root = self.project().path.clone();
-                self.posthog_view
+                self.views
+                    .posthog
                     .update(cx, |v, cx| v.set_project(&root, cx));
-                self.posthog_view.clone().into_any_element()
+                self.views.posthog.clone().into_any_element()
             }
-            Some(TabKind::Linear) => self.linear_view.clone().into_any_element(),
-            Some(TabKind::Doop) => self.doop_view.clone().into_any_element(),
+            Some(TabKind::Linear) => self.views.linear.clone().into_any_element(),
+            Some(TabKind::Doop) => self.views.doop.clone().into_any_element(),
             Some(TabKind::Branches) => {
                 // Sessions start and stop all the time; the rows follow them.
                 self.sync_branches_view(cx);
-                self.branches_view.clone().into_any_element()
+                self.views.branches.clone().into_any_element()
             }
             Some(TabKind::GitHub) => {
                 let corners = self.pane_card_corners(index);
-                self.github_view
+                self.views
+                    .github
                     .update(cx, |v, cx| v.set_card_corners(corners, cx));
-                self.github_view.clone().into_any_element()
+                self.views.github.clone().into_any_element()
             }
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();
-                self.extensions_view.update(cx, |v, cx| {
+                self.views.extensions.update(cx, |v, cx| {
                     v.set_dir(dir, cx);
                     v.refresh_if_stale(cx);
                 });
-                self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
+                self.with_subnav(index, self.views.extensions.clone().into_any_element(), cx)
             }
-            Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
+            Some(TabKind::Phone) => self.views.phone.clone().into_any_element(),
             Some(TabKind::Servers) => {
                 // This computer's sessions start and stop all the time; its row follows them.
                 self.sync_this_computer(cx);
-                self.servers_view.clone().into_any_element()
+                self.views.servers.clone().into_any_element()
             }
             Some(TabKind::Teams) => {
                 // @bot reads the visible environment's code.
@@ -4220,19 +4069,19 @@ impl Shell {
                 self.teams_view.update(cx, |v, cx| v.set_project(dir, cx));
                 self.teams_view.clone().into_any_element()
             }
-            Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
+            Some(TabKind::Gallery) => self.views.gallery.clone().into_any_element(),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at
                 // launch that was never opened from the rail.
                 let root = self.env().path.clone();
-                self.iso_view.update(cx, |v, cx| v.set_root(root, cx));
-                self.iso_view.clone().into_any_element()
+                self.views.iso.update(cx, |v, cx| v.set_root(root, cx));
+                self.views.iso.clone().into_any_element()
             }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Canvas) => self.canvas_view.clone().into_any_element(),
             Some(TabKind::Usage) => {
                 self.sync_usage_view(cx);
-                self.usage_view.clone().into_any_element()
+                self.views.usage.clone().into_any_element()
             }
             _ if focused => self.render_home(window, cx).into_any_element(),
             _ => div()
@@ -4384,9 +4233,9 @@ impl Render for Shell {
         if self.teams_view.read(cx).is_shown() != self.teams_shown(window) {
             cx.defer_in(window, |this, window, cx| this.sync_teams_shown(window, cx));
         }
-        if self.cloudflare_view.read(cx).is_shown() != self.cloudflare_shown(window)
-            || self.memory_view.read(cx).is_shown() != self.memory_shown(window)
-            || self.usage_view.read(cx).is_shown() != self.usage_shown(window)
+        if self.views.cloudflare.read(cx).is_shown() != self.cloudflare_shown(window)
+            || self.views.memory.read(cx).is_shown() != self.memory_shown(window)
+            || self.views.usage.read(cx).is_shown() != self.usage_shown(window)
         {
             cx.defer_in(window, |this, window, cx| {
                 this.sync_polled_shown(window, cx)

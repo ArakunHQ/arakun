@@ -28,7 +28,7 @@ impl Shell {
             self.show_alone(Some(super::home::Alone::GitHub), cx);
         }
         self.github.update(cx, |g, cx| g.opened(cx));
-        self.github_view.update(cx, |v, cx| {
+        self.views.github.update(cx, |v, cx| {
             v.unfloat(cx);
             v.focus(window, cx);
         });
@@ -38,8 +38,8 @@ impl Shell {
     /// Ends the island's floating sheet once the GitHub tab is in front, by
     /// whatever path it got there.
     pub(super) fn unfloat_github(&mut self, cx: &mut Context<Self>) {
-        if self.github_in_front() && self.github_view.read(cx).floating() {
-            self.github_view.update(cx, |v, cx| v.unfloat(cx));
+        if self.github_in_front() && self.views.github.read(cx).floating() {
+            self.views.github.update(cx, |v, cx| v.unfloat(cx));
         }
     }
 
@@ -166,30 +166,31 @@ impl Shell {
         // The tab already draws the view: the sheet opens there, not over it.
         let over = !self.github_in_front();
         let shown = self
-            .github_view
+            .views
+            .github
             .update(cx, |v, cx| v.float_pilot(id, over, cx));
         if !shown || !over {
             self.open_github_tab(window, cx);
             if !shown {
-                self.github_view.update(cx, |v, cx| v.reveal_pilot(id, cx));
+                self.views.github.update(cx, |v, cx| v.reveal_pilot(id, cx));
             }
             return;
         }
-        self.github_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.github.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
     /// The sheet the island opened, over the window: None unless it is up.
     pub(super) fn render_floating_sheet(&self, cx: &App) -> Option<gpui::AnyElement> {
         use gpui::{IntoElement as _, ParentElement as _, Styled as _};
-        let floating = self.github_view.read(cx).floating() && !self.github_in_front();
+        let floating = self.views.github.read(cx).floating() && !self.github_in_front();
         floating.then(|| {
             gpui::div()
                 .absolute()
                 .top_0()
                 .left_0()
                 .size_full()
-                .child(self.github_view.clone())
+                .child(self.views.github.clone())
                 .into_any_element()
         })
     }
@@ -400,7 +401,7 @@ impl Shell {
         match crate::github::pr::ItemRef::from_notification(&n) {
             Some(item) => {
                 self.open_github_tab(window, cx);
-                self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+                self.views.github.update(cx, |v, cx| v.reveal(&item, cx));
             }
             None => self.open_page(n.web_url(), window, cx),
         }

@@ -294,6 +294,9 @@ pub struct Session {
     pub task: Option<String>,
     /// The GitHub Actions run it was started to fix.
     pub ci_run: Option<u64>,
+    /// The identifier of the Linear issue it was started for (`ENG-412`).
+    /// Kept apart from the title, which the agent may replace.
+    pub linear: Option<SharedString>,
     /// Started by `arakun agent new`: the model it asked for.
     pub cli_model: Option<String>,
     /// Its agent's permission requests are allowed without asking.
@@ -340,6 +343,7 @@ impl Session {
             #[cfg(feature = "coderlabs")]
             task: None,
             ci_run: None,
+            linear: None,
             cli_model: None,
             auto_allow: false,
             continues: Vec::new(),
@@ -358,6 +362,13 @@ impl Session {
             self.status
         }
     }
+}
+
+/// The mark a session from Linear keeps: its issue's identifier, cut to one
+/// short line. It comes from Linear, so a row can't be made to hold more.
+pub fn linear_mark(identifier: &str) -> Option<SharedString> {
+    let line = identifier.trim().lines().next()?.trim();
+    (!line.is_empty()).then(|| line.chars().take(32).collect::<String>().into())
 }
 
 /// "now", "5m", "3h", "2d" for the session list.
@@ -1312,6 +1323,20 @@ pub fn unique_icon(icon: u64, taken: impl Fn(u64) -> bool) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linear_mark_is_one_short_line() {
+        assert_eq!(linear_mark("ENG-412").as_deref(), Some("ENG-412"));
+        assert_eq!(linear_mark("  ENG-412\nsecond").as_deref(), Some("ENG-412"));
+        assert_eq!(linear_mark(&"X".repeat(40)).unwrap().len(), 32);
+        assert_eq!(linear_mark(&"é".repeat(40)).unwrap().chars().count(), 32);
+        assert_eq!(linear_mark(""), None);
+        assert_eq!(linear_mark(" \n"), None);
+        assert_eq!(
+            Session::new("s".into(), "t".into(), AgentKind::Claude).linear,
+            None
+        );
+    }
 
     #[test]
     fn project_icons_are_mirrored_shapes_that_differ() {

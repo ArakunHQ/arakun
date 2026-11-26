@@ -310,6 +310,12 @@ impl Teams {
         self.me.as_ref().is_some_and(|m| m.has(api::TEAMS_FLAG))
     }
 
+    /// Whether Linear may start sessions here: the server set the `linear`
+    /// flag on this account.
+    pub fn linear_enabled(&self) -> bool {
+        self.me.as_ref().is_some_and(|m| m.has(api::LINEAR_FLAG))
+    }
+
     /// What the Teams tab can say about this account.
     pub fn access(&self) -> Access {
         access(

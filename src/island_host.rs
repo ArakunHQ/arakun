@@ -498,20 +498,14 @@ mod host {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let listener = match UnixListener::bind(path) {
+        match crate::private_socket::bind(path) {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // Left behind by a crash: nothing answered on it.
                 std::fs::remove_file(path)?;
-                UnixListener::bind(path)?
+                crate::private_socket::bind(path)
             }
-            other => other?,
-        };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            other => other,
         }
-        Ok(listener)
     }
 
     /// One connection: the app's, kept, or a request, answered.

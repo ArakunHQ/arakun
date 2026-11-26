@@ -91,6 +91,18 @@ pub(super) struct PhoneLink {
     _tick: Task<()>,
 }
 
+/// The phone's private keys on their way from the keyring. It may wait for
+/// the person to unlock it, so it is read on background threads.
+#[derive(Default)]
+pub(super) struct PhoneKeys {
+    /// The keys of the link `start_phone` is starting.
+    starting: Option<Task<()>>,
+    /// The relay identity, made when the relay is chosen.
+    making: Option<Task<()>>,
+    /// A new relay identity in place of the old one.
+    renewing: Option<Task<()>>,
+}
+
 /// The account's signed-in devices and computers, as last asked.
 #[derive(Default)]
 pub(super) struct SignedIn {
@@ -589,7 +601,7 @@ impl Shell {
     /// if that fails the key is replaced all the same, and the tab says the
     /// old one is still listed.
     fn new_identity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was_on = self.phone.is_some();
+        let was_on = self.phone_on();
         // Stopped first: the old key must not connect, and so register, again.
         self.stop_phone(cx);
         let old = phone::Settings::load().relay_label();
@@ -627,16 +639,63 @@ impl Shell {
         .detach();
     }
 
+    /// Puts a new relay key in the keyring on a background thread: the
+    /// keyring may wait for the person to unlock it. When it does not take
+    /// the key, the old one stays, and the tab says so.
     fn renew_identity(&mut self, was_on: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let mut settings = phone::Settings::load();
-        settings.renew_identity();
-        self.signed_in.own_label = settings.relay_label();
-        self.servers_own_label_changed();
-        if was_on {
-            self.start_phone(&settings, window, cx);
-        } else {
-            self.sync_phone_view(cx);
+        let renew = cx.background_spawn(async move {
+            let mut settings = phone::Settings::load();
+            settings.renew_identity()?;
+            settings.save_soon();
+            Ok::<_, String>(settings)
+        });
+        self.phone_keys.renewing = Some(cx.spawn_in(window, async move |this, cx| {
+            let renewed = renew.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.phone_keys.renewing = None;
+                let settings = renewed.unwrap_or_else(|e| {
+                    this.notify(AlertKind::Warning, "Relay key not changed", &e, None, cx);
+                    phone::Settings::load()
+                });
+                this.signed_in.own_label = settings.relay_label();
+                this.servers_own_label_changed();
+                // Turned on while the key was made, the link has the old key.
+                if was_on || this.phone_on() {
+                    this.restart_phone(&settings, window, cx);
+                } else {
+                    this.sync_phone_view(cx);
+                }
+            });
+        }));
+    }
+
+    /// Whether the phone link is on, or its keys are on their way to start it.
+    fn phone_on(&self) -> bool {
+        self.phone.is_some() || self.phone_keys.starting.is_some()
+    }
+
+    /// Makes the relay identity the first time the relay is chosen, on a
+    /// background thread: the keyring may wait for the person to unlock it.
+    fn make_identity(&mut self, cx: &mut Context<Self>) {
+        if self.phone_keys.making.is_some() {
+            return;
         }
+        let make = cx.background_spawn(async { phone::Settings::load_keys(true).map(drop) });
+        self.phone_keys.making = Some(cx.spawn(async move |this, cx| {
+            let made = make.await;
+            let _ = this.update(cx, |this, cx| {
+                // After an error `making` stays set: a keyring that said no
+                // is not asked again on every view update.
+                if let Err(e) = made {
+                    eprintln!("arakun: {e}");
+                    return;
+                }
+                this.phone_keys.making = None;
+                this.signed_in.own_label = phone::Settings::load().relay_label();
+                this.servers_own_label_changed();
+                this.sync_phone_view(cx);
+            });
+        }));
     }
 
     /// The devices the relay let in belong to the account signed in then:
@@ -752,7 +811,7 @@ impl Shell {
 
     /// A call to the account failed. A sign-in the service no longer knows
     /// is forgotten here, and the prompt to sign in shows.
-    fn account_call_failed(&mut self, e: cloud::Error, cx: &mut Context<Self>) {
+    pub(super) fn account_call_failed(&mut self, e: cloud::Error, cx: &mut Context<Self>) {
         if e == cloud::Error::SignedOut {
             self.teams.update(cx, |t, cx| t.session_ended(cx));
         } else {
@@ -832,7 +891,7 @@ impl Shell {
                 let mut settings = phone::Settings::load();
                 settings.enabled = true;
                 settings.save_soon();
-                self.start_phone(&settings, window, cx);
+                self.start_phone(&settings, None, window, cx);
             }
             PhoneEvent::Disable => {
                 self.save_devices();
@@ -851,7 +910,7 @@ impl Shell {
                 settings.reach = *reach;
                 settings.save_soon();
                 self.list_signed_in(window, cx);
-                if self.phone.is_some() {
+                if self.phone_on() {
                     self.restart_phone(&settings, window, cx);
                 } else {
                     self.sync_phone_view(cx);
@@ -896,11 +955,16 @@ impl Shell {
         }
     }
 
+    /// The relay is this computer's way in, so the account can reach it.
+    pub(super) fn relay_on(&self) -> bool {
+        self.phone.as_ref().is_some_and(|l| l.reach == Reach::Relay)
+    }
+
     /// Starts the server when the last run left it on.
     pub(super) fn restore_phone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = phone::Settings::load();
         if settings.enabled {
-            self.start_phone(&settings, window, cx);
+            self.start_phone(&settings, None, window, cx);
         }
     }
 
@@ -916,9 +980,12 @@ impl Shell {
 
     /// Closes the server and every phone; gives Tailscale's HTTPS port back if it was ours.
     fn stop_phone(&mut self, cx: &mut Context<Self>) {
+        // A link still waiting for its keys does not start.
+        self.phone_keys.starting = None;
         let Some(link) = self.phone.take() else {
             return;
         };
+        self.push_linear_host(cx);
         // A phone of the next link may come with the same id.
         self.servers_phone_left(None);
         if link.reach == Reach::Tailscale {
@@ -943,20 +1010,52 @@ impl Shell {
             .as_mut()
             .map(|link| std::mem::take(&mut link.notifier));
         self.stop_phone(cx);
-        self.start_phone(settings, window, cx);
-        if let (Some(waiting), Some(link)) = (waiting, &mut self.phone) {
-            link.notifier = waiting;
-        }
-        self.time_notices(window, cx);
+        self.start_phone(settings, waiting, window, cx);
     }
 
+    /// Starts the phone link with `settings` once its private keys are read.
+    /// They come from the keyring, which may wait up to minutes for the
+    /// person to unlock it, so they are read on a background thread and
+    /// never on this one. `waiting` are the notices a link before this one
+    /// still had for when the person leaves.
     fn start_phone(
         &mut self,
         settings: &phone::Settings,
+        waiting: Option<Notifier>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let vapid = Arc::new(settings.clone().vapid_soon());
+        let mut settings = settings.clone();
+        let relay = settings.reach == Reach::Relay;
+        let keys = cx.background_spawn(async move { phone::Settings::load_keys(relay) });
+        self.phone_keys.starting = Some(cx.spawn_in(window, async move |this, cx| {
+            let keys = keys.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.phone_keys.starting = None;
+                match keys {
+                    Ok(keys) => {
+                        // Devices may have come or gone while the keys were read.
+                        settings.devices = phone::Settings::load().devices;
+                        this.start_phone_with(&settings, keys, window, cx);
+                        if let (Some(waiting), Some(link)) = (waiting, &mut this.phone) {
+                            link.notifier = waiting;
+                            this.time_notices(window, cx);
+                        }
+                    }
+                    Err(e) => this.views.phone.update(cx, |v, cx| v.set_error(e, cx)),
+                }
+            });
+        }));
+    }
+
+    fn start_phone_with(
+        &mut self,
+        settings: &phone::Settings,
+        keys: phone::Keys,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let vapid = Arc::new(keys.vapid);
         let access = Access::new(settings.devices.clone(), vapid.public_key());
         let teams_account = (settings.reach == Reach::Relay)
             .then(|| self.teams.read(cx).account())
@@ -985,6 +1084,10 @@ impl Shell {
                 }
             }
             Reach::Relay => {
+                // Read with the keys when the relay is the way in.
+                let Some(identity) = keys.identity else {
+                    return;
+                };
                 // The window's sign-in; without one the client waits signed
                 // out, and a sign-in starts a new one (`account_changed`).
                 let machine = relay::Machine {
@@ -994,7 +1097,7 @@ impl Shell {
                 let account = relay_account;
                 let (r, rx) = RelayClient::start(
                     &settings.relay_base,
-                    settings.clone().identity_soon(),
+                    identity,
                     access.clone(),
                     machine,
                     account,
@@ -1054,6 +1157,7 @@ impl Shell {
             _listen: listen,
             _tick: tick,
         });
+        self.push_linear_host(cx);
         self.sync_phone_view(cx);
     }
 
@@ -1096,15 +1200,15 @@ impl Shell {
 
     /// Tells the Phone tab what to show: the address, the code while pairing, the devices.
     pub(super) fn sync_phone_view(&mut self, cx: &mut Context<Self>) {
-        let mut settings = phone::Settings::load();
+        let settings = phone::Settings::load();
         let reach = self.phone.as_ref().map_or(settings.reach, |l| l.reach);
         // The identity is made the first time the relay is chosen, not before.
-        let relay = (reach == Reach::Relay).then(|| {
-            settings.identity_soon();
-            RelayInfo {
-                url: settings.relay_address().trim_end_matches('/').to_string(),
-                account: self.relay_account(cx),
-            }
+        if reach == Reach::Relay && settings.relay_label().is_none() {
+            self.make_identity(cx);
+        }
+        let relay = (reach == Reach::Relay).then(|| RelayInfo {
+            url: settings.relay_address().trim_end_matches('/').to_string(),
+            account: self.relay_account(cx),
         });
         let state = match &self.phone {
             Some(link) => {
@@ -1209,6 +1313,9 @@ impl Shell {
                 self.sync_phone_view(cx);
             }
             Incoming::Relay(status) => {
+                // A Linear sync that failed, and reports Linear did not take,
+                // while the relay was away go now.
+                let connected = status == relay::Status::Connected;
                 let mut ended = false;
                 if let Some(link) = &mut self.phone
                     && let Transport::Relay(client) = &link.server
@@ -1224,8 +1331,17 @@ impl Shell {
                     self.teams.update(cx, |t, cx| t.recheck(cx));
                 }
                 self.sync_phone_view(cx);
+                self.push_linear_host(cx);
+                if connected {
+                    self.sync_linear(window, cx);
+                    self.linear_flush(cx);
+                    // The relay label may be what the gate waited for.
+                    self.linear_replay_kept(window, cx);
+                    self.linear_start_waiting(window, cx);
+                }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),
+            Incoming::Linear(delivery) => self.linear_delivery(delivery, window, cx),
         }
     }
 
@@ -1726,7 +1842,7 @@ impl Shell {
         }
     }
 
-    fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
+    pub(super) fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
         let env = self.find_env(env_path)?;
         env.sessions[env.session_index(id)?]
             .live

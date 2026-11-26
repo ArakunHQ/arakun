@@ -137,12 +137,15 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Archive after merge (Settings › Branches), and the merges archived | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
-| Linear sign-ins (personal API keys) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
+| Linear sign-ins (who signed in; the personal API keys are in the Credential Manager) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
+| Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
+| Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `%LOCALAPPDATA%\arakun\linear\runs.json` |
 | Doop sign-ins (their keys and tokens are in the Credential Manager), canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sign-in (`account.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with or reaches through your account (Computers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| The token each server paired by link gave (Computers tab) | Credential Manager, as `arakun:server-token:<id>`; with `ARAKUN_STATE` set, `@<that file>` is added to the name |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
@@ -151,10 +154,12 @@ With `--service` a server that is not signed in yet stays up and waits for
 | Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | By default `%LOCALAPPDATA%\arakun\pilot.json`; with `ARAKUN_STATE` set, `pilot.json` next to that state file |
-| arakun-pilot's Worker address and token | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
+| arakun-pilot's Worker address | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
+| arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key, typed address and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-address`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
-| Claude seats' tokens (`arakun seat add`), one file per seat | `%LOCALAPPDATA%\arakun\seats\<name>` |
+| Claude seats' tokens (`arakun seat add`) | Credential Manager, as `arakun:seat:<name>` |
+| Claude seats, one empty file per seat that lists it | `%LOCALAPPDATA%\arakun\seats\<name>` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
@@ -186,11 +191,11 @@ Manager (Windows Credentials, Generic Credentials).
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
 - **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
-  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' tokens in
+  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' files in
   `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
   Windows has no such modes, so there they get the default access rules of
-  `%LOCALAPPDATA%\arakun\`. A seat's token signs in to that Claude subscription, so
-  check those rules before you add one.
+  `%LOCALAPPDATA%\arakun\`. A seat's token is in the Credential Manager, not in
+  `seats\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
   `SYSTEM` and the Administrators can read it. To check who can read the folder and the

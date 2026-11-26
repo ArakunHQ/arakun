@@ -60,6 +60,7 @@ export function fakeGitHub(): void {
   github.profileCalls = [];
   webhook.bodies = [];
   webhook.outage = null;
+  resetLinear();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     const lookup = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(req.url);
@@ -72,6 +73,7 @@ export function fakeGitHub(): void {
       const found = github.profiles.get(Number(profile[1]));
       return found ? Response.json(found) : Response.json({ message: "Not Found" }, { status: 404 });
     }
+    if (req.url.startsWith("https://api.linear.app/")) return linearReply(req);
     if (req.url === webhook.url && req.method === "POST") {
       webhook.bodies.push(await req.text());
       if (webhook.outage === "throw") throw new TypeError("Network connection lost.");
@@ -199,4 +201,277 @@ export async function roomInWindow(periodSeconds: 10 | 60, roomMs = 3_000): Prom
   const period = periodSeconds * 1000;
   const left = period - (Date.now() % period);
   if (left < roomMs) await new Promise((r) => setTimeout(r, left + 50));
+}
+
+/// Signs in and gives the user the `linear` flag, as `user()` does for `teams`.
+export async function flagged(id: number, login: string): Promise<{ id: number; login: string; session: string }> {
+  const got = await signIn(id, login);
+  await call("PUT", `/admin/users/${id}/flags/linear`, ADMIN);
+  return { id, login, session: got.session };
+}
+
+// A fake Linear: its token endpoint and GraphQL API. It issues the tokens it
+// then accepts, and takes an old refresh token again, as Linear does for 30
+// minutes after a refresh.
+
+/// Who a token is. `app` says it is an app's own token (`actor=app`); left
+/// out, it is a person's.
+export interface LinearWho {
+  userId: string;
+  organizationId: string;
+  organizationName: string;
+  app?: boolean;
+}
+
+/// The workspace and app user an exchanged code belongs to.
+export const FAKE_ORG = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+export const FAKE_APP_USER = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a";
+
+export const linearFake = {
+  /// Access token → who Linear says it belongs to. A test adds the tokens it
+  /// saves; an exchange or refresh adds the pair it issues.
+  tokens: new Map<string, LinearWho>(),
+  /// What an exchange or refresh issues a token as, over the app in FAKE_ORG.
+  issueAs: {} as Partial<LinearWho>,
+  /// Refresh tokens Linear still takes → the access token issued with each.
+  refreshTokens: new Map<string, string>(),
+  /// Refresh tokens already rotated → the pair that answered them. Linear
+  /// answers the same pair again for 30 minutes; with `grace` off it refuses.
+  rotated: new Map<string, { access: string; refresh: string }>(),
+  grace: true,
+  /// Issue id → its team and project.
+  issues: new Map<string, { teamId: string; projectId: string | null }>(),
+  /// Every GraphQL call: the query, its variables and the access token.
+  calls: [] as { query: string; variables: unknown; token: string }[],
+  /// The calls Linear accepted, apart from `calls`: what `activities()` and `links()` read.
+  accepted: [] as { query: string; variables: unknown; token: string }[],
+  /// The Authorization header of every GraphQL call, as sent.
+  auth: [] as string[],
+  /// The forms POSTed to /oauth/token.
+  exchanges: [] as URLSearchParams[],
+  /// Every call fails as the network does, as a timeout would.
+  down: false,
+  /// Every call answers this status.
+  refuse: null as number | null,
+  /// With `refuse`, only GraphQL calls whose query contains this text are refused.
+  refuseOnly: null as string | null,
+  /// The next GraphQL call answers 401, once.
+  expireNext: false,
+  /// Every GraphQL call answers 401, whatever the token.
+  expireAlways: false,
+  /// Runs after a refresh issued its pair and before the answer goes out: a
+  /// test uses it to let another request refresh in between.
+  afterRefresh: null as ((pair: { access: string; refresh: string }) => Promise<void>) | null,
+  /// Makes a query answer a 200 with data of the wrong shape.
+  malformed: null as "viewer" | "issue-null" | "no-team" | null,
+  /// The agent activities created, in order.
+  activities(): { agentSessionId: string; type: string; body: string }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("agentActivityCreate"))
+      .map((c) => {
+        const input = (c.variables as { input: { agentSessionId: string; content: { type: string; body: string } } }).input;
+        return { agentSessionId: input.agentSessionId, type: input.content.type, body: input.content.body };
+      });
+  },
+  /// The links added to agent sessions, in order.
+  links(): { agentSessionId: string; label: string; url: string }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("agentSessionUpdate"))
+      .flatMap((c) => {
+        const v = c.variables as { id: string; input: { addedExternalUrls: { label: string; url: string }[] } };
+        return v.input.addedExternalUrls.map((l) => ({ agentSessionId: v.id, label: l.label, url: l.url }));
+      });
+  },
+};
+
+let linearIssued = 0;
+
+function resetLinear(): void {
+  linearFake.tokens.clear();
+  linearFake.issueAs = {};
+  linearFake.refreshTokens.clear();
+  linearFake.rotated.clear();
+  linearFake.grace = true;
+  linearFake.issues.clear();
+  linearFake.calls = [];
+  linearFake.accepted = [];
+  linearFake.auth = [];
+  linearFake.exchanges = [];
+  linearFake.down = false;
+  linearFake.refuse = null;
+  linearFake.refuseOnly = null;
+  linearFake.expireNext = false;
+  linearFake.expireAlways = false;
+  linearFake.malformed = null;
+  linearFake.afterRefresh = null;
+  linearIssued = 0;
+}
+
+async function linearReply(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  if (req.method !== "POST" || (url.pathname !== "/oauth/token" && url.pathname !== "/graphql"))
+    throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
+  if (linearFake.down) throw new TypeError("Network connection lost.");
+  if (linearFake.refuse !== null && linearFake.refuseOnly === null) return new Response("refused", { status: linearFake.refuse });
+  if (url.pathname === "/oauth/token") {
+    const form = new URLSearchParams([...(await req.formData()).entries()] as [string, string][]);
+    linearFake.exchanges.push(form);
+    if (form.get("client_id") !== "lin-test" || form.get("client_secret") !== "lin-secret")
+      return Response.json({ error: "invalid_client" }, { status: 401 });
+    const grant = form.get("grant_type");
+    const used = form.get("refresh_token") ?? "";
+    if (grant === "refresh_token") {
+      const again = linearFake.rotated.get(used);
+      if (again && linearFake.grace)
+        return Response.json({ access_token: again.access, refresh_token: again.refresh, expires_in: 86400, token_type: "Bearer", scope: "read" });
+      if (!linearFake.refreshTokens.has(used)) return Response.json({ error: "invalid_grant" }, { status: 400 });
+    } else if (!form.get("code")) return Response.json({ error: "invalid_grant" }, { status: 400 });
+    linearIssued++;
+    const access = `lin_oauth_issued${linearIssued}`;
+    const refresh = `lin_refresh_issued${linearIssued}`;
+    if (grant === "refresh_token") {
+      // The pair it replaces stops working.
+      linearFake.tokens.delete(linearFake.refreshTokens.get(used)!);
+      linearFake.refreshTokens.delete(used);
+      linearFake.rotated.set(used, { access, refresh });
+    }
+    linearFake.tokens.set(access, { userId: FAKE_APP_USER, organizationId: FAKE_ORG, organizationName: "Fake", app: true, ...linearFake.issueAs });
+    linearFake.refreshTokens.set(refresh, access);
+    if (grant === "refresh_token") await linearFake.afterRefresh?.({ access, refresh });
+    return Response.json({ access_token: access, refresh_token: refresh, expires_in: 86400, token_type: "Bearer", scope: "read" });
+  }
+  const header = req.headers.get("Authorization") ?? "";
+  const token = header.replace(/^Bearer /, "");
+  const { query, variables } = (await req.json()) as { query: string; variables: Record<string, unknown> };
+  linearFake.auth.push(header);
+  linearFake.calls.push({ query, variables, token });
+  if (linearFake.refuse !== null && linearFake.refuseOnly !== null && query.includes(linearFake.refuseOnly))
+    return new Response("refused", { status: linearFake.refuse });
+  const who = linearFake.tokens.get(token);
+  if (linearFake.expireNext || linearFake.expireAlways || !who) {
+    linearFake.expireNext = false;
+    return Response.json({ errors: [{ message: "expired", extensions: { code: "AUTHENTICATION_ERROR" } }] }, { status: 401 });
+  }
+  linearFake.accepted.push({ query, variables, token });
+  if (linearFake.malformed === "viewer") return Response.json({ data: { viewer: null } });
+  if (linearFake.malformed === "issue-null") return Response.json({ data: { issue: null } });
+  if (linearFake.malformed === "no-team") return Response.json({ data: { issue: { team: null, project: null } } });
+  if (query.includes("viewer"))
+    return Response.json({
+      data: { viewer: { id: who.userId, app: who.app ?? false, organization: { id: who.organizationId, name: who.organizationName } } },
+    });
+  if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))
+    return Response.json({ data: { agentActivityCreate: { success: true }, agentSessionUpdate: { success: true } } });
+  if (query.includes("issue(")) {
+    const issue = linearFake.issues.get((variables as { id: string }).id);
+    if (!issue) return Response.json({ errors: [{ message: "Entity not found", extensions: { code: "INVALID_INPUT" } }] });
+    return Response.json({ data: { issue: { team: { id: issue.teamId }, project: issue.projectId ? { id: issue.projectId } : null } } });
+  }
+  throw new Error(`unexpected Linear query: ${query}`);
+}
+
+/// Every row of every table the app owns, as one JSON string, to look for
+/// what must not be stored.
+export async function dump(db: D1Database): Promise<string> {
+  const tables = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE 'd1\\_%' ESCAPE '\\' ORDER BY name")
+    .all<{ name: string }>();
+  const out: Record<string, unknown[]> = {};
+  for (const { name } of tables.results) out[name] = (await db.prepare(`SELECT * FROM "${name}"`).all()).results;
+  return JSON.stringify(out);
+}
+
+// Linear's webhooks, as Linear sends them: the body signed with the webhook
+// secret the tests run with.
+
+export const HOOK_ORG = "11111111-1111-4111-8111-111111111111";
+export const HOOK_SESSION = "55555555-5555-4555-8555-555555555555";
+/// The id of the webhook itself. Linear sends it on every event, so it is one
+/// value here too.
+export const HOOK_WEBHOOK = "99999999-9999-4999-8999-999999999999";
+const HOOK_SECRET = "lin-hook";
+
+/// A signed webhook: the exact text sent and its headers. `at` is the
+/// webhook's time in milliseconds; the text is serialized once and that text
+/// is what is signed.
+export async function signedWebhook(
+  body: Record<string, unknown>,
+  { secret = HOOK_SECRET, at = Date.now() }: { secret?: string; at?: number } = {},
+): Promise<{ text: string; headers: Record<string, string> }> {
+  const text = JSON.stringify({ ...body, webhookTimestamp: at });
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+  const signature = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
+  return { text, headers: { "Content-Type": "application/json", "Linear-Signature": signature, "Linear-Event": "AgentSessionEvent" } };
+}
+
+/// The body of a `created` AgentSessionEvent: someone delegated or mentioned
+/// Arakun. Each call has a fresh agent session id unless one is given.
+export function created({
+  creatorId,
+  issueId,
+  promptContext = "<issue identifier=\"ENG-1\"><title>Make it blue</title></issue>",
+  webhookId = HOOK_WEBHOOK,
+  organizationId = HOOK_ORG,
+  agentSessionId = crypto.randomUUID(),
+}: {
+  creatorId: string | null;
+  issueId: string | null;
+  promptContext?: string;
+  webhookId?: string;
+  organizationId?: string;
+  agentSessionId?: string;
+}): Record<string, unknown> {
+  return {
+    type: "AgentSessionEvent",
+    action: "created",
+    organizationId,
+    webhookId,
+    appUserId: "app-user",
+    agentSession: {
+      id: agentSessionId,
+      issueId,
+      creatorId,
+      issue: issueId ? { id: issueId, identifier: "ENG-1", title: "Make it blue", description: "The button is grey.", teamId: null } : null,
+      comment: null,
+    },
+    promptContext,
+    previousComments: [],
+    guidance: [],
+  };
+}
+
+/// The body of a `prompted` AgentSessionEvent: a follow-up in the session.
+/// Linear's schema has the author twice, as `userId` and `user.id`; a null
+/// `userId` leaves both out. Each call has a fresh agent session id and
+/// activity id unless they are given.
+export function prompted({
+  userId,
+  body,
+  activityId = crypto.randomUUID(),
+  signal = null,
+  issueId = null,
+  webhookId = HOOK_WEBHOOK,
+  organizationId = HOOK_ORG,
+  agentSessionId = crypto.randomUUID(),
+}: {
+  userId: string | null;
+  body: string;
+  activityId?: string;
+  signal?: string | null;
+  issueId?: string | null;
+  webhookId?: string;
+  organizationId?: string;
+  agentSessionId?: string;
+}): Record<string, unknown> {
+  const author = userId === null ? {} : { userId, user: { id: userId, name: "Some One", email: "someone@example.com" } };
+  return {
+    type: "AgentSessionEvent",
+    action: "prompted",
+    organizationId,
+    webhookId,
+    appUserId: "app-user",
+    agentSession: { id: agentSessionId, issueId, creatorId: null, comment: null },
+    agentActivity: { id: activityId, ...author, body, signal, content: { type: "prompt", body } },
+  };
 }

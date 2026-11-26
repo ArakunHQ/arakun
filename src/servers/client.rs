@@ -24,7 +24,7 @@ use tungstenite::handshake::client::Request;
 use tungstenite::http::HeaderValue;
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
-use super::{Invite, Saved, Way, socket_origin};
+use super::{Invite, Saved, Vault, Way, socket_origin};
 use crate::phone::e2e::{Handshake, Session};
 use crate::phone::identity::label_of;
 use crate::phone::relay::{CONTROL, DATA, HELLO, Joiner};
@@ -41,6 +41,11 @@ pub const SIGNED_OUT: &str = "Your sign-in is no longer valid. Sign in again to 
 pub const SIGN_IN_TO_RECONNECT: &str = "Sign in to reconnect.";
 /// A server's status while it was paired through the relay by link, before
 /// accounts: it comes back once the account lists it.
+/// What a server paired by link says when its token is in neither the file
+/// nor the keyring.
+pub const NO_TOKEN: &str =
+    "This app's token for the server is gone. Remove the server here, then pair it again.";
+
 pub const PAIRED_BY_LINK: &str = "Paired by link before 0.19, which the relay no longer takes. Sign in here and run `arakun-server login` on the server with the same GitHub account, or pair it again over Tailscale.";
 /// A server's status while the account could not be asked for its machines.
 pub const ACCOUNT_UNREACHABLE: &str = "Could not reach your account. Trying again.";
@@ -88,8 +93,12 @@ pub enum Status {
 
 pub enum Event {
     Status(Status),
-    /// Pairing worked: what to keep to come back with.
+    /// Pairing worked: what to keep to come back with. Its token is in the
+    /// keyring, or still in it when the keyring refused.
     Paired(Saved),
+    /// The token a file from before held is in the keyring now: the file
+    /// can go without it.
+    TokenKept,
     /// A message from the server, whole (`wire`'s `part`s put back together).
     Message(Value),
     /// A message [`Client::send`] was given that the server did not get:
@@ -125,7 +134,7 @@ impl Client {
     /// Pairs with the server `invite` names and stays connected. `id` is the
     /// one its [`Saved`] will carry.
     pub fn pair(id: String, invite: Invite, name: String, events: Events) -> Client {
-        Self::start(id, Who::Invite(invite), name, events, TIMING)
+        Self::start(id, Who::Invite(invite), name, events, TIMING, keyring())
     }
 
     /// Connects to a server of the account through the relay, with the
@@ -137,6 +146,7 @@ impl Client {
             String::new(),
             events,
             TIMING,
+            keyring(),
         )
     }
 
@@ -148,6 +158,7 @@ impl Client {
             String::new(),
             events,
             TIMING,
+            keyring(),
         )
     }
 
@@ -159,10 +170,18 @@ impl Client {
             String::new(),
             events,
             TIMING,
+            keyring(),
         )
     }
 
-    fn start(id: String, who: Who, name: String, events: Events, timing: Timing) -> Client {
+    fn start(
+        id: String,
+        who: Who,
+        name: String,
+        events: Events,
+        timing: Timing,
+        vault: Arc<dyn Vault>,
+    ) -> Client {
         let (out, queued) = std_mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(Mutex::new(false));
@@ -177,6 +196,7 @@ impl Client {
             status: None,
             parts: wire::Parts::default(),
             timing,
+            vault,
             page: crate::servers::new_id(),
             torn: false,
             acks: false,
@@ -252,6 +272,10 @@ impl Drop for Client {
     }
 }
 
+fn keyring() -> Arc<dyn Vault> {
+    Arc::new(super::Keyring)
+}
+
 /// Who the link is, to the server: a stranger with a link, a paired device,
 /// or a device of the server's account.
 enum Who {
@@ -301,6 +325,8 @@ struct Link {
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
+    /// Where the token is kept.
+    vault: Arc<dyn Vault>,
     /// This client's name to the relay, as `phone/public/relay.js` has one per page.
     /// It stays the same across reconnects, so the relay replaces the socket
     /// a sleep or a network switch left behind instead of counting it as one
@@ -329,6 +355,7 @@ impl Link {
             self.close();
             return;
         }
+        self.keep_token_from_file();
         let mut wait = RETRY_MIN;
         loop {
             if self.stop.load(Ordering::Relaxed) {
@@ -375,6 +402,41 @@ impl Link {
                     wait = (wait * 2).min(RETRY_MAX);
                 }
             }
+        }
+    }
+
+    /// A token `servers.json` still holds moves to the keyring here, on the
+    /// connection's thread, the first time it is needed. When the keyring
+    /// refuses, the file keeps it and it is still used.
+    fn keep_token_from_file(&self) {
+        let Who::Saved(saved) = &self.who else {
+            return;
+        };
+        if saved.way != Way::Direct || saved.token.is_empty() {
+            return;
+        }
+        match super::keep_token(&*self.vault, saved) {
+            Ok(()) => self.tell(Event::TokenKept),
+            Err(e) => eprintln!("arakun: could not move a server's token to the keyring: {e}"),
+        }
+    }
+
+    /// The token this connection comes in with, read from the keyring once
+    /// and then held. Not there at all, nothing will let the app in again.
+    fn token(&mut self) -> Result<String, Ended> {
+        let Who::Saved(saved) = &mut self.who else {
+            return Err(Ended::Refused("Pairing did not finish.".into()));
+        };
+        match super::token(&*self.vault, saved) {
+            Ok(Some(token)) => {
+                saved.token = token.clone();
+                Ok(token)
+            }
+            Ok(None) => Err(Ended::Refused(NO_TOKEN.into())),
+            // A keyring that stayed locked may be unlocked by the next try.
+            Err(e) => Err(Ended::Retry(format!(
+                "The keyring could not give the server's token: {e}"
+            ))),
         }
     }
 
@@ -451,9 +513,16 @@ impl Link {
     }
 
     /// Pairing gave the app its place on the server: from now on it comes as itself.
+    /// The token goes to the keyring and not to the file, unless the keyring
+    /// refuses it: then the file keeps it, as before the keyring.
     fn paired(&mut self, saved: Saved) {
-        self.who = Who::Saved(saved.clone());
-        self.tell(Event::Paired(saved));
+        let mut kept = saved.clone();
+        match super::keep_token(&*self.vault, &saved) {
+            Ok(()) => kept.token.clear(),
+            Err(e) => eprintln!("arakun: could not keep a server's token in the keyring: {e}"),
+        }
+        self.who = Who::Saved(saved);
+        self.tell(Event::Paired(kept));
     }
 
     /// A message from the server, once all of it is here.
@@ -485,11 +554,15 @@ impl Link {
                 Err(ended) => return ended,
             }
         }
+        let token = match self.token() {
+            Ok(token) => token,
+            Err(ended) => return ended,
+        };
         let Who::Saved(saved) = &self.who else {
             return Ended::Refused("Pairing did not finish.".into());
         };
-        let url = format!("{}/ws?t={}", socket_origin(&saved.origin), saved.token);
-        let unpair = (format!("{}/unpair", saved.origin), saved.token.clone());
+        let url = format!("{}/ws?t={token}", socket_origin(&saved.origin));
+        let unpair = (format!("{}/unpair", saved.origin), token);
         let (mut ws, acks) = match connect(&url, None) {
             Ok(ws) => ws,
             Err(ended) => return ended,
@@ -1070,6 +1143,7 @@ mod tests {
     use crate::phone::e2e::PhoneHello;
     use crate::phone::identity::Identity;
     use crate::phone::{Access, ClientMsg, Incoming, Server};
+    use crate::servers::tests::Fake;
     use futures::StreamExt as _;
     use std::net::{Ipv4Addr, TcpListener};
 
@@ -1080,8 +1154,23 @@ mod tests {
 
     type Heard = mpsc::UnboundedReceiver<(String, Event)>;
 
-    /// The next event, or a panic when none comes in time.
+    fn fake() -> Arc<Fake> {
+        Arc::new(Fake::default())
+    }
+
+    /// The next event but [`Event::TokenKept`], which a client started with
+    /// a token tells first.
     fn next(rx: &mut Heard) -> Event {
+        loop {
+            match next_any(rx) {
+                Event::TokenKept => {}
+                event => return event,
+            }
+        }
+    }
+
+    /// The next event, or a panic when none comes in time.
+    fn next_any(rx: &mut Heard) -> Event {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             match rx.try_recv() {
@@ -1099,6 +1188,7 @@ mod tests {
         match next(rx) {
             Event::Status(s) => s,
             Event::Paired(_) => panic!("paired, where a status was expected"),
+            Event::TokenKept => panic!("a token kept, where a status was expected"),
             Event::Message(m) => panic!("{m}, where a status was expected"),
             Event::Undelivered(m) => panic!("{m} undelivered, where a status was expected"),
         }
@@ -1136,18 +1226,23 @@ mod tests {
             origin: origin.clone(),
             code,
         };
+        let vault = fake();
         let client = Client::start(
             "srv".into(),
             Who::Invite(invite.clone()),
             "Arakun on a test".into(),
             tx.clone(),
             QUICK,
+            vault.clone(),
         );
         assert_eq!(status(&mut rx), Status::Connecting);
         let Event::Paired(saved) = next(&mut rx) else {
             panic!("not paired");
         };
         assert_eq!((saved.id.as_str(), &saved.way), ("srv", &Way::Direct));
+        // The token went to the keyring, not to what the file keeps.
+        assert!(saved.token.is_empty());
+        assert_eq!(vault.entries.lock().unwrap().len(), 1);
         assert_eq!(saved.origin, origin);
         assert_eq!(status(&mut rx), Status::Connected);
         assert!(matches!(from_server(&mut incoming), Incoming::Paired));
@@ -1183,7 +1278,14 @@ mod tests {
 
         // The link worked once.
         let (tx2, mut rx2) = mpsc::unbounded();
-        let _again = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx2, QUICK);
+        let _again = Client::start(
+            "srv".into(),
+            Who::Invite(invite),
+            "x".into(),
+            tx2,
+            QUICK,
+            fake(),
+        );
         assert_eq!(status(&mut rx2), Status::Connecting);
         assert!(matches!(status(&mut rx2), Status::Refused(why) if why.contains("run out")));
 
@@ -1199,6 +1301,7 @@ mod tests {
             String::new(),
             tx,
             QUICK,
+            vault.clone(),
         );
         assert_eq!(status(&mut rx), Status::Connecting);
         assert_eq!(status(&mut rx), Status::Connected);
@@ -1231,7 +1334,14 @@ mod tests {
             removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
-        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let client = Client::start(
+            "srv".into(),
+            Who::Saved(saved),
+            String::new(),
+            tx,
+            QUICK,
+            fake(),
+        );
         let prompt = json!({ "type": "send", "session": "s1", "text": "hi" });
         client.send(&prompt);
         loop {
@@ -1256,7 +1366,14 @@ mod tests {
             code: "not-a-code".into(),
         };
         let (tx, mut rx) = mpsc::unbounded();
-        let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+        let client = Client::start(
+            "srv".into(),
+            Who::Invite(invite),
+            "x".into(),
+            tx,
+            QUICK,
+            fake(),
+        );
         // Queued while pairing: the thread gives up with it still there.
         let queued = json!({ "type": "start", "env": "/srv/app", "text": "hi" });
         client.send(&queued);
@@ -1386,7 +1503,14 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let (tx, mut rx) = mpsc::unbounded();
         let saved = direct_saved(&listener);
-        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let client = Client::start(
+            "srv".into(),
+            Who::Saved(saved),
+            String::new(),
+            tx,
+            QUICK,
+            fake(),
+        );
         assert_eq!(status(&mut rx), Status::Connecting);
         let mut ws = accept_direct(&listener, true);
         assert_eq!(status(&mut rx), Status::Connected);
@@ -1417,7 +1541,14 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let (tx, mut rx) = mpsc::unbounded();
         let saved = direct_saved(&listener);
-        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let client = Client::start(
+            "srv".into(),
+            Who::Saved(saved),
+            String::new(),
+            tx,
+            QUICK,
+            fake(),
+        );
         assert_eq!(status(&mut rx), Status::Connecting);
         let mut ws = accept_direct(&listener, false);
         assert_eq!(status(&mut rx), Status::Connected);
@@ -1470,7 +1601,14 @@ mod tests {
             code: access.lock().unwrap().begin_pairing(),
         };
         let (tx, mut rx) = mpsc::unbounded();
-        let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+        let client = Client::start(
+            "srv".into(),
+            Who::Invite(invite),
+            "x".into(),
+            tx,
+            QUICK,
+            fake(),
+        );
         assert_eq!(status(&mut rx), Status::Connecting);
         assert!(matches!(next(&mut rx), Event::Paired(_)));
         assert_eq!(status(&mut rx), Status::Connected);
@@ -1502,7 +1640,14 @@ mod tests {
                 code: access.lock().unwrap().begin_pairing(),
             };
             let (tx, mut rx) = mpsc::unbounded();
-            let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+            let client = Client::start(
+                "srv".into(),
+                Who::Invite(invite),
+                "x".into(),
+                tx,
+                QUICK,
+                fake(),
+            );
             assert_eq!(status(&mut rx), Status::Connecting);
             assert!(matches!(next(&mut rx), Event::Paired(_)));
             assert_eq!(status(&mut rx), Status::Connected);
@@ -1639,6 +1784,7 @@ mod tests {
             String::new(),
             tx,
             QUICK,
+            fake(),
         )
     }
 
@@ -1983,5 +2129,96 @@ mod tests {
             Some(("127.0.0.1".into(), 8787))
         );
         assert_eq!(host_port("https://a.arakun.dev"), None);
+    }
+
+    /// A server paired by link at a port nobody listens on.
+    fn unreachable(token: &str) -> Saved {
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        Saved {
+            id: "srv".into(),
+            name: "box".into(),
+            origin: format!("http://127.0.0.1:{port}"),
+            way: Way::Direct,
+            device: "d".into(),
+            token: token.into(),
+            removed: false,
+        }
+    }
+
+    #[test]
+    fn a_token_from_an_old_file_moves_to_the_keyring() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let vault = fake();
+        let _client = Client::start(
+            "srv".into(),
+            Who::Saved(unreachable("t")),
+            String::new(),
+            tx,
+            QUICK,
+            vault.clone(),
+        );
+        assert!(matches!(next_any(&mut rx), Event::TokenKept));
+        assert_eq!(
+            vault.entries.lock().unwrap().values().collect::<Vec<_>>(),
+            [&"t".to_string()]
+        );
+        assert_eq!(status(&mut rx), Status::Connecting);
+    }
+
+    #[test]
+    fn a_keyring_that_refuses_the_token_leaves_it_in_the_file() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let locked = Arc::new(Fake {
+            locked: true,
+            ..Fake::default()
+        });
+        let _client = Client::start(
+            "srv".into(),
+            Who::Saved(unreachable("t")),
+            String::new(),
+            tx,
+            QUICK,
+            locked,
+        );
+        // Not told kept, and dialed with the file's token all the same.
+        assert_eq!(status(&mut rx), Status::Connecting);
+        assert!(
+            matches!(status(&mut rx), Status::Waiting { why, .. } if why.contains("Could not reach"))
+        );
+    }
+
+    #[test]
+    fn without_its_token_a_server_is_not_dialed() {
+        let (tx, mut rx) = mpsc::unbounded();
+        let _gone = Client::start(
+            "srv".into(),
+            Who::Saved(unreachable("")),
+            String::new(),
+            tx,
+            QUICK,
+            fake(),
+        );
+        assert_eq!(status(&mut rx), Status::Connecting);
+        assert_eq!(status(&mut rx), Status::Refused(NO_TOKEN.into()));
+        // A locked keyring is tried again: the next try may find it open.
+        let (tx, mut rx) = mpsc::unbounded();
+        let locked = Arc::new(Fake {
+            locked: true,
+            ..Fake::default()
+        });
+        let _locked = Client::start(
+            "srv".into(),
+            Who::Saved(unreachable("")),
+            String::new(),
+            tx,
+            QUICK,
+            locked,
+        );
+        assert_eq!(status(&mut rx), Status::Connecting);
+        assert!(matches!(status(&mut rx), Status::Waiting { why, .. } if why.contains("keyring")));
     }
 }

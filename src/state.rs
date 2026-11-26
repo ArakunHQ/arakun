@@ -440,6 +440,9 @@ pub struct SessionState {
     /// The GitHub Actions run it was started to fix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci_run: Option<u64>,
+    /// The identifier of the Linear issue it was started for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear: Option<String>,
     /// Started by `arakun agent new`: the model it asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_model: Option<String>,
@@ -939,6 +942,7 @@ pub fn snapshot_with(
                                     #[cfg(feature = "coderlabs")]
                                     task: s.task.clone(),
                                     ci_run: s.ci_run,
+                                    linear: s.linear.as_ref().map(|l| l.to_string()),
                                     cli_model: s.cli_model.clone(),
                                     auto_allow: s.auto_allow,
                                     continues: s.continues.clone(),
@@ -1118,6 +1122,8 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) 
                                 session.task = s.task;
                             }
                             session.ci_run = s.ci_run;
+                            session.linear =
+                                s.linear.as_deref().and_then(crate::model::linear_mark);
                             session.cli_model = s.cli_model;
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
@@ -1394,6 +1400,22 @@ mod tests {
         let s: SessionState = serde_json::from_str(json).unwrap();
         assert!(s.settled);
         assert_eq!(serde_json::to_value(&s).unwrap()["settled"], true);
+    }
+
+    #[test]
+    fn a_session_from_linear_keeps_its_issue() {
+        let json = r#"{"id":"s1","title":"T","agent":"claude","updated":1,"linear":"ENG-412"}"#;
+        let s: SessionState = serde_json::from_str(json).unwrap();
+        assert_eq!(s.linear.as_deref(), Some("ENG-412"));
+        let saved = serde_json::to_string(&s).unwrap();
+        let back: SessionState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.linear.as_deref(), Some("ENG-412"));
+
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"claude","updated":1}"#)
+                .unwrap();
+        assert_eq!(old.linear, None, "older state files have no issue");
+        assert!(serde_json::to_value(&old).unwrap().get("linear").is_none());
     }
 
     #[test]

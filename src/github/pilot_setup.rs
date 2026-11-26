@@ -1,9 +1,10 @@
 //! Connecting arakun-pilot without writing `client.json` by hand: the
-//! settings are checked against the Worker, then saved private. The
+//! settings are checked against the Worker, then saved: the tokens in the
+//! keyring, the address in a private file. The
 //! connect form in the GitHub tab and `arakun github pilot` both use this.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::board::BoardProblem;
 use super::pilot::{self, Config};
@@ -102,26 +103,63 @@ pub fn refused(status: u16) -> String {
     }
 }
 
-/// Saves `cfg` where Arakun reads it, readable only by this user.
+/// Saves `cfg`: the tokens in the keyring, the address in the settings file,
+/// readable only by this user. Not on the UI thread: the keyring may wait
+/// for the person to unlock it.
 pub fn save(cfg: &Config) -> io::Result<PathBuf> {
     let path = pilot::config_file();
-    let mut json = serde_json::json!({ "url": cfg.url, "token": cfg.token });
-    if let Some(admin) = &cfg.admin_token {
-        json["admin_token"] = admin.as_str().into();
-    }
-    let mut bytes = serde_json::to_vec_pretty(&json).map_err(io::Error::other)?;
-    bytes.push(b'\n');
-    crate::durable::write_private(&path, &bytes)?;
+    save_at(&path, cfg, &pilot::Keyring, &pilot::Accounts::here())?;
     Ok(path)
 }
 
-/// Removes the settings; Ok(false) when there were none.
-pub fn remove() -> io::Result<bool> {
-    match std::fs::remove_file(pilot::config_file()) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
+fn save_at(
+    path: &Path,
+    cfg: &Config,
+    vault: &dyn pilot::Vault,
+    accounts: &pilot::Accounts,
+) -> io::Result<()> {
+    let _held = pilot::CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let refused =
+        |e: String| io::Error::other(format!("the keyring could not keep the token: {e}"));
+    // The keyring first: a file with the address and no token is broken,
+    // and a file left as it was still works.
+    vault
+        .set(&accounts.token, pilot::TOKEN_LABEL, &cfg.token)
+        .map_err(refused)?;
+    match &cfg.admin_token {
+        Some(admin) => vault
+            .set(&accounts.admin, pilot::ADMIN_LABEL, admin)
+            .map_err(refused)?,
+        None => vault.forget(&accounts.admin),
     }
+    pilot::write_settings(path, &serde_json::json!({ "url": cfg.url }))
+}
+
+/// Removes the settings and the tokens; Ok(false) when there were none. Not
+/// on the UI thread, as [`save`].
+pub fn remove() -> io::Result<bool> {
+    remove_at(
+        &pilot::config_file(),
+        &pilot::Keyring,
+        &pilot::Accounts::here(),
+    )
+}
+
+fn remove_at(
+    path: &Path,
+    vault: &dyn pilot::Vault,
+    accounts: &pilot::Accounts,
+) -> io::Result<bool> {
+    let _held = pilot::CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let removed = match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e),
+    };
+    // Also without a file: tokens a lost file left behind go too.
+    vault.forget(&accounts.token);
+    vault.forget(&accounts.admin);
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +566,47 @@ mod tests {
                 board: Err(BoardProblem::Missing)
             }
         );
+    }
+
+    #[test]
+    fn save_keeps_the_tokens_in_the_keyring_and_remove_forgets_them() {
+        use crate::github::pilot::tests::{Fake, accounts, scratch};
+        let (ring, path) = (Fake::default(), scratch("save"));
+        save_at(&path, &saved(), &ring, &accounts()).unwrap();
+        let file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(file, serde_json::json!({ "url": "https://p.dev" }));
+        assert_eq!(ring.entries.borrow()["arakun-pilot-token"], "old");
+        assert_eq!(ring.entries.borrow()["arakun-pilot-admin-token"], "adm");
+        // Saved without an admin token, the old one goes.
+        let no_admin = Config {
+            admin_token: None,
+            ..saved()
+        };
+        save_at(&path, &no_admin, &ring, &accounts()).unwrap();
+        assert!(
+            !ring
+                .entries
+                .borrow()
+                .contains_key("arakun-pilot-admin-token")
+        );
+        assert!(remove_at(&path, &ring, &accounts()).unwrap());
+        assert!(!path.exists() && ring.entries.borrow().is_empty());
+        assert!(!remove_at(&path, &ring, &accounts()).unwrap());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_keyring_that_refuses_leaves_the_file_as_it_was() {
+        use crate::github::pilot::tests::{Fake, accounts, scratch};
+        let path = scratch("save-locked");
+        let ring = Fake {
+            locked: true,
+            ..Fake::default()
+        };
+        let e = save_at(&path, &saved(), &ring, &accounts()).unwrap_err();
+        assert!(e.to_string().contains("keyring"), "{e}");
+        assert!(!path.exists());
     }
 
     #[test]

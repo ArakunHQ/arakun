@@ -206,7 +206,7 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let listener = match UnixListener::bind(&path) {
+    let listener = match crate::private_socket::bind(&path) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             if UnixStream::connect(&path).is_ok() {
@@ -215,7 +215,7 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
             }
             // Left behind by a crash.
             let _ = std::fs::remove_file(&path);
-            UnixListener::bind(&path)
+            crate::private_socket::bind(&path)
                 .map_err(|e| eprintln!("arakun: control socket {}: {e}", path.display()))
                 .ok()?
         }
@@ -224,11 +224,6 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
             return None;
         }
     };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
     SERVING.store(true, Ordering::Relaxed);
     let (tx, rx) = mpsc::unbounded();
     serve_on(listener, tx.clone(), false, "arakun-control").ok()?;
@@ -267,13 +262,8 @@ fn serve_sandboxed(tx: mpsc::UnboundedSender<Incoming>) {
     }
     // Only one instance gets here (it holds the main socket), so an old one is stale.
     let _ = std::fs::remove_file(&path);
-    match UnixListener::bind(&path) {
+    match crate::private_socket::bind(&path) {
         Ok(listener) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-            }
             let _ = serve_on(listener, tx, true, "arakun-control-sandbox");
         }
         Err(e) => eprintln!("arakun: sandbox control socket {}: {e}", path.display()),

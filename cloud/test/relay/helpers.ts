@@ -201,3 +201,17 @@ export async function untilStored<T>(label: string, key: string, ok: (v: T | und
   }
   throw new Error(`${key} never settled`);
 }
+
+/// The computer leaves, and this waits until its object counts it offline,
+/// as `deliver` asks. `last_seen` cannot tell: the claim already set it.
+export async function away(label: string, pc: PcSocket): Promise<void> {
+  pc.ws.close(1000, "shutting down");
+  await pc.inbox.closedWith();
+  const stub = env.RELAY.get(env.RELAY.idFromName(label));
+  for (let i = 0; i < 50; i++) {
+    const res = await stub.fetch("https://relay/_state", { headers: { "x-arakun-label": label } });
+    if (!((await res.json()) as { online: boolean }).online) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error("the computer never went offline");
+}

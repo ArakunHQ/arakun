@@ -437,11 +437,13 @@ sees the project's skills.
   `ARAKUN_PILOT_TOKEN`, else the token already saved for the same address. The admin
   token comes the same way, from `--admin-token -` or `ARAKUN_PILOT_ADMIN_TOKEN` (only
   one of the two can come from stdin); `--no-admin-token` removes the saved one, and
-  `--no-check` saves without asking the Worker first. An empty stdin is an error. They go in
-  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
-  `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
-  starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
+  `--no-check` saves without asking the Worker first. An empty stdin is an error. The tokens
+  go in the system keyring and the address in `~/.config/arakun-pilot/client.json`
+  (`$XDG_CONFIG_HOME` when set to an absolute path; `{"url": "…"}`, readable only by you), and
+  Arakun reads `GET <url>/board` and `GET <url>/items` every minute. A `token` or
+  `admin_token` written in that file by hand moves to the keyring the first time Arakun reads
+  it. A test Arakun with `ARAKUN_STATE` set, as `arakun dev` starts one, reads
+  `arakun-pilot/client.json` in the folder of that state file instead, and keeps its own tokens.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
   and `[::1]`, so the tokens never cross a network unencrypted. The board fills the
   queue; the rows pilot doesn't follow fold under "More on GitHub". When pilot
@@ -608,11 +610,11 @@ after a week).
   by state (in progress, todo, backlog) with their identifier, title, team and
   priority, and a search box over them. Sign in with a personal API key (Linear ›
   Settings › Security & access › Personal API keys; read access is enough). Add one
-  sign-in per workspace; the header switches between them. The keys are kept in
-  `~/.local/share/arakun/linear/sessions.json`
-  (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows) and never leave the
-  computer: they go to Linear's API and nowhere else. The tab reads the list again
-  when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
+  sign-in per workspace; the header switches between them. The keys are kept in the
+  system keyring; who signed in is kept in `~/.local/share/arakun/linear/sessions.json`
+  (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows). A key goes to Linear's
+  API; if you let Linear start sessions on this computer, it also goes to Arakun, to
+  prove the Linear user is you. The tab reads the list again when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
   long as Linear asks when it hits Linear's request limit, saying how many minutes
   are left. A click on an issue (or
   `↑`/`↓` and `Enter`; `/` goes to the search box) opens it with its description and
@@ -623,6 +625,108 @@ after a week).
   browser when no project is open). To try the tab without a key (Linux and
   macOS), start a test Arakun with
   `ARAKUN_LINEAR_FIXTURE="$PWD/tools/linear-fixture.json" arakun dev start`.
+  An Arakun account with the `linear` flag also sees **Start from Linear** in the
+  header, a page that lets Linear start sessions on this computer. The feature is
+  still behind the `linear` flag. The server side is turned on by the operator (see
+  `cloud/README.md`), and only after an app release with this feature is out.
+
+  *Setting it up.* The switch **Let Linear start sessions on this computer** is off
+  until you turn it on. It needs an Arakun sign-in, "Reach this computer from
+  anywhere" on in the Phone tab, and Arakun installed in the Linear workspace by a
+  Linear admin (the page links to the install). **Add a mapping** sends a Linear
+  team or project of the workspace to a project on this computer; projects on a
+  server can't be mapped. A Linear project's mapping wins over its team's.
+
+  *What starts.* When you assign an issue to Arakun in Linear, or mention Arakun on
+  it, Arakun's server hands the issue to this computer. The computer checks that the
+  switch is on, that the issue (read with your own Linear key) is in a mapped team
+  or project, and that the mapped project is still in Arakun on this computer. Then
+  it makes an environment on the issue's branch in that project, or reuses the one
+  already on that branch, without changing what is on screen. The branch is
+  Linear's suggested name, made safe for git, or `linear/<issue id>` (for example
+  `linear/eng-412`) when that name can't be used or is a default branch such as
+  `main`. A session never runs in the project's main checkout or on its base
+  branch. The session uses the project's usual agent, model and permission mode.
+  Its prompt is built from the issue: the title, description and comments, marked
+  as data. It ends by asking the agent to commit, push and open a draft pull
+  request that names the issue. Anyone who can write in the issue or its
+  comments, integrations included, can steer a session that commits and pushes
+  under your permission mode; map only projects where you accept that. A
+  session started from Linear shows its issue's identifier before its title in the
+  sidebar and the Inbox.
+
+  *Who can start what.* Anyone who can assign issues to Arakun in the workspace
+  only starts work on their own computer: the server routes by who delegated the
+  issue. One gap: a Linear automation that delegates an issue assigned to you is
+  treated as you, because Linear does not tell a person from an automation. Text
+  that other people wrote in the issue becomes part of the agent's prompt, marked
+  as data.
+
+  *How many.* At most three such sessions run at once on a computer. More wait in a
+  saved queue and start, in the order they came, as others finish. A queued issue
+  is read again when it starts, so its text may have changed since you delegated
+  it.
+
+  *What the issue hears.* Arakun writes to the issue as the work goes:
+  `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
+  `Waiting on {computer}: {n} other sessions from Linear are running. This one
+  starts when one finishes.`; a question from the session, with its choices one
+  per line; `Waiting for your permission: run a command. Answer it in Arakun or on
+  your phone.` (only the kind of action, never the command or file; a permission
+  is never answered from Linear); the result, with the pull request's link when
+  one is known; `The session failed: {reason}` on a failure; and `Still working.`
+  after 25 quiet minutes. If you close Arakun while a session runs, the issue
+  hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
+
+  *Talking to the session.* A reply in Linear from the person who delegated goes to
+  the session as a new message. Arakun does not take a reply's text from
+  its server: it reads it from Linear with your own key, and if that fails the
+  issue asks you to send it again. With the switch off, or without a Linear sign-in for the
+  workspace on this computer, a reply is refused and the issue hears why. A reply
+  waits in the session's queue when the agent is busy, and it never answers a
+  permission prompt. A reply while a question is pending skips the question and
+  sends the reply, unless the question asks for a secret. A reply to a finished session continues it, unless another
+  session from Linear is working on the same issue by then. A stop in Linear
+  cancels the turn. A stop that arrives while a reply or a new delegation for the
+  same issue is still being read is applied after the work it follows. A stop
+  works even with the switch off, or when this computer is no longer signed in to
+  that Linear workspace.
+
+  *When nothing starts.* Each case gets a line in the issue that says why: the
+  switch is off, the issue is not mapped, the mapped project is gone, this computer
+  has no Linear sign-in for the workspace, the issue can't be read, an environment
+  can't be made, or the same issue is already in work on this computer. If this
+  computer is off, the server says so in the issue and keeps the delivery for up to
+  7 days; it starts when the computer is back.
+
+  *What goes where.* The Linear key of each workspace you connect goes to Arakun's
+  server, to prove which Linear user you are, and the server does not store it. You
+  connect the workspace in view by turning the switch on, and another workspace
+  with its **Connect** button while the switch is on. Its key is sent once the
+  workspace has a mapping, and again only if the server loses the link. Otherwise
+  only the relay label of this computer, the Linear organization id of the
+  workspace and the ids of its mapped teams and projects go for the setup. Once a
+  session runs, what the issue hears goes through Arakun's server to the issue:
+  the session's last reply (up to 7,500 characters, code included, with secrets
+  scrubbed), its questions and their choices, the kind of a permission it waits
+  for (never its arguments), the project name, the branch, this computer's name
+  and the reason of a failure. The server stores none of it. Turning it off removes
+  this computer's routes on the server and leaves the link, so your other computers
+  keep working. Until you turn it on nothing about Linear is sent, except that an
+  account with the flag asks the server whether Arakun is installed in the
+  workspace. The switch and the mappings (ids, names and project paths, no keys) are
+  kept in `~/.local/share/arakun/linear/delegation.json`
+  (`%LOCALAPPDATA%\arakun\linear\delegation.json` on Windows), with the workspaces
+  you connected. The runs are kept next to it in
+  `~/.local/share/arakun/linear/runs.json`
+  (`%LOCALAPPDATA%\arakun\linear\runs.json` on Windows): which deliveries were
+  handled, each run with its ids, paths, the issue's identifier and state, and the
+  reports not yet sent. Those reports hold text and are dropped after a day.
+  Arakun updates the server when you change the page, add or remove a Linear
+  sign-in, sign in to Arakun, or add or remove a mapped project, and when this
+  computer reconnects to the relay; there is no timer. A report that can't be sent
+  is kept and tried again later, and never holds up a session. The server's side is
+  in `cloud/README.md`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
@@ -672,8 +776,10 @@ after a week).
   seat of its own so parallel sessions don't drain one. Save each subscription's
   long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
   from stdin, checked with one small call (about 35 tokens of that seat) and kept in
-  `~/.local/share/arakun/seats/<name>`, readable only by you. From then on each new
-  Claude Code session starts on the seat with the most room in its 5-hour window that
+  the system keyring, with an empty `~/.local/share/arakun/seats/<name>` that lists
+  the seat. A token an older Arakun saved in that file moves to the keyring the first
+  time it is read. From then on each new Claude Code session starts on the seat with
+  the most room in its 5-hour window that
   is not near its 5-hour or weekly limit (your own sign-in and a
   `CLAUDE_CODE_OAUTH_TOKEN` Arakun was started with count as seats too), and keeps
   that seat for its whole life, also when it is resumed or restarted. The token goes
@@ -1680,9 +1786,10 @@ for two minutes and pairs one device. There are two ways to use it:
   clone goes into `~/code`. Clone takes https and ssh addresses, not plain http, and
   gives up after 20 minutes. Add offers a folder the server already has, as
   `arakun-server add` does. The app keeps what pairing gave it in `servers.json`
-  next to its state, which only your user can read: a server's address and token,
-  or, for one reached through the account, only its label on the relay (the sign-in
-  stays in the system keyring). A server paired through the relay before accounts
+  next to its state, which only your user can read: a server's address, with the token
+  pairing gave in the system keyring (one kept in the file by an older version moves
+  there the next time the server is dialed), or, for one reached through the account,
+  only its label on the relay (the sign-in stays in the system keyring). A server paired through the relay before accounts
   stays in the file as it was and says it was paired by link, which the relay no longer
   takes: sign in here and run `arakun-server login` on the server with the same GitHub
   account, or pair it again over Tailscale. Once your account lists it, it is kept as

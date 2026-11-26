@@ -12,3 +12,18 @@
 .setup .s { font-size: var(--text-md); color: var(--color-text-subtle); margin-top: 2px; overflow-wrap: anywhere; }
 .setup .x { width: 44px; height: 44px; margin: -8px -8px -8px 0; flex: none; color: var(--color-text-faint); display: flex; align-items: center; justify-content: center; }
 .setup .x svg { width: 16px; height: 16px; }
+
+/* The phone app beta: the email the store invites, and a Join per platform. */
+.setup.beta { align-items: flex-start; }
+.beta-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; width: 100%; }
+.beta-form input {
+  height: 40px; padding: 0 12px; border-radius: var(--radius-md);
+  /* 16px or more, or iOS zooms in on focus. */
+  font: var(--text-page-body) var(--font-sans); -webkit-appearance: none; appearance: none;
+  background: var(--color-background); color: var(--color-text); border: 1px solid var(--color-border);
+}
+.beta-form input:focus { outline: none; border-color: var(--color-border-strong); }
+.beta-form input::placeholder { color: var(--color-text-faint); }
+.beta-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.beta-err { font-size: var(--text-md); color: var(--color-error); }
+.prow.beta-row .beta-form { margin-top: 0; }

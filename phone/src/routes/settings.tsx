@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useReducer, useState } from "react";
 import { turnOnNotifications, appleTab } from "../components/SetupCards";
+import { BetaGroup } from "../components/BetaSignup";
 import { StatusBar } from "../components/StatusBar";
 import { TopBar } from "../components/shell/TopBar";
 import { meQuery, signedOut, useMachines, useSignedInSessions, useSignOut } from "../lib/account";
@@ -271,6 +272,7 @@ export function Settings() {
         ) : null}
         <Group label="Notifications">{notify}</Group>
         {account ? <SignedInDevices /> : null}
+        {account ? <BetaGroup /> : null}
         <Group label="This device">
           {account ? (
             <>

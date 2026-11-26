@@ -23,6 +23,7 @@ mod active;
 pub(crate) mod agent_cli;
 mod arrange;
 mod automations;
+mod beta_card;
 mod branches;
 mod browsers;
 mod checks;
@@ -535,6 +536,7 @@ pub struct Shell {
     phone: Option<phone::PhoneLink>,
     /// The account's signed-in devices, for the Phone tab's relay section.
     signed_in: phone::SignedIn,
+    beta_card: beta_card::BetaCard,
     /// The account `relay_owner_changed` last settled the relay's devices for.
     relay_owner_seen: Option<crate::phone::AccountNow>,
     phone_view: Entity<crate::phone_view::PhoneView>,
@@ -1164,6 +1166,7 @@ impl Shell {
             _extensions_view: extensions_sub,
             phone: None,
             signed_in: Default::default(),
+            beta_card: beta_card::BetaCard::new(cx),
             relay_owner_seen: None,
             phone_view,
             _phone_view: phone_sub,

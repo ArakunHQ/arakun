@@ -396,12 +396,15 @@ impl Shell {
                     Err(e) => this.signed_in.beta_error = Some(e.to_string()),
                 }
                 this.sync_phone_view(cx);
+                // The rail's beta card reads the same answer.
+                this.fill_beta_card_email(cx);
+                cx.notify();
             });
         }));
     }
 
     /// Signs the account up for one beta; the operator admits by hand.
-    fn join_beta(
+    pub(super) fn join_beta(
         &mut self,
         platform: cloud::BetaPlatform,
         email: String,
@@ -417,6 +420,7 @@ impl Shell {
         self.signed_in.beta_joining = Some(platform);
         self.signed_in.beta_join_error = None;
         self.sync_phone_view(cx);
+        cx.notify();
         let session = account.session.clone();
         cx.spawn_in(window, async move |this, cx| {
             let (base, token) = (account.base, account.session);
@@ -452,6 +456,7 @@ impl Shell {
                     Err(e) => this.signed_in.beta_join_error = Some((platform, e.to_string())),
                 }
                 this.sync_phone_view(cx);
+                cx.notify();
             });
         })
         .detach();
@@ -459,7 +464,7 @@ impl Shell {
 
     /// What the Phone tab says of the phone app betas, and the account's
     /// email to offer.
-    fn beta_state(&self, cx: &App) -> (BetaState, Option<String>) {
+    pub(super) fn beta_state(&self, cx: &App) -> (BetaState, Option<String>) {
         let teams = self.teams.read(cx);
         if teams.account().is_none() {
             // A session the service has not answered about yet is not a sign-out.

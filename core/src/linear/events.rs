@@ -8,7 +8,7 @@
 
 use super::runs::{ReportKind, Run, RunState, cut};
 use super::start::failed_line;
-use crate::agent::{Entry, Thread, ThreadStatus};
+use crate::agent::{AskUserRequest, Entry, Question, Thread, ThreadStatus};
 use crate::phone::notify;
 
 /// The most characters of a question sent to Linear.
@@ -144,6 +144,36 @@ pub fn question_text(head: &str, options: &[String]) -> String {
         head.to_string()
     } else {
         format!("{head}\n\n{}", choices.join("\n"))
+    }
+}
+
+/// Every question of a questionnaire with its choices, so the person can
+/// answer all of them in one reply in Linear. One question reads as
+/// [`question_text`]; several are numbered, each with its own choices.
+pub fn questionnaire_text(q: &AskUserRequest) -> String {
+    let head = |x: &Question| {
+        let text = notify::plain(&x.question).trim().to_string();
+        if text.is_empty() {
+            notify::plain(&x.topic).trim().to_string()
+        } else {
+            text
+        }
+    };
+    match q.questions.as_slice() {
+        [one] => question_text(&head(one), &one.options),
+        many => many
+            .iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let mut text = format!("{}. {}", i + 1, head(x));
+                for o in x.options.iter().map(|o| o.trim()).filter(|o| !o.is_empty()) {
+                    // Indented to sit under its number in Linear's Markdown.
+                    text.push_str(&format!("\n   - {o}"));
+                }
+                text
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
     }
 }
 
@@ -335,14 +365,17 @@ pub fn ask_of(t: &Thread, computer: &str) -> Option<(String, Seen)> {
         return (t.status() == ThreadStatus::NeedsInput)
             .then(|| (WAITING_KEY.to_string(), waiting));
     };
-    // A secret's field is answered in Arakun only.
-    let options = q
-        .questions
-        .first()
-        .filter(|first| !first.secret)
-        .map(|first| first.options.clone())
-        .unwrap_or_default();
-    let text = question_text(&notify::question_body(q), &options);
+    if q.has_secret() {
+        // A secret's field is answered in Arakun only, and a reply from
+        // Linear never answers the questionnaire it is in: Linear only
+        // hears that it waits.
+        let waiting = Seen::Waiting {
+            computer: computer.to_string(),
+        };
+        let key = ask_key(&["secret question", &q.tool_call_id]);
+        return Some((key, waiting));
+    }
+    let text = questionnaire_text(q);
     let key = ask_key(&["question", &q.tool_call_id, &text]);
     Some((key, Seen::Question(text)))
 }
@@ -383,6 +416,48 @@ mod tests {
             report(Seen::Question(text.clone())),
             Some((ReportKind::Elicitation, text))
         );
+    }
+
+    fn ask(question: &str, options: &[&str]) -> Question {
+        Question {
+            index: 1,
+            topic: String::new(),
+            question: question.into(),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            multi: false,
+            secret: false,
+        }
+    }
+
+    #[test]
+    fn one_question_reads_as_before() {
+        let q = AskUserRequest::for_test(vec![ask("Which database?", &["Postgres", "SQLite"])]);
+        assert_eq!(
+            questionnaire_text(&q),
+            "Which database?\n\n- Postgres\n- SQLite"
+        );
+    }
+
+    #[test]
+    fn every_question_goes_to_linear_with_its_choices() {
+        let q = AskUserRequest::for_test(vec![
+            ask("Which database?", &["Postgres", "SQLite"]),
+            ask("Which port?", &[]),
+            ask("Add a cache?", &["Yes", " ", "No"]),
+        ]);
+        assert_eq!(
+            questionnaire_text(&q),
+            "1. Which database?\n   - Postgres\n   - SQLite\n\n2. Which port?\n\n\
+             3. Add a cache?\n   - Yes\n   - No"
+        );
+    }
+
+    #[test]
+    fn a_question_without_text_uses_its_topic() {
+        let mut one = ask("", &["A", "B"]);
+        one.topic = "Approach".into();
+        let q = AskUserRequest::for_test(vec![one]);
+        assert_eq!(questionnaire_text(&q), "Approach\n\n- A\n- B");
     }
 
     #[test]

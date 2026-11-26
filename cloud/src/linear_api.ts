@@ -25,6 +25,15 @@ export class LinearRefused extends Error {
   }
 }
 
+/// A stored token that does not open under LINEAR_TOKEN_KEY: the key changed
+/// or the row was damaged. Only installing again mends it.
+export class TokenUnopened extends LinearRefused {
+  constructor() {
+    super("the stored Linear token cannot be opened", 500);
+    this.name = "TokenUnopened";
+  }
+}
+
 interface Tokens {
   access: string;
   refresh: string;
@@ -44,7 +53,9 @@ async function tokenCall(env: Env, form: Record<string, string>): Promise<Tokens
   } catch {
     throw new LinearRefused("Linear did not answer", 502);
   }
-  if (!res.ok) throw new LinearRefused(`Linear refused the token request: ${res.status}`, res.status === 401 ? 401 : 502);
+  // Linear answers a refresh token it no longer takes (the app was removed,
+  // or it went unused for 30 days) with 400 invalid_grant: a refusal, like a 401.
+  if (!res.ok) throw new LinearRefused(`Linear refused the token request: ${res.status}`, res.status === 400 || res.status === 401 ? 401 : 502);
   const j = (await res.json().catch(() => null)) as { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown } | null;
   if (!j || typeof j.access_token !== "string" || typeof j.refresh_token !== "string" || typeof j.expires_in !== "number")
     throw new LinearRefused("Linear sent an unusable token answer", 502);
@@ -142,7 +153,7 @@ async function readRow(env: Env, organizationId: string): Promise<Row> {
 
 async function unseal(env: Env, organizationId: string, sealed: string): Promise<string> {
   const plain = await open(env, organizationId, sealed);
-  if (plain === null) throw new LinearRefused("the stored Linear token cannot be opened", 500);
+  if (plain === null) throw new TokenUnopened();
   return plain;
 }
 

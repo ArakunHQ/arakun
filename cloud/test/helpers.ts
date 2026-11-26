@@ -249,6 +249,8 @@ export const linearFake = {
   auth: [] as string[],
   /// The forms POSTed to /oauth/token.
   exchanges: [] as URLSearchParams[],
+  /// Every call fails as the network does, as a timeout would.
+  down: false,
   /// Every call answers this status.
   refuse: null as number | null,
   /// With `refuse`, only GraphQL calls whose query contains this text are refused.
@@ -295,6 +297,7 @@ function resetLinear(): void {
   linearFake.accepted = [];
   linearFake.auth = [];
   linearFake.exchanges = [];
+  linearFake.down = false;
   linearFake.refuse = null;
   linearFake.refuseOnly = null;
   linearFake.expireNext = false;
@@ -308,6 +311,7 @@ async function linearReply(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (req.method !== "POST" || (url.pathname !== "/oauth/token" && url.pathname !== "/graphql"))
     throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
+  if (linearFake.down) throw new TypeError("Network connection lost.");
   if (linearFake.refuse !== null && linearFake.refuseOnly === null) return new Response("refused", { status: linearFake.refuse });
   if (url.pathname === "/oauth/token") {
     const form = new URLSearchParams([...(await req.formData()).entries()] as [string, string][]);

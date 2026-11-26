@@ -4,7 +4,7 @@ import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
-import { verified } from "../src/linear_webhook";
+import { verified, webhook } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
 import { account, claim, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./relay/helpers";
 
@@ -264,6 +264,69 @@ describe("Linear's webhook", () => {
     // The same webhook again changes nothing.
     expect((await send(hook)).status).toBe(200);
     expect(linearFake.activities()).toEqual(said);
+  });
+
+  it.each([
+    ["Linear is down", () => (linearFake.down = true), "502"],
+    ["Linear answers 500", () => (linearFake.refuse = 500), "500"],
+    ["Linear answers 503", () => (linearFake.refuse = 503), "503"],
+    ["Linear limits the app", () => (linearFake.refuse = 429), "429"],
+  ])("answers 500 so Linear retries when %s", async (_n, fail, why) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pc } = await linkedComputerWithRoute();
+    fail();
+    const res = await send(signedWebhook(body));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
+    expect(log.mock.calls).toEqual([[`POST /linear/webhook: ${why}`]]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("answers 500 so Linear retries when the database fails", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const broken = { ...env, DB: { prepare: () => { throw new TypeError("D1 is down"); }, batch: () => { throw new TypeError("D1 is down"); } } } as unknown as typeof env;
+    const hook = await signedWebhook(body);
+    const res = await webhook(new Request("https://teams.test/linear/webhook", { method: "POST", headers: hook.headers, body: hook.text }), broken);
+    expect(res.status).toBe(500);
+    expect(log.mock.calls).toEqual([["POST /linear/webhook: TypeError"]]);
+  });
+
+  it.each([
+    ["the workspace never installed the app", async () => void (await env.DB.prepare("DELETE FROM linear_workspaces").run()), "404"],
+    ["Linear refuses the token even after a refresh", async () => void (linearFake.expireAlways = true), "401"],
+    [
+      "the app was removed, so the refresh is refused too",
+      async () => {
+        linearFake.expireAlways = true;
+        linearFake.refreshTokens.clear();
+      },
+      "401",
+    ],
+    ["Linear forbids the call", async () => void (linearFake.refuse = 403), "403"],
+    [
+      "the stored token will not open",
+      async () => void (await env.DB.prepare("UPDATE linear_workspaces SET access_token = 'v1.AAAA.AAAA'").run()),
+      "TokenUnopened",
+    ],
+  ])("answers 200 when a retry cannot help: %s", async (_n, fail, why) => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pc } = await linkedComputerWithRoute();
+    await fail();
+    const res = await send(signedWebhook(body));
+    expect(res.status).toBe(200);
+    expect(log.mock.calls).toEqual([[`POST /linear/webhook: ${why}`]]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(0);
+  });
+
+  it("answers 200 when a follow-up's workspace is gone", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { pc } = await delegatedIssue();
+    await env.DB.prepare("DELETE FROM linear_workspaces").run();
+    // A stranger's words: the refusal is said in the session, which needs the workspace.
+    expect((await send(signedWebhook(prompted({ userId: OTHER, body: "x", agentSessionId: SESSION })))).status).toBe(200);
+    expect(log.mock.calls).toEqual([["POST /linear/webhook: 404"]]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 
   it.each([

@@ -7,7 +7,7 @@
 // of it is kept, stored, logged or put in an error: only ids go on.
 
 import { routeFor, FLAG, UUID } from "./linear";
-import { issuePlace, LinearRefused, postActivity } from "./linear_api";
+import { issuePlace, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
 import { deliver, QueueFull, type Delivery } from "./machines";
 import { bodyText, error, hex, isObject, now, sha256, type Env } from "./util";
 
@@ -79,12 +79,23 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
   try {
     return action === "created" ? await delegated(env, hook) : await followUp(env, hook, parsed);
   } catch (e) {
-    // Linear sends it again after a 500; the retry lands on the same row.
     // The status or the error's name only: a message could quote Linear.
-    const why = e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
+    const why = e instanceof TokenUnopened ? e.name : e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
     console.error(`POST /linear/webhook: ${why}`);
-    return error(500, "internal error");
+    // Linear sends a webhook again after a 500, in 1 minute, 1 hour and 6
+    // hours, and may turn off one that keeps failing. So a 500 is only for
+    // what a retry can mend: a timeout, Linear's 5xx or 429, a D1 error. The
+    // retry lands on the same row. No workspace, a token Linear refuses even
+    // after the refresh, or one that will not open stay so until someone
+    // installs again: a 200.
+    return lasting(e) ? ok() : error(500, "internal error");
   }
+}
+
+/// Whether a retry of the webhook would fail the same way.
+function lasting(e: unknown): boolean {
+  if (e instanceof TokenUnopened) return true;
+  return e instanceof LinearRefused && (e.status === 401 || e.status === 403 || e.status === 404);
 }
 
 function isUuid(v: unknown): v is string {

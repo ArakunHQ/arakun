@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 /// Delegated sessions running at once. A computer back after days must not
 /// start dozens of agents; the rest wait their turn.
 pub const MAX_RUNNING: usize = 3;
+/// The most replies kept for a run that waits for a slot.
+pub const KEPT_REPLIES: usize = 8;
 /// Delivery ids remembered, so a delivery sent again is not run twice.
 pub const HANDLED_KEPT: usize = 500;
 /// How long a report Linear has not taken is tried again.
@@ -98,6 +100,11 @@ pub struct Run {
     /// once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<String>,
+    /// Replies that came in Linear while the run waited for a slot, as the
+    /// ids of their agent activities, oldest first. Never their text: it is
+    /// read from Linear when the session starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -139,6 +146,7 @@ impl std::fmt::Debug for Run {
             .field("held", &self.held)
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
+            .field("kept", &self.kept.len())
             .finish()
     }
 }
@@ -451,6 +459,33 @@ impl Runs {
         !self.outbox.is_empty()
     }
 
+    /// Keeps a reply for a run of `organization` that waits for a slot, by
+    /// the id of its agent activity. False when there is no such run or it
+    /// holds `KEPT_REPLIES` already. The same reply twice is kept once.
+    pub fn keep_reply(&mut self, agent_session: &str, organization: &str, activity: &str) -> bool {
+        let Some(run) = self.by_agent_session(agent_session) else {
+            return false;
+        };
+        if run.organization != organization || run.state != RunState::Waiting {
+            return false;
+        }
+        if run.kept.iter().any(|a| a == activity) {
+            return true;
+        }
+        if run.kept.len() >= KEPT_REPLIES {
+            return false;
+        }
+        run.kept.push(activity.to_string());
+        true
+    }
+
+    /// The replies kept for a run, taken out: its session starts now.
+    pub fn take_kept(&mut self, agent_session: &str) -> Vec<String> {
+        self.by_agent_session(agent_session)
+            .map(|r| std::mem::take(&mut r.kept))
+            .unwrap_or_default()
+    }
+
     /// The agent session to send `url` to as the pull request of the run of
     /// `arakun_session`, when Linear has not been sent it yet. Only a web
     /// address, and only for a run that has started.
@@ -558,6 +593,7 @@ mod tests {
             held: None,
             progress: None,
             linked: None,
+            kept: Vec::new(),
         }
     }
 
@@ -606,6 +642,32 @@ mod tests {
         let saved = serde_json::to_string(&r).unwrap();
         let mut back: Runs = serde_json::from_str(&saved).unwrap();
         assert_eq!(back.link("s1", next), None);
+    }
+
+    #[test]
+    fn replies_are_kept_only_for_a_waiting_run_of_the_same_workspace() {
+        let mut r = Runs::default();
+        r.add(run("a"));
+        // With a free slot it would start at once; here it waits for one.
+        r.by_agent_session("a").unwrap().state = RunState::Waiting;
+        assert!(!r.keep_reply("other", "w1", "act-1"));
+        assert!(!r.keep_reply("a", "w2", "act-1"), "another workspace");
+        assert!(r.keep_reply("a", "w1", "act-1"));
+        assert!(r.keep_reply("a", "w1", "act-1"), "the relay sent it again");
+        for i in 2..=KEPT_REPLIES {
+            assert!(r.keep_reply("a", "w1", &format!("act-{i}")));
+        }
+        assert!(!r.keep_reply("a", "w1", "one-too-many"));
+        // Only ids are saved, and they survive a restart.
+        let saved = serde_json::to_string(&r).unwrap();
+        let mut back: Runs = serde_json::from_str(&saved).unwrap();
+        let kept = back.take_kept("a");
+        assert_eq!(kept.len(), KEPT_REPLIES);
+        assert_eq!((kept[0].as_str(), kept[1].as_str()), ("act-1", "act-2"));
+        assert!(back.take_kept("a").is_empty(), "taken once");
+        // A run at work takes a reply at once: nothing to keep.
+        back.by_agent_session("a").unwrap().state = RunState::Running;
+        assert!(!back.keep_reply("a", "w1", "act-9"));
     }
 
     #[test]

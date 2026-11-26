@@ -317,11 +317,35 @@ pub fn no_directions_line(computer: &str) -> String {
     )
 }
 
+/// A reply for a run that waits, when it could not be kept: it has no
+/// activity to read later, or the run holds as many as it keeps.
 pub fn not_started_line(computer: &str) -> String {
     format!(
         "This has not started yet on {computer}. Your message will not be passed on; send it \
          again once it has started."
     )
+}
+
+/// A reply for a run that waits for a slot: it goes to the session when
+/// that starts.
+pub fn kept_line(computer: &str) -> String {
+    format!("Kept your message. The session on {computer} gets it when it starts.")
+}
+
+/// A kept reply that could not be read from Linear when the session started.
+pub fn kept_unread_line(computer: &str) -> String {
+    format!(
+        "Arakun on {computer} could not read a message you sent before the session started. \
+         Send it again."
+    )
+}
+
+/// What a kept reply leads to once its session has started and its text was
+/// read: the message to send, without an interrupt marker (there is no turn
+/// of the person's to interrupt), or None when there is nothing to send.
+pub fn kept_message(text: Option<&str>) -> Option<&str> {
+    let text = message(text?).trim();
+    (!text.is_empty()).then_some(text)
 }
 
 #[cfg(test)]
@@ -698,6 +722,7 @@ mod tests {
             held: None,
             progress: None,
             linked: None,
+            kept: Vec::new(),
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);
@@ -804,6 +829,20 @@ mod tests {
              it was. To interrupt it, write your new directions after the marker, as in \
              \"! Use the other API.\""
         );
+        assert_eq!(
+            kept_line("rik-mac"),
+            "Kept your message. The session on rik-mac gets it when it starts."
+        );
+        assert_eq!(
+            kept_message(Some("! Use the other API.")),
+            Some("Use the other API.")
+        );
+        assert_eq!(
+            kept_message(Some(" and keep the flag ")),
+            Some("and keep the flag")
+        );
+        assert_eq!(kept_message(Some("!")), None);
+        assert_eq!(kept_message(None), None);
         assert_eq!(
             not_started_line("rik-mac"),
             "This has not started yet on rik-mac. Your message will not be passed on; send it \

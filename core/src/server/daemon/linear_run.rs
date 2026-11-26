@@ -26,9 +26,10 @@ use crate::linear::events::{
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
-    message, no_directions_line, no_session_line, not_started_line, passed_line, pending_in,
-    release_stops, reply_no_sign_in_line, reply_off_line, reply_source, run_state, skips_question,
-    stop, stopped_after_reply, unread_line,
+    kept_line, kept_message, kept_unread_line, message, no_directions_line, no_session_line,
+    not_started_line, passed_line, pending_in, release_stops, reply_no_sign_in_line,
+    reply_off_line, reply_source, run_state, skips_question, stop, stopped_after_reply,
+    unread_line,
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
@@ -289,6 +290,7 @@ impl Daemon {
             held: None,
             progress: None,
             linked: None,
+            kept: Vec::new(),
         });
         self.linear_save_runs();
         match added {
@@ -406,6 +408,58 @@ impl Daemon {
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
+        self.linear_send_kept(&start.agent_session, &start.organization, cx);
+    }
+
+    /// The replies kept while the run waited for a slot: read from Linear
+    /// now, in order, and sent to its session, which queues them behind the
+    /// first prompt.
+    fn linear_send_kept(
+        &mut self,
+        agent_session: &str,
+        organization: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let kept = self.linear_run.runs.take_kept(agent_session);
+        if kept.is_empty() {
+            return;
+        }
+        self.linear_save_runs();
+        let Some(key) = self.linear_key(organization) else {
+            let line = reply_no_sign_in_line(&computer());
+            return self.linear_report(agent_session, ReportKind::Thought, line, None, cx);
+        };
+        let agent_session = agent_session.to_string();
+        cx.spawn(async move |this, cx| {
+            let of = agent_session.clone();
+            // Any error, a panic too, means a text could not be read.
+            let texts = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        kept.iter()
+                            .map(|a| {
+                                issues::prompt_text(|q, v| crate::linear::call(&key, q, v), a, &of)
+                                    .ok()
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    |_| vec![None],
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                for text in texts {
+                    let sent = kept_message(text.as_deref()).is_some_and(|m| {
+                        this.linear_pass_on(&agent_session, m.to_string(), false, cx)
+                            .is_some()
+                    });
+                    if !sent {
+                        let line = kept_unread_line(&computer());
+                        this.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn linear_still_running(&mut self, agent_session: &str) -> bool {
@@ -482,6 +536,19 @@ impl Daemon {
         };
         // Without its text yet: is there a session to read it for?
         let decided = self.linear_follow_up(&d, None);
+        if decided == FollowUp::NotStarted
+            && let Some(activity) = &activity
+            && self
+                .linear_run
+                .runs
+                .keep_reply(&d.agent_session, &d.organization, activity)
+        {
+            // Saved with the report. Its text is read when the session starts.
+            self.linear_run.runs.mark_seen(&d.id);
+            let line = kept_line(&computer());
+            self.linear_report(&d.agent_session, ReportKind::Thought, line, None, cx);
+            return self.linear_accept(&d.id, cx);
+        }
         let (Some(activity), Some(key), FollowUp::Unreadable) = (activity, key, decided) else {
             return self.linear_answer(&d.id, &d.agent_session, decided, None, cx);
         };

@@ -44,6 +44,18 @@ impl Shell {
         };
         // Without its text yet: is there a session to read it for?
         let decided = self.linear_follow_up(&d, None);
+        if decided == FollowUp::NotStarted
+            && let Some(activity) = &activity
+            && self
+                .linear_runs
+                .keep_reply(&d.agent_session, &d.organization, activity)
+        {
+            // Saved with the report. Its text is read when the session starts.
+            self.linear_runs.mark_seen(&d.id);
+            let line = kept_line(&computer());
+            self.linear_report(&d.agent_session, ReportKind::Thought, line, None, cx);
+            return self.linear_accept(&d.id, cx);
+        }
         let (Some(activity), Some(sign_in), FollowUp::Unreadable) = (activity, sign_in, decided)
         else {
             return self.linear_answer(&d.id, &d.agent_session, decided, None, window, cx);
@@ -61,6 +73,56 @@ impl Shell {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.linear_prompt_read(d, text, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    /// The replies kept while the run waited for a slot: read from Linear
+    /// now, in order, and sent to its session, which queues them behind the
+    /// first prompt.
+    pub(super) fn linear_send_kept(
+        &mut self,
+        agent_session: &str,
+        organization: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kept = self.linear_runs.take_kept(agent_session);
+        if kept.is_empty() {
+            return;
+        }
+        self.linear_save();
+        let sessions = crate::linear::sessions();
+        let Some(sign_in) = crate::linear::session_for(&sessions, organization).cloned() else {
+            let line = reply_no_sign_in_line(&computer());
+            return self.linear_report(agent_session, ReportKind::Thought, line, None, cx);
+        };
+        let agent_session = agent_session.to_string();
+        cx.spawn_in(window, async move |this, cx| {
+            let of = agent_session.clone();
+            // Any error, a panic too, means a text could not be read.
+            let texts = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        kept.iter()
+                            .map(|a| issues::prompt_text(&sign_in, a, &of).ok())
+                            .collect::<Vec<_>>()
+                    },
+                    |_| vec![None],
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                for text in texts {
+                    let sent = kept_message(text.as_deref()).is_some_and(|m| {
+                        this.linear_pass_on(&agent_session, m.to_string(), false, window, cx)
+                            .is_some()
+                    });
+                    if !sent {
+                        let line = kept_unread_line(&computer());
+                        this.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+                    }
+                }
             });
         })
         .detach();

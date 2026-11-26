@@ -608,8 +608,8 @@ after a week).
   by state (in progress, todo, backlog) with their identifier, title, team and
   priority, and a search box over them. Sign in with a personal API key (Linear ›
   Settings › Security & access › Personal API keys; read access is enough). Add one
-  sign-in per workspace; the header switches between them. The keys are kept in
-  `~/.local/share/arakun/linear/sessions.json`
+  sign-in per workspace; the header switches between them. The keys are kept in the
+  system keyring; who signed in is kept in `~/.local/share/arakun/linear/sessions.json`
   (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows). A key goes to Linear's
   API; if you let Linear start sessions on this computer, it also goes to Arakun, to
   prove the Linear user is you. The tab reads the list again when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as

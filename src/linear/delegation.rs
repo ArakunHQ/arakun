@@ -29,9 +29,13 @@ pub struct Mapping {
     pub project: PathBuf,
 }
 
+/// Each field defaults, so a file from an older or newer Arakun still loads
+/// what it can.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Delegation {
+    #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
     pub mappings: Vec<Mapping>,
     /// The Linear organization ids whose key the person agreed to send.
     /// Turning the switch off keeps them: the person agreed, and the link
@@ -55,13 +59,17 @@ impl Delegation {
         self.save_to(&file())
     }
 
-    /// A missing or unreadable file reads as off, so a bad file never sends work.
+    /// A missing or unreadable file reads as off, so a bad file never sends
+    /// work. An unreadable one is set aside, not saved over: it holds the
+    /// person's mappings and consents.
     pub fn load_from(file: &Path) -> Delegation {
-        crate::durable::load_json(file).unwrap_or_default()
+        crate::stored::load(file).unwrap_or_default()
     }
 
     pub fn save_to(&self, file: &Path) -> Result<(), String> {
-        crate::durable::save_json(file, self)
+        serde_json::to_vec(self)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| crate::stored::write(file, &bytes))
             .map_err(|e| format!("Couldn't save the Linear settings: {e}"))
     }
 
@@ -241,7 +249,7 @@ mod tests {
     }
     #[test]
     fn it_survives_the_disk_and_a_missing_or_broken_file() {
-        let dir = std::env::temp_dir().join(format!("arakun-delegation-{}", std::process::id()));
+        let dir = crate::stored::tests::scratch("delegation");
         let file = dir.join("linear").join("delegation.json");
         assert_eq!(Delegation::load_from(&file), Delegation::default());
 
@@ -250,8 +258,31 @@ mod tests {
         d.save_to(&file).unwrap();
         assert_eq!(Delegation::load_from(&file), d);
 
+        // A file it can't read reads as off, and is kept aside, not lost.
         std::fs::write(&file, b"not json {").unwrap();
         assert_eq!(Delegation::load_from(&file), Delegation::default());
+        assert_eq!(
+            crate::stored::tests::kept(&file).as_deref(),
+            Some("not json {")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_file_from_another_version_loads_what_it_can() {
+        let dir = crate::stored::tests::scratch("delegation-versions");
+        let file = dir.join("delegation.json");
+        // Newer: a field this version doesn't know.
+        std::fs::write(
+            &file,
+            br#"{"enabled": true, "mappings": [], "consented": ["w1"], "later": 1}"#,
+        )
+        .unwrap();
+        let d = Delegation::load_from(&file);
+        assert!(d.enabled && d.consents("w1"));
+        // Older: written before consent was kept.
+        std::fs::write(&file, br#"{"enabled": true, "mappings": []}"#).unwrap();
+        let d = Delegation::load_from(&file);
+        assert!(d.enabled && d.consented.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

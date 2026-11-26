@@ -117,9 +117,17 @@ pub fn run(
     // and the other workspaces still go.
     let mut refused: Option<String> = None;
     let linked: Vec<String> = links.iter().map(|l| l.organization_id.clone()).collect();
-    let mut steps = plan(d, &workspaces, local);
-    steps.extend(clear_signed_out(&workspaces, &linked));
-    for step in steps {
+    // The clearing steps are told apart: for them a missing computer or link
+    // means there is nothing to clear.
+    let steps = plan(d, &workspaces, local)
+        .into_iter()
+        .map(|s| (s, false))
+        .chain(
+            clear_signed_out(&workspaces, &linked)
+                .into_iter()
+                .map(|s| (s, true)),
+        );
+    for (step, clearing) in steps {
         if refused.as_deref() == Some(step.workspace()) {
             continue;
         }
@@ -164,6 +172,10 @@ pub fn run(
         };
         match done {
             Ok(()) => {}
+            // No machine row (404) or a link that went since the read (409).
+            Err(cloud::Error::Status {
+                status: 404 | 409, ..
+            }) if clearing => {}
             // A refusal is about this workspace (a bad key, a link taken
             // over). A limit, a sign-out or no network would hit the
             // next one too.
@@ -962,22 +974,58 @@ pub(super) mod tests {
         let (base, rx) = serve(vec![
             (
                 200,
-                r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+                r#"{"links": [{"organization_id": "w1", "linear_user_id": "u1", "installed": true}, {"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
             ),
             (200, r#"{"ok": true}"#),
+            (200, r#"{"ok": true}"#),
         ]);
-        // On and mapped, but w9 has no sign-in here: no key can exist for it.
-        let d = on(vec![team("w9", "t9", "/p/a")]);
-        let no_keys: [(String, Fake); 0] = [];
-        let ran = run(&base, "s", "k1", &d, &no_keys, &[p("/p/a")], || true);
+        // w1 is signed in, with a key here; w9 has no sign-in.
+        let d = on(vec![team("w1", "t1", "/p/a"), team("w9", "t9", "/p/a")]);
+        let ks = [key("w1")];
+        let ran = run(&base, "s", "k1", &d, &ks, &[p("/p/a")], || true);
         assert!(ran.error.is_none());
         let got: Vec<String> = rx.try_iter().collect();
-        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got.len(), 3, "{got:?}");
         assert!(got[0].starts_with("GET /linear/link "));
         assert!(got[1].starts_with("PUT /linear/routes "), "{}", got[1]);
-        assert!(got[1].contains(r#""teams":[]"#), "{}", got[1]);
-        assert!(got[1].contains(r#""projects":[]"#), "{}", got[1]);
+        assert!(got[1].contains(r#""teams":["t1"]"#), "{}", got[1]);
+        assert!(got[2].starts_with("PUT /linear/routes "), "{}", got[2]);
+        assert!(got[2].contains(r#""teams":[]"#), "{}", got[2]);
+        assert!(got[2].contains(r#""projects":[]"#), "{}", got[2]);
+        assert!(got[2].contains("w9"), "{}", got[2]);
         assert!(got.iter().all(|r| !r.contains("lin_api_")), "{got:?}");
+        assert_eq!(ks[0].1.reads.get(), 0);
+    }
+
+    #[test]
+    fn a_clear_the_server_cannot_find_is_not_a_failure() {
+        for (status, body) in [
+            (404, r#"{"error": "no such computer"}"#),
+            (409, r#"{"error": "link linear first"}"#),
+        ] {
+            let (base, rx) = serve(vec![
+                (
+                    200,
+                    r#"{"links": [{"organization_id": "w9", "linear_user_id": "u9", "installed": true}]}"#,
+                ),
+                (status, body),
+            ]);
+            let no_keys: [(String, Fake); 0] = [];
+            let ran = run(&base, "s", "k1", &off(vec![]), &no_keys, &[], || true);
+            assert!(ran.error.is_none(), "{status}: {:?}", ran.error);
+            assert_eq!(rx.try_iter().count(), 2);
+        }
+        // For a workspace signed in here the same 404 is still a failure.
+        let (base, _rx) = serve(vec![
+            (
+                200,
+                r#"{"links": [{"organization_id": "w1", "linear_user_id": "u1", "installed": true}]}"#,
+            ),
+            (404, r#"{"error": "no such computer"}"#),
+        ]);
+        let d = on(vec![team("w1", "t1", "/p/a")]);
+        let ran = run(&base, "s", "k1", &d, &[key("w1")], &[p("/p/a")], || true);
+        assert!(ran.error.is_some());
     }
 
     #[test]

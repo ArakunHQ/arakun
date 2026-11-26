@@ -174,6 +174,18 @@ describe("Linear's API", () => {
     linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: "p-1" });
     expect(await issuePlace(env, ORG, ISSUE)).toEqual({ teamId: TEAM, projectId: "p-1" });
   });
+  it("a viewer answer without its fields is LinearRefused", async () => {
+    linearFake.tokens.set("lin_oauth_t", who);
+    linearFake.malformed = "viewer";
+    await expect(viewer("lin_oauth_t")).rejects.toMatchObject({ status: 502 });
+  });
+  it("an issue that is null is a 404, one without a team a 502", async () => {
+    await save({});
+    linearFake.malformed = "issue-null";
+    await expect(issuePlace(env, ORG, ISSUE)).rejects.toMatchObject({ status: 404 });
+    linearFake.malformed = "no-team";
+    await expect(issuePlace(env, ORG, ISSUE)).rejects.toMatchObject({ status: 502 });
+  });
   it("adds links to an agent session", async () => {
     await save({});
     await addLinks(env, ORG, SESSION, [{ label: "Arakun", url: "https://example.com/x" }]);

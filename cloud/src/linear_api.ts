@@ -85,12 +85,15 @@ async function graphql<T>(token: string, query: string, variables: Record<string
 }
 
 export async function viewer(token: string): Promise<{ userId: string; organizationId: string; organizationName: string }> {
-  const data = await graphql<{ viewer: { id: string; organization: { id: string; name: string } } }>(
+  const data = await graphql<{ viewer?: { id?: unknown; organization?: { id?: unknown; name?: unknown } | null } | null }>(
     token,
     "query { viewer { id organization { id name } } }",
     {},
   );
-  return { userId: data.viewer.id, organizationId: data.viewer.organization.id, organizationName: data.viewer.organization.name };
+  const v = data?.viewer;
+  if (typeof v?.id !== "string" || typeof v.organization?.id !== "string" || typeof v.organization.name !== "string")
+    throw new LinearRefused("Linear sent an unusable viewer answer", 502);
+  return { userId: v.id, organizationId: v.organization.id, organizationName: v.organization.name };
 }
 
 export async function saveWorkspace(
@@ -194,11 +197,17 @@ export async function addLinks(env: Env, organizationId: string, agentSessionId:
 }
 
 export async function issuePlace(env: Env, organizationId: string, issueId: string): Promise<{ teamId: string; projectId: string | null }> {
-  const data = await asApp<{ issue: { team: { id: string }; project: { id: string } | null } }>(
+  const data = await asApp<{ issue?: { team?: { id?: unknown } | null; project?: { id?: unknown } | null } | null }>(
     env,
     organizationId,
     "query($id: String!) { issue(id: $id) { team { id } project { id } } }",
     { id: issueId },
   );
-  return { teamId: data.issue.team.id, projectId: data.issue.project?.id ?? null };
+  // Linear answers null for an issue that does not exist or the app cannot see.
+  if (data.issue === null) throw new LinearRefused("Linear has no such issue", 404);
+  const teamId = data.issue?.team?.id;
+  const projectId = data.issue?.project?.id ?? null;
+  if (typeof teamId !== "string" || (projectId !== null && typeof projectId !== "string"))
+    throw new LinearRefused("Linear sent an unusable issue answer", 502);
+  return { teamId, projectId };
 }

@@ -11,9 +11,11 @@
 //! also lock out the proxy's own web panel, so nothing is sent without a key
 //! and a key the proxy refused is not tried again. The key is saved with the
 //! proxy it was typed for and only ever sent there, never in the clear to
-//! another machine: switch to another proxy and the tab asks again.
+//! another machine: switch to another proxy and the tab asks again. The key
+//! is kept in the keyring (`secret_store`); its file names only that proxy.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -212,9 +214,15 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The proxy the key was saved for. The name is from when the file held the
+/// key too, and stays so a file from before is still found.
 fn key_path() -> PathBuf {
     crate::platform::app_dir().join("cliproxy-management-key")
 }
+
+/// The keyring entry of the key. Not per test Arakun: its file is shared too.
+const KEY_ACCOUNT: &str = "cliproxy-management-key";
+const KEY_LABEL: &str = "arakun: CLIProxyAPI management key";
 
 fn cache_path() -> PathBuf {
     crate::platform::app_dir().join("cliproxy-plan.json")
@@ -224,11 +232,13 @@ fn address_path() -> PathBuf {
     crate::platform::app_dir().join("cliproxy-address")
 }
 
-/// The management key as saved from the Usage tab, with the management base
-/// it was typed for. Never logged or shown.
+/// The management base the key saved from the Usage tab was typed for. The
+/// key is in the keyring; `key` holds it only as a file from before had it,
+/// until it is moved there. Never logged or shown.
 #[derive(Serialize, Deserialize)]
 struct SavedKey {
     base: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     key: String,
 }
 
@@ -236,12 +246,90 @@ fn saved_key() -> Option<SavedKey> {
     crate::durable::load_json(key_path())
 }
 
-/// The saved key, only when it was typed for `base`.
-fn key_for(saved: Option<SavedKey>, base: &str) -> Option<String> {
-    saved
-        .filter(|s| s.base == base)
-        .map(|s| s.key.trim().to_string())
-        .filter(|k| !k.is_empty())
+/// Where the key is kept: the keyring, or a fake one in the tests.
+trait Keep {
+    fn get(&self) -> Result<Option<String>, String>;
+    fn set(&self, key: &str) -> Result<(), String>;
+    fn forget(&self);
+}
+
+struct Keyring;
+
+impl Keep for Keyring {
+    fn get(&self) -> Result<Option<String>, String> {
+        crate::secret_store::get(KEY_ACCOUNT)
+    }
+
+    fn set(&self, key: &str) -> Result<(), String> {
+        crate::secret_store::set(KEY_ACCOUNT, KEY_LABEL, key)
+    }
+
+    fn forget(&self) {
+        crate::secret_store::forget(KEY_ACCOUNT)
+    }
+}
+
+/// The saved key, only when it was typed for `base`. A key still in the file
+/// at `file` is moved to the keyring. `held` is what the keyring gave last
+/// time, so the 30-second poll does not ask it again: a locked keyring would
+/// show its unlock prompt each time. `force` (Refresh, a saved key) asks it
+/// anew. An error means the keyring could not say.
+fn key_for(
+    saved: Option<SavedKey>,
+    base: &str,
+    file: &Path,
+    held: &mut Held,
+    force: bool,
+    keep: &impl Keep,
+) -> Result<Option<String>, String> {
+    let Some(saved) = saved else {
+        return Ok(None);
+    };
+    let in_file = saved.key.trim();
+    if !in_file.is_empty() {
+        let key = in_file.to_string();
+        // A keyring that refused it is asked again only on Refresh, not
+        // with each poll's prompt.
+        if force || !matches!(held, Some(Err(_))) {
+            *held =
+                Some(move_to_keyring(&saved.base, &key, file, keep).map(|()| Some(key.clone())));
+        }
+        return Ok((saved.base == base).then_some(key));
+    }
+    if saved.base != base {
+        return Ok(None);
+    }
+    if force {
+        *held = None;
+    }
+    held.get_or_insert_with(|| {
+        keep.get()
+            .map(|k| k.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()))
+    })
+    .clone()
+}
+
+/// Moves the key from the file to the keyring and rewrites the file without
+/// it. When the keyring can't take it, it stays in the file and is still used.
+fn move_to_keyring(base: &str, key: &str, file: &Path, keep: &impl Keep) -> Result<(), String> {
+    if let Err(e) = keep.set(key) {
+        eprintln!("arakun: could not move the CLIProxyAPI management key to the keyring: {e}");
+        return Err(e);
+    }
+    if let Err(e) = write_base(file, base) {
+        eprintln!("arakun: {e:#}");
+    }
+    Ok(())
+}
+
+/// Writes the file that says which proxy the key is for, without the key.
+fn write_base(file: &Path, base: &str) -> Result<()> {
+    let saved = SavedKey {
+        base: base.to_string(),
+        key: String::new(),
+    };
+    crate::durable::write_private(file, &serde_json::to_vec(&saved)?)?;
+    Ok(())
 }
 
 /// The management base the address typed in the Usage tab points to.
@@ -289,35 +377,42 @@ pub fn save_address(typed: &str) -> Result<String> {
     Ok(base)
 }
 
+/// What this process last read from the keyring for the key: `None` before
+/// the first read, then the key, none, or why the keyring could not say.
+type Held = Option<Result<Option<String>, String>>;
+
 /// Held while the key or the cache is read or written, so a read that
 /// started with a key cannot write its cache after the key is forgotten.
-static FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// It guards the key as last read from the keyring too.
+static FILES: Mutex<Held> = Mutex::new(None);
 
-fn files() -> std::sync::MutexGuard<'static, ()> {
+fn files() -> MutexGuard<'static, Held> {
     FILES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Forgets the typed address, the key saved for it and its last read, so the
 /// tab goes back to Claude Code's endpoint.
 pub fn forget_address() -> Result<()> {
-    let _files = files();
+    let mut held = files();
     let base = typed_base();
     remove(&address_path())?;
     if base.is_some_and(|b| saved_key().is_some_and(|k| k.base == b)) {
-        remove_key()?;
+        remove_key(&key_path(), &cache_path(), &mut held, &Keyring)?;
     }
     Ok(())
 }
 
 /// Forgets the management key and what was read with it.
 pub fn forget_key() -> Result<()> {
-    let _files = files();
-    remove_key()
+    remove_key(&key_path(), &cache_path(), &mut files(), &Keyring)
 }
 
-fn remove_key() -> Result<()> {
-    remove(&key_path())?;
-    remove(&cache_path())
+fn remove_key(file: &Path, cache: &Path, held: &mut Held, keep: &impl Keep) -> Result<()> {
+    remove(file)?;
+    remove(cache)?;
+    keep.forget();
+    *held = None;
+    Ok(())
 }
 
 fn remove(path: &std::path::Path) -> Result<()> {
@@ -330,15 +425,25 @@ fn remove(path: &std::path::Path) -> Result<()> {
 }
 
 /// Saves the management key for `base`, the proxy the tab showed when the key
-/// was typed (not whatever Claude Code runs on by the time this runs), where
-/// only this user can read it.
+/// was typed (not whatever Claude Code runs on by the time this runs): the
+/// key in the keyring, the proxy in the file. Off the UI thread: the keyring
+/// may wait for the person to unlock it.
 pub fn save_key(key: &str, base: &str) -> Result<()> {
-    let saved = SavedKey {
-        base: base.to_string(),
-        key: key.trim().to_string(),
-    };
-    let _files = files();
-    crate::durable::write_private(&key_path(), &serde_json::to_vec(&saved)?)?;
+    save_key_in(key, base, &key_path(), &mut files(), &Keyring)
+}
+
+fn save_key_in(
+    key: &str,
+    base: &str,
+    file: &Path,
+    held: &mut Held,
+    keep: &impl Keep,
+) -> Result<()> {
+    let key = key.trim();
+    keep.set(key)
+        .map_err(|e| anyhow!("The keyring could not keep the management key: {e}"))?;
+    write_base(file, base)?;
+    *held = Some(Ok(Some(key.to_string())));
     Ok(())
 }
 
@@ -399,16 +504,33 @@ fn store(p: &Proxy) {
 /// not, or now with `force` (a key was just saved, or Refresh). Reads files
 /// and the network; keep it off the UI thread.
 pub fn refresh(force: bool) -> Option<Proxy> {
-    let _files = files();
+    let mut held = files();
     let (base, typed) = current_base()?;
-    let key = key_for(saved_key(), &base);
+    let key = key_for(saved_key(), &base, &key_path(), &mut held, force, &Keyring);
     let cache = cached().filter(|c| c.base == base);
-    let (mut out, read_now) = decide(base, key.as_deref(), cache, now(), force, read);
+    let (mut out, read_now) = match key {
+        Ok(key) => decide(base, key.as_deref(), cache, now(), force, read),
+        Err(e) => (keyring_failed(base, cache, &e), false),
+    };
     if read_now {
         store(&out);
     }
     out.typed = typed;
     Some(out)
+}
+
+/// What to show when the keyring could not give the key: the last read, with
+/// why. The key counts as set, so the tab offers Refresh, not a new key.
+fn keyring_failed(base: String, cache: Option<Proxy>, why: &str) -> Proxy {
+    let mut out = cache.unwrap_or_else(|| Proxy {
+        base,
+        ..Proxy::default()
+    });
+    out.has_key = true;
+    out.error = Some(format!(
+        "The keyring could not give the management key: {why}"
+    ));
+    out
 }
 
 /// [`refresh`] without the files: whether to call `read` and what to show.
@@ -1153,20 +1275,164 @@ mod tests {
         assert!(read, "a saved key reads at once");
     }
 
+    /// A keyring in memory. `locked` makes it refuse, as one left locked does.
+    #[derive(Default)]
+    struct Fake {
+        key: std::cell::RefCell<Option<String>>,
+        locked: bool,
+        asked: std::cell::Cell<usize>,
+    }
+
+    impl Keep for Fake {
+        fn get(&self) -> Result<Option<String>, String> {
+            self.asked.set(self.asked.get() + 1);
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.key.borrow().clone())
+        }
+
+        fn set(&self, key: &str) -> Result<(), String> {
+            self.asked.set(self.asked.get() + 1);
+            if self.locked {
+                return Err("locked".into());
+            }
+            *self.key.borrow_mut() = Some(key.to_string());
+            Ok(())
+        }
+
+        fn forget(&self) {
+            *self.key.borrow_mut() = None;
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("arakun-cliproxy-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("cliproxy-management-key")
+    }
+
+    fn saved(base: &str, key: &str) -> Option<SavedKey> {
+        Some(SavedKey {
+            base: base.into(),
+            key: key.into(),
+        })
+    }
+
     #[test]
     fn the_key_only_goes_to_the_proxy_it_was_typed_for() {
-        let saved = || {
-            Some(SavedKey {
-                base: LOCAL.into(),
-                key: "k".into(),
-            })
-        };
-        assert_eq!(key_for(saved(), LOCAL).as_deref(), Some("k"));
+        let (file, ring) = (scratch("typed-for"), Fake::default());
+        *ring.key.borrow_mut() = Some("k".into());
+        let other = "https://gw.example.com/v0/management";
         assert_eq!(
-            key_for(saved(), "https://gw.example.com/v0/management"),
-            None
+            key_for(saved(LOCAL, ""), LOCAL, &file, &mut None, false, &ring),
+            Ok(Some("k".into()))
         );
-        assert_eq!(key_for(None, LOCAL), None);
+        assert_eq!(
+            key_for(saved(LOCAL, ""), other, &file, &mut None, false, &ring),
+            Ok(None)
+        );
+        assert_eq!(
+            key_for(None, LOCAL, &file, &mut None, false, &ring),
+            Ok(None)
+        );
+        assert_eq!(ring.asked.get(), 1, "only the proxy it was typed for asks");
+    }
+
+    #[test]
+    fn a_key_saved_goes_to_the_keyring_and_the_file_keeps_only_the_proxy() {
+        let (file, ring) = (scratch("save"), Fake::default());
+        let mut held = None;
+        save_key_in(" k1 ", LOCAL, &file, &mut held, &ring).unwrap();
+        assert_eq!(ring.key.borrow().as_deref(), Some("k1"));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("k1"), "{text}");
+        let left: SavedKey = crate::durable::load_json(&file).unwrap();
+        assert_eq!((left.base.as_str(), left.key.as_str()), (LOCAL, ""));
+        // The poll reads what was saved without asking the keyring.
+        let asked = ring.asked.get();
+        assert_eq!(
+            key_for(Some(left), LOCAL, &file, &mut held, false, &ring),
+            Ok(Some("k1".into()))
+        );
+        assert_eq!(ring.asked.get(), asked);
+    }
+
+    #[test]
+    fn a_key_from_before_moves_to_the_keyring_once() {
+        let (file, ring) = (scratch("move"), Fake::default());
+        let mut held = None;
+        // A key typed for another proxy moves too.
+        let got = key_for(
+            saved("https://gw.example.com/v0/management", "old"),
+            LOCAL,
+            &file,
+            &mut held,
+            false,
+            &ring,
+        );
+        assert_eq!(got, Ok(None));
+        assert_eq!(ring.key.borrow().as_deref(), Some("old"));
+        let left: SavedKey = crate::durable::load_json(&file).unwrap();
+        assert!(left.key.is_empty());
+        assert_eq!(left.base, "https://gw.example.com/v0/management");
+        let mut held = None;
+        assert_eq!(
+            key_for(saved(LOCAL, "k"), LOCAL, &file, &mut held, false, &ring),
+            Ok(Some("k".into()))
+        );
+        assert_eq!(ring.key.borrow().as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn a_locked_keyring_keeps_the_files_key_and_is_not_asked_each_poll() {
+        let (file, ring) = (
+            scratch("locked"),
+            Fake {
+                locked: true,
+                ..Fake::default()
+            },
+        );
+        crate::durable::write_private(&file, br#"{"base":"x","key":"k"}"#).unwrap();
+        let mut held = None;
+        for _ in 0..3 {
+            assert_eq!(
+                key_for(saved(LOCAL, "k"), LOCAL, &file, &mut held, false, &ring),
+                Ok(Some("k".into()))
+            );
+        }
+        assert_eq!(ring.asked.get(), 1);
+        let left: SavedKey = crate::durable::load_json(&file).unwrap();
+        assert_eq!(
+            left.key, "k",
+            "the file keeps it until the keyring takes it"
+        );
+        // Refresh asks again.
+        key_for(saved(LOCAL, "k"), LOCAL, &file, &mut held, true, &ring).unwrap();
+        assert_eq!(ring.asked.get(), 2);
+        // A key only in the keyring: the error shows, not a first run.
+        let mut held = None;
+        assert!(key_for(saved(LOCAL, ""), LOCAL, &file, &mut held, false, &ring).is_err());
+        assert!(key_for(saved(LOCAL, ""), LOCAL, &file, &mut held, false, &ring).is_err());
+        assert_eq!(ring.asked.get(), 3);
+        assert!(save_key_in("k2", LOCAL, &file, &mut held, &ring).is_err());
+    }
+
+    #[test]
+    fn a_keyring_that_cannot_say_keeps_the_tab_on_the_key() {
+        let p = keyring_failed(LOCAL.into(), None, "locked");
+        assert!(p.has_key && !p.key_refused());
+        assert!(p.error.unwrap().contains("keyring"));
+    }
+
+    #[test]
+    fn a_forgotten_key_leaves_the_keyring() {
+        let (file, ring) = (scratch("forget"), Fake::default());
+        let mut held = None;
+        save_key_in("k", LOCAL, &file, &mut held, &ring).unwrap();
+        remove_key(&file, &file.with_extension("cache"), &mut held, &ring).unwrap();
+        assert!(!file.exists() && ring.key.borrow().is_none() && held.is_none());
     }
 
     #[test]

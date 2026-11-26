@@ -561,6 +561,18 @@ impl ThreadView {
                         )
                     })
                     .when_some(ask.and_then(|a| a.inputs.get(qi)).cloned(), |d, input| {
+                        if q.secret {
+                            let shown = ask
+                                .and_then(|a| a.revealed.get(qi))
+                                .copied()
+                                .unwrap_or(false);
+                            return d.child(div().ml(px(22.)).child(masked_field(
+                                ("ask-reveal", qi),
+                                Some(input),
+                                shown,
+                                cx.listener(move |this, _, _, cx| this.toggle_ask_reveal(qi, cx)),
+                            )));
+                        }
                         d.child(
                             div()
                                 .ml(px(22.))
@@ -750,40 +762,12 @@ impl ThreadView {
                             .text_color(theme::text_subtle())
                             .child(field.label.clone()),
                     )
-                    .child(
-                        div()
-                            .h(px(28.))
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(6.))
-                            .px(crate::ui::sp(8.))
-                            .rounded(crate::ui::rad(8.))
-                            .border_1()
-                            .border_color(theme::border_strong())
-                            .bg(theme::fill_raised())
-                            .text_size(px(crate::ui::TEXT_MD))
-                            .child(div().flex_1().min_w_0().children(input))
-                            .child(
-                                crate::ui::labelled(
-                                    div().id(("secret-reveal", i)),
-                                    gpui::Role::Button,
-                                    if shown { "Hide" } else { "Show" },
-                                )
-                                .group("secret-reveal")
-                                .flex_none()
-                                .cursor_pointer()
-                                .child(hover_icon(
-                                    if shown { "view-off" } else { "view" },
-                                    14.,
-                                    theme::text_faint(),
-                                    theme::text_muted(),
-                                    "secret-reveal",
-                                ))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.toggle_reveal(i, cx)),
-                                ),
-                            ),
-                    )
+                    .child(masked_field(
+                        ("secret-reveal", i),
+                        input,
+                        shown,
+                        cx.listener(move |this, _, _, cx| this.toggle_reveal(i, cx)),
+                    ))
             }))
             .child(
                 div()
@@ -904,4 +888,44 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                 })),
         )
         .into_any_element()
+}
+
+/// A masked input with a Show/Hide toggle, for a secret the user types: the
+/// secret card's fields and a question's password field.
+fn masked_field(
+    id: impl Into<gpui::ElementId>,
+    input: Option<Entity<TextInput>>,
+    shown: bool,
+    on_toggle: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(8.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .bg(theme::fill_raised())
+        .text_size(px(crate::ui::TEXT_MD))
+        .child(div().flex_1().min_w_0().children(input))
+        .child(
+            crate::ui::labelled(
+                div().id(id),
+                gpui::Role::Button,
+                if shown { "Hide" } else { "Show" },
+            )
+            .group("secret-reveal")
+            .flex_none()
+            .cursor_pointer()
+            .child(hover_icon(
+                if shown { "view-off" } else { "view" },
+                14.,
+                theme::text_faint(),
+                theme::text_muted(),
+                "secret-reveal",
+            ))
+            .on_click(on_toggle),
+        )
 }

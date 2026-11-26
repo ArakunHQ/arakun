@@ -630,9 +630,10 @@ after a week).
   (doop.design), or to a self-hosted instance when you pick Self-hosted and type its
   address. Plain `http://` is only taken for an instance on this machine or a private
   network, and then the key or token crosses that network unencrypted; use `https://`
-  unless you trust every device on it. Every sign-in stays saved in
-  `~/.local/share/arakun/doop/sessions.json`
-  (`%LOCALAPPDATA%\arakun\doop\sessions.json` on Windows) and the header switches between them. The
+  unless you trust every device on it. Every sign-in stays saved, and the header
+  switches between them: the account in `~/.local/share/arakun/doop/sessions.json`
+  (`%LOCALAPPDATA%\arakun\doop\sessions.json` on Windows), and its key or tokens in
+  the system keyring. The
   tab reads through the instance's MCP endpoint (`<instance>/mcp`), so a canvas an
   instance doesn't list can be added by its link; those canvases are kept in
   `~/.local/share/arakun/doop/pins.json` and the renders in

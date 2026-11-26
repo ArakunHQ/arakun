@@ -32,6 +32,9 @@ pub struct Tokens {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
     pub token_endpoint: String,
+    /// Empty in the sessions file: the keyring keeps it, with the refresh
+    /// token and the client secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub access: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh: Option<String>,

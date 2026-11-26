@@ -1,0 +1,100 @@
+cloud/test/setup.ts
+  s_0f76e381f21594::t_b9e3b7ac2f4f95 15
+cloud/src/admin.ts
+  s_0f76e381f21594::t_97dd32ca955df1 24,38,80-81
+cloud/src/admin_totp.ts
+  s_0f76e381f21594::t_84511aa2a83381 1-88
+cloud/admin/src/types.ts
+  s_0f76e381f21594::t_33843244fdb70b 146-149
+cloud/admin/worker/auth.ts
+  s_0f76e381f21594::t_aded42ab17e924 27,191
+  s_0f76e381f21594::t_032c854950e640 133,165,168-171,173-174,178,180-181
+  s_0f76e381f21594::t_755bd43e912291 8-9,15-26,28,48-49,52-53,98,113-116,118-119,132,134-160,162-164,166,176
+cloud/admin/src/routes/sign-in.test.tsx
+  s_0f76e381f21594::t_286114deeb2109 6,18,38-39,73-114
+cloud/admin/package.json
+  s_0f76e381f21594::t_a27898e04c26ca 17-18
+cloud/admin/test/helpers.ts
+  s_0f76e381f21594::t_36fc98dba14985 5-6,8-23,25-55,78-79
+  s_0f76e381f21594::t_eb54363da9f933 24
+cloud/admin/test/session.test.ts
+  s_0f76e381f21594::t_780e079bf94b20 116,119-121
+cloud/admin/src/components/AuthenticatorSetup.tsx
+  s_0f76e381f21594::t_4bcb762de62afc 1-162
+cloud/admin/worker/totp.ts
+  s_0f76e381f21594::t_8a3d81b2b6cf3a 3-5,7,11-12,14-15,26,36-46,48-59,73-77,79,82,84
+cloud/admin/test/auth.test.ts
+  s_0f76e381f21594::t_a379ddbb0f1cc6 5,7,11-15,53,289,292-293,296-303,305-309,311-320,339-350,373-374,379-380
+  s_0f76e381f21594::t_780e079bf94b20 4,304,310
+cloud/admin/src/signIn.ts
+  s_0f76e381f21594::t_33843244fdb70b 4,7
+cloud/admin/src/components/ActivityList.tsx
+  s_0f76e381f21594::t_33843244fdb70b 45-50
+cloud/admin/test/setup.test.ts
+  s_0f76e381f21594::t_a85868fc5e28e7 1-105,109-158
+  s_0f76e381f21594::t_fb53d994c32f04 106,108
+  s_0f76e381f21594::t_ced0da573b9f73 107
+cloud/admin/src/routes/settings.test.tsx
+  s_0f76e381f21594::t_286114deeb2109 1-68
+cloud/src/admin_log.ts
+  s_0f76e381f21594::t_97dd32ca955df1 23-26
+cloud/admin/worker/index.ts
+  s_0f76e381f21594::t_aded42ab17e924 3,14-15
+cloud/admin/README.md
+  s_0f76e381f21594::t_bf3564624aa631 4-6
+cloud/admin/src/routes/__root.tsx
+  s_0f76e381f21594::t_33843244fdb70b 30
+cloud/admin/worker/seal.ts
+  s_0f76e381f21594::t_00db48c7edba43 1-54
+cloud/admin/src/routes/settings.tsx
+  s_0f76e381f21594::t_33843244fdb70b 1-44
+cloud/admin/test/proxy.test.ts
+  s_0f76e381f21594::t_a85868fc5e28e7 45-54
+cloud/README.md
+  s_0f76e381f21594::t_1377be4d31b5a7 626-628,632-647,700,704,736,755-757,760-761,764-765
+  s_0f76e381f21594::t_eefb931ca179fb 768
+cloud/admin/worker/setup.ts
+  s_0f76e381f21594::t_5d8a45149366d5 1-130
+cloud/admin/src/styles/app.css
+  s_0f76e381f21594::t_33843244fdb70b 607-639
+cloud/admin/src/routeTree.gen.ts
+  s_0f76e381f21594::t_b9379357c93364 17,47-51,74,85,97,110,121,132,144,187-193,224
+cloud/admin/worker/session.ts
+  s_0f76e381f21594::t_aded42ab17e924 8-9,11
+cloud/admin/wrangler.toml
+  s_0f76e381f21594::t_aded42ab17e924 25-27
+cloud/migrations/0014_operator_totp.sql
+  s_0f76e381f21594::t_b9e3b7ac2f4f95 1-15
+cloud/test/admin_totp.test.ts
+  s_0f76e381f21594::t_90d806d9954d91 1-64
+cloud/admin/test/totp.test.ts
+  s_0f76e381f21594::t_780e079bf94b20 2,34,37-39,44-45,49-54
+cloud/admin/src/routes/sign-in.tsx
+  s_0f76e381f21594::t_f2071afe1c15cb 1,3,6-7,11,19,27,34,36,40-44,56-57,84-107,111,122,124,128-133
+cloud/admin/src/components/QrCode.tsx
+  s_0f76e381f21594::t_4bcb762de62afc 1-20
+cloud/admin/worker/proxy.ts
+  s_0f76e381f21594::t_aded42ab17e924 24-27
+cloud/admin/src/styles/tokens.css
+  s_0f76e381f21594::t_b9379357c93364 109-112
+cloud/admin/worker/keys.ts
+  s_0f76e381f21594::t_7098cdeca7a7b8 1-91
+cloud/admin/package-lock.json
+  s_0f76e381f21594::t_e7ca7afb8f536b 12-13,4955-4960
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0d758caa6fd913cff7baa60b67bfff1aed8cc6ba",
+  "prompts": {},
+  "sessions": {
+    "s_0f76e381f21594": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c890cf2a-6429-4e0c-9770-88f8fbc4b779",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

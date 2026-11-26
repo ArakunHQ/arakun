@@ -664,9 +664,11 @@ after a week).
   signed out). For a proxy Claude Code does not run on, use Add CLIProxyAPI (or Change
   address) and type its address. Refresh reads the accounts now; Change key and
   Forget key replace or remove the key. The key is only sent to the proxy it was added
-  for, over https or to this machine. It is saved in
-  `~/.local/share/arakun/cliproxy-management-key`, a typed address in
-  `cliproxy-address`, and the last limits read in `cliproxy-plan.json` next to it.
+  for, over https or to this machine. It is kept in the system keyring, and the
+  proxy it is for in `~/.local/share/arakun/cliproxy-management-key`; a key saved there
+  by an older Arakun moves to the keyring the next time the tab reads. A typed
+  address is in `cliproxy-address`, and the last limits read in `cliproxy-plan.json`
+  next to it.
 - **Claude seats.** With several Claude subscriptions, give each Claude Code session a
   seat of its own so parallel sessions don't drain one. Save each subscription's
   long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read

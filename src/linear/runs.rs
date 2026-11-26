@@ -158,7 +158,8 @@ impl Runs {
         false
     }
 
-    /// Stores `run` as `Running` when a slot is free, else as `Waiting`.
+    /// Stores `run` as `Running` when a slot is free and nobody waits, else
+    /// as `Waiting`.
     pub fn add(&mut self, mut run: Run) -> Added {
         if self
             .runs
@@ -168,12 +169,14 @@ impl Runs {
             return Added::Already;
         }
         let busy = self.busy();
-        let added = if busy < MAX_RUNNING {
+        let waiting = self.count(RunState::Waiting);
+        // Slots free up before the shell calls `next_waiting` (a run ends, or
+        // a restart interrupts them all); a new run must not jump the queue.
+        let added = if busy < MAX_RUNNING && waiting == 0 {
             run.state = RunState::Running;
             Added::Start
         } else {
             run.state = RunState::Waiting;
-            let waiting = self.count(RunState::Waiting);
             Added::Wait {
                 ahead: busy + waiting,
             }
@@ -372,6 +375,30 @@ mod tests {
         );
         assert!(r.next_waiting().is_none(), "the slot is taken again");
         assert_eq!(state(&mut r, "e"), RunState::Waiting);
+    }
+
+    #[test]
+    fn a_new_run_waits_behind_one_already_waiting() {
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d"] {
+            r.add(run(id));
+        }
+        for id in ["a", "b", "c"] {
+            r.by_agent_session(id).unwrap().state = RunState::Done;
+        }
+        assert_eq!(r.add(run("e")), Added::Wait { ahead: 1 });
+        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
+    }
+
+    #[test]
+    fn after_a_restart_the_queue_keeps_its_order() {
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            r.add(run(id));
+        }
+        assert_eq!(r.interrupted(&|_| false), ["a", "b", "c"]);
+        assert_eq!(r.add(run("f")), Added::Wait { ahead: 2 });
+        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
     }
 
     #[test]

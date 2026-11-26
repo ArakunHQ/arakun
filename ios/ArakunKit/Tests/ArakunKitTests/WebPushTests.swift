@@ -180,12 +180,15 @@ struct WebPushTests {
     }
 
     @Test func readsTheMutedSessions() throws {
-        let me = try #require(PushState(try #require(JSON.parse(Data(
-            #"{"notifying":true,"notices":{},"muted":["s1","s2",3]}"#.utf8)))))
+        // One #require each: Xcode 27 refuses one expanded inside another.
+        let mine = try #require(JSON.parse(Data(
+            #"{"notifying":true,"notices":{},"muted":["s1","s2",3]}"#.utf8)))
+        let me = try #require(PushState(mine))
         #expect(me.muted == ["s1", "s2"])
         #expect(me.canMute)
         // An older computer knows no muting: nothing is muted, and no switch shows.
-        let old = try #require(PushState(try #require(JSON.parse(Data(#"{"notifying":false}"#.utf8)))))
+        let older = try #require(JSON.parse(Data(#"{"notifying":false}"#.utf8)))
+        let old = try #require(PushState(older))
         #expect(old.muted == [])
         #expect(!old.canMute)
         #expect(old == PushState(notifying: false, notices: NoticeChoice()))

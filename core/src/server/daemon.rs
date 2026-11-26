@@ -2764,6 +2764,8 @@ impl Daemon {
                 }
             }
             Incoming::Message(id, msg) => self.message(id, msg, cx),
+            // Linear runs belong to the desktop app; a server takes none.
+            Incoming::Linear(_) => {}
         }
     }
 

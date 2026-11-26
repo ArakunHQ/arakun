@@ -1239,6 +1239,7 @@ impl Shell {
                 }
             }
             Incoming::Message(id, msg) => self.phone_message(id, msg, window, cx),
+            Incoming::Linear(delivery) => self.linear_delivery(delivery, window, cx),
         }
     }
 

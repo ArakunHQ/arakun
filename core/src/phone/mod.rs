@@ -15,6 +15,7 @@
 
 pub mod e2e;
 pub mod identity;
+pub mod linear;
 pub mod notify;
 pub mod push;
 mod quiet;
@@ -428,6 +429,9 @@ pub enum Incoming {
     Unpaired,
     /// The connection to the relay changed state.
     Relay(relay::Status),
+    /// The relay passed on an issue delegated to Arakun in Linear. It may
+    /// come again: the relay resends it until the app takes it.
+    Linear(linear::Delivery),
 }
 
 /// A paired phone. Its token is kept only as a hash: the file does not open the door.

@@ -13,6 +13,7 @@ pub mod follow;
 pub mod issues;
 pub mod outbox;
 pub mod prompt;
+pub mod remote;
 pub mod runs;
 pub mod start;
 

@@ -21,6 +21,8 @@ use futures::channel::mpsc;
 use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
 use serde_json::json;
 
+mod linear;
+
 use super::files;
 use super::local::{self, Reply, Request};
 use super::login::{self, SignIn};
@@ -234,6 +236,8 @@ pub struct Daemon {
     /// When the files no session needs were last looked for; `None` until
     /// the first tick, so a server that runs for weeks also cleans up.
     housekept_at: Option<Instant>,
+    /// The Linear settings the app sent, and the routes they made.
+    linear: linear::Linear,
     _tasks: Vec<Task<()>>,
     _account: Subscription,
 }
@@ -1241,6 +1245,7 @@ impl Daemon {
             relay_pruned_at: None,
             relay_pruning: false,
             housekept_at: None,
+            linear: linear::Linear::new(linear::load(&super::dir())),
             _tasks: tasks,
             _account: account_events,
         }
@@ -1290,6 +1295,8 @@ impl Daemon {
         self.signed_in = signed_in;
         // `login` tells of a sign-in the account just took or just vouched for.
         self.session_dead = false;
+        // Routes owed while signed out go now.
+        self.linear_sync(cx);
         match change {
             // The client follows `signed_in`, which is now none for a sign-out.
             RelayChange::Restart | RelayChange::SignOut => self.restart_relay(cx),
@@ -2840,6 +2847,10 @@ impl Daemon {
                         relay::Status::SignedOut => None,
                     };
                     self.relay_rejected = matches!(status, relay::Status::Rejected(_));
+                    if status == relay::Status::Connected {
+                        // Routes owed while away go now.
+                        self.linear_sync(cx);
+                    }
                     self.relay_signed_out = status == relay::Status::SignedOut;
                     if self.relay_signed_out {
                         let why =
@@ -2856,7 +2867,8 @@ impl Daemon {
                 }
             }
             Incoming::Message(id, msg) => self.message(id, msg, cx),
-            // Linear runs belong to the desktop app; a server takes none.
+            // Linear runs on a server come in the next step; until then a
+            // delivery stays with the relay, unaccepted.
             Incoming::Linear(_) => {}
         }
     }
@@ -3499,6 +3511,7 @@ impl Daemon {
                 })
                 .detach();
             }
+            ClientMsg::LinearSettings(settings) => self.linear_settings(client, settings, cx),
             ClientMsg::NewEnv { from, branch } => {
                 let from = PathBuf::from(from);
                 let Some(agent) = self.store.place(&from).map(|p| p.agent) else {
@@ -3945,6 +3958,8 @@ impl Daemon {
         }
         self.inbox_dirty = true;
         self.deletions += 1;
+        // A mapping to a place that went takes no more work.
+        self.linear_sync(cx);
         self.store.save().inspect_err(|e| {
             eprintln!("arakun server: could not save its state: {e}");
         })
@@ -3987,6 +4002,8 @@ impl Daemon {
             Ok(p)
         }) {
             Ok(path) => {
+                // A mapping may name the new place.
+                self.linear_sync(cx);
                 let inbox = self.inbox(cx);
                 if self.last_inbox != inbox {
                     self.transport.broadcast(&inbox);

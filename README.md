@@ -1859,7 +1859,9 @@ arakun-server service install   # keep it running; see Keep it running
   it is signed in to and the sign-in that lets it in to the relay; `logout` removes it),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
   work), `linked/` (the conversation of a session handed to another agent, as
-  markdown that the new agent reads) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
+  markdown that the new agent reads), `uploads/` (photos sent with prompts) and
+  `linear.json` (the Linear settings the app sent it: the switch, the mappings to its
+  projects and the Linear key of each mapped workspace). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
 - **The local socket.** The commands above reach the server over `server.sock` in

@@ -4,8 +4,10 @@
 //! `app_dir/linear/sessions.json` (0600) and never printed. The key goes to
 //! `api.linear.app` and nowhere else.
 
+pub mod delegation;
 mod fixture;
 pub mod issues;
+pub mod places;
 pub mod prompt;
 
 use std::path::{Path, PathBuf};

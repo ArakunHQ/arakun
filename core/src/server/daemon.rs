@@ -44,6 +44,8 @@ use crate::phone::{
 /// agent costs a few messages a second, not one per token.
 const GATHER: Duration = Duration::from_millis(90);
 const TICK: Duration = Duration::from_secs(1);
+/// How often the files no session needs are looked for.
+const HOUSEKEEP_EVERY: Duration = Duration::from_secs(86_400);
 /// How often a working session's transcript is saved.
 const SAVE_EVERY: Duration = Duration::from_secs(2);
 /// How often Tailscale is asked again: quickly while something is in the way
@@ -229,6 +231,9 @@ pub struct Daemon {
     /// whether an ask is under way.
     relay_pruned_at: Option<Instant>,
     relay_pruning: bool,
+    /// When the files no session needs were last looked for; `None` until
+    /// the first tick, so a server that runs for weeks also cleans up.
+    housekept_at: Option<Instant>,
     _tasks: Vec<Task<()>>,
     _account: Subscription,
 }
@@ -1235,6 +1240,7 @@ impl Daemon {
             session_dead: false,
             relay_pruned_at: None,
             relay_pruning: false,
+            housekept_at: None,
             _tasks: tasks,
             _account: account_events,
         }
@@ -1318,6 +1324,26 @@ impl Daemon {
             self.save_devices();
         }
         self.prune_signed_out(cx);
+    }
+
+    /// The tick's part: once at start and then once a day, removes old
+    /// uploads, unlisted transcripts and dead temp files, off this thread.
+    fn housekeep_tick(&mut self, cx: &mut Context<Self>) {
+        if self
+            .housekept_at
+            .is_some_and(|at| at.elapsed() < HOUSEKEEP_EVERY)
+        {
+            return;
+        }
+        self.housekept_at = Some(Instant::now());
+        let job = self.store.housekeeping(self.live.keys());
+        cx.background_spawn(crate::guard::task(async move {
+            let removed = job.run();
+            if removed > 0 {
+                eprintln!("arakun server: removed {removed} files no session needs");
+            }
+        }))
+        .detach();
     }
 
     /// The tick's part: while a relay device gets pushes, the account is
@@ -2309,6 +2335,7 @@ impl Daemon {
         }
         self.last_read.trim();
         self.relay_prune_tick(cx);
+        self.housekeep_tick(cx);
         // Dropping one hangs it up.
         self.terms.retain(|_, t| {
             t.alone_since

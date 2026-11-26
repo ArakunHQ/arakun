@@ -248,11 +248,76 @@ impl Store {
         self.deleting.len() != before
     }
 
-    /// Forgets a session and its transcript.
+    /// Forgets a session and its transcript. Its linked note stays: the
+    /// session that took over from it reads it.
     pub fn remove_session(&mut self, id: &str) {
         self.sessions.retain(|s| s.id != id);
         let _ = std::fs::remove_file(self.transcript_path(id));
     }
+
+    /// What [`Housekeeping::run`] needs, taken now so it can run off the
+    /// daemon's thread. `also` are sessions running that the list may not
+    /// hold yet.
+    pub fn housekeeping<'a>(&self, also: impl IntoIterator<Item = &'a String>) -> Housekeeping {
+        let mut listed: std::collections::HashSet<String> =
+            self.sessions.iter().map(|s| s.id.clone()).collect();
+        listed.extend(also.into_iter().cloned());
+        Housekeeping {
+            dir: self.dir.clone(),
+            listed,
+        }
+    }
+}
+
+/// How long a photo sent to the server stays. A prompt that named it has been
+/// read by its agent long before.
+pub const UPLOAD_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+/// How long the transcript of a session the server no longer lists stays,
+/// such as one a crash left between writing it and saving the list.
+pub const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86_400);
+
+/// The server's files no session needs any more.
+pub struct Housekeeping {
+    dir: PathBuf,
+    listed: std::collections::HashSet<String>,
+}
+
+impl Housekeeping {
+    /// Removes old uploads, the transcripts of sessions the server does not
+    /// list, and the temp files of writes that died. Linked notes stay: a
+    /// session that took over from one no longer listed still reads its note.
+    /// Slow on a big folder: call it off the daemon's thread.
+    pub fn run(self) -> usize {
+        use crate::housekeep::{remove_old, remove_write_leftovers};
+        let unlisted = |name: &str| {
+            name.strip_suffix(".json")
+                .is_some_and(|id| is_id(id) && !self.listed.contains(id))
+        };
+        let (sessions, linked, uploads) = (
+            self.dir.join("sessions"),
+            self.dir.join("linked"),
+            self.dir.join("uploads"),
+        );
+        let mut removed = remove_old(&uploads, UPLOAD_AGE, |n| n.starts_with("photo-"));
+        removed += remove_old(&sessions, ORPHAN_AGE, unlisted);
+        for dir in [&self.dir, &sessions, &linked, &uploads] {
+            removed += remove_write_leftovers(dir);
+        }
+        removed
+    }
+}
+
+/// Whether `id` is one [`new_id`] makes (`s<hex>-<n>`), so a file someone
+/// else put in the folder is never taken for a session's.
+fn is_id(id: &str) -> bool {
+    id.strip_prefix('s')
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(millis, n)| {
+            !millis.is_empty()
+                && millis.bytes().all(|b| b.is_ascii_hexdigit())
+                && !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 /// An id no other session of this server has: the time, and a count for two
@@ -596,5 +661,54 @@ mod tests {
     #[test]
     fn ids_differ_within_a_millisecond() {
         assert_ne!(new_id(), new_id());
+    }
+
+    fn aged(path: &Path, days: u64) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let f = std::fs::File::create(path).unwrap();
+        f.set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn housekeeping_keeps_what_a_session_still_needs() {
+        let dir = temp("housekeep");
+        let mut store = Store::load(&dir).unwrap();
+        store.sessions.push(record("s1-0", Status::Idle));
+        let listed = store.transcript_path("s1-0");
+        let running = store.transcript_path("s2-0");
+        let orphan = store.transcript_path("s3-0");
+        let young = store.transcript_path("s4-0");
+        let foreign = dir.join("sessions").join("notes.json");
+        let note = store.linked_path("s3-0");
+        let old_photo = store.uploads_dir().join("photo-1.png");
+        let new_photo = store.uploads_dir().join("photo-2.png");
+        let leftover = dir.join(".state.json.1-0.tmp");
+        for p in [&listed, &running, &orphan, &foreign, &note] {
+            aged(p, 30);
+        }
+        aged(&young, 1);
+        aged(&old_photo, 40);
+        aged(&new_photo, 2);
+        aged(&leftover, 2);
+
+        let running_id = "s2-0".to_string();
+        assert_eq!(store.housekeeping([&running_id]).run(), 3);
+        assert!(listed.exists() && running.exists() && young.exists());
+        assert!(foreign.exists() && note.exists() && new_photo.exists());
+        assert!(!orphan.exists() && !old_photo.exists() && !leftover.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_server_ids_count_as_sessions() {
+        assert!(is_id("s18f3a2b-0"));
+        assert!(is_id(&new_id()));
+        assert!(!is_id("s-0"));
+        assert!(!is_id("s18f3a2b"));
+        assert!(!is_id("notes"));
+        assert!(!is_id("x18f-0"));
     }
 }

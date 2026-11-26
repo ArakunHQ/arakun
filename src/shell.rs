@@ -1064,9 +1064,11 @@ impl Shell {
             .flat_map(|e| &e.sessions)
             .flat_map(sessions::session_file_ids)
             .collect();
-        cx.background_spawn(crate::guard::task(
-            async move { state::sweep_orphans(listed) },
-        ))
+        let images = servers::images_dir();
+        cx.background_spawn(crate::guard::task(async move {
+            state::sweep_orphans(listed);
+            crate::cleanup::sweep_leftovers(&images);
+        }))
         .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);

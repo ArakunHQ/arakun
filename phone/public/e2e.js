@@ -1,9 +1,12 @@
 // The phone's half of the end-to-end encryption with the computer, through the
-// relay (core/src/phone/e2e.rs is the computer's). WebCrypto only: P-256 ECDH for the
-// shared secret, the computer's P-256 ECDSA signature over the whole handshake,
-// HKDF-SHA256 for the two session keys, AES-256-GCM for the frames. Loaded as a
-// plain script before the page's bundle; phone/test/e2e.test.mjs checks it against the
-// vectors the Rust side writes.
+// relay or on the computer's own server (core/src/phone/e2e.rs is the computer's).
+// P-256 ECDH for the shared secret, the computer's P-256 ECDSA signature over the
+// whole handshake, HKDF-SHA256 for the two session keys, AES-256-GCM for the
+// frames. WebCrypto where the page has it; a page served over plain http on the
+// network is not a secure context and has none, so the bundle puts the same
+// primitives in plain JavaScript at `E2E_SUBTLE` (src/lib/subtle.ts). Loaded as a
+// plain script before the page's bundle; phone/test/e2e.test.mjs checks it against
+// the vectors the Rust side writes.
 "use strict";
 
 const E2E = (() => {
@@ -14,7 +17,8 @@ const E2E = (() => {
   const TRANSCRIPT_TAG = "arakun-phone-v1";
   const KEYS_INFO = "arakun-phone-v1 keys";
   const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
-  const subtle = crypto.subtle;
+  /// Asked at each use: the bundle sets the stand-in after this script ran.
+  const subtle = () => (globalThis.crypto && crypto.subtle) || globalThis.E2E_SUBTLE;
   const utf8 = (s) => new TextEncoder().encode(s);
   const text = (b) => new TextDecoder().decode(b);
 
@@ -63,8 +67,20 @@ const E2E = (() => {
 
   /// The label a computer's public key (65 bytes, uncompressed) derives.
   async function labelOf(pub) {
-    const digest = new Uint8Array(await subtle.digest("SHA-256", pub));
+    const digest = new Uint8Array(await subtle().digest("SHA-256", pub));
     return base32(digest.subarray(0, 10));
+  }
+
+  /// The label of the key a computer's hello names, or "" when it names none:
+  /// what a phone pairing by a typed code trusts from then on.
+  async function helloLabel(reply) {
+    let pub;
+    try {
+      pub = fromB64url(JSON.parse(text(reply)).pub);
+    } catch {
+      return "";
+    }
+    return pub && pub.length === 65 ? labelOf(pub) : "";
   }
 
   /// A field of exactly `len` bytes, or a named failure.
@@ -91,18 +107,18 @@ const E2E = (() => {
     const e = field(hello, "e", 65);
     const nonce = field(hello, "nonce", 16);
     const sig = field(hello, "sig", 64);
-    const key = await subtle.importKey("raw", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    const key = await subtle().importKey("raw", pub, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
     const signed = transcript(label, channel, ePhone, e, noncePhone, nonce);
-    if (!(await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, sig, signed))) throw new Error("bad hello: sig");
+    if (!(await subtle().verify({ name: "ECDSA", hash: "SHA-256" }, key, sig, signed))) throw new Error("bad hello: sig");
     return { pub, e, nonce, arakun: typeof hello.arakun === "string" ? hello.arakun : "" };
   }
 
   /// The two session keys out of the shared secret: phone to computer, then
   /// computer to phone. Salt is both nonces, phone's first.
   async function deriveKeys(shared, noncePhone, noncePc) {
-    const ikm = await subtle.importKey("raw", shared, "HKDF", false, ["deriveBits"]);
+    const ikm = await subtle().importKey("raw", shared, "HKDF", false, ["deriveBits"]);
     const bits = new Uint8Array(
-      await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: concat(noncePhone, noncePc), info: utf8(KEYS_INFO) }, ikm, 512),
+      await subtle().deriveBits({ name: "HKDF", hash: "SHA-256", salt: concat(noncePhone, noncePc), info: utf8(KEYS_INFO) }, ikm, 512),
     );
     return { phoneToPc: bits.slice(0, 32), pcToPhone: bits.slice(32) };
   }
@@ -117,7 +133,7 @@ const E2E = (() => {
   /// One encrypted channel: the key this side seals with, the key it opens
   /// with, and a counter for each.
   async function sessionFromKeys(sealRaw, openRaw) {
-    const aes = (raw, use) => subtle.importKey("raw", raw, "AES-GCM", false, [use]);
+    const aes = (raw, use) => subtle().importKey("raw", raw, "AES-GCM", false, [use]);
     const [sealKey, openKey] = await Promise.all([aes(sealRaw, "encrypt"), aes(openRaw, "decrypt")]);
     let sealed = 0;
     let opened = 0;
@@ -128,7 +144,7 @@ const E2E = (() => {
       async seal(plain) {
         const counter = sealed++;
         const body = typeof plain === "string" ? utf8(plain) : plain;
-        const cipher = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: nonceFor(counter), additionalData: aad }, sealKey, body));
+        const cipher = new Uint8Array(await subtle().encrypt({ name: "AES-GCM", iv: nonceFor(counter), additionalData: aad }, sealKey, body));
         const head = new Uint8Array(8);
         new DataView(head.buffer).setBigUint64(0, BigInt(counter));
         return concat(head, cipher);
@@ -140,7 +156,7 @@ const E2E = (() => {
         if (counter !== BigInt(opened)) throw new Error("frame out of order");
         let plain;
         try {
-          plain = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: nonceFor(opened), additionalData: aad }, openKey, payload.subarray(8)));
+          plain = new Uint8Array(await subtle().decrypt({ name: "AES-GCM", iv: nonceFor(opened), additionalData: aad }, openKey, payload.subarray(8)));
         } catch {
           throw new Error("frame does not decrypt");
         }
@@ -153,8 +169,8 @@ const E2E = (() => {
   /// Starts a handshake: `hello` is what to send the computer; `finish` takes
   /// its answer and gives the session, or throws with why it is not trusted.
   async function begin() {
-    const pair = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
-    const e = new Uint8Array(await subtle.exportKey("raw", pair.publicKey));
+    const pair = await subtle().generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]);
+    const e = new Uint8Array(await subtle().exportKey("raw", pair.publicKey));
     const nonce = crypto.getRandomValues(new Uint8Array(16));
     const hello = utf8(JSON.stringify({ v: VERSION, e: b64url(e), nonce: b64url(nonce) }));
     return {
@@ -167,8 +183,8 @@ const E2E = (() => {
           throw new Error("bad hello: not json");
         }
         const pc = await verifyPc(obj, label, channel, e, nonce);
-        const theirs = await subtle.importKey("raw", pc.e, { name: "ECDH", namedCurve: "P-256" }, false, []);
-        const shared = new Uint8Array(await subtle.deriveBits({ name: "ECDH", public: theirs }, pair.privateKey, 256));
+        const theirs = await subtle().importKey("raw", pc.e, { name: "ECDH", namedCurve: "P-256" }, false, []);
+        const shared = new Uint8Array(await subtle().deriveBits({ name: "ECDH", public: theirs }, pair.privateKey, 256));
         const keys = await deriveKeys(shared, nonce, pc.nonce);
         const session = await sessionFromKeys(keys.phoneToPc, keys.pcToPhone);
         session.arakun = pc.arakun;
@@ -187,7 +203,7 @@ const E2E = (() => {
     return { type: bytes[0], payload: bytes.subarray(1) };
   }
 
-  return { VERSION, HELLO, DATA, CONTROL, labelOf, transcript, verifyPc, deriveKeys, sessionFromKeys, begin, encodeFrame, decodeFrame, b64url, fromB64url, utf8, text };
+  return { VERSION, HELLO, DATA, CONTROL, labelOf, helloLabel, transcript, verifyPc, deriveKeys, sessionFromKeys, begin, encodeFrame, decodeFrame, b64url, fromB64url, utf8, text };
 })();
 
 globalThis.E2E = E2E;

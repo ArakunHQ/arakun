@@ -5,7 +5,16 @@ import { useSaid } from "./lib/account";
 import { noteNoticeOpen, openSession, pairMessage, resetStart, whereTo } from "./lib/start";
 import { renderHook } from "@testing-library/react";
 import type { Link } from "./lib/link";
-import { TOKEN_KEY } from "./lib/token";
+import { PIN_KEY, TOKEN_KEY } from "./lib/token";
+
+// The computer's sealed socket, faked: it never answers unless a test says so.
+const sealed = vi.hoisted(() => ({ links: [] as { opts: any; h: any }[] }));
+vi.mock("./lib/sealed", () => ({
+  openSealed: (opts: any, h: any) => {
+    sealed.links.push({ opts, h });
+    return { send() {}, close() {}, fetch: () => new Promise(() => {}), ready: false };
+  },
+}));
 
 // The page's scripts, faked: which way in this is, and what the account says.
 function fakeRelay(over: Record<string, unknown> = {}) {
@@ -33,6 +42,7 @@ async function land(hash: string): Promise<string> {
 const machine = (label: string) => ({ label, pub: "AAAA", name: `pc-${label}` });
 
 beforeEach(() => {
+  sealed.links = [];
   localStorage.clear();
   // A computer that never answers: the link waits, nothing fails.
   vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -58,18 +68,23 @@ describe("where the page lands", () => {
 
   it("pairs with the code in the QR link once, also when the router asks again meanwhile", async () => {
     fakeRelay();
-    const pending: { answer?: (r: Response) => void } = {};
-    vi.stubGlobal("fetch", (url: string) => (url === "/pair" ? new Promise<Response>((r) => (pending.answer = r)) : new Promise(() => {})));
-    history.replaceState(null, "", "/?p=123456");
+    history.replaceState(null, "", "/?p=123456&k=abcdefghij234567");
     const qc = new QueryClient();
     const first = whereTo("/", qc);
     // Dropping the code from the address makes the router load again before the pairing is done.
-    while (!pending.answer) await new Promise((r) => setTimeout(r, 0));
+    while (!sealed.links.length) await new Promise((r) => setTimeout(r, 0));
     const second = whereTo("/", qc);
-    pending.answer(new Response(JSON.stringify({ token: "tok" })));
+    const [{ opts, h }] = sealed.links;
+    // The code goes inside the socket, checked against the key the link names.
+    expect(opts.label).toBe("abcdefghij234567");
+    expect(opts.greeting.pair.code).toBe("123456");
+    expect(location.search).toBe("");
+    h.onopen({ type: "paired", token: "tok", id: "p1", name: "iPhone", host: "mbp" }, "abcdefghij234567");
     expect(await first).toBe("/inbox");
     expect(await second).toBe("/inbox");
     expect(localStorage.getItem(TOKEN_KEY)).toBe("tok");
+    expect(localStorage.getItem(PIN_KEY)).toBe("abcdefghij234567");
+    expect(sealed.links.filter((l) => l.opts.greeting.pair).length).toBe(1);
   });
 
   it("opens the inbox on the computer's own server with a token", async () => {

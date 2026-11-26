@@ -514,7 +514,20 @@ after a week).
   computer over the local network (the default), over Tailscale, or through an
   end-to-end encrypted relay. On the local network and over Tailscale the page comes
   from the computer itself, so it only opens while the computer is on and awake; the
-  relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
+  relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay).
+  Every way is end-to-end encrypted between the phone and the computer. The computer
+  signs each handshake with its own key, the phone checks it is the key it was paired
+  with, and every message after that is sealed with AES-256-GCM. On the local network
+  and over Tailscale the pairing link carries the key's label (`?p=<code>&k=<label>`);
+  a phone that types the code instead keeps the key that answers then. The code, the
+  device token, the sessions and the notification settings all go inside that channel.
+  Plain HTTP only carries the page itself. So someone on the same Wi-Fi who listens
+  reads nothing. Someone who can change the traffic could still change the page: for
+  that, use Tailscale (the page comes over HTTPS) or the relay. On the local network the
+  page has no WebCrypto (the browser keeps it to HTTPS pages), so it uses a JavaScript
+  copy of the same algorithms. The page keeps its token in `localStorage`, and over
+  HTTPS in a cookie too, for the iOS home-screen app; the page must read it to send it
+  inside the channel. The relay defaults
   to the hosted one at `app.arakun.dev`, and lets a device in only when it is signed in
   to the same account as the computer. With Relay chosen, the Phone tab says "Sign in
   to reach this computer from anywhere" until you press **Sign in with GitHub** (the
@@ -1738,7 +1751,10 @@ out, `pair` says so instead of where to sign in.
 Through the relay, `pair` prints no link: it says to open `https://app.arakun.dev` on
 the device and sign in as the same GitHub account, and the device is let in. On
 Tailscale and the local network, `pair` prints a link and its QR code. The link is good
-for two minutes and pairs one device. There are two ways to use it:
+for two minutes and pairs one device. It names the server's key, and the device checks
+every connection against it: pairing, and everything after, goes end-to-end encrypted,
+as through the relay. The app and the server must both be this version or newer to
+reach each other this way. There are two ways to use it:
 
 - **In the app.** Open the Computers tab, press **Add a computer**, pick **By link** and paste the link (a link of the old relay
   says to sign in on the server with `arakun-server login` instead). From then on the app
@@ -1817,8 +1833,9 @@ for two minutes and pairs one device. There are two ways to use it:
   user removed the app from its devices is marked in the file and is not connected
   again until you remove it and run `arakun-server login` on it again. What each server listed last is
   kept in `servers-inbox.json` beside it, so its environments show at start before it
-  answers, or while it cannot be reached. A server reached over plain http shows them
-  only once the Computers tab connects it. **Remove** on a server removes it
+  answers, or while it cannot be reached. A server over plain http that was paired
+  before its socket was sealed shows them only once the Computers tab connects it: that
+  first connection keeps the server's key, and every later one is checked against it. **Remove** on a server removes it
   here and has the server forget the app. A server that cannot be reached at that
   moment keeps the app in its list: remove it there with
   `arakun-server unpair <device>`.

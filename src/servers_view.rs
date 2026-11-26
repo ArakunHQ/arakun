@@ -106,7 +106,8 @@ pub struct PlaceRow {
 /// How the app gets to a server, as the detail says it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Via {
-    /// Its own socket. `clear`: over plain http, not encrypted.
+    /// Its own socket, sealed end to end. `clear`: over plain http, and paired
+    /// before the socket was sealed, so the server's key is not checked yet.
     Direct { clear: bool },
     /// Through the relay with the account's sign-in.
     Account,
@@ -303,7 +304,7 @@ pub fn reached(server: &ServerRow, now: u64) -> String {
     let way = match server.via {
         Via::Account => "through your account, end-to-end encrypted",
         Via::Direct { clear: false } => "direct, encrypted",
-        Via::Direct { clear: true } => "direct, not encrypted",
+        Via::Direct { clear: true } => "direct, key not checked yet",
         Via::OldRelay => "paired by link before accounts",
     };
     let mut line = format!("Your server · {way}");
@@ -2286,7 +2287,10 @@ mod tests {
         );
         s.via = Via::Direct { clear: true };
         s.reach = Reach::Away("gone".into());
-        assert_eq!(reached(&s, now), "Your server · direct, not encrypted");
+        assert_eq!(
+            reached(&s, now),
+            "Your server · direct, key not checked yet"
+        );
         s.via = Via::Direct { clear: false };
         assert_eq!(reached(&s, now), "Your server · direct, encrypted");
     }

@@ -13,6 +13,7 @@ fn activity(kind: ReportKind) -> LinearActivity {
         ReportKind::Elicitation => LinearActivity::Elicitation,
         ReportKind::Response => LinearActivity::Response,
         ReportKind::Error => LinearActivity::Error,
+        ReportKind::Progress => LinearActivity::Progress,
     }
 }
 

@@ -1,14 +1,17 @@
 //! Telling a Linear issue what its delegated session does: a question, a
-//! permission it waits for, the result, a failure, that it still works, and
-//! that Arakun was closed while it ran.
+//! permission it waits for, the step it works on, the result, a failure,
+//! that it still works, and that Arakun was closed while it ran.
 //!
-//! Only the last reply, a question's text and a short name of what a
-//! permission is for go to Linear: never a permission's arguments, which can
-//! hold file contents, commands with secrets or whole diffs.
+//! Only the last reply, a question's text, a short name of what a permission
+//! is for and of the current step (with the file it works on) go to Linear:
+//! never a tool's arguments, which can hold file contents, commands with
+//! secrets or whole diffs.
+
+use std::path::Path;
 
 use super::runs::{ReportKind, Run, RunState, cut};
 use super::start::failed_line;
-use crate::agent::{AskUserRequest, Entry, Question, Thread, ThreadStatus};
+use crate::agent::{AskUserRequest, Entry, Question, Thread, ThreadStatus, ToolStatus};
 use crate::phone::notify;
 
 /// The most characters of a question sent to Linear.
@@ -108,6 +111,65 @@ pub fn removed_line(computer: &str) -> String {
 
 pub fn closed_line(computer: &str) -> String {
     format!("Arakun was closed on {computer} while this ran. Reply here to continue.")
+}
+
+/// The most characters of a file's path in a progress line.
+pub const PATH_LIMIT: usize = 120;
+
+/// The step the session works on now, as Linear shows it while the session
+/// runs: the latest tool call of the turn that has not ended, named by its
+/// kind. A step on a file names the file, relative to `cwd`; any other step
+/// says only what kind it is, never its command, query or address. None
+/// when no step runs, or its kind says nothing.
+pub fn progress_line(entries: &[Entry], cwd: &Path) -> Option<String> {
+    let turn = entries
+        .iter()
+        .rposition(|e| matches!(e, Entry::User { .. }))
+        .map_or(entries, |at| &entries[at + 1..]);
+    let tc = turn.iter().rev().find_map(|e| match e {
+        Entry::Tool(tc) => Some(tc),
+        _ => None,
+    })?;
+    if !matches!(tc.status, ToolStatus::Pending | ToolStatus::InProgress) {
+        return None;
+    }
+    let on_file = |verb: &str| {
+        let path = tc.locations.first().map(|p| shown_path(p, cwd))?;
+        (!path.is_empty()).then(|| format!("{verb} `{path}`"))
+    };
+    match tc.kind.as_str() {
+        "read" => on_file("Reading"),
+        "edit" => on_file("Editing"),
+        "delete" => on_file("Deleting"),
+        "move" => on_file("Moving"),
+        "search" => Some("Searching the code".into()),
+        "execute" => Some("Running a command".into()),
+        "fetch" => Some("Reading a web page".into()),
+        "think" => Some("Thinking it through".into()),
+        _ => None,
+    }
+}
+
+/// A path as a progress line shows it: inside `cwd` relative to it, else
+/// only its file name, so a home folder or user name stays here. Only its
+/// end when long, and never anything that breaks out of the code span.
+fn shown_path(path: &Path, cwd: &Path) -> String {
+    let shown = match path.strip_prefix(cwd) {
+        Ok(rel) => rel.to_string_lossy(),
+        Err(_) => path.file_name().unwrap_or_default().to_string_lossy(),
+    };
+    let shown = crate::secrets::scrub(&shown);
+    let chars: Vec<char> = shown
+        .chars()
+        .filter(|c| !c.is_control() && *c != '`')
+        .collect();
+    match chars.len().checked_sub(PATH_LIMIT) {
+        Some(cut) if cut > 0 => {
+            let tail: String = chars[cut + 1..].iter().collect();
+            format!("…{tail}")
+        }
+        _ => chars.into_iter().collect(),
+    }
 }
 
 /// What a permission is for, from its tool's kind alone, as the session
@@ -414,6 +476,7 @@ mod tests {
             asked: None,
             stopped: false,
             held: None,
+            progress: None,
         }
     }
 
@@ -531,6 +594,79 @@ mod tests {
         let (_, body) = report(Seen::Permission(format!("{}\nrm -rf ~", "x".repeat(200)))).unwrap();
         assert!(!body.contains("rm -rf") && body.contains(&"x".repeat(WHAT_LIMIT)));
         assert!(!body.contains(&"x".repeat(WHAT_LIMIT + 1)));
+    }
+
+    fn tool(kind: &str, status: &str, locations: &[&str]) -> Entry {
+        Entry::Tool(
+            serde_json::from_value(serde_json::json!({
+                "id": "tc", "title": "Run `curl -H 'Authorization: Bearer hunter2'`",
+                "kind": kind, "status": status, "locations": locations,
+                "raw_input": {"command": "curl -H 'Authorization: Bearer hunter2'"},
+            }))
+            .unwrap(),
+        )
+    }
+
+    fn user() -> Entry {
+        serde_json::from_value(serde_json::json!({"type": "user", "text": "go", "at": 0})).unwrap()
+    }
+
+    #[test]
+    fn progress_names_the_running_step_and_its_file() {
+        let cwd = Path::new("/home/rik/app");
+        let line = |e: Entry| progress_line(&[user(), e], cwd);
+        assert_eq!(
+            line(tool("edit", "in_progress", &["/home/rik/app/src/main.rs"])).as_deref(),
+            Some("Editing `src/main.rs`")
+        );
+        assert_eq!(
+            line(tool("read", "pending", &["/etc/hosts"])).as_deref(),
+            Some("Reading `hosts`"),
+            "outside the folder only the file name goes"
+        );
+        for (kind, want) in [
+            ("execute", "Running a command"),
+            ("search", "Searching the code"),
+            ("fetch", "Reading a web page"),
+        ] {
+            let got = line(tool(kind, "in_progress", &["/home/rik/app/secrets.env"])).unwrap();
+            assert_eq!(got, want);
+            assert!(!got.contains("hunter2") && !got.contains("curl"));
+        }
+        // A step on a file with no file known yet, or a kind that says
+        // nothing, is not shown.
+        assert_eq!(line(tool("edit", "in_progress", &[])), None);
+        assert_eq!(line(tool("other", "in_progress", &[])), None);
+    }
+
+    #[test]
+    fn progress_is_only_the_latest_step_of_this_turn_while_it_runs() {
+        let cwd = Path::new("/a");
+        let done = tool("edit", "completed", &["/a/x.rs"]);
+        let running = tool("execute", "in_progress", &[]);
+        assert_eq!(progress_line(&[user(), done.clone()], cwd), None);
+        assert_eq!(progress_line(&[running.clone(), user()], cwd), None);
+        let text = Entry::Agent {
+            text: "Now the tests.".into(),
+        };
+        assert_eq!(
+            progress_line(&[user(), running, text], cwd).as_deref(),
+            Some("Running a command")
+        );
+    }
+
+    #[test]
+    fn a_progress_path_cannot_break_out_or_run_long() {
+        let cwd = Path::new("/a");
+        let odd = tool("edit", "in_progress", &["/a/x`y\nz.rs"]);
+        assert_eq!(
+            progress_line(&[odd], cwd).as_deref(),
+            Some("Editing `xyz.rs`")
+        );
+        let deep = format!("/a/{}/end.rs", "d/".repeat(200));
+        let line = progress_line(&[tool("read", "pending", &[&deep])], cwd).unwrap();
+        assert!(line.ends_with("/end.rs`") && line.contains('…'), "{line}");
+        assert_eq!(line.chars().count(), "Reading ``".len() + PATH_LIMIT);
     }
 
     #[test]

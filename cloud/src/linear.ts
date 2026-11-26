@@ -308,14 +308,18 @@ const chars = (s: string) => [...s].length;
 interface Activity {
   type: (typeof ACTIVITY_TYPES)[number];
   body: string;
+  /// Linear replaces it with the next activity: what a session does right now.
+  ephemeral: boolean;
   links: { label: string; url: string }[];
 }
 
 /// The activity, checked, or null. Only the known fields are copied out.
 function parseActivity(v: unknown): Activity | null {
   if (!isObject(v)) return null;
-  const { type, body, links = [] } = v;
+  const { type, body, ephemeral = false, links = [] } = v;
   if (!ACTIVITY_TYPES.includes(type as Activity["type"])) return null;
+  // Linear takes it for a thought only.
+  if (typeof ephemeral !== "boolean" || (ephemeral && type !== "thought")) return null;
   if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
   if (!Array.isArray(links) || links.length > MAX_LINKS) return null;
   const out: Activity["links"] = [];
@@ -326,7 +330,7 @@ function parseActivity(v: unknown): Activity | null {
     if (typeof url !== "string" || !url.startsWith("https://") || /\s/.test(url) || url.length > MAX_URL) return null;
     out.push({ label, url });
   }
-  return { type: type as Activity["type"], body, links: out };
+  return { type: type as Activity["type"], body, ephemeral, links: out };
 }
 
 /// The computer's progress in a session it was given, posted as Arakun. The
@@ -346,7 +350,7 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
     .first<{ organization_id: string }>();
   if (!owned) return error(404, "no such session");
   try {
-    await postActivity(env, owned.organization_id, agentSessionId, activity.type, activity.body);
+    await postActivity(env, owned.organization_id, agentSessionId, activity.type, activity.body, activity.ephemeral);
     if (activity.links.length > 0) await addLinks(env, owned.organization_id, agentSessionId, activity.links);
   } catch (e) {
     if (e instanceof LinearRefused) return error(502, "linear refused");

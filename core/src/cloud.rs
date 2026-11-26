@@ -541,12 +541,15 @@ pub enum LinearActivity {
     Elicitation,
     Response,
     Error,
+    /// What the session does right now: a thought Linear replaces with the
+    /// next activity, so the steps do not pile up on the issue.
+    Progress,
 }
 
 impl LinearActivity {
     fn wire(self) -> &'static str {
         match self {
-            Self::Thought => "thought",
+            Self::Thought | Self::Progress => "thought",
             Self::Elicitation => "elicitation",
             Self::Response => "response",
             Self::Error => "error",
@@ -574,6 +577,9 @@ pub fn linear_activity(
 ) -> Result<(), Error> {
     let path = format!("/linear/sessions/{}/activity", path_id(agent_session)?);
     let mut payload = serde_json::json!({ "type": kind.wire(), "body": body });
+    if kind == LinearActivity::Progress {
+        payload["ephemeral"] = serde_json::json!(true);
+    }
     if !links.is_empty() {
         payload["links"] = serde_json::json!(links);
     }
@@ -1709,6 +1715,16 @@ mod tests {
                 serde_json::json!({ "type": word, "body": "hi" })
             );
         }
+    }
+
+    #[test]
+    fn progress_is_an_ephemeral_thought() {
+        let (base, rx) = serve(204, "");
+        linear_activity(&base, "s", "as-1", LinearActivity::Progress, "hi", &[]).unwrap();
+        assert_eq!(
+            body_of(&rx.recv().unwrap()),
+            serde_json::json!({ "type": "thought", "body": "hi", "ephemeral": true })
+        );
     }
 
     #[test]

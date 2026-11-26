@@ -288,6 +288,7 @@ impl Shell {
             asked: None,
             stopped: false,
             held: None,
+            progress: None,
         });
         self.linear_save();
         match added {

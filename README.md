@@ -1308,7 +1308,9 @@ which of it no session called, each project's first-message size, how full sessi
 got, and the noisiest tool results. It lists what to fix first, largest first, with one
 suggestion each. The last 30 days count by default (`--days 0` for all). Every number
 is an estimate, at about 4 bytes a token. It only reads the files: nothing is sent
-anywhere and your setup is not changed.
+anywhere and your setup is not changed. The Usage tab shows the same findings under
+Breakdown, as "Where tokens go", each with a button that opens the file, or the
+Marketplace tab's installed MCP servers, plugins or skills, where you change it.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents on Linux), `tailscale` (phone over Tailscale), `cf` (Cloudflare tab).

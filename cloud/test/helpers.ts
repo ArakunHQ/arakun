@@ -341,3 +341,14 @@ async function linearReply(req: Request): Promise<Response> {
   }
   throw new Error(`unexpected Linear query: ${query}`);
 }
+
+/// Every row of every table the app owns, as one JSON string, to look for
+/// what must not be stored.
+export async function dump(db: D1Database): Promise<string> {
+  const tables = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE 'd1\\_%' ESCAPE '\\' ORDER BY name")
+    .all<{ name: string }>();
+  const out: Record<string, unknown[]> = {};
+  for (const { name } of tables.results) out[name] = (await db.prepare(`SELECT * FROM "${name}"`).all()).results;
+  return JSON.stringify(out);
+}

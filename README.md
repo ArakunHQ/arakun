@@ -598,9 +598,9 @@ after a week).
   Settings › Security & access › Personal API keys; read access is enough). Add one
   sign-in per workspace; the header switches between them. The keys are kept in
   `~/.local/share/arakun/linear/sessions.json`
-  (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows) and never leave the
-  computer: they go to Linear's API and nowhere else. The tab reads the list again
-  when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
+  (`%LOCALAPPDATA%\arakun\linear\sessions.json` on Windows). A key goes to Linear's
+  API; if you let Linear start sessions on this computer, it also goes to Arakun, to
+  prove the Linear user is you. The tab reads the list again when it is 5 minutes old or you refresh (at most every 30 seconds), and waits as
   long as Linear asks when it hits Linear's request limit, saying how many minutes
   are left. A click on an issue (or
   `↑`/`↓` and `Enter`; `/` goes to the search box) opens it with its description and
@@ -612,26 +612,31 @@ after a week).
   macOS), start a test Arakun with
   `ARAKUN_LINEAR_FIXTURE="$PWD/tools/linear-fixture.json" arakun dev start`.
   An Arakun account with the `linear` flag also sees **Start from Linear** in the
-  header, a page that lets Linear start sessions on this computer. **Nothing starts
+  header, a page that lets Linear start sessions on this computer. The flag stays
+  inside the Arakun team until sessions really start from Linear. **Nothing starts
   yet:** in this version the computer only tells Arakun's server which Linear teams and
   projects it takes; acting on an issue assigned to Arakun is not built. The switch
   **Let Linear start sessions on this computer** is off until you turn it on. It
   needs an Arakun sign-in, "Reach this computer from anywhere" on in the Phone tab,
   and Arakun installed in the Linear workspace by a Linear admin (the page links to
   the install). **Add a mapping** sends a Linear team or project of the workspace
-  to a project on this computer; projects on a server can't be mapped. Turning the
-  switch on sends the Linear key to Arakun's server once, to prove which Linear user
-  you are, and the server does not store it; after that only the relay label of
-  this computer and the ids of the mapped teams and projects go. Turning it off
-  removes this computer's routes on the server and leaves the link, so your other
+  to a project on this computer; projects on a server can't be mapped. The Linear key
+  of each workspace you connect goes to Arakun's server, to prove which Linear user
+  you are, and the server does not store it. You connect the workspace in view by
+  turning the switch on, and another workspace with its **Connect** button while the
+  switch is on. Its key is sent once the workspace has a mapping, and again only if
+  the server loses the link. Otherwise only the relay label of this computer, the
+  Linear organization id of the workspace and the ids of its mapped teams and
+  projects go. Turning it off removes this computer's routes on the server and leaves the link, so your other
   computers keep working. Until you turn it on nothing about Linear is sent, except
   that an account with the flag asks the server whether Arakun is installed in the
   workspace. The switch and the mappings (ids, names and project paths, no keys) are
   kept in `~/.local/share/arakun/linear/delegation.json`
-  (`%LOCALAPPDATA%\arakun\linear\delegation.json` on Windows). The server is sent
-  again when you change the page, when this computer reconnects to the relay, when
-  you sign in to Arakun and when a mapped project is added or removed; there is no
-  timer. The server's side is in `cloud/README.md`.
+  (`%LOCALAPPDATA%\arakun\linear\delegation.json` on Windows), with the workspaces
+  you connected. Arakun updates the server when you change the page, add or remove
+  a Linear sign-in, sign in to Arakun, or add or remove a mapped project, and when
+  this computer reconnects to the relay; there is no timer. The server's side is in
+  `cloud/README.md`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one

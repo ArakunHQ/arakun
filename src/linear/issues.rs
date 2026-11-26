@@ -212,7 +212,9 @@ fn parse_prompt_text(data: &Value) -> Option<String> {
     if content["__typename"] != "AgentActivityPromptContent" {
         return None;
     }
-    content["body"].as_str().map(str::to_string)
+    let body = content["body"].as_str()?;
+    // Longer than the relay passes on: unreadable, never cut silently.
+    (body.chars().count() <= crate::phone::linear::MAX_BODY).then(|| body.to_string())
 }
 
 /// A follow-up's text, read with the person's own key. The relay keeps no
@@ -369,6 +371,10 @@ mod tests {
             parse_prompt_text(&data).as_deref(),
             Some("Use the other API.")
         );
+        let longest = "é".repeat(crate::phone::linear::MAX_BODY);
+        let data = json!({"agentActivity": {"content": {
+            "__typename": "AgentActivityPromptContent", "body": longest}}});
+        assert_eq!(parse_prompt_text(&data), Some(longest));
     }
 
     #[test]
@@ -384,6 +390,8 @@ mod tests {
             json!({"agentActivity": {"content": {
                 "__typename": "AgentActivityPromptContent", "body": 7}}}),
             json!({"agentActivity": {"content": {"body": "no type"}}}),
+            json!({"agentActivity": {"content": {
+                "__typename": "AgentActivityPromptContent", "body": "é".repeat(16_001)}}}),
             json!({"agentActivity": null}),
             json!({}),
         ] {

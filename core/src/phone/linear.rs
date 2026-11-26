@@ -9,7 +9,7 @@ use serde_json::Value;
 /// The longest agent session, issue or organization id taken.
 const MAX_ID: usize = 64;
 /// The longest follow-up text kept, in characters.
-const MAX_BODY: usize = 16_000;
+pub const MAX_BODY: usize = 16_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryKind {

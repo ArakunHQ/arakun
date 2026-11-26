@@ -7,6 +7,7 @@
 //   PUT /linear/routes    → what a computer takes: Linear teams and projects
 //   GET /linear/install   → a redirect to Linear's consent page
 //   GET /linear/callback  → where Linear sends the admin back to
+//   POST /linear/webhook  → Linear's events (linear_webhook.ts)
 //
 // Without all four LINEAR_* secrets every /linear path is a 404. All routes
 // but the webhook and the OAuth callback (which Linear calls) need a session
@@ -14,6 +15,7 @@
 
 import { cookie, session, type Session } from "./auth";
 import { exchangeCode, LinearRefused, saveWorkspace, viewer } from "./linear_api";
+import { webhook } from "./linear_webhook";
 import { b64url, error, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 export const FLAG = "linear";
@@ -41,8 +43,10 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
   if (pathname !== "/linear" && !pathname.startsWith("/linear/")) return null;
   if (!configured(env)) return error(404, "not found");
   const key = `${request.method} ${pathname}`;
-  // Linear's own calls carry no session; later tasks add them here. The
-  // callback is a browser's, and does its own check of session and flag.
+  // Linear's own calls carry no session: the webhook's proof is its
+  // signature. The callback is a browser's, and does its own check of
+  // session and flag.
+  if (key === "POST /linear/webhook") return webhook(request, env);
   if (key === "GET /linear/callback") return callback(request, env, url);
   const who = await signedIn(request, env);
   if (who instanceof Response) return who;

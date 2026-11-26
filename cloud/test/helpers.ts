@@ -235,6 +235,8 @@ export const linearFake = {
   exchanges: [] as URLSearchParams[],
   /// Every call answers this status.
   refuse: null as number | null,
+  /// With `refuse`, only GraphQL calls whose query contains this text are refused.
+  refuseOnly: null as string | null,
   /// The next GraphQL call answers 401, once.
   expireNext: false,
   /// Every GraphQL call answers 401, whatever the token.
@@ -277,6 +279,7 @@ function resetLinear(): void {
   linearFake.auth = [];
   linearFake.exchanges = [];
   linearFake.refuse = null;
+  linearFake.refuseOnly = null;
   linearFake.expireNext = false;
   linearFake.expireAlways = false;
   linearFake.malformed = null;
@@ -288,7 +291,7 @@ async function linearReply(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (req.method !== "POST" || (url.pathname !== "/oauth/token" && url.pathname !== "/graphql"))
     throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
-  if (linearFake.refuse !== null) return new Response("refused", { status: linearFake.refuse });
+  if (linearFake.refuse !== null && linearFake.refuseOnly === null) return new Response("refused", { status: linearFake.refuse });
   if (url.pathname === "/oauth/token") {
     const form = new URLSearchParams([...(await req.formData()).entries()] as [string, string][]);
     linearFake.exchanges.push(form);
@@ -321,6 +324,8 @@ async function linearReply(req: Request): Promise<Response> {
   const { query, variables } = (await req.json()) as { query: string; variables: Record<string, unknown> };
   linearFake.auth.push(header);
   linearFake.calls.push({ query, variables, token });
+  if (linearFake.refuse !== null && linearFake.refuseOnly !== null && query.includes(linearFake.refuseOnly))
+    return new Response("refused", { status: linearFake.refuse });
   const who = linearFake.tokens.get(token);
   if (linearFake.expireNext || linearFake.expireAlways || !who) {
     linearFake.expireNext = false;
@@ -351,4 +356,92 @@ export async function dump(db: D1Database): Promise<string> {
   const out: Record<string, unknown[]> = {};
   for (const { name } of tables.results) out[name] = (await db.prepare(`SELECT * FROM "${name}"`).all()).results;
   return JSON.stringify(out);
+}
+
+// Linear's webhooks, as Linear sends them: the body signed with the webhook
+// secret the tests run with.
+
+export const HOOK_ORG = "11111111-1111-4111-8111-111111111111";
+export const HOOK_SESSION = "55555555-5555-4555-8555-555555555555";
+const HOOK_SECRET = "lin-hook";
+
+/// A signed webhook: the exact text sent and its headers. `at` is the
+/// webhook's time in milliseconds; the text is serialized once and that text
+/// is what is signed.
+export async function signedWebhook(
+  body: Record<string, unknown>,
+  { secret = HOOK_SECRET, at = Date.now() }: { secret?: string; at?: number } = {},
+): Promise<{ text: string; headers: Record<string, string> }> {
+  const text = JSON.stringify({ ...body, webhookTimestamp: at });
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+  const signature = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
+  return { text, headers: { "Content-Type": "application/json", "Linear-Signature": signature, "Linear-Event": "AgentSessionEvent" } };
+}
+
+/// The body of a `created` AgentSessionEvent: someone delegated or mentioned
+/// Arakun. Each call has a fresh webhook id unless one is given.
+export function created({
+  creatorId,
+  issueId,
+  promptContext = "<issue identifier=\"ENG-1\"><title>Make it blue</title></issue>",
+  webhookId = crypto.randomUUID(),
+  organizationId = HOOK_ORG,
+  agentSessionId = HOOK_SESSION,
+}: {
+  creatorId: string | null;
+  issueId: string | null;
+  promptContext?: string;
+  webhookId?: string;
+  organizationId?: string;
+  agentSessionId?: string;
+}): Record<string, unknown> {
+  return {
+    type: "AgentSessionEvent",
+    action: "created",
+    organizationId,
+    webhookId,
+    appUserId: "app-user",
+    agentSession: {
+      id: agentSessionId,
+      issueId,
+      creatorId,
+      issue: issueId ? { id: issueId, identifier: "ENG-1", title: "Make it blue", description: "The button is grey.", teamId: null } : null,
+      comment: null,
+    },
+    promptContext,
+    previousComments: [],
+    guidance: [],
+  };
+}
+
+/// The body of a `prompted` AgentSessionEvent: a follow-up in the session.
+export function prompted({
+  userId,
+  body,
+  activityId,
+  signal = null,
+  issueId = null,
+  webhookId = crypto.randomUUID(),
+  organizationId = HOOK_ORG,
+  agentSessionId = HOOK_SESSION,
+}: {
+  userId: string;
+  body: string;
+  activityId: string;
+  signal?: string | null;
+  issueId?: string | null;
+  webhookId?: string;
+  organizationId?: string;
+  agentSessionId?: string;
+}): Record<string, unknown> {
+  return {
+    type: "AgentSessionEvent",
+    action: "prompted",
+    organizationId,
+    webhookId,
+    appUserId: "app-user",
+    agentSession: { id: agentSessionId, issueId, creatorId: null, comment: null },
+    agentActivity: { id: activityId, userId, body, signal, content: { type: "prompt", body } },
+  };
 }

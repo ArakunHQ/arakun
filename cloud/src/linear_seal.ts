@@ -8,10 +8,22 @@ import { b64url, fromB64url, utf8, type Env } from "./util";
 
 const VERSION = "v1";
 
+/// The key's bytes, or null when the secret is not 32 bytes of base64url.
+function keyBytes(env: Env): Uint8Array | null {
+  const raw = fromB64url(env.LINEAR_TOKEN_KEY ?? "");
+  return raw && raw.length === 32 ? raw : null;
+}
+
+/// Whether LINEAR_TOKEN_KEY can seal. Checked up front, so a bad key turns
+/// Linear off rather than failing after Linear granted an install.
+export function keyUsable(env: Env): boolean {
+  return keyBytes(env) !== null;
+}
+
 /// The key, or null when the secret is not 32 bytes of base64url.
 async function key(env: Env): Promise<CryptoKey | null> {
-  const raw = fromB64url(env.LINEAR_TOKEN_KEY ?? "");
-  if (!raw || raw.length !== 32) return null;
+  const raw = keyBytes(env);
+  if (!raw) return null;
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 

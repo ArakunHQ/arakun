@@ -37,6 +37,18 @@ describe("the /linear gate", () => {
     const res = await linear(req, bare, new URL(req.url));
     expect(res?.status).toBe(404);
   });
+  it.each([
+    ["too short", "A".repeat(42)],
+    ["too long", "A".repeat(44)],
+    ["not base64url", `${"A".repeat(42)}+`],
+  ])("is 404 when the token key is %s, before Linear grants an install", async (_n, LINEAR_TOKEN_KEY) => {
+    const u = await flagged(1, "ada");
+    const bad = { ...env, LINEAR_TOKEN_KEY } as typeof env;
+    for (const path of ["/linear/link", "/linear/install", "/linear/callback?code=abc&state=x"]) {
+      const req = new Request(`https://teams.test${path}`, { headers: as(u.session) });
+      expect((await linear(req, bad, new URL(req.url)))?.status, path).toBe(404);
+    }
+  });
   it("leaves other paths alone", async () => {
     const req = new Request("https://teams.test/lineary");
     expect(await linear(req, env, new URL(req.url))).toBeNull();

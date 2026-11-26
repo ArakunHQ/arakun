@@ -13,12 +13,14 @@
 //   POST /linear/sessions/<agent_session>/activity
 //                         → the computer's progress, posted as Arakun
 //
-// Without all four LINEAR_* secrets every /linear path is a 404. All routes
+// Without all four LINEAR_* secrets, or with a LINEAR_TOKEN_KEY that is not 32
+// bytes of base64url, every /linear path is a 404. All routes
 // but the webhook and the OAuth callback (which Linear calls) need a session
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
 import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, UUID, viewer } from "./linear_api";
+import { keyUsable } from "./linear_seal";
 import { webhook } from "./linear_webhook";
 import { dropDelivery } from "./machines";
 import { b64url, error, isObject, jsonBody, now, sha256, type Env } from "./util";
@@ -26,10 +28,10 @@ import { b64url, error, isObject, jsonBody, now, sha256, type Env } from "./util
 export const FLAG = "linear";
 export { UUID };
 
-/// Whether the app is set up: a Worker without its secrets does not pretend
-/// to take part.
+/// Whether the app is set up: a Worker without its secrets, or with a token
+/// key that cannot seal, does not pretend to take part.
 export function configured(env: Env): boolean {
-  return Boolean(env.LINEAR_CLIENT_ID && env.LINEAR_CLIENT_SECRET && env.LINEAR_WEBHOOK_SECRET && env.LINEAR_TOKEN_KEY);
+  return Boolean(env.LINEAR_CLIENT_ID && env.LINEAR_CLIENT_SECRET && env.LINEAR_WEBHOOK_SECRET && keyUsable(env));
 }
 
 /// The session, or the 401 or 403 to send.

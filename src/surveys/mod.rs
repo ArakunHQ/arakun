@@ -5,4 +5,3 @@ pub mod model;
 pub mod report;
 pub mod send;
 pub mod store;
-pub mod support;

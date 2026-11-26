@@ -6,7 +6,7 @@
 //! title and text are the scrubbed copies. The text as typed goes in the
 //! customer request, which stays in Linear, and the email only names the
 //! customer. It only runs after `send::submit` passed the feedback consent
-//! check, like `support`.
+//! check.
 
 use std::time::Duration;
 

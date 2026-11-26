@@ -31,7 +31,7 @@ use crate::linear::follow::{
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
-use crate::linear::runs::{Added, Report, ReportKind, Run, RunState, Runs};
+use crate::linear::runs::{Added, Held, Report, ReportKind, Run, RunState, Runs};
 use crate::linear::start::{
     HIT_AN_ERROR, busy_line, guard_again, keep, may_read, next_branch, no_env_line,
     no_sign_in_line, own_branch, refusal_line, started_line, unreadable_line, waiting_line,
@@ -285,6 +285,7 @@ impl Daemon {
             reported_at: 0,
             asked: None,
             stopped: false,
+            held: None,
         });
         self.linear_save_runs();
         match added {
@@ -713,6 +714,7 @@ impl Daemon {
             failed: matches!(status, ThreadStatus::Error(_)),
             asking: ask.is_some(),
             continues: !t.queued().is_empty() && !t.queue_paused(),
+            background: t.left_work_running(),
         };
         let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
         let session_pr = t.meta().pr.clone();
@@ -724,6 +726,21 @@ impl Daemon {
             return;
         };
         let to = run.state;
+        if effect.step == Step::Background {
+            // Sent when the agent's own turn after the background work ends,
+            // or by the timer if that never comes.
+            let body = to_report(Seen::Finished {
+                reply: reply.clone().unwrap_or_default(),
+            })
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+            let since = run.held.as_ref().map_or_else(unix_now, |h| h.since);
+            run.held = Some(Held {
+                since,
+                body,
+                link: None,
+            });
+        }
         let agent_session = run.agent_session.clone();
         let seen = match effect.step {
             Step::Ask => ask.map(|(_, seen)| seen),
@@ -735,12 +752,13 @@ impl Daemon {
                 _ => String::new(),
             })),
             Step::Cancelled => Some(Seen::Cancelled),
-            Step::Working | Step::Nothing => None,
+            Step::Working | Step::Background | Step::Nothing => None,
         };
         let report = seen.filter(|_| effect.report).and_then(to_report);
-        let link = (effect.step == Step::Finished)
+        let link = matches!(effect.step, Step::Finished | Step::Background)
             .then(|| pr_link(session_pr.as_deref(), None))
             .flatten();
+        let link = self.linear_hold_link(id, effect.step, link);
         match report {
             Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
             None => self.linear_save_runs(),
@@ -910,6 +928,23 @@ impl Daemon {
         .detach();
     }
 
+    /// A held turn keeps its pull request with its reply; any other step
+    /// sends the link now.
+    fn linear_hold_link(&mut self, id: &str, step: Step, link: Option<String>) -> Option<String> {
+        if step != Step::Background {
+            return link;
+        }
+        if let Some(held) = self
+            .linear_run
+            .runs
+            .by_session(id)
+            .and_then(|r| r.held.as_mut())
+        {
+            held.link = link;
+        }
+        None
+    }
+
     fn linear_needs_watch(&self) -> bool {
         self.linear_run.runs.any_running() || self.linear_run.runs.unsent()
     }
@@ -924,6 +959,20 @@ impl Daemon {
         for agent_session in quiet {
             let line = STILL_WORKING.to_string();
             self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+        }
+        let overdue = self.linear_run.runs.overdue(now);
+        let freed = !overdue.is_empty();
+        for (agent_session, held) in overdue {
+            self.linear_report(
+                &agent_session,
+                ReportKind::Response,
+                held.body,
+                held.link,
+                cx,
+            );
+        }
+        if freed {
+            self.linear_start_waiting(cx);
         }
         // Reports older than a day go, so a signed-out outbox ends the timer.
         self.linear_run.runs.due(now);

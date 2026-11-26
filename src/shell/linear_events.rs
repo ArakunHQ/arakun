@@ -15,7 +15,7 @@ use gpui::{Context, Entity, Window};
 use super::Shell;
 use super::linear_run::computer;
 use crate::agent::{Thread, ThreadEvent, ThreadStatus};
-use crate::linear::runs::{ReportKind, RunState};
+use crate::linear::runs::{Held, ReportKind, RunState};
 use crate::model::unix_now;
 
 pub(super) use crate::linear::events::*;
@@ -59,6 +59,7 @@ impl Shell {
             failed: matches!(status, ThreadStatus::Error(_)),
             asking: ask.is_some(),
             continues: !t.queued().is_empty() && !t.queue_paused(),
+            background: t.left_work_running(),
         };
         let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
         let session_pr = t.meta().pr.clone();
@@ -70,6 +71,21 @@ impl Shell {
             return;
         };
         let to = run.state;
+        if effect.step == Step::Background {
+            // Sent when the agent's own turn after the background work ends,
+            // or by the timer if that never comes.
+            let body = to_report(Seen::Finished {
+                reply: reply.clone().unwrap_or_default(),
+            })
+            .map(|(_, body)| body)
+            .unwrap_or_default();
+            let since = run.held.as_ref().map_or_else(unix_now, |h| h.since);
+            run.held = Some(Held {
+                since,
+                body,
+                link: None,
+            });
+        }
         let seen = match effect.step {
             Step::Ask => ask.map(|(_, seen)| seen),
             Step::Finished => Some(Seen::Finished {
@@ -80,15 +96,25 @@ impl Shell {
                 _ => String::new(),
             })),
             Step::Cancelled => Some(Seen::Cancelled),
-            Step::Working | Step::Nothing => None,
+            Step::Working | Step::Background | Step::Nothing => None,
         };
         let report = seen.filter(|_| effect.report).and_then(to_report);
         let agent_session = run.agent_session.clone();
-        let link = if effect.step == Step::Finished {
+        let link = if matches!(effect.step, Step::Finished | Step::Background) {
             self.linear_pr(id, session_pr.as_deref(), cx)
         } else {
             None
         };
+        if effect.step == Step::Background
+            && let Some(held) = self
+                .linear_runs
+                .by_session(id)
+                .and_then(|r| r.held.as_mut())
+        {
+            // It goes with the reply, once that is sent.
+            held.link = link.clone();
+        }
+        let link = link.filter(|_| effect.step != Step::Background);
         // The new state goes in the same save as the report.
         match report {
             Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
@@ -222,6 +248,17 @@ impl Shell {
         for agent_session in quiet {
             let line = STILL_WORKING.to_string();
             self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+        }
+        // Its slot is free now; the runs that wait take it when the next
+        // run starts or ends, as the timer has no window to start them in.
+        for (agent_session, held) in self.linear_runs.overdue(now) {
+            self.linear_report(
+                &agent_session,
+                ReportKind::Response,
+                held.body,
+                held.link,
+                cx,
+            );
         }
         // Reports older than a day go, so a signed-out outbox ends the timer.
         self.linear_runs.due(now);

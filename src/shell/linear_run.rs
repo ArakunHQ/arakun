@@ -287,6 +287,7 @@ impl Shell {
             reported_at: 0,
             asked: None,
             stopped: false,
+            held: None,
         });
         self.linear_save();
         match added {

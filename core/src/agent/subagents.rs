@@ -230,6 +230,14 @@ impl Thread {
         self.held || self.auto_turn || self.running_subagents() > 0
     }
 
+    /// The turn that just ended left work going that the agent comes back
+    /// to by itself: subagents, or a command it started in the background.
+    /// Claude takes a turn of its own once that ends, so the work is not done.
+    pub fn left_work_running(&self) -> bool {
+        let turn = self.entries.get(self.turn_from..).unwrap_or_default();
+        self.held || self.running_subagents() > 0 || background_commands(turn) > 0
+    }
+
     /// A subagent's transcript, kept for it by the session that runs it.
     pub fn is_subagent_view(&self) -> bool {
         self.parent.is_some()
@@ -976,9 +984,66 @@ impl Thread {
     }
 }
 
+/// Commands started in the background in `turn` and not stopped in it.
+/// Claude Code reports each one's end as a turn of its own, not as an
+/// update to the call that started it.
+pub(crate) fn background_commands(turn: &[Entry]) -> usize {
+    let mut started = 0usize;
+    let mut stopped = 0usize;
+    for e in turn {
+        let Entry::Tool(t) = e else { continue };
+        if t.status == ToolStatus::Failed {
+            continue;
+        }
+        let input = t.raw_input.as_ref();
+        if input.is_some_and(|i| i["run_in_background"] == Value::Bool(true)) {
+            started += 1;
+        } else if matches!(
+            t.tool_name.as_deref(),
+            Some("KillShell" | "KillBash" | "TaskStop")
+        ) {
+            stopped += 1;
+        }
+    }
+    started.saturating_sub(stopped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn call(name: &str, input: Value, status: ToolStatus) -> Entry {
+        let mut c = marker_call("x", name, "");
+        c.tool_name = Some(name.into());
+        c.raw_input = Some(input);
+        c.status = status;
+        Entry::Tool(c)
+    }
+
+    #[test]
+    fn a_turn_counts_the_commands_it_left_in_the_background() {
+        let bg = || {
+            call(
+                "Bash",
+                json!({"command": "cargo test", "run_in_background": true}),
+                ToolStatus::Completed,
+            )
+        };
+        let fg = call("Bash", json!({"command": "ls"}), ToolStatus::Completed);
+        assert_eq!(background_commands(std::slice::from_ref(&fg)), 0);
+        assert_eq!(background_commands(&[fg, bg(), bg()]), 2);
+        // One that failed to start leaves nothing running.
+        let failed = call(
+            "Bash",
+            json!({"run_in_background": true}),
+            ToolStatus::Failed,
+        );
+        assert_eq!(background_commands(&[failed]), 0);
+        // One the agent stopped again is not waited for.
+        let kill = call("KillShell", json!({"shell_id": "1"}), ToolStatus::Completed);
+        assert_eq!(background_commands(&[bg(), kill.clone()]), 0);
+        assert_eq!(background_commands(&[kill]), 0);
+    }
 
     #[test]
     fn states_read_from_both_forms() {

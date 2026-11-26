@@ -164,6 +164,9 @@ pub struct Now {
     pub asking: bool,
     /// Queued messages start the next turn at once.
     pub continues: bool,
+    /// The turn left work running that the agent comes back to by itself:
+    /// subagents, or a command in the background.
+    pub background: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +174,9 @@ pub enum Step {
     Ask,
     Working,
     Finished,
+    /// The turn ended, but the work it left running is not done: the
+    /// session stays open in Linear until the agent's own turn after it.
+    Background,
     Failed,
     Cancelled,
     Nothing,
@@ -182,6 +188,7 @@ pub fn step(ev: Event, now: Now) -> Step {
         Event::Finished("error") => Step::Failed,
         Event::Finished(_) if now.asking => Step::Ask,
         Event::Finished(_) if now.continues => Step::Nothing,
+        Event::Finished(_) if now.background => Step::Background,
         Event::Finished(_) => Step::Finished,
         Event::Status if now.failed => Step::Failed,
         Event::Status if now.asking => Step::Ask,
@@ -208,6 +215,7 @@ pub fn apply(state: RunState, step: Step) -> Option<Move> {
     match step {
         Step::Ask if at_work => to(Asked, true, false),
         Step::Finished | Step::Failed if at_work => to(Done, true, true),
+        Step::Background if at_work => to(Running, false, false),
         Step::Cancelled if at_work => to(Done, false, true),
         Step::Working if matches!(state, Asked | Done | Interrupted) => to(Running, false, false),
         _ => None,
@@ -241,6 +249,10 @@ pub fn advance(run: &mut Run, ev: Event, now: Now, key: Option<&str>) -> Option<
     }
     let mv = apply(run.state, step)?;
     let before = run.clone();
+    if step != Step::Background {
+        // It moved on: what it said before the background work ended is old.
+        run.held = None;
+    }
     let mut report = mv.report;
     if step == Step::Ask {
         let key = key?;
@@ -253,7 +265,8 @@ pub fn advance(run: &mut Run, ev: Event, now: Now, key: Option<&str>) -> Option<
         // Back at work: the next ask is a new one, even with the same words.
         run.asked = None;
     }
-    (report || *run != before).then_some(Effect {
+    // A held turn's reply is kept each time, even when the run stays as it was.
+    (report || step == Step::Background || *run != before).then_some(Effect {
         step,
         report,
         frees: mv.frees,
@@ -367,6 +380,7 @@ mod tests {
             reported_at: 0,
             asked: None,
             stopped: false,
+            held: None,
         }
     }
 
@@ -753,6 +767,50 @@ mod tests {
         assert_eq!(seen.last(), Some(&(Step::Cancelled, false, true)));
         assert!(seen.iter().all(|(_, report, _)| !report));
         assert_eq!(r.state, RunState::Done);
+    }
+
+    #[test]
+    fn a_turn_that_left_work_in_the_background_keeps_the_run_open() {
+        let background = Now {
+            background: true,
+            ..Now::default()
+        };
+        // Asking or a queue still go first.
+        assert_eq!(
+            step(Event::Finished("end_turn"), background),
+            Step::Background
+        );
+        let asking_too = Now {
+            asking: true,
+            ..background
+        };
+        assert_eq!(step(Event::Finished("end_turn"), asking_too), Step::Ask);
+        assert_eq!(step(Event::Finished("error"), background), Step::Failed);
+
+        let mut r = ran(RunState::Running);
+        r.held = Some(crate::linear::runs::Held {
+            since: 1,
+            body: "old".into(),
+            link: None,
+        });
+        let seen = feed(
+            &mut r,
+            &[
+                // The turn ends while a command runs in the background.
+                (Event::Finished("end_turn"), background, None),
+                // The agent's own turn once the command is done.
+                (Event::Status, working(), None),
+            ],
+        );
+        assert_eq!(seen, [(Step::Background, false, false)]);
+        assert_eq!(r.state, RunState::Running);
+        assert!(r.held.is_some(), "kept until the work is done");
+        let seen = feed(
+            &mut r,
+            &[(Event::Finished("end_turn"), Now::default(), None)],
+        );
+        assert_eq!(seen, [(Step::Finished, true, true)]);
+        assert_eq!((r.state, r.held.is_none()), (RunState::Done, true));
     }
 
     #[test]

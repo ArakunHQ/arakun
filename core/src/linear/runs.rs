@@ -19,6 +19,11 @@ pub const REPORT_KEPT_SECS: u64 = 24 * 3600;
 /// A running session silent this long tells Linear it is still working.
 pub const QUIET_SECS: u64 = 25 * 60;
 
+/// How long a run waits on work its session left in the background before
+/// its reply goes to Linear anyway. A server started in the background never
+/// ends, and the run must not hold its slot for good.
+pub const HOLD_SECS: u64 = 3 * 60 * 60;
+
 /// Reports kept for Linear at most. A server that takes none for a day must
 /// not grow the file without end; the oldest go first.
 pub const OUTBOX_KEPT: usize = 500;
@@ -75,6 +80,31 @@ pub struct Run {
     /// events must not move it, until that turn ends.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopped: bool,
+    /// The turn ended while work it left in the background runs on: its
+    /// reply, sent once that work is done or `HOLD_SECS` passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
+}
+
+/// A reply kept back while the session's background work runs. Debug leaves
+/// out the body: it can hold the agent's words about private code.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Held {
+    /// When the first held turn ended, in unix seconds.
+    pub since: u64,
+    pub body: String,
+    #[serde(default)]
+    pub link: Option<String>,
+}
+
+impl std::fmt::Debug for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Held")
+            .field("since", &self.since)
+            .field("body", &format_args!("…"))
+            .field("link", &self.link.is_some())
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for Run {
@@ -92,6 +122,7 @@ impl std::fmt::Debug for Run {
             .field("reported_at", &self.reported_at)
             .field("asked", &self.asked.is_some())
             .field("stopped", &self.stopped)
+            .field("held", &self.held)
             .finish()
     }
 }
@@ -344,6 +375,24 @@ impl Runs {
             .collect()
     }
 
+    /// Runs whose held reply waited `HOLD_SECS` for background work that
+    /// never ended: they are done, and give their reply to send.
+    pub fn overdue(&mut self, now: u64) -> Vec<(String, Held)> {
+        self.runs
+            .iter_mut()
+            .filter(|r| r.state == RunState::Running)
+            .filter(|r| {
+                r.held
+                    .as_ref()
+                    .is_some_and(|h| now.saturating_sub(h.since) >= HOLD_SECS)
+            })
+            .filter_map(|r| {
+                r.state = RunState::Done;
+                Some((r.agent_session.clone(), r.held.take()?))
+            })
+            .collect()
+    }
+
     /// The Arakun sessions of the runs that have one.
     pub fn session_ids(&self) -> Vec<String> {
         self.runs.iter().filter_map(|r| r.session.clone()).collect()
@@ -438,6 +487,7 @@ mod tests {
             reported_at: 0,
             asked: None,
             stopped: false,
+            held: None,
         }
     }
 
@@ -695,6 +745,33 @@ mod tests {
         let later = now + 10 * QUIET_SECS;
         assert_eq!(r.next_waiting_at(later).unwrap().agent_session, "d");
         assert!(!r.quiet(later).contains(&"d".to_string()));
+    }
+
+    #[test]
+    fn a_held_reply_goes_once_the_background_work_took_too_long() {
+        let mut r = Runs::default();
+        for id in ["a", "b"] {
+            r.add_at(run(id), 0);
+            let run = r.by_agent_session(id).unwrap();
+            run.state = RunState::Running;
+        }
+        r.by_agent_session("a").unwrap().held = Some(Held {
+            since: 100,
+            body: "Done.".into(),
+            link: Some("https://github.com/o/r/pull/1".into()),
+        });
+        // Still waiting: it keeps telling Linear it works.
+        assert!(r.overdue(100 + HOLD_SECS - 1).is_empty());
+        assert!(r.quiet(100 + QUIET_SECS).contains(&"a".to_string()));
+        let gone = r.overdue(100 + HOLD_SECS);
+        assert_eq!(gone.len(), 1);
+        assert_eq!(
+            (gone[0].0.as_str(), gone[0].1.body.as_str()),
+            ("a", "Done.")
+        );
+        let a = r.by_agent_session("a").unwrap();
+        assert_eq!((a.state, a.held.is_none()), (RunState::Done, true));
+        assert_eq!(r.by_agent_session("b").unwrap().state, RunState::Running);
     }
 
     #[test]

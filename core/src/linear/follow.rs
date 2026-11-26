@@ -529,6 +529,7 @@ mod tests {
             reported_at: 0,
             asked: None,
             stopped: false,
+            held: None,
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);

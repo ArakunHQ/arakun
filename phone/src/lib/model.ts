@@ -44,6 +44,8 @@ export interface Session {
   entries: Entry[];
   permission: unknown;
   question: unknown;
+  /** The secret card it shows (`request_secret`), and whether this connection may carry the answer. */
+  secret?: unknown;
   place: string;
   usage?: unknown;
   elapsed_ms?: number | null;

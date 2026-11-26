@@ -1,6 +1,8 @@
 //! The chat's side of `request_secret` (`super::secret`): the requests its
 //! agent waits on, and how each ends. Values pass through here only on their
-//! way to [`secret::keep`]; no entry, event or saved file holds one.
+//! way to [`secret::keep`]; no entry, event or saved file holds one. A
+//! server's session shows the request its server sends, and the answer goes
+//! back there ([`RemoteAction::Secret`]), only over a private connection.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -9,8 +11,8 @@ use futures::StreamExt as _;
 use futures::channel::oneshot;
 use gpui::{Context, Task};
 
-use super::super::secret::{self, McpCommand, Outcome, Route, SecretRequest, Why};
-use super::{AgentKind, Thread, ThreadEvent, ThreadStatus};
+use super::super::secret::{self, McpCommand, Outcome, Route, SecretRequest, Typed, Why};
+use super::{AgentKind, RemoteAction, Thread, ThreadEvent, ThreadStatus};
 
 /// A request on show, and the agent's tool call waiting on it.
 pub(super) struct Pending {
@@ -19,9 +21,20 @@ pub(super) struct Pending {
     _timeout: Option<Task<()>>,
 }
 
+/// The request a server's session shows, as its server sent it.
+struct RemoteSecret {
+    request: SecretRequest,
+    /// Whether every connection between here and the agent is encrypted.
+    private: bool,
+    /// Answered here, and the answer is on its way: the card is gone.
+    answered: bool,
+}
+
 /// What a chat keeps for its requests.
 #[derive(Default)]
 pub(super) struct Secrets {
+    /// A server's session: the request its server shows.
+    remote: Option<RemoteSecret>,
     /// Where this chat's calls arrive while its agent runs.
     route: Option<Route>,
     /// Arakun's MCP server for this chat's session, when there is one.
@@ -61,6 +74,22 @@ impl Secrets {
         let handles = secret::keep(cwd, named)?;
         self.end(id, Outcome::Saved(handles));
         Ok(())
+    }
+
+    /// A device's answer: declines with `None`, or saves the values. Values
+    /// that came over a path that is not `private` are refused, and the
+    /// request stays open. True when a request ended.
+    fn answer(
+        &mut self,
+        id: u64,
+        values: Option<Typed>,
+        private: bool,
+        cwd: &Path,
+    ) -> Result<bool, String> {
+        match secret::answer(values, private)? {
+            Some(values) => self.save(id, values.0, cwd).map(|()| true),
+            None => Ok(self.end(id, Outcome::Declined)),
+        }
     }
 
     /// Answers one request; false when it was not open.
@@ -133,7 +162,96 @@ impl Thread {
 
     /// The request the card shows: the oldest one still open.
     pub fn pending_secret(&self) -> Option<&SecretRequest> {
-        self.secrets.pending.front().map(|p| &p.request)
+        self.secrets
+            .pending
+            .front()
+            .map(|p| &p.request)
+            .or_else(|| {
+                let r = self.secrets.remote.as_ref().filter(|r| !r.answered)?;
+                Some(&r.request)
+            })
+    }
+
+    /// Whether what is typed into the card may go: always for a session
+    /// here, and for a server's session when its connection is encrypted.
+    pub fn secret_private(&self) -> bool {
+        self.secrets.remote.as_ref().is_none_or(|r| r.private)
+    }
+
+    /// What a server's session waits on, as the server sent it
+    /// (`phone::wire::secret`). `connection_private` says whether this app
+    /// reaches the server encrypted.
+    pub fn set_remote_secret(
+        &mut self,
+        wire: &serde_json::Value,
+        connection_private: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let old = self.secrets.remote.take();
+        self.secrets.remote = SecretRequest::from_wire(wire).map(|(request, private)| {
+            let answered = old
+                .as_ref()
+                .is_some_and(|o| o.answered && o.request.id == request.id);
+            RemoteSecret {
+                request,
+                private: private && connection_private,
+                answered,
+            }
+        });
+        let asked = self
+            .secrets
+            .remote
+            .as_ref()
+            .is_some_and(|r| old.as_ref().is_none_or(|o| o.request.id != r.request.id));
+        if asked {
+            cx.emit(ThreadEvent::NeedsPermission);
+        }
+        cx.emit(ThreadEvent::Changed);
+        cx.notify();
+    }
+
+    /// The answer to a server's session did not reach the server: the card
+    /// shows again.
+    pub(super) fn remote_secret_undelivered(&mut self) {
+        if let Some(r) = &mut self.secrets.remote {
+            r.answered = false;
+        }
+    }
+
+    /// Answers the card: saves `values`, one per field, or declines with
+    /// `None`. `private` says whether they came over an encrypted path (the
+    /// card here always does). On an error the card stays, so nothing is lost.
+    pub fn answer_secret(
+        &mut self,
+        id: u64,
+        values: Option<Typed>,
+        private: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let private = private && self.secret_private();
+        if self.remote {
+            let values = secret::answer(values, private)?;
+            let r = self
+                .secrets
+                .remote
+                .as_mut()
+                .filter(|r| r.request.id == id && !r.answered)
+                .ok_or("The agent stopped waiting for this.")?;
+            if let Some(v) = &values
+                && (v.0.len() != r.request.fields.len() || v.0.iter().any(String::is_empty))
+            {
+                return Err("Fill in every field.".into());
+            }
+            r.answered = true;
+            cx.emit(ThreadEvent::Remote(RemoteAction::Secret { id, values }));
+            cx.emit(ThreadEvent::Changed);
+            cx.notify();
+            return Ok(());
+        }
+        if self.secrets.answer(id, values, private, &self.cwd)? {
+            self.secret_ended(cx);
+        }
+        Ok(())
     }
 
     /// Saves what the user typed, one value per field, and hands the agent
@@ -144,13 +262,11 @@ impl Thread {
         values: Vec<String>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.secrets.save(id, values, &self.cwd)?;
-        self.secret_ended(cx);
-        Ok(())
+        self.answer_secret(id, Some(Typed(values)), true, cx)
     }
 
     pub fn decline_secret(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.end_secret(id, Outcome::Declined, cx);
+        let _ = self.answer_secret(id, None, true, cx);
     }
 
     /// Ends every open request without an answer.
@@ -317,6 +433,43 @@ mod tests {
             matches!(answer.try_recv(), Ok(None)),
             "the agent still waits"
         );
+    }
+
+    #[test]
+    fn values_from_an_unencrypted_path_are_refused() {
+        const VALUE: &str = "token-sent-in-the-clear";
+        let mut secrets = Secrets::default();
+        let (_route, mut answer, asked) = ask(&json!({"label": "Token", "reason": "To deploy."}));
+        let id = asked.request.id;
+        secrets.push(asked, None);
+
+        let refused = secrets.answer(id, Some(Typed(vec![VALUE.into()])), false, Path::new("/p"));
+        assert_eq!(refused, Err(secret::NOT_PRIVATE.to_string()));
+        assert_eq!(secrets.pending.len(), 1, "the card stays open");
+        assert!(
+            matches!(answer.try_recv(), Ok(None)),
+            "the agent still waits"
+        );
+
+        // Over the relay or Tailscale it goes.
+        assert_eq!(
+            secrets.answer(id, Some(Typed(vec![VALUE.into()])), true, Path::new("/p")),
+            Ok(true)
+        );
+        let Some(Outcome::Saved(handles)) = answer.try_recv().unwrap() else {
+            panic!("not saved");
+        };
+        assert_eq!(
+            secret::take(&handles[0].1, Path::new("/p")).as_deref(),
+            Some(VALUE)
+        );
+
+        // Declining sends nothing, so a plain path may carry it.
+        let (_b, mut declined, asked) = ask(&json!({"label": "PIN", "reason": "To pair."}));
+        let id = asked.request.id;
+        secrets.push(asked, None);
+        assert_eq!(secrets.answer(id, None, false, Path::new("/p")), Ok(true));
+        assert_eq!(declined.try_recv().unwrap(), Some(Outcome::Declined));
     }
 
     #[test]

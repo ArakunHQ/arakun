@@ -594,6 +594,16 @@ fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
 }
 
+impl Shell {
+    /// Whether this app reaches `server` over plain http, or does not know it.
+    fn server_in_the_clear(&self, server: &str) -> bool {
+        self.servers
+            .as_ref()
+            .and_then(|l| l.saved.iter().find(|s| s.id == server))
+            .is_none_or(in_the_clear)
+    }
+}
+
 /// Whether building the link connects this server: at start, not over plain http.
 fn connects_now(s: &Saved, startup: bool) -> bool {
     !startup || !in_the_clear(s)
@@ -1904,6 +1914,13 @@ impl Shell {
             RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
             RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
             RemoteAction::SkipQuestion => json!({ "type": "skip_question" }),
+            RemoteAction::Secret { id, values } => {
+                // The thread checks this too; plain http must not carry a secret.
+                if values.is_some() && self.server_in_the_clear(&remote.server) {
+                    return;
+                }
+                json!({ "type": "secret", "id": id, "values": values })
+            }
             RemoteAction::Fork => json!({ "type": "fork" }),
             RemoteAction::Compact => json!({ "type": "compact" }),
             RemoteAction::RewindPlan(entry) => json!({ "type": "rewind", "entry": entry }),
@@ -3576,10 +3593,17 @@ impl Shell {
                 };
                 let (status, transcript) = (thread_status(f.status), transcript_of(f));
                 let (permission, question) = (msg["permission"].clone(), msg["question"].clone());
+                let secret = msg["secret"].clone();
+                let private = !link
+                    .saved
+                    .iter()
+                    .find(|s| s.id == id)
+                    .is_none_or(in_the_clear);
                 let queue = f.queue.clone();
                 thread.update(cx, |t, cx| {
                     t.show_transcript(transcript, status, cx);
                     t.set_remote_asks(&permission, &question, cx);
+                    t.set_remote_secret(&secret, private, cx);
                     t.set_remote_queue(queue.prompts, queue.paused, queue.sending_now, cx);
                 });
             }

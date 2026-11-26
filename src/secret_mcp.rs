@@ -1,12 +1,10 @@
 //! `arakun mcp`: Arakun's MCP server for the agents it starts, on stdio. Its
 //! one tool, `request_secret`, goes to the app over the control socket with the
 //! token of the chat the server was started for, and waits for the card's
-//! outcome there. The protocol is `agent::secret::mcp_reply`.
+//! outcome there. The protocol is `agent::secret::mcp_reply`. Under `arakun
+//! server` it goes to that server's socket (`arakun_core::server::mcp`).
 
-use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::Value;
 
@@ -32,58 +30,26 @@ pub fn command() -> Option<(PathBuf, Vec<String>)> {
     Some((program, vec!["mcp".into()]))
 }
 
-/// Serves MCP on stdin and stdout until stdin closes.
+/// Serves MCP on stdin and stdout until stdin closes. Started by `arakun
+/// server` for its sessions, it answers through that server instead.
 pub fn serve() -> i32 {
-    let token = std::env::var(secret::TOKEN_VAR).unwrap_or_default();
-    let out = Arc::new(Mutex::new(std::io::stdout()));
-    let write = |out: &Mutex<std::io::Stdout>, v: Value| {
-        let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = writeln!(out, "{v}");
-        let _ = out.flush();
-    };
-    for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
-        // A call waits for the user; pings and lists must not wait behind it.
-        let is_call = serde_json::from_str::<Value>(&line)
-            .is_ok_and(|v| v["method"] == "tools/call" && v.get("id").is_some());
-        if is_call {
-            let (out, token) = (out.clone(), token.clone());
-            std::thread::spawn(move || {
-                if let Some(reply) = secret::mcp_reply(&line, |args| forward(&token, args)) {
-                    write(&out, reply);
-                }
-            });
-        } else if let Some(reply) = secret::mcp_reply(&line, |_| Err(String::new())) {
-            write(&out, reply);
-        }
+    if std::env::var_os(secret::SERVER_SOCKET_VAR).is_some() {
+        return arakun_core::server::mcp();
     }
-    0
+    secret::serve_stdio(forward)
 }
 
-/// Sends one call to the app and waits for the outcome, a little longer than
-/// the card stays open.
+/// Sends one call to the app and waits for the outcome.
 fn forward(token: &str, args: &Value) -> Result<Value, String> {
-    if token.is_empty() {
-        return Err(
-            "Arakun did not start this server for a session, so it has no card to show".into(),
-        );
-    }
-    let timeout = secret::SecretRequest::parse(args)?.timeout;
+    let wait = secret::call_wait(args)?;
     let req = Request {
         cmd: "secret".into(),
         args: vec![token.to_string(), args.to_string()],
         cwd: std::env::current_dir().unwrap_or_default(),
         side: false,
     };
-    let reply = control::send_within(
-        &control::socket_path(),
-        &req,
-        timeout + Duration::from_secs(60),
-    )
-    .map_err(|e| format!("could not reach Arakun: {e}"))?;
+    let reply = control::send_within(&control::socket_path(), &req, wait)
+        .map_err(|e| format!("could not reach Arakun: {e}"))?;
     if !reply.ok {
         return Err(reply.message);
     }

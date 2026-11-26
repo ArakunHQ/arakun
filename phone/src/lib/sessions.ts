@@ -31,7 +31,9 @@ export function inboxGroups(inbox: InboxSession[], now = Date.now() / 1000) {
 
 /** Under a waiting session's title: what it asks, so the inbox alone says it. "" when it asks nothing. */
 export function asksLine(s: Pick<InboxSession, "status" | "asks">): string {
-  if (s.asks) return s.asks.kind === "permission" ? `Run: ${s.asks.text}` : s.asks.text;
+  if (s.asks?.kind === "permission") return `Run: ${s.asks.text}`;
+  if (s.asks?.kind === "secret") return `Asks for: ${s.asks.text}`;
+  if (s.asks) return s.asks.text;
   if (s.status === "error") return "Stopped with an error";
   return "";
 }

@@ -1636,6 +1636,25 @@ impl Shell {
                     thread.update(cx, |t, cx| t.skip_question(cx));
                 }
             }
+            ClientMsg::Secret {
+                session,
+                id,
+                values,
+            } => {
+                let private = self.phone.as_ref().is_some_and(|l| l.server.private());
+                let answered = match self
+                    .phone_session(&session)
+                    .and_then(|(env_path, sid)| self.phone_thread(&env_path, &sid))
+                {
+                    Some(thread) => {
+                        thread.update(cx, |t, cx| t.answer_secret(id, values, private, cx))
+                    }
+                    None => Err("that session is not running".into()),
+                };
+                if let Err(e) = answered {
+                    self.phone_send(client, wire::error(&e));
+                }
+            }
             ClientMsg::Changes { session } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
@@ -1985,7 +2004,9 @@ impl Shell {
             Some(thread) => {
                 let t = thread.read(cx);
                 let status = super::sessions::status_of(t);
-                wire::session_live(&head, t, status, &self.phone_scope(env_path, t.cwd()))
+                let private = self.phone.as_ref().is_some_and(|l| l.server.private());
+                let scope = self.phone_scope(env_path, t.cwd());
+                wire::session_live(&head, t, status, &scope, private)
             }
             None => {
                 let Some(link) = &self.phone else {
@@ -2172,7 +2193,8 @@ impl Shell {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::state_message(&id, t, super::sessions::status_of(t));
+            let private = self.phone.as_ref().is_some_and(|l| l.server.private());
+            let msg = wire::state_message(&id, t, super::sessions::status_of(t), private);
             self.phone_send_watchers(&id, msg);
         }
     }

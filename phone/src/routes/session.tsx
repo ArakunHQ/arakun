@@ -11,6 +11,7 @@ import { Counts, EntryContext, type EntryHandlers } from "../components/session/
 import { Pending, usePending } from "../components/session/Pending";
 import { type Permission, PermissionCard } from "../components/session/PermissionCard";
 import { type Question, QuestionCard } from "../components/session/QuestionCard";
+import { type SecretRequest, SecretCard } from "../components/session/SecretCard";
 import { Sheet } from "../components/session/Sheet";
 import { useSheetNav } from "../components/session/sheetNav";
 import { usageSummary } from "../components/session/StopRow";
@@ -188,6 +189,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
 
   const p = s.permission as Permission | null;
   const q = s.question as Question | null;
+  const secret = s.secret as SecretRequest | null | undefined;
   const answer = (m: ClientMessage, toolCallId: string) => {
     if (!stillLinked()) return false;
     send(m);
@@ -269,6 +271,17 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
             question={q}
             onAnswer={(answers) => answer({ type: "answer", session: s.id, answers }, q.tool_call_id)}
             onSkip={() => answer({ type: "skip_question", session: s.id }, q.tool_call_id)}
+          />
+        ) : null}
+        {secret && !answered.includes(`secret:${secret.id}`) ? (
+          <SecretCard
+            key={secret.id}
+            secret={secret}
+            onSave={(values) => {
+              // The computer refuses it too; this keeps it off the network.
+              if (secret.private) answer({ type: "secret", session: s.id, id: secret.id, values }, `secret:${secret.id}`);
+            }}
+            onDecline={() => answer({ type: "secret", session: s.id, id: secret.id }, `secret:${secret.id}`)}
           />
         ) : null}
         <Composer

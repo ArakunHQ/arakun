@@ -653,6 +653,12 @@ pub enum RemoteAction {
     Permission(String),
     Answer(Vec<String>),
     SkipQuestion,
+    /// The secret card answered: what was typed, one value per field, or
+    /// `None` to decline. Sent only over a private connection.
+    Secret {
+        id: u64,
+        values: Option<super::secret::Typed>,
+    },
     /// Copy the session into a new one there.
     Fork,
     /// Summarize the conversation so far, to free context.
@@ -1851,15 +1857,9 @@ impl Thread {
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
-                // A sandboxed agent reaches arakun through the sandbox's socket.
                 let server = |sandboxed: bool| {
-                    let socket = if sandboxed {
-                        Some((crate::host::get().sandbox_socket)())
-                    } else {
-                        std::env::var_os("ARAKUN_SOCKET").map(PathBuf::from)
-                    };
                     secret_token.as_deref().and_then(|token| {
-                        super::secret::McpCommand::for_chat(token, socket.as_deref())
+                        super::secret::McpCommand::for_chat(token, sandboxed)
                     })
                 };
                 if native {
@@ -2379,6 +2379,7 @@ impl Thread {
     /// answered again, and a rewind asked for is off.
     pub fn remote_undelivered(&mut self, cx: &mut Context<Self>) {
         self.native.remote_answered = None;
+        self.remote_secret_undelivered();
         self.set_remote_rewind_plan(None, None, cx);
     }
 

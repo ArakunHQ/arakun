@@ -201,6 +201,14 @@ pub enum ClientMsg {
     SkipQuestion {
         session: String,
     },
+    /// The secret card answered: what was typed, one value per field, or no
+    /// `values` to decline. Refused when the connection is not encrypted.
+    Secret {
+        session: String,
+        id: u64,
+        #[serde(default)]
+        values: Option<crate::agent::secret::Typed>,
+    },
     /// Copies the session into a new one. Answered with `forked` once the new
     /// one is in the inbox.
     Fork {
@@ -1497,6 +1505,8 @@ type Clients = Arc<Mutex<HashMap<ClientId, Client>>>;
 /// The listening server. Dropping it stops listening and closes every phone.
 pub struct Server {
     port: u16,
+    /// It listens on the loopback only.
+    loopback: bool,
     clients: Clients,
     stop: Arc<AtomicBool>,
 }
@@ -1534,6 +1544,7 @@ impl Server {
         Ok((
             Server {
                 port,
+                loopback: bind.is_loopback(),
                 clients,
                 stop,
             },
@@ -1543,6 +1554,10 @@ impl Server {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn loopback(&self) -> bool {
+        self.loopback
     }
 
     /// The device behind a connected phone.
@@ -2380,6 +2395,43 @@ mod tests {
         let (mut quick, _) = listener.accept().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         assert_eq!(read_body(&mut quick, 2, deadline), Some(b"{}".to_vec()));
+    }
+
+    #[test]
+    fn a_secret_answer_without_values_declines() {
+        use crate::agent::secret::Typed;
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        assert_eq!(
+            read(r#"{"type":"secret","session":"s1","id":3}"#),
+            ClientMsg::Secret {
+                session: "s1".into(),
+                id: 3,
+                values: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"secret","session":"s1","id":3,"values":["a","b"]}"#),
+            ClientMsg::Secret {
+                session: "s1".into(),
+                id: 3,
+                values: Some(Typed(vec!["a".into(), "b".into()])),
+            }
+        );
+    }
+
+    #[test]
+    fn only_a_loopback_server_or_the_relay_is_private() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (tailnet, _rx) = Server::start(Reach::Tailscale.bind(), 0, access).unwrap();
+        assert!(Transport::Local(tailnet).private());
+        // Not bound for real: a test should not listen on every interface.
+        let lan = Server {
+            port: 0,
+            loopback: Reach::Lan.bind().is_loopback(),
+            clients: Arc::default(),
+            stop: Arc::default(),
+        };
+        assert!(!Transport::Local(lan).private());
     }
 
     #[test]
@@ -3642,6 +3694,7 @@ mod tests {
         let (tx, _rx) = std_mpsc::sync_channel(1);
         let server = Server {
             port: 0,
+            loopback: true,
             clients: Arc::default(),
             stop: Arc::default(),
         };

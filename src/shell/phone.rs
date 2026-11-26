@@ -1756,6 +1756,11 @@ impl Shell {
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
+            // The app's Linear settings come from its own tab, not a phone.
+            ClientMsg::LinearSettings(_) => self.phone_send(
+                client,
+                wire::error("set up Linear in Arakun's Linear tab"),
+            ),
             ClientMsg::Fork { .. }
             | ClientMsg::Compact { .. }
             | ClientMsg::Rewind { .. }

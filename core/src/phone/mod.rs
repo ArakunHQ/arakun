@@ -285,6 +285,10 @@ pub enum ClientMsg {
     Clone {
         url: String,
     },
+    /// The desktop app's Linear settings for this server: which Linear
+    /// teams and projects it takes work for, in which of its places, and the
+    /// key to read those issues with. Answered with `linear_settings`.
+    LinearSettings(crate::linear::remote::ServerSettings),
     /// A new worktree of the repository `from` is a checkout of, on a new
     /// `branch`, made a place. Answered with `place_added`.
     NewEnv {

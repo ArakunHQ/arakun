@@ -223,7 +223,7 @@ pub enum Error {
     /// Any other answer than the one expected, with what the server said.
     Refused(String),
     /// An answer with a status the caller may act on, with what the server
-    /// said. Only the Linear calls use it; their 404, 409 and 400 mean
+    /// said. Only the Linear calls use it; their 404, 409, 400 and 429 mean
     /// different things.
     Status { status: u16, message: String },
 }
@@ -562,14 +562,19 @@ fn linear_json<T: serde::de::DeserializeOwned>(status: u16, body: &str) -> Resul
 }
 
 /// [`refusal`], except that the answers a caller acts on (404, 409, 400, a
-/// 403 for a missing flag) keep their status. The sign-in, a block and the
-/// rate limit stay what the rest of the module says.
+/// 403 for a missing flag, the rate limit) keep their status. The sign-in and
+/// a block stay what the rest of the module says.
 fn linear_refusal(status: u16, body: &str) -> Error {
     let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     let said = v["error"].as_str().unwrap_or_default();
     match status {
-        401 | 429 => refusal(status, body),
+        401 => refusal(status, body),
         403 if said == "blocked" => refusal(status, body),
+        // The app tells a limit apart from a failure, so it keeps its status.
+        429 => Error::Status {
+            status,
+            message: "too many requests; try again in a minute".into(),
+        },
         _ => Error::Status {
             status,
             message: if said.is_empty() {
@@ -1564,10 +1569,13 @@ mod tests {
             })
         );
         let (base, _rx) = serve(429, r#"{"error": "too many requests"}"#);
-        assert!(matches!(
+        assert_eq!(
             linear_link(&base, "s", "lin_api_x"),
-            Err(Error::Refused(m)) if m.contains("too many requests")
-        ));
+            Err(Error::Status {
+                status: 429,
+                message: "too many requests; try again in a minute".into()
+            })
+        );
         let (base, _rx) = serve(403, r#"{"error": "blocked", "reason": "abuse"}"#);
         assert_eq!(
             linear_links(&base, "s"),

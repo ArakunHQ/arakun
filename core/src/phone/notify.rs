@@ -514,6 +514,7 @@ mod tests {
             question: text.into(),
             options: Vec::new(),
             multi: false,
+            secret: false,
         };
         let req = AskUserRequest::for_test(vec![q("Which database?"), q("Which port?")]);
         assert_eq!(question_body(&req), "Which database? (+1 more)");

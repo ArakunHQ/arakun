@@ -11,7 +11,7 @@
 //! `droid.add_user_message` (answered at once) followed by streamed
 //! `droid.session_notification`s and finally `agent_turn_completed`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -210,6 +210,8 @@ pub struct Question {
     pub question: String,
     pub options: Vec<String>,
     pub multi: bool,
+    /// A password field: typed masked, and its answer kept out of the chat.
+    pub secret: bool,
 }
 
 /// An AskUser questionnaire the agent is waiting on.
@@ -248,6 +250,7 @@ pub(super) fn remote_question(v: &Value) -> Option<AskUserRequest> {
                     })
                     .unwrap_or_default(),
                 multi: q["multi"].as_bool().unwrap_or(false),
+                secret: q["secret"].as_bool().unwrap_or(false),
             })
             .collect(),
         fields: Vec::new(),
@@ -266,6 +269,11 @@ impl AskUserRequest {
             fields: Vec::new(),
             session: None,
         }
+    }
+
+    /// Whether an answer to it holds a password.
+    pub fn has_secret(&self) -> bool {
+        self.questions.iter().any(|q| q.secret)
     }
 
     /// What tells one of a server's questionnaires from another.
@@ -315,6 +323,7 @@ impl AskUserRequest {
                 question,
                 options,
                 multi,
+                secret: is_secret_field(field),
             });
             let custom = format!("{key}_custom");
             fields.push((key.clone(), props.contains_key(&custom).then_some(custom)));
@@ -331,6 +340,12 @@ impl AskUserRequest {
 
 /// The card's answers ("A, B, my own words") as an elicitation's form content:
 /// picked options in the field, the rest in its free-text companion.
+/// A form field whose answer is a secret: JSON Schema's `format: "password"`,
+/// or `writeOnly`, which says the value is sent but never read back.
+fn is_secret_field(field: &Value) -> bool {
+    field["format"] == "password" || field["writeOnly"] == true
+}
+
 fn form_content(req: &AskUserRequest, answers: &[String]) -> Value {
     let mut content = serde_json::Map::new();
     for ((q, (key, custom)), answer) in req.questions.iter().zip(&req.fields).zip(answers) {
@@ -409,6 +424,9 @@ pub(super) struct State {
     /// [`AskUserRequest::remote_key`]: the server cannot tell two of them
     /// apart, so a second Submit could answer the next one.
     pub remote_answered: Option<String>,
+    /// Tool calls whose questionnaire got a password: what the agent reports
+    /// back for them shows as "Answered", not the answer.
+    pub secret_answered: HashSet<String>,
     /// A server's session: its model and reasoning and their choices, as the
     /// server last said. Empty until it is asked.
     pub remote_settings: Vec<(Setting, (String, Vec<SettingOption>))>,
@@ -1046,6 +1064,7 @@ impl Thread {
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
+        self.hide_secret_answer(&req, cx);
         let reply = if req.fields.is_empty() {
             let answers: Vec<Value> = req
                 .questions
@@ -1134,10 +1153,26 @@ impl Thread {
         let Some(req) = self.native.questions.remove(at) else {
             return;
         };
+        if reply["action"] == "accept" {
+            self.hide_secret_answer(&req, cx);
+        }
         if let Some(conn) = &self.conn {
             conn.respond(req.rpc_id.clone(), reply);
         }
         self.after_input(&req.tool_call_id, cx);
+    }
+
+    /// Keeps a password answer out of the chat: the tool call that asked shows
+    /// "Answered" now and whatever the agent reports for it later.
+    fn hide_secret_answer(&mut self, req: &AskUserRequest, cx: &mut Context<Self>) {
+        if !req.has_secret() || req.tool_call_id.is_empty() {
+            return;
+        }
+        self.native.secret_answered.insert(req.tool_call_id.clone());
+        if let Some(&ix) = self.tool_index.get(&req.tool_call_id) {
+            self.mask_answered(ix);
+            self.entries_changed(ix, cx);
+        }
     }
 
     /// Drops the subagent's copy of a questionnaire answered or dropped here.
@@ -2373,6 +2408,7 @@ impl Thread {
                             })
                             .unwrap_or_default(),
                         multi: q["multiSelect"].as_bool().unwrap_or(false),
+                        secret: false,
                     })
                     .collect();
                 let tool_call_id = str_of(&params, "toolCallId").unwrap_or_default();
@@ -2504,6 +2540,40 @@ mod tests {
             json!({"question_0_custom": "MySQL", "question_1": ["Cache"]})
         );
         assert!(AskUserRequest::from_form(json!(8), &json!({"mode": "url", "url": "x"})).is_none());
+    }
+
+    #[test]
+    fn password_form_field_is_secret() {
+        let params = json!({
+            "mode": "form", "toolCallId": "t2", "message": "Sign in",
+            "requestedSchema": {"type": "object", "properties": {
+                "user": {"type": "string", "title": "User"},
+                "password": {"type": "string", "title": "Password", "format": "password"},
+                "token": {"type": "string", "title": "Token", "writeOnly": true}
+            }}
+        });
+        let req = AskUserRequest::from_form(json!(9), &params).unwrap();
+        let secret: Vec<(&str, bool)> = req
+            .fields
+            .iter()
+            .zip(&req.questions)
+            .map(|((key, _), q)| (key.as_str(), q.secret))
+            .collect();
+        assert_eq!(
+            secret,
+            [("user", false), ("password", true), ("token", true)]
+        );
+        assert!(req.has_secret());
+        // The answer still goes to the agent as typed.
+        let content = form_content(&req, &["rik".into(), "hunter2".into(), "t0k".into()]);
+        assert_eq!(
+            content,
+            json!({"password": "hunter2", "token": "t0k", "user": "rik"})
+        );
+        // A server's session masks the field too.
+        let wire = crate::phone::wire::question(&req);
+        let back = remote_question(&wire).unwrap();
+        assert!(!back.questions[0].secret && back.questions[1].secret);
     }
 
     fn percent(v: Value) -> Option<u64> {

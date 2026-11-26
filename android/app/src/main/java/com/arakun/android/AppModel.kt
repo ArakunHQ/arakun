@@ -882,6 +882,30 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         session = s.copy(question = null)
     }
 
+    /**
+     * Sends what was typed for the secret card. Only over a private
+     * connection: the computer would refuse it otherwise, so the card offers
+     * only [declineSecret] then. Whether it went out; the card keeps the
+     * fields when it did not.
+     */
+    fun saveSecret(values: List<String>): Boolean {
+        val s = session ?: return false
+        val r = s.secret ?: return false
+        if (!canSend || !r.private || values.size != r.fields.size) return false
+        send("type" to "secret", "session" to s.id, "id" to r.id, "values" to values)
+        session = s.copy(secret = null)
+        return true
+    }
+
+    /** Declines the secret card: an answer without `values`. */
+    fun declineSecret() {
+        val s = session ?: return
+        val r = s.secret ?: return
+        if (!canSend) return
+        send("type" to "secret", "session" to s.id, "id" to r.id)
+        session = s.copy(secret = null)
+    }
+
     /** Whether the start went out; the form keeps its prompt when it did not. */
     fun startSession(place: Place, text: String): Boolean {
         // One start at a time: the sheet can close and open again while one waits.

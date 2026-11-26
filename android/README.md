@@ -179,7 +179,8 @@ says "Relay links are no longer used. Sign in to reach your computers."
 - A session, live: messages, tool calls with their output, plans, thinking.
 - Send a prompt (queued while the agent works), Stop, allow or deny a permission (a
   one-time allow is held, an allow for the session asks twice), answer the agent's
-  questions, load older entries.
+  questions, give a secret the agent asks for (masked, and only over an encrypted
+  connection; otherwise only Decline), load older entries.
 - Start a session in any place the computer offers.
 - Notifications when a turn finishes, the agent needs you, or something goes wrong.
 

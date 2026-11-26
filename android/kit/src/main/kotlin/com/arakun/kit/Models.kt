@@ -32,7 +32,7 @@ data class InboxSession(
     val env: String,
     val place: String,
     val pr: String?,
-    /** What a waiting session asks: a permission or a question. */
+    /** What a waiting session asks: a permission, a question or a secret. */
     val asks: String?,
 ) {
     companion object {
@@ -48,7 +48,7 @@ data class InboxSession(
             env = j["env"].str,
             place = j["place"].str,
             pr = j["pr"].string,
-            asks = j["asks"]["text"].string,
+            asks = j["asks"]["text"].string?.let { if (j["asks"]["kind"].string == "secret") "Asks for: $it" else it },
         )
     }
 }
@@ -169,6 +169,39 @@ data class QuestionAsk(val toolCallId: String, val questions: List<Question>) {
     }
 }
 
+/**
+ * The agent asks for a secret (`request_secret`). `private` says whether this
+ * connection may carry what is typed; when it is not, the card only declines.
+ */
+data class SecretAsk(
+    val id: Long,
+    val label: String,
+    val reason: String,
+    /** Where to get it: an http(s) link, or null. */
+    val url: String?,
+    val fields: List<Field>,
+    val private: Boolean,
+) {
+    data class Field(val name: String, val label: String)
+
+    companion object {
+        fun of(j: JsonElement): SecretAsk? {
+            if (!j.isObject) return null
+            // The answer names the request by its id: without one it cannot be answered.
+            val id = j["id"].double?.takeIf { it >= 0 && it == kotlin.math.floor(it) }?.toLong() ?: return null
+            return SecretAsk(
+                id = id,
+                label = j["label"].str,
+                reason = j["reason"].str,
+                // The computer checks the link, and so does the phone.
+                url = j["url"].string?.takeIf { it.startsWith("https://") || it.startsWith("http://") },
+                fields = j["fields"].array.map { Field(it["name"].str, it["label"].str) },
+                private = j["private"].bool,
+            )
+        }
+    }
+}
+
 data class Changes(val files: Int = 0, val added: Int = 0, val removed: Int = 0)
 
 /**
@@ -185,6 +218,7 @@ data class LiveSession(
     val entries: List<Entry> = emptyList(),
     val permission: PermissionAsk? = null,
     val question: QuestionAsk? = null,
+    val secret: SecretAsk? = null,
     val usage: String? = null,
     val queue: List<String> = emptyList(),
     /** When the running turn started, by this phone's clock. */
@@ -231,6 +265,7 @@ data class LiveSession(
             status = SessionStatus.of(j["status"]),
             permission = PermissionAsk.of(j["permission"]),
             question = QuestionAsk.of(j["question"]),
+            secret = SecretAsk.of(j["secret"]),
             usage = j["usage"]["summary"].string,
             queue = j["queue"].array.map { it.str },
             title = j["title"].string?.takeIf { it.isNotEmpty() } ?: title,

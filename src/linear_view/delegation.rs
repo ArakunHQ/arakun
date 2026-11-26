@@ -37,6 +37,25 @@ pub fn can_turn_on(host: &Host) -> bool {
     host.signed_in && host.relay_on
 }
 
+/// What shows under the switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Notes {
+    /// The help text, which says the Linear key is sent.
+    pub help: bool,
+    pub blocker: Option<Blocker>,
+    pub sync: bool,
+}
+
+/// While off, the help always shows: turning the switch on sends the Linear
+/// key, so that must be on screen first, blocker or not.
+pub(super) fn notes(host: &Host, installed: Option<bool>, on: bool) -> Notes {
+    Notes {
+        help: !on,
+        blocker: blocker(host, installed),
+        sync: on,
+    }
+}
+
 /// The kind, the Linear name, and the project's name, or None when the
 /// project is no longer in Arakun.
 pub(super) fn row_text(
@@ -222,18 +241,8 @@ impl LinearView {
                 .map(ui::focusable)
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_delegation(cx)))
         });
-        let note: Option<AnyElement> = match blocker(&self.host, installed) {
-            Some(b) => Some(self.render_blocker(b, cx)),
-            None if !on => Some(
-                ui::text(
-                    Type::Body,
-                    theme::text_muted(),
-                    "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key to Arakun once, to prove the Linear user is you. It is not stored there.",
-                )
-                .into_any_element(),
-            ),
-            None => None,
-        };
+        let notes = notes(&self.host, installed, on);
+        let blocker = notes.blocker.map(|b| self.render_blocker(b, cx));
         let card = div()
             .flex()
             .flex_col()
@@ -261,8 +270,15 @@ impl LinearView {
                     )
                     .child(switch),
             )
-            .children(note)
-            .when(on, |d| {
+            .when(notes.help, |d| {
+                d.child(ui::text(
+                    Type::Body,
+                    theme::text_muted(),
+                    "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key to Arakun once, to prove the Linear user is you. It is not stored there.",
+                ))
+            })
+            .children(blocker)
+            .when(notes.sync, |d| {
                 let color = match self.sync {
                     Sync::Failed | Sync::Limited => theme::attention().into(),
                     Sync::Idle | Sync::Sending => theme::text_faint(),
@@ -626,6 +642,38 @@ mod tests {
             target: target.into(),
             name: name.into(),
             project: PathBuf::from(project),
+        }
+    }
+
+    #[test]
+    fn the_help_shows_whenever_the_switch_is_off() {
+        let ok = ok();
+        let states = [
+            (
+                Host {
+                    signed_in: false,
+                    ..ok.clone()
+                },
+                Some(false),
+            ),
+            (
+                Host {
+                    relay_on: false,
+                    ..ok.clone()
+                },
+                None,
+            ),
+            (ok.clone(), Some(false)), // not installed, and the switch still works
+            (ok.clone(), Some(true)),
+            (ok.clone(), None),
+        ];
+        for (host, installed) in states {
+            let off = notes(&host, installed, false);
+            assert!(off.help && !off.sync, "{host:?} {installed:?}");
+            assert_eq!(off.blocker, blocker(&host, installed));
+            let on = notes(&host, installed, true);
+            assert!(!on.help && on.sync, "{host:?} {installed:?}");
+            assert_eq!(on.blocker, blocker(&host, installed));
         }
     }
 

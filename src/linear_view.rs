@@ -342,6 +342,7 @@ impl LinearView {
         self.read_at = None;
         self.places.reset();
         self.adding = None;
+        self.delegation_error = None;
     }
 
     /// The end of the rate-limit wait for `session`, or 0.

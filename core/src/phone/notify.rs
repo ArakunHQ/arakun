@@ -339,7 +339,7 @@ fn subject(t: &ToolCall) -> Option<String> {
 
 /// Markdown as one line of plain text: no code blocks, links as their text,
 /// no emphasis marks.
-fn plain(md: &str) -> String {
+pub fn plain(md: &str) -> String {
     let mut kept = String::new();
     let mut fenced = false;
     for line in md.lines() {

@@ -9,6 +9,7 @@ import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, now
 import { account, away, claim, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./relay/helpers";
 
 const ORG = HOOK_ORG;
+const ORG2 = "11111111-1111-4111-8111-222222222222";
 const SESSION = HOOK_SESSION;
 const LU = "22222222-2222-4222-8222-222222222222";
 const OTHER = "22222222-2222-4222-8222-999999999999";
@@ -513,6 +514,43 @@ describe("follow-ups from Linear", () => {
     expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
     await expect(pc.inbox.next(200)).rejects.toThrow();
     if (theirs) await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("a stop from someone else is refused", async () => {
+    const { pc } = await delegatedIssue();
+    await linkedComputerWithRoute({ linearUser: OTHER });
+    expect((await send(signedWebhook(prompted({ userId: OTHER, body: "Stop", signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("a Linear user linked to the delegator's account in another workspace cannot steer", async () => {
+    const { pc, owner } = await delegatedIssue();
+    // OTHER is the delegator's account too, but only in another workspace.
+    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?, ?, ?, ?)")
+      .bind(ORG2, OTHER, owner.github_id, nowSeconds())
+      .run();
+    expect((await send(signedWebhook(prompted({ userId: OTHER, body: "do this instead", agentSessionId: SESSION })))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("a follow-up from another workspace finds no session", async () => {
+    const { pc, owner } = await delegatedIssue();
+    // The other workspace has the app too, so the answer can be said there.
+    linearFake.tokens.set("lin_oauth_ws2", { userId: "app-user", organizationId: ORG2, organizationName: "Other" });
+    await saveWorkspace(env, { organizationId: ORG2, name: "Other", appUserId: "app-user", access: "lin_oauth_ws2", refresh: "lin_refresh_ws2", expiresAt: nowSeconds() + 86_400, installedBy: owner.github_id });
+    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, github_id, linked_at) VALUES (?, ?, ?, ?)")
+      .bind(ORG2, LU, owner.github_id, nowSeconds())
+      .run();
+    const res = await send(signedWebhook(prompted({ userId: LU, body: "do this instead", organizationId: ORG2, agentSessionId: SESSION })));
+    expect(res.status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, { agentSessionId: SESSION, type: "error", body: "Arakun has no session for this. Delegate the issue again." }]);
+    expect(linearFake.accepted.at(-1)!.token).toBe("lin_oauth_ws2");
+    await expect(pc.inbox.next(200)).rejects.toThrow();
     expect(await count("linear_deliveries")).toBe(1);
   });
 

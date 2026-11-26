@@ -17,7 +17,7 @@ impl Shell {
         } else {
             self.show_alone(Some(super::home::Alone::Linear), cx);
         }
-        self.linear_view.update(cx, |v, cx| {
+        self.views.linear.update(cx, |v, cx| {
             v.refresh_if_stale(cx);
             v.focus(window, cx);
         });

@@ -298,7 +298,7 @@ impl Shell {
                 match crate::github::pr::ItemRef::from_url(url) {
                     Some(item) => {
                         this.open_github_tab(window, cx);
-                        this.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+                        this.views.github.update(cx, |v, cx| v.reveal(&item, cx));
                     }
                     None if !url.is_empty() => cx.open_url(url),
                     None => {}

@@ -1022,7 +1022,7 @@ impl Shell {
         // A server signed in since shows up.
         self.servers_list_machines(window, cx);
         self.sync_servers_view(cx);
-        self.servers_view.update(cx, |v, cx| v.focus(window, cx));
+        self.views.servers.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }
 
@@ -1159,7 +1159,8 @@ impl Shell {
 
     pub(super) fn sync_servers_view(&mut self, cx: &mut Context<Self>) {
         let targets = self.server_targets();
-        self.extensions_view
+        self.views
+            .extensions
             .update(cx, |v, cx| v.set_servers(targets, cx));
         let yours = self.servers_yours();
         let Some(link) = &self.servers else {
@@ -1209,7 +1210,9 @@ impl Shell {
             error: link.error.clone(),
             balance: link.balance.clone(),
         };
-        self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
+        self.views
+            .servers
+            .update(cx, |v, cx| v.set_state(state, cx));
         self.sync_this_computer(cx);
         cx.notify();
     }
@@ -1253,7 +1256,7 @@ impl Shell {
             envs,
             agents: crate::servers_view::agents_of(&self.local_usage(cx)),
         };
-        self.servers_view.update(cx, |v, cx| v.set_this(this, cx));
+        self.views.servers.update(cx, |v, cx| v.set_this(this, cx));
     }
 
     /// The paired servers, for the Marketplace to install on. Before the
@@ -2485,7 +2488,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_servers_tab(window, cx);
-        self.servers_view
+        self.views
+            .servers
             .update(cx, |v, cx| v.add_place(server, window, cx));
     }
 
@@ -3173,7 +3177,8 @@ impl Shell {
                     return;
                 }
                 if matches!(kind, "market" | "market_done") {
-                    self.extensions_view
+                    self.views
+                        .extensions
                         .update(cx, |v, cx| v.server_said(id, &msg, cx));
                     return;
                 }
@@ -3181,7 +3186,8 @@ impl Shell {
                 // there; a start's goes on to whoever asked for it.
                 if kind == "error"
                     && self
-                        .extensions_view
+                        .views
+                        .extensions
                         .update(cx, |v, cx| v.server_error(id, &msg, cx))
                 {
                     return;
@@ -3211,7 +3217,7 @@ impl Shell {
                     if link.adding.remove(id) {
                         link.from_picker.remove(id);
                         link.added = Some((id.to_string(), text(&msg, "path")));
-                        self.servers_view.update(cx, |v, cx| v.place_added(id, cx));
+                        self.views.servers.update(cx, |v, cx| v.place_added(id, cx));
                     }
                     // The server sends its inbox before this: the folder is here.
                     self.servers_open_added(window, cx);

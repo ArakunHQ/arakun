@@ -18,7 +18,7 @@ impl Shell {
         });
         self.note_active_tab(cx);
         let root = self.project().path.clone();
-        self.posthog_view.update(cx, |v, cx| {
+        self.views.posthog.update(cx, |v, cx| {
             v.set_project(&root, cx);
             v.refresh_if_stale(cx);
             v.focus(window, cx);

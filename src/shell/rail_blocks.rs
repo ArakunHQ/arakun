@@ -238,7 +238,7 @@ impl Shell {
                     quiet(n)
                 }
             }),
-            View::Extensions => Some(self.extensions_view.read(cx).problems())
+            View::Extensions => Some(self.views.extensions.read(cx).problems())
                 .filter(|n| *n > 0)
                 .map(|n| loud(n, theme::attention().into())),
             #[cfg(feature = "team")]
@@ -346,7 +346,7 @@ impl Shell {
     pub(super) fn rail_shows(&self, piece: &Piece, cx: &App) -> bool {
         match piece {
             Piece::View { view: View::Teams } => self.teams.read(cx).enabled(),
-            Piece::View { view } => self.extensions_view.read(cx).shows(*view),
+            Piece::View { view } => self.views.extensions.read(cx).shows(*view),
             _ => true,
         }
     }

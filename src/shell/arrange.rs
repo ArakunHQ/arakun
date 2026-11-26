@@ -380,7 +380,8 @@ impl Shell {
             chip("arr-more".into(), "store01", "More in Marketplace…".into()).on_click(
                 cx.listener(|this, _, window, cx| {
                     this.open_extensions_tab(window, cx);
-                    this.extensions_view
+                    this.views
+                        .extensions
                         .update(cx, |v, cx| v.show_extensions(cx));
                 }),
             ),

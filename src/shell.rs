@@ -420,13 +420,8 @@ pub struct Shell {
     /// The workspace panel, open but left out this frame because the window
     /// is too narrow for it (see `crowd_out`).
     side_crowded: Cell<bool>,
-    /// The user left the Session tab, so a new subagent or pull request
-    /// doesn't bring it back until restart.
-    subagents_dismissed: bool,
-    /// The subagent whose transcript the Session tab shows.
-    subagent_view: Option<subagents::SubagentView>,
-    /// Redraws the Session tab each second while a subagent in it runs.
-    subagent_tick: Option<Task<()>>,
+    /// The Session tab's subagent state: the one open, its redraw, dismissal.
+    subagents: subagents::Subagents,
     /// The session on screen when its branch's pull request was last looked
     /// at, and whether it had one: a read that finds one counts as connecting
     /// it, a switch to a session that already has one does not.
@@ -885,9 +880,7 @@ impl Shell {
             builder: Default::default(),
             side_fit: Cell::new([layout.rail_w, layout.panel_w]),
             side_crowded: Cell::new(false),
-            subagents_dismissed: false,
-            subagent_view: None,
-            subagent_tick: None,
+            subagents: Default::default(),
             branch_pr_seen: None,
             arcade: layout.arcade,
             pins: crate::palette::pins::Pins::load(),
@@ -3277,7 +3270,7 @@ impl Shell {
     fn panel_preferred_w(&self) -> f32 {
         if self.panel.customize.is_some() {
             self.panel.width.max(crate::customize_view::CUSTOMIZE_W)
-        } else if self.panel.tab == PanelTab::Session && self.subagent_view.is_some() {
+        } else if self.panel.tab == PanelTab::Session && self.subagents.view.is_some() {
             self.panel.width.max(SUBAGENT_TRANSCRIPT_W)
         } else {
             self.panel.width

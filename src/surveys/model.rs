@@ -107,10 +107,18 @@ pub enum Kind {
     Feature,
     Ux,
     Other,
+    /// A question for the team, answered in PostHog's Support inbox.
+    Support,
 }
 
 impl Kind {
-    const ALL: [Kind; 4] = [Kind::Bug, Kind::Feature, Kind::Ux, Kind::Other];
+    const ALL: [Kind; 5] = [
+        Kind::Bug,
+        Kind::Feature,
+        Kind::Ux,
+        Kind::Other,
+        Kind::Support,
+    ];
 
     pub fn as_str(self) -> &'static str {
         ids::KINDS[self as usize]
@@ -656,8 +664,8 @@ mod tests {
 
     #[test]
     fn kind_order_matches_ids() {
-        let kinds = [Kind::Bug, Kind::Feature, Kind::Ux, Kind::Other];
-        for (kind, name) in kinds.iter().zip(super::super::ids::KINDS) {
+        assert_eq!(Kind::ALL.len(), super::super::ids::KINDS.len());
+        for (kind, name) in Kind::ALL.iter().zip(super::super::ids::KINDS) {
             assert_eq!(kind.as_str(), name);
         }
     }

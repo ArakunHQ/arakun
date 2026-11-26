@@ -51,8 +51,8 @@ APNS_TOPIC = "com.arakun.ios"
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
 # so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
-# 1011 and 1013, production 1001, 1002, 1006, 1008, 1012 and 1014. cloud/admin
-# has 1009 and 1010.
+# 1011, 1013 and 1015, production 1001, 1002, 1006, 1008, 1012, 1014 and
+# 1016. cloud/admin has 1009 and 1010.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -109,6 +109,16 @@ namespace_id = "1013"
   limit = 30
   period = 60
 
+# Feedback from the app, which needs no sign-in, so per client IP: a person
+# sends one now and then; 5 a minute leaves room for that and none for a script.
+[[ratelimits]]
+name = "FEEDBACK_LIMIT"
+namespace_id = "1015"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
 # One SQLite-backed object per channel: its messages, their seq and the live
 # sockets.
 [[durable_objects.bindings]]
@@ -134,7 +144,8 @@ new_sqlite_classes = ["Channel"]
 # The hosted Worker (`npx wrangler deploy --env production`), which
 # .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET,
 # GITHUB_CLIENT_SECRET, CLOUD_REQUESTS_WEBHOOK, BETA_REQUESTS_WEBHOOK,
-# APNS_KEY, APNS_KEY_ID and FCM_SERVICE_ACCOUNT stay Worker secrets. An
+# APNS_KEY, APNS_KEY_ID, FCM_SERVICE_ACCOUNT and LINEAR_API_KEY stay Worker
+# secrets. An
 # environment inherits no bindings, so they are all here again. The one route covers the account host
 # app.arakun.dev and the old label hosts, which tell old apps to update.
 [env.production]
@@ -196,6 +207,14 @@ namespace_id = "1014"
   limit = 30
   period = 60
 
+[[env.production.ratelimits]]
+name = "FEEDBACK_LIMIT"
+namespace_id = "1016"
+
+  [env.production.ratelimits.simple]
+  limit = 5
+  period = 60
+
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL"
 class_name = "Channel"
@@ -229,3 +248,6 @@ BASE_DOMAIN = "arakun.dev"
 ACCOUNT_HOST = "app.arakun.dev"
 APNS_TEAM_ID = "V9JGU28UV7"
 APNS_TOPIC = "com.arakun.ios"
+# The Arakun team in Linear, where feedback becomes customer requests
+# (src/feedback.ts). The key is `wrangler secret put LINEAR_API_KEY`.
+LINEAR_TEAM_ID = "8b4b9034-fa97-447d-b9db-04ee52b0f360"

@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use super::ids;
 use super::model::{Answer, Body, Question, Survey, kind_of};
-use super::support;
+use super::{linear, report, support};
 use crate::telemetry::{self, Refused, Source};
 
 /// Whether the answer to `q` must not get a scrubbed copy.
@@ -99,8 +99,13 @@ pub fn submit(
 ) -> Result<(), Refused> {
     let props = response_props(s, answers, src, extra);
     telemetry::send_feedback(telemetry::events::SURVEY_SENT, src, props.clone())?;
-    // Only once consent passed, so the ticket follows the event's rules.
-    support::open(s, &props);
+    // Only once consent passed, so both follow the event's rules. Support
+    // questions, and surveys with no kind, go to the Support inbox, where
+    // the team answers; the rest is product feedback, for Linear.
+    match report::kind(&props) {
+        None | Some("support") => support::open(s, &props),
+        Some(_) => linear::open(s, &props),
+    }
     Ok(())
 }
 

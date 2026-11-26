@@ -6,7 +6,11 @@
 
 /// The values of the `kind` property. The choices of a kind question map to
 /// these by position, so rewording a choice in PostHog changes nothing here.
-pub const KINDS: [&str; 4] = ["bug", "feature", "ux", "other"];
+/// `support` is last, so the older surveys' choices keep their kinds.
+pub const KINDS: [&str; 5] = ["bug", "feature", "ux", "other", "support"];
+
+/// The kinds an agent may send: a support question needs a person to answer.
+pub const AGENT_KINDS: [&str; 4] = ["bug", "feature", "ux", "other"];
 
 /// One survey Arakun knows about.
 pub struct Builtin {
@@ -39,9 +43,11 @@ pub enum FallbackBody {
 }
 
 const KIND_TEXT: &str = "What kind of feedback is it?";
-const KIND_CHOICES: &[&str] = &["Bug", "Feature request", "UX", "Other"];
-// Choices map to `KINDS` by position, so the lengths must match.
-const _: () = assert!(KIND_CHOICES.len() == KINDS.len());
+const USER_KIND_CHOICES: &[&str] = &["Bug", "Feature request", "UX", "Other", "Help / support"];
+const AGENT_KIND_CHOICES: &[&str] = &["Bug", "Feature request", "UX", "Other"];
+// Choices map to the kinds by position, so the lengths must match.
+const _: () = assert!(USER_KIND_CHOICES.len() == KINDS.len());
+const _: () = assert!(AGENT_KIND_CHOICES.len() == AGENT_KINDS.len());
 
 /// Feedback a person writes from the app. The third question is an optional
 /// email and must never reach a public place such as a GitHub issue.
@@ -57,7 +63,7 @@ pub const USER: Builtin = Builtin {
             text: KIND_TEXT,
             optional: false,
             body: FallbackBody::SingleChoice {
-                choices: KIND_CHOICES,
+                choices: USER_KIND_CHOICES,
             },
         },
         Fallback {
@@ -88,7 +94,7 @@ pub const AGENT: Builtin = Builtin {
             text: KIND_TEXT,
             optional: false,
             body: FallbackBody::SingleChoice {
-                choices: KIND_CHOICES,
+                choices: AGENT_KIND_CHOICES,
             },
         },
         Fallback {

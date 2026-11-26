@@ -53,6 +53,7 @@ cloud/
                         and the operator's side of them
   src/cloud_access.ts   requests for cloud access: GET|POST /cloud/access, and the
                         operator's side of them
+  src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/push.ts           the native apps' push service: POST /push/v1/<service>/<token>
   src/teams.ts          devices, teams, invites, envelopes, members, channels
@@ -332,6 +333,15 @@ admin secret cannot grant flags or make sessions in production.
    # Google: a service account's JSON key from the Firebase project, with the
    # Firebase Cloud Messaging API Admin role.
    npx wrangler secret put FCM_SERVICE_ACCOUNT --env production < service-account.json
+   ```
+
+   Optionally, a Linear API key that turns the app's feedback into customer
+   requests in the team `LINEAR_TEAM_ID` names (Linear → Settings → Security &
+   access → Personal API keys, with access to create issues and customers).
+   Without it, `/feedback` answers 503 and feedback stays in PostHog only:
+
+   ```sh
+   npx wrangler secret put LINEAR_API_KEY --env production
    ```
 
 4. Deploy:

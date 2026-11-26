@@ -20,7 +20,7 @@ use crate::theme;
 use crate::ui::{self, ButtonKind, Type};
 
 /// Shown before Send on forms a person opened to report something.
-pub const PUBLIC: &str = "Bug reports may become a public GitHub issue.";
+pub const PUBLIC: &str = "Feedback other than support questions may become a public GitHub issue.";
 /// On the error form when no crash report was sent to link the answer to.
 pub const NO_REPORT: &str = "No crash report was sent, so describe what you were doing.";
 pub const THANKS: &str = "Thanks. Sent to the Arakun team.";
@@ -944,10 +944,7 @@ mod tests {
             assert_eq!(f.public_notice(), None);
             f.set(Answer::Text("x".into()));
             f.advance();
-            assert_eq!(
-                f.public_notice(),
-                Some("Bug reports may become a public GitHub issue.")
-            );
+            assert_eq!(f.public_notice(), Some(PUBLIC));
         }
         for src in [Source::Popover, Source::Agent] {
             let mut f = Flow::new(s.clone(), src);

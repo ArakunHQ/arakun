@@ -277,6 +277,7 @@ fn set_token(args: &[String]) -> Result<(), String> {
         "arakun: Cloudflare Browser Run account",
         account,
     )
+    .map_err(String::from)
 }
 
 /// `arakun fetch …` (`crawl` true for `arakun crawl …`); the exit code.

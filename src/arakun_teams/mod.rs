@@ -731,7 +731,8 @@ async fn device_flow(
         let signed = api::sign_in(&base, &token).map_err(|e| Ended::Failed(format!("Teams: {e}")));
         drop(token);
         let signed = signed?;
-        let saved = keyring::store(&session_account(), "arakun: Teams session", &signed.session);
+        let saved = keyring::store(&session_account(), "arakun: Teams session", &signed.session)
+            .map_err(String::from);
         Ok((signed, saved))
     })
     .await

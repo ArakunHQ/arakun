@@ -71,6 +71,19 @@ cef = { workspace = true, optional = true }
 uds_windows.workspace = true
 windows-sys.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Keychain items through SecItem (src/platform.rs keyring); gpui already pulls it in
+core-foundation = "0.10"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+# The Secret Service over the session bus (src/platform.rs keyring), so no
+# `secret-tool` is needed. gpui already pulls it in through ashpd; keep it at that version.
+zbus = "=5.19.0"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dev-dependencies]
+# The keyring tests serve a stand-in Secret Service over a socket pair.
+zbus = { version = "=5.19.0", features = ["p2p"] }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # An https server on 127.0.0.1 that a server clone signs in to (src/server/daemon.rs).
 # The rustls ureq already builds.

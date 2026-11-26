@@ -107,8 +107,12 @@ pub(super) fn sync_line(sync: Sync) -> &'static str {
     match sync {
         Sync::Idle => "Up to date.",
         Sync::Sending => "Sending…",
-        Sync::Failed => "Couldn't reach Arakun. It is tried again when this computer reconnects.",
-        Sync::Limited => "Too many requests. It is tried again in a moment.",
+        Sync::Failed => {
+            "Couldn't update Arakun. It is tried again when this computer reconnects or you change something here."
+        }
+        Sync::Limited => {
+            "Too many requests. It is tried again when this computer reconnects or you change something here."
+        }
     }
 }
 
@@ -725,11 +729,11 @@ mod tests {
         assert_eq!(sync_line(Sync::Sending), "Sending…");
         assert_eq!(
             sync_line(Sync::Failed),
-            "Couldn't reach Arakun. It is tried again when this computer reconnects."
+            "Couldn't update Arakun. It is tried again when this computer reconnects or you change something here."
         );
         assert_eq!(
             sync_line(Sync::Limited),
-            "Too many requests. It is tried again in a moment."
+            "Too many requests. It is tried again when this computer reconnects or you change something here."
         );
     }
 }

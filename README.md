@@ -1301,6 +1301,15 @@ Turns of Workers AI sessions also log what each tool's results added to the cont
 the program the command runs (`bash cargo`, `bash git`), so you can see which tools and
 commands cost the tokens.
 
+`arakun usage where [--days N] [--json]` reads the Claude Code transcripts on this
+computer (`~/.claude/projects`) and shows where their tokens go: the setup that loads
+with every message (skills, plugins, MCP servers, `CLAUDE.md` files, hook output) and
+which of it no session called, each project's first-message size, how full sessions
+got, and the noisiest tool results. It lists what to fix first, largest first, with one
+suggestion each. The last 30 days count by default (`--days 0` for all). Every number
+is an estimate, at about 4 bytes a token. It only reads the files: nothing is sent
+anywhere and your setup is not changed.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
 from GLib (`libglib2.0-bin` on Debian), `tailscale` (phone over Tailscale), `cf`
@@ -1483,6 +1492,7 @@ arakun shrink -- cargo test       # run it and print a summary: failures, collap
 arakun feedback --kind bug "..."  # tell the Arakun team about a problem (agents use it; needs usage telemetry on)
 arakun notices --unseen           # notices you haven't read yet
 arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
+arakun usage where                # where Claude Code sessions' tokens go, and what to fix first
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
 arakun seat ls                    # the seats and their 5-hour and weekly usage
 arakun seat rm work               # forget a seat

@@ -20,6 +20,16 @@ impl Transport {
         }
     }
 
+    /// Whether what goes over it is encrypted on the way: through the relay
+    /// (end to end), or a server on the loopback that only Tailscale's https
+    /// and this computer reach. A server on every interface is plain http.
+    pub fn private(&self) -> bool {
+        match self {
+            Transport::Local(s) => s.loopback(),
+            Transport::Relay(_) => true,
+        }
+    }
+
     pub fn device_of(&self, id: ClientId) -> Option<String> {
         match self {
             Transport::Local(s) => s.device_of(id),

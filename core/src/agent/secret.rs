@@ -7,10 +7,15 @@
 //! the token of the chat it was started for; [`ask`] hands it to that chat's
 //! [`Route`], and the chat shows the card. The agent gets back only the outcome
 //! and, for a saved secret, a `secret-ref:` handle per field, never the value.
+//!
+//! Under `arakun server` the call goes to the server's local socket instead
+//! ([`serve_from`]), and the card goes to the devices that watch the session
+//! (`phone::wire::secret`). They send what was typed back only over a private
+//! path ([`answer`]): the relay, Tailscale or https, never plain http.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures::channel::{mpsc, oneshot};
@@ -23,6 +28,9 @@ pub const SERVER: &str = "arakun";
 pub const TOOL: &str = "request_secret";
 /// Names the chat a call came from, in the MCP server's environment.
 pub const TOKEN_VAR: &str = "ARAKUN_SECRET_TOKEN";
+/// The local socket of the `arakun server` that started the MCP server, in
+/// its environment. Without it, calls go to the app's control socket.
+pub const SERVER_SOCKET_VAR: &str = "ARAKUN_SERVER_SOCKET";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MIN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TIMEOUT: Duration = Duration::from_secs(60 * 60);
@@ -129,6 +137,32 @@ impl SecretRequest {
     }
 }
 
+impl SecretRequest {
+    /// As the devices that watch a server's session get it. `private` says
+    /// whether every connection from them to the agent is encrypted, so what
+    /// they type may be sent; the card offers only Decline otherwise.
+    pub fn to_wire(&self, private: bool) -> Value {
+        json!({
+            "id": self.id,
+            "label": self.label,
+            "reason": self.reason,
+            "url": self.url,
+            "fields": self.fields.iter().map(|f| json!({"name": f.name, "label": f.label})).collect::<Vec<_>>(),
+            "timeout_secs": self.timeout.as_secs(),
+            "private": private,
+        })
+    }
+
+    /// [`SecretRequest::to_wire`] read back by the app, and whether it is private.
+    /// A server words it, so it is checked as an agent's request is.
+    pub fn from_wire(v: &Value) -> Option<(Self, bool)> {
+        let id = v["id"].as_u64()?;
+        let mut request = Self::parse(v).ok()?;
+        request.id = id;
+        Some((request, v["private"] == true))
+    }
+}
+
 /// Why a request ended without an answer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Why {
@@ -228,6 +262,33 @@ impl Outcome {
     }
 }
 
+/// What the user typed into a card, one value per field, on its way from a
+/// device or the card to [`keep`]. Its `Debug` hides the values, so a logged
+/// message does not show them.
+#[derive(Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct Typed(pub Vec<String>);
+
+impl std::fmt::Debug for Typed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Typed({} hidden)", self.0.len())
+    }
+}
+
+/// Why typed values are refused: the path they would take, or took, is not
+/// encrypted. Until the LAN path is (ARAKUN-150), only the relay, Tailscale
+/// and https carry them.
+pub const NOT_PRIVATE: &str = "This connection is not encrypted, so the secret can't be sent over it. Decline, or answer from a device that reaches the computer through your account or Tailscale.";
+
+/// What a device's answer comes to: `None` declines. Values that came, or
+/// would go, over a path that is not `private` are refused.
+pub fn answer(values: Option<Typed>, private: bool) -> Result<Option<Typed>, &'static str> {
+    match values {
+        Some(_) if !private => Err(NOT_PRIVATE),
+        v => Ok(v),
+    }
+}
+
 /// A request on its way to a chat, with the way back to the agent.
 pub struct Asked {
     pub request: SecretRequest,
@@ -295,14 +356,47 @@ pub struct McpCommand {
     pub env: Vec<(String, String)>,
 }
 
+static SERVER_SOCKET: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sends the calls of this process's sessions to `arakun server`'s local
+/// socket at `socket`, which answers `secret` ([`ask`]), instead of to the app.
+/// Set once, when the server starts.
+pub fn serve_from(socket: &Path) {
+    let _ = SERVER_SOCKET.set(socket.to_path_buf());
+}
+
+fn server_socket() -> Option<&'static Path> {
+    SERVER_SOCKET.get().map(PathBuf::as_path)
+}
+
 impl McpCommand {
-    /// The server for the chat whose [`Route`] has `token`, reaching the app
-    /// on `socket`. `None` when this program has no MCP server
-    /// (`arakun-server`, the examples).
-    pub fn for_chat(token: &str, socket: Option<&Path>) -> Option<Self> {
-        let (program, args) = (crate::host::get().secret_mcp)()?;
+    /// The server for the chat whose [`Route`] has `token`. `None` when this
+    /// program has no MCP server (the examples), or when a sandboxed agent
+    /// could not reach `arakun server`'s socket.
+    pub fn for_chat(token: &str, sandboxed: bool) -> Option<Self> {
         // Codex starts MCP servers with only a few of its own variables.
         let mut env = vec![(TOKEN_VAR.to_string(), token.to_string())];
+        if let Some(socket) = server_socket() {
+            // The sandbox shows the app's control socket only.
+            if sandboxed {
+                return None;
+            }
+            env.push((SERVER_SOCKET_VAR.into(), socket.display().to_string()));
+            // `arakun mcp` and `arakun-server mcp` both serve it.
+            let program = std::env::current_exe().ok()?;
+            return Some(Self {
+                program,
+                args: vec!["mcp".into()],
+                env,
+            });
+        }
+        let (program, args) = (crate::host::get().secret_mcp)()?;
+        // A sandboxed agent reaches arakun through the sandbox's socket.
+        let socket = if sandboxed {
+            Some((crate::host::get().sandbox_socket)())
+        } else {
+            std::env::var_os("ARAKUN_SOCKET").map(PathBuf::from)
+        };
         if let Some(socket) = socket {
             env.push(("ARAKUN_SOCKET".into(), socket.display().to_string()));
         }
@@ -354,7 +448,7 @@ pub fn offered_to(kind: AgentKind) -> bool {
     matches!(
         kind,
         AgentKind::Claude | AgentKind::Codex | AgentKind::Droid
-    ) && (crate::host::get().secret_mcp)().is_some()
+    ) && (server_socket().is_some() || (crate::host::get().secret_mcp)().is_some())
 }
 
 /// Told to the agents that have the tool.
@@ -447,6 +541,59 @@ fn tool() -> Value {
             "required": ["label", "reason"]
         }
     })
+}
+
+/// Serves MCP on stdin and stdout until stdin closes. `forward` takes a
+/// `request_secret` call to whoever shows the card, with the chat's token from
+/// [`TOKEN_VAR`], and waits for its outcome.
+pub fn serve_stdio<F>(forward: F) -> i32
+where
+    F: Fn(&str, &Value) -> Result<Value, String> + Clone + Send + 'static,
+{
+    use std::io::{BufRead as _, Write as _};
+    use std::sync::Arc;
+
+    let token = std::env::var(TOKEN_VAR).unwrap_or_default();
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let write = |out: &Mutex<std::io::Stdout>, v: Value| {
+        let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(out, "{v}");
+        let _ = out.flush();
+    };
+    for line in std::io::stdin().lock().lines() {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        // A call waits for the user; pings and lists must not wait behind it.
+        let is_call = serde_json::from_str::<Value>(&line)
+            .is_ok_and(|v| v["method"] == "tools/call" && v.get("id").is_some());
+        if is_call {
+            let (out, token, forward) = (out.clone(), token.clone(), forward.clone());
+            std::thread::spawn(move || {
+                let call = |args: &Value| {
+                    if token.is_empty() {
+                        return Err(
+                            "Arakun did not start this server for a session, so it has no card to show".into(),
+                        );
+                    }
+                    forward(&token, args)
+                };
+                if let Some(reply) = mcp_reply(&line, call) {
+                    write(&out, reply);
+                }
+            });
+        } else if let Some(reply) = mcp_reply(&line, |_| Err(String::new())) {
+            write(&out, reply);
+        }
+    }
+    0
+}
+
+/// How long the MCP server waits for a call's outcome: a little longer than
+/// the card stays open.
+pub fn call_wait(args: &Value) -> Result<Duration, String> {
+    Ok(SecretRequest::parse(args)?.timeout + Duration::from_secs(60))
 }
 
 /// The MCP server's answer to one JSON-RPC line, if it needs one. `call` runs
@@ -556,6 +703,43 @@ mod tests {
             assert_eq!(Outcome::from_json(&o.to_json()), Some(o));
         }
         assert_eq!(Outcome::from_json(&json!({"outcome": "?"})), None);
+    }
+
+    #[test]
+    fn typed_values_go_only_over_a_private_path() {
+        let typed = || Some(Typed(vec!["hunter2".into()]));
+        assert_eq!(answer(typed(), false), Err(NOT_PRIVATE));
+        assert_eq!(answer(typed(), true), Ok(typed()));
+        // Declining sends nothing, so any path may carry it.
+        assert_eq!(answer(None, false), Ok(None));
+        assert!(!format!("{:?}", typed()).contains("hunter2"));
+    }
+
+    #[test]
+    fn a_request_survives_the_wire() {
+        let mut r = SecretRequest::parse(&json!({
+            "label": "Login", "reason": "To deploy.", "url": "https://example.com",
+            "fields": [{"name": "user", "label": "User"}, {"name": "pw"}],
+            "timeout_secs": 120,
+        }))
+        .unwrap();
+        r.id = 7;
+        assert_eq!(
+            SecretRequest::from_wire(&r.to_wire(true)),
+            Some((r.clone(), true))
+        );
+        assert_eq!(
+            SecretRequest::from_wire(&r.to_wire(false)),
+            Some((r, false))
+        );
+        assert_eq!(SecretRequest::from_wire(&Value::Null), None);
+        // A server's words are checked as an agent's are.
+        assert_eq!(
+            SecretRequest::from_wire(
+                &json!({"id": 1, "label": "T", "reason": "r", "url": "javascript:x"})
+            ),
+            None
+        );
     }
 
     #[test]

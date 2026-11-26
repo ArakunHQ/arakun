@@ -14,6 +14,10 @@
 //! - `ack`: the server read the message the client numbered `seq`.
 //! - `error`.
 //!
+//! A session's `session` and `state` carry the card it shows: `permission`,
+//! `question` or `secret` (`agent::secret`). A `secret` says whether it is
+//! `private`; only then does a device send what was typed, with `secret`.
+//!
 //! A client may number what it sends with `seq`. The server then answers
 //! each with an `ack` once it has read it, so a client can tell a message
 //! lost in a dropped connection from one that arrived. It says it does with
@@ -192,6 +196,15 @@ pub fn question(q: &AskUserRequest) -> Value {
             "index": q.index, "topic": q.topic, "question": q.question, "options": q.options, "multi": q.multi,
         })).collect::<Vec<_>>(),
     })
+}
+
+/// The secret card a session shows (`request_secret`), or null. `private`
+/// says whether this connection is encrypted; with the thread's own
+/// connection to its server, it decides whether the device may send what is
+/// typed (`agent::secret::answer`).
+pub fn secret(t: &Thread, private: bool) -> Value {
+    t.pending_secret()
+        .map_or(Value::Null, |r| r.to_wire(private && t.secret_private()))
 }
 
 pub fn usage(u: &Usage) -> Value {
@@ -733,12 +746,14 @@ pub fn entries_message(id: &str, all: &[Entry], from: usize, scope: &Scope) -> S
     .to_string()
 }
 
-/// `state`: what changed around a watched session's entries.
-pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
+/// `state`: what changed around a watched session's entries. `private`
+/// says whether the connection it goes over is encrypted.
+pub fn state_message(id: &str, t: &Thread, status: Status, private: bool) -> String {
     json!({
         "type": "state", "id": id, "status": self::status(status),
         "permission": t.pending_permission().map(permission),
         "question": t.pending_question().map(question),
+        "secret": secret(t, private),
         "usage": usage(t.usage()),
         "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
         "title": t.title(),
@@ -799,18 +814,26 @@ fn session_head(head: &SessionHead, all: &[Entry], scope: &Scope) -> Value {
     json!({
         "type": "session", "id": head.id, "title": head.title, "agent": head.agent,
         "status": status(head.status), "place": head.place,
-        "permission": null, "question": null, "usage": null, "elapsed_ms": null,
+        "permission": null, "question": null, "secret": null, "usage": null, "elapsed_ms": null,
         "count": all.len(), "from": from, "entries": entries(all, from, scope),
         "changes": change_totals(all),
     })
 }
 
 /// `session`: a session that is running, as a phone opens it. `status` is the
-/// thread's own, which is fresher than the list's.
-pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scope) -> String {
+/// thread's own, which is fresher than the list's. `private` as for
+/// [`state_message`].
+pub fn session_live(
+    head: &SessionHead,
+    t: &Thread,
+    status: Status,
+    scope: &Scope,
+    private: bool,
+) -> String {
     let mut msg = session_head(head, t.entries(), scope);
     msg["permission"] = t.pending_permission().map_or(Value::Null, permission);
     msg["question"] = t.pending_question().map_or(Value::Null, question);
+    msg["secret"] = secret(t, private);
     msg["usage"] = usage(t.usage());
     msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
     msg["status"] = json!(self::status(status));
@@ -841,6 +864,10 @@ pub fn asks(t: &Thread) -> Option<Value> {
         .or_else(|| {
             let q = t.pending_question()?;
             Some(json!({ "kind": "question", "text": q.questions.first()?.question }))
+        })
+        .or_else(|| {
+            let r = t.pending_secret()?;
+            Some(json!({ "kind": "secret", "text": r.label }))
         })
 }
 

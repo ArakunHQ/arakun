@@ -410,6 +410,8 @@ pub fn run(opts: Options) -> i32 {
             return 1;
         }
     };
+    // Its sessions' `request_secret` calls come back through that socket.
+    crate::agent::secret::serve_from(&socket);
     // Before a device can reach it: a server that cannot read what it kept does not start.
     let store = match Store::load(&dir) {
         Ok(store) => store,
@@ -1102,6 +1104,11 @@ impl Daemon {
         let listen = Self::listen_to(incoming, cx);
         tasks.push(cx.spawn(async move |this, cx| {
             while let Some((req, done)) = requests.next().await {
+                // The card answers once the user did, so it waits on its own.
+                if req.cmd == "secret" {
+                    secret_request(&req, done, cx);
+                    continue;
+                }
                 match this.update(cx, |this, cx| this.request(&req, cx)) {
                     Ok(reply) => {
                         let _ = done.send(reply);
@@ -2661,7 +2668,7 @@ impl Daemon {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::state_message(&id, t, status_of(t));
+            let msg = wire::state_message(&id, t, status_of(t), self.transport.private());
             self.send_watchers(&id, msg);
         }
         for id in subagents {
@@ -2801,7 +2808,8 @@ impl Daemon {
                 let reply = match self.live.get(&session) {
                     Some(live) => {
                         let t = live.thread.read(cx);
-                        wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
+                        let private = self.transport.private();
+                        wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()), private)
                     }
                     None => self.with_entries(&session, cx, |all, cwd| {
                         // The read just made, kept: not read again.
@@ -3044,6 +3052,22 @@ impl Daemon {
             ClientMsg::SkipQuestion { session } => {
                 if let Some(thread) = self.thread(&session) {
                     thread.update(cx, |t, cx| t.skip_question(cx));
+                }
+            }
+            ClientMsg::Secret {
+                session,
+                id,
+                values,
+            } => {
+                let private = self.transport.private();
+                let answered = match self.thread(&session) {
+                    Some(thread) => {
+                        thread.update(cx, |t, cx| t.answer_secret(id, values, private, cx))
+                    }
+                    None => Err("that session is not running".into()),
+                };
+                if let Err(e) = answered {
+                    self.transport.send(client, session_error(&session, &e));
                 }
             }
             ClientMsg::Fork { session } => match self.thread_to_change(&session, cx) {
@@ -3680,7 +3704,7 @@ impl Daemon {
             return;
         }
         if self.watched(id) {
-            let state = wire::state_message(id, t, Status::Idle);
+            let state = wire::state_message(id, t, Status::Idle, self.transport.private());
             self.send_watchers(id, settled_state(&state));
         }
         self.retire(id, cx);
@@ -4667,6 +4691,37 @@ fn asks_text(id: &str, t: &Thread) -> Option<String> {
     Some(out)
 }
 
+/// `secret <token> <args>` from Arakun's MCP server for one of this server's
+/// sessions: hands the call to the session's thread, and answers with the
+/// outcome once the card on a device ended.
+fn secret_request(
+    req: &Request,
+    done: futures::channel::oneshot::Sender<Reply>,
+    cx: &mut gpui::AsyncApp,
+) {
+    use crate::agent::secret;
+    let [token, args] = req.args.as_slice() else {
+        let _ = done.send(Reply::err("usage: secret <token> <arguments>"));
+        return;
+    };
+    let asked = serde_json::from_str(args)
+        .map_err(|e| format!("bad arguments: {e}"))
+        .and_then(|args| secret::ask(token, &args));
+    match asked {
+        Ok(outcome) => cx
+            .spawn(async move |_| {
+                let outcome = outcome
+                    .await
+                    .unwrap_or(secret::Outcome::Cancelled(secret::Why::Closed));
+                let _ = done.send(Reply::ok(outcome.to_json().to_string()));
+            })
+            .detach(),
+        Err(e) => {
+            let _ = done.send(Reply::err(e));
+        }
+    }
+}
+
 /// Answers the questionnaire a session waits on: one answer for each question.
 fn answer_question(
     thread: &Entity<Thread>,
@@ -5303,6 +5358,7 @@ fn settled_state(state: &str) -> String {
     msg["status"] = json!(wire::status(Status::Idle));
     msg["permission"] = serde_json::Value::Null;
     msg["question"] = serde_json::Value::Null;
+    msg["secret"] = serde_json::Value::Null;
     msg["elapsed_ms"] = serde_json::Value::Null;
     msg.to_string()
 }
@@ -5718,11 +5774,13 @@ mod tests {
         let asking = json!({
             "type": "state", "id": "s1", "status": "needs_input", "permission": null,
             "question": { "text": "Which one?" }, "elapsed_ms": 1200, "title": "Fix",
+            "secret": { "id": 1, "label": "Token" },
         });
         let settled: serde_json::Value =
             serde_json::from_str(&settled_state(&asking.to_string())).unwrap();
         assert_eq!(settled["status"], wire::status(Status::Idle));
         assert!(settled["question"].is_null() && settled["elapsed_ms"].is_null());
+        assert!(settled["secret"].is_null());
         // What it says of the session itself stays.
         assert_eq!(
             (settled["id"].as_str(), settled["title"].as_str()),

@@ -644,7 +644,9 @@ impl ThreadView {
     /// `request_secret`: masked inputs the agent never sees, with Save and
     /// Decline. What is typed goes to `secret::keep`; the agent gets a handle.
     pub(super) fn secret_card(&self, req: &SecretRequest, cx: &Context<Self>) -> AnyElement {
-        let ready = self.secret_ready(cx);
+        // A server reached over plain http: only Decline, nothing to type.
+        let private = self.thread.read(cx).secret_private();
+        let ready = private && self.secret_ready(cx);
         let state = self.secret.as_ref().filter(|s| s.id == req.id);
         let error = state.and_then(|s| s.error.clone());
         let button = |id: &'static str, label: &'static str, primary: bool, on: bool| {
@@ -733,58 +735,75 @@ impl ThreadView {
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 )
             })
-            .children(req.fields.iter().enumerate().map(|(i, field)| {
-                let input = state.and_then(|s| s.inputs.get(i)).cloned();
-                let shown = state
-                    .and_then(|s| s.revealed.get(i))
-                    .copied()
-                    .unwrap_or(false);
-                div()
-                    .pl(crate::ui::sp(22.))
-                    .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(4.))
-                    .child(
+            .when(!private, |d| {
+                d.child(
+                    div()
+                        .pl(crate::ui::sp(22.))
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .text_color(theme::danger())
+                        .child(crate::agent::secret::NOT_PRIVATE),
+                )
+            })
+            .children(
+                req.fields
+                    .iter()
+                    .enumerate()
+                    .filter(|_| private)
+                    .map(|(i, field)| {
+                        let input = state.and_then(|s| s.inputs.get(i)).cloned();
+                        let shown = state
+                            .and_then(|s| s.revealed.get(i))
+                            .copied()
+                            .unwrap_or(false);
                         div()
-                            .text_size(px(crate::ui::TEXT_XS))
-                            .text_color(theme::text_subtle())
-                            .child(field.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .h(px(28.))
+                            .pl(crate::ui::sp(22.))
                             .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(6.))
-                            .px(crate::ui::sp(8.))
-                            .rounded(crate::ui::rad(8.))
-                            .border_1()
-                            .border_color(theme::border_strong())
-                            .bg(theme::fill_raised())
-                            .text_size(px(crate::ui::TEXT_MD))
-                            .child(div().flex_1().min_w_0().children(input))
+                            .flex_col()
+                            .gap(crate::ui::sp(4.))
                             .child(
-                                crate::ui::labelled(
-                                    div().id(("secret-reveal", i)),
-                                    gpui::Role::Button,
-                                    if shown { "Hide" } else { "Show" },
-                                )
-                                .group("secret-reveal")
-                                .flex_none()
-                                .cursor_pointer()
-                                .child(hover_icon(
-                                    if shown { "view-off" } else { "view" },
-                                    14.,
-                                    theme::text_faint(),
-                                    theme::text_muted(),
-                                    "secret-reveal",
-                                ))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.toggle_reveal(i, cx)),
-                                ),
-                            ),
-                    )
-            }))
+                                div()
+                                    .text_size(px(crate::ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(field.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .h(px(28.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(crate::ui::sp(6.))
+                                    .px(crate::ui::sp(8.))
+                                    .rounded(crate::ui::rad(8.))
+                                    .border_1()
+                                    .border_color(theme::border_strong())
+                                    .bg(theme::fill_raised())
+                                    .text_size(px(crate::ui::TEXT_MD))
+                                    .child(div().flex_1().min_w_0().children(input))
+                                    .child(
+                                        crate::ui::labelled(
+                                            div().id(("secret-reveal", i)),
+                                            gpui::Role::Button,
+                                            if shown { "Hide" } else { "Show" },
+                                        )
+                                        .group("secret-reveal")
+                                        .flex_none()
+                                        .cursor_pointer()
+                                        .child(hover_icon(
+                                            if shown { "view-off" } else { "view" },
+                                            14.,
+                                            theme::text_faint(),
+                                            theme::text_muted(),
+                                            "secret-reveal",
+                                        ))
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.toggle_reveal(i, cx)
+                                            }),
+                                        ),
+                                    ),
+                            )
+                    }),
+            )
             .child(
                 div()
                     .flex()
@@ -802,6 +821,7 @@ impl ThreadView {
                     .child(div().text_size(px(crate::ui::TEXT_XS)).map(|d| {
                         match &error {
                             Some(e) => d.text_color(theme::danger()).child(e.clone()),
+                            None if !private => d,
                             None => d
                                 .text_color(theme::text_faint())
                                 .child("The agent gets a handle, never the value"),

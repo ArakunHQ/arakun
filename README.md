@@ -1722,6 +1722,11 @@ arakun-server service install   # keep it running; see Keep it running
   server's `PATH`; the server install script puts one there. The service keeps the `PATH` it was installed
   with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
   where `node` works.
+- **Secrets.** When an agent there needs a login, token or password, it asks with a
+  private card (`request_secret`), as in the app; the app and the phone page show it, and
+  what you type stays out of the session. It goes only over an encrypted connection: the
+  relay, Tailscale or https. Over `--reach lan`, which is plain http, the card offers
+  only Decline. A sandboxed agent there doesn't get the card yet.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. It needs `login`

@@ -441,8 +441,34 @@ fn ask_within(req: &Request, wait: Duration) -> Result<String, String> {
     }
 }
 
+/// `arakun-server mcp`, and `arakun mcp` started by a server: Arakun's MCP
+/// server for one of the server's sessions, on stdio. Its `request_secret`
+/// calls go to the server's socket, named in its environment, and wait there
+/// for the card's outcome (`agent::secret`).
+pub fn mcp() -> i32 {
+    use crate::agent::secret;
+    let Some(socket) = std::env::var_os(secret::SERVER_SOCKET_VAR).map(PathBuf::from) else {
+        eprintln!("{}: mcp is started by the server for its sessions", name());
+        return 2;
+    };
+    secret::serve_stdio(move |token, args| {
+        let wait = secret::call_wait(args)?;
+        let req = Request::new("secret", &[token, &args.to_string()]);
+        let reply = local::send(&socket, &req, wait)
+            .map_err(|e| format!("could not reach the server: {e}"))?;
+        if !reply.ok {
+            return Err(reply.message);
+        }
+        serde_json::from_str(&reply.message).map_err(|e| format!("the server answered oddly: {e}"))
+    })
+}
+
 /// `arakun server …` (and all of `arakun-server …`): the exit code.
 pub fn cli(args: &[String]) -> i32 {
+    // Not a command people type: the server starts it for its agents.
+    if args.first().map(String::as_str) == Some("mcp") {
+        return mcp();
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let command = match parse(args, &cwd) {
         Ok(c) => c,

@@ -247,7 +247,7 @@ impl Shell {
             self.linear_sync.seen = seen;
             self.views
                 .linear
-                .update(cx, |v, cx| v.set_installed(&[], true, cx));
+                .update(cx, |v, cx| v.set_installed(&[], cx));
         }
         let teams = self.teams.read(cx);
         let now = teams
@@ -341,7 +341,7 @@ impl Shell {
         if ran.learned {
             self.views
                 .linear
-                .update(cx, |v, cx| v.set_installed(&ran.installed, false, cx));
+                .update(cx, |v, cx| v.set_installed(&ran.installed, cx));
         }
         if ran.stopped {
             self.linear_sync.owed = true;

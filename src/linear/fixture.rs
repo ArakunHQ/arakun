@@ -47,6 +47,11 @@ fn loaded() -> Option<&'static Fixture> {
     .as_ref()
 }
 
+/// A test Arakun reads Linear from a fixture.
+pub(crate) fn active() -> bool {
+    loaded().is_some()
+}
+
 /// The fixture always supplies this same list, so with a fixture, signing in
 /// or out in the tab looks like it does nothing.
 pub(super) fn sessions() -> Option<Vec<Session>> {

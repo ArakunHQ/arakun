@@ -1,16 +1,19 @@
 //! The Linear tab: the issues assigned to you, in whichever workspace you
 //! pick. Every sign-in (`linear::Session`) stays saved; the header names the
 //! workspace in view and switches between them, and `accounts` adds and
-//! removes them.
+//! removes them. `delegation` is the page where Linear may start sessions
+//! on this computer.
 //!
 //! In this module "session" is a Linear sign-in. The interface says sign-in
 //! or workspace, since a session in Arakun is an agent's.
 
 mod accounts;
+mod delegation;
 mod list;
 mod sheet;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -22,7 +25,9 @@ use gpui::{
 
 use crate::agent::markdown::Block;
 use crate::input::{InputEvent, TextInput};
+use crate::linear::delegation::Delegation;
 use crate::linear::issues::{Assigned, Detail};
+use crate::linear::places::Places;
 use crate::linear::{self, ApiError, Session};
 use crate::loadable::Loadable;
 use crate::theme;
@@ -38,12 +43,57 @@ pub enum LinearEvent {
     Open(String),
     /// Start an agent session on an issue.
     Ask { title: String, prompt: String },
+    /// The switch or a mapping changed and is saved.
+    DelegationChanged,
+    /// Open the Phone tab, where the relay is turned on.
+    OpenPhoneTab,
+    /// Sign in to the Arakun account.
+    SignInToArakun,
+}
+
+/// What the shell knows and the view cannot see.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Host {
+    pub signed_in: bool,
+    /// The account may use the Linear opt-in.
+    pub flagged: bool,
+    pub relay_on: bool,
+    /// The projects on this computer: name and root.
+    pub projects: Vec<(String, PathBuf)>,
+    pub install_url: String,
+}
+
+impl Host {
+    /// A test Arakun with a Linear fixture has no Arakun account, so it
+    /// pretends to have one to show the page.
+    pub fn for_fixture() -> Host {
+        Host {
+            signed_in: true,
+            flagged: true,
+            relay_on: true,
+            projects: vec![],
+            install_url: "https://app.arakun.dev/linear/install".into(),
+        }
+    }
+}
+
+/// How sending the opt-in to Arakun went.
+// Task 4 sets the other states and removes the allow.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sync {
+    #[default]
+    Idle,
+    Sending,
+    Failed,
+    Limited,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
     Main,
     Accounts,
+    Delegation,
 }
 
 /// With nobody signed in there is only the form; otherwise the page asked for.
@@ -123,6 +173,17 @@ pub struct LinearView {
     detail: Loadable<Detail, ApiError>,
     /// The detail's description, then each comment, parsed once.
     detail_md: Vec<Vec<Block>>,
+    host: Host,
+    /// Per Linear organization id, whether Arakun's Linear app is installed there.
+    installed: HashMap<String, bool>,
+    sync: Sync,
+    delegation: Delegation,
+    /// Why the last change to `delegation` was not saved.
+    delegation_error: Option<String>,
+    /// The teams and projects of the workspace in view, for the add menu.
+    places: Loadable<Places, ApiError>,
+    /// The add menu, where it opens and which of its two steps it is on.
+    adding: Option<(Point<Pixels>, delegation::Adding)>,
     _subs: Vec<Subscription>,
 }
 
@@ -188,6 +249,17 @@ impl LinearView {
             open: None,
             detail: Loadable::default(),
             detail_md: Vec::new(),
+            host: if linear::fixture::active() {
+                Host::for_fixture()
+            } else {
+                Host::default()
+            },
+            installed: HashMap::new(),
+            sync: Sync::Idle,
+            delegation: Delegation::load(),
+            delegation_error: None,
+            places: Loadable::default(),
+            adding: None,
             _subs: vec![sub, search_sub],
         }
     }
@@ -207,6 +279,40 @@ impl LinearView {
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         self.reload(cx);
         self.read(false, cx);
+        if self.page() == Page::Delegation {
+            self.read_places(cx);
+        }
+    }
+
+    /// Without the flag the page goes, even while it is open.
+    pub fn set_host(&mut self, host: Host, cx: &mut Context<Self>) {
+        if !host.flagged && self.page == Page::Delegation {
+            self.page = Page::Main;
+            self.adding = None;
+        }
+        self.host = host;
+        cx.notify();
+    }
+
+    /// `workspace` is the Linear organization id; None forgets what was known.
+    #[allow(dead_code)] // Task 4 calls it.
+    pub fn set_installed(
+        &mut self,
+        workspace: &str,
+        installed: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        match installed {
+            Some(i) => self.installed.insert(workspace.to_string(), i),
+            None => self.installed.remove(workspace),
+        };
+        cx.notify();
+    }
+
+    #[allow(dead_code)] // Task 4 calls it.
+    pub fn set_sync(&mut self, sync: Sync, cx: &mut Context<Self>) {
+        self.sync = sync;
+        cx.notify();
     }
 
     /// Reads the saved sign-ins again. Another workspace in view starts
@@ -234,6 +340,8 @@ impl LinearView {
         self.picked = None;
         self.asked_at = 0;
         self.read_at = None;
+        self.places.reset();
+        self.adding = None;
     }
 
     /// The end of the rate-limit wait for `session`, or 0.
@@ -295,12 +403,18 @@ impl LinearView {
 
     fn switch(&mut self, id: String, cx: &mut Context<Self>) {
         self.menu = None;
-        self.page = Page::Main;
+        // The opt-in page shows the workspace in view, so it stays open.
+        if self.page != Page::Delegation {
+            self.page = Page::Main;
+        }
         if self.current_id().as_deref() != Some(id.as_str()) {
             self.current = Some(id);
             self.clear();
         }
         self.read(false, cx);
+        if self.page() == Page::Delegation {
+            self.read_places(cx);
+        }
         cx.notify();
     }
 
@@ -311,9 +425,27 @@ impl LinearView {
             || k.modifiers.alt
             || k.modifiers.platform
             || !self.focus.is_focused(window)
-            || self.page() != Page::Main
         {
             return;
+        }
+        match self.page() {
+            Page::Main => {}
+            Page::Accounts => return,
+            Page::Delegation => {
+                if k.key != "escape" {
+                    return;
+                }
+                // The innermost open thing closes first.
+                if self.menu.is_some() || self.adding.is_some() {
+                    self.menu = None;
+                    self.adding = None;
+                } else {
+                    self.page = Page::Main;
+                }
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
         }
         let sheet = self.open.is_some();
         match k.key.as_str() {
@@ -363,6 +495,7 @@ impl LinearView {
                 ))
                 .child(icon("unfold-more", 14.).text_color(theme::text_subtle()))
                 .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    this.adding = None;
                     this.menu = if this.menu.is_some() {
                         None
                     } else {
@@ -393,6 +526,29 @@ impl LinearView {
                 Page::Accounts
             };
             this.menu = None;
+            this.adding = None;
+            cx.notify();
+        }));
+        let delegation = ui::button_with(
+            "lin-delegation",
+            Some("flash"),
+            if self.page() == Page::Delegation {
+                "Back to the issues"
+            } else {
+                "Start from Linear"
+            },
+            ButtonKind::Outline,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.menu = None;
+            this.adding = None;
+            if this.page == Page::Delegation {
+                this.page = Page::Main;
+            } else {
+                this.page = Page::Delegation;
+                this.read_places(cx);
+            }
             cx.notify();
         }));
         let updated = self
@@ -423,6 +579,9 @@ impl LinearView {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
+                    .when(!self.sessions.is_empty() && self.host.flagged, |d| {
+                        d.child(delegation)
+                    })
                     .when(!self.sessions.is_empty(), |d| d.child(accounts))
                     .child(refresh),
             )
@@ -466,6 +625,7 @@ impl LinearView {
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.page() {
             Page::Accounts => self.render_accounts(cx),
+            Page::Delegation => self.render_delegation(cx),
             Page::Main => self.render_list(cx),
         }
     }
@@ -481,12 +641,17 @@ impl Render for LinearView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.render_header(cx);
         let body = self.render_body(cx);
-        let menu = self.menu.filter(|_| self.session().is_some());
+        // One floating menu at a time: the workspace switch or the add menu.
+        let menu = match (self.menu.filter(|_| self.session().is_some()), &self.adding) {
+            (Some(at), _) => Some((at, self.render_menu(cx))),
+            (None, Some((at, step))) => Some((*at, self.render_add_menu(step, cx))),
+            (None, None) => None,
+        };
         let sheet = self.render_sheet(cx);
         let body = match self.page() {
             // The list scrolls on its own, under its search box.
             Page::Main => div().flex_1().min_h_0().child(body),
-            Page::Accounts => div().flex_1().min_h_0().child(
+            Page::Accounts | Page::Delegation => div().flex_1().min_h_0().child(
                 div()
                     .id("lin-body")
                     .size_full()
@@ -510,7 +675,7 @@ impl Render for LinearView {
             .child(header)
             .child(body)
             .children(sheet)
-            .when_some(menu, |d, at| {
+            .when_some(menu, |d, (at, menu)| {
                 d.child(
                     div()
                         .id("lin-menu-backdrop")
@@ -523,6 +688,7 @@ impl Render for LinearView {
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
                                 this.menu = None;
+                                this.adding = None;
                                 cx.notify();
                             }),
                         ),
@@ -531,7 +697,7 @@ impl Render for LinearView {
                     gpui::anchored()
                         .position(at)
                         .snap_to_window_with_margin(px(8.))
-                        .child(self.render_menu(cx)),
+                        .child(menu),
                 ))
             })
     }

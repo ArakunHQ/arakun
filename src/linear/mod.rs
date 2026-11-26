@@ -5,7 +5,7 @@
 //! `api.linear.app` and nowhere else.
 
 pub mod delegation;
-mod fixture;
+pub(crate) mod fixture;
 pub mod issues;
 pub mod places;
 pub mod prompt;

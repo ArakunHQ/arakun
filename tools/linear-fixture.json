@@ -124,6 +124,22 @@
           }
         }
       }
+    },
+    {
+      "query": "teams(",
+      "body": {
+        "data": {
+          "teams": { "nodes": [
+            { "id": "team-eng", "name": "Engineering" },
+            { "id": "team-des", "name": "Design" },
+            { "id": "team-ops", "name": "Operations" }
+          ] },
+          "projects": { "nodes": [
+            { "id": "proj-hooks", "name": "Webhooks v2" },
+            { "id": "proj-reports", "name": "Reports" }
+          ] }
+        }
+      }
     }
   ]
 }

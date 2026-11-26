@@ -1,6 +1,4 @@
 //! The teams and projects of a Linear workspace, for the picker in the opt-in.
-// Task 3 (the opt-in UI) uses these and removes the allow.
-#![allow(dead_code)]
 
 use serde_json::Value;
 

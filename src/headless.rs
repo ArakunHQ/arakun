@@ -1961,7 +1961,7 @@ pub fn set_shown(id: &str, on: bool) {
 
 /// Writes each file a session folder holds through the calls the host makes
 /// (under `TEST_ROOT`), for the test of what the data dir leaves readable.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn write_every_file(id: &str) {
     let m = Meta {
         id: id.to_string(),

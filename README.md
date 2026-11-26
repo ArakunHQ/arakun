@@ -1861,14 +1861,26 @@ arakun-server service install   # keep it running; see Keep it running
   it is signed in to and the sign-in that lets it in to the relay; `logout` removes it),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
   work), `linked/` (the conversation of a session handed to another agent, as
-  markdown that the new agent reads), `uploads/` (photos sent with prompts) and
+  markdown that the new agent reads), `uploads/` (photos sent with prompts),
   `linear.json` (the Linear settings the app sent it: the switch, the mappings to its
-  projects and the Linear key of each mapped workspace). `ARAKUN_SERVER_DIR` names another
+  projects and the Linear key of each mapped workspace) and `linear-runs.json` (the
+  issues from Linear it runs). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
 - **The local socket.** The commands above reach the server over `server.sock` in
   that folder, which only your user can open. It is also what keeps a second server
   off the same folder.
+- **Issues delegated in Linear.** A server takes the Linear teams and projects that
+  the app's Linear tab maps to its projects (see the Linear section). It runs them as
+  the app does: it reads the issue with the workspace's Linear key the app gave it,
+  checks the mapping, makes a worktree on the issue's branch under
+  `~/arakun-workspaces/`, and starts a session there with the project's agent that
+  ends in a draft pull request. At most three run at once; the rest wait. Replies and
+  stops from Linear reach the session, and the issue hears what it does. It needs the
+  sign-in (`login`) and the relay. `linear-runs.json` in its folder holds the
+  deliveries handled, each run, and the reports Linear has not taken yet (dropped
+  after a day). A server that stops mid-session tells the issue when it starts again;
+  a reply in Linear continues the session.
 - **A turn that is running when the server stops** is cut off. Its session is still
   there after a restart, and the next message picks it up. Follow-ups that were
   waiting behind that turn run first, then the new message.

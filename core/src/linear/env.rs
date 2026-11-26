@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::git;
+
 pub const NOT_HERE: &str = "the project is not on this computer";
 pub const BAD_NAME: &str = "the branch name is not one git accepts";
 
@@ -55,6 +57,52 @@ impl<T> InFlight<T> {
             .remove(&(project.to_path_buf(), branch.to_string()))
             .unwrap_or_default()
     }
+}
+
+/// The worktree of `repo` on `branch`, and whether it was made now. One git
+/// already has on the branch is used as it is. A branch only on origin is
+/// checked out from there; a new one starts from the project's base.
+/// It blocks on git, so it runs off the UI thread.
+pub fn worktree_on(
+    repo: &Path,
+    project: &str,
+    branch: &str,
+    start: Option<&str>,
+) -> Result<(PathBuf, bool), String> {
+    let said = |e: anyhow::Error| format!("git said \"{}\"", why(&e.to_string()));
+    if !git::branch_arg_ok(repo, branch) {
+        return Err(BAD_NAME.into());
+    }
+    // Listed here or not, the worktree git has on the branch now is used as it is.
+    if let Some(tree) = git::worktrees(repo)
+        .map_err(said)?
+        .into_iter()
+        .find(|t| t.branch.as_deref() == Some(branch))
+    {
+        return Ok((tree.path, false));
+    }
+    if !git::has_commits(repo).map_err(said)? {
+        return Err("the project has no commits yet".into());
+    }
+    let mut branches = git::branches(repo).map_err(said)?;
+    let local = branches.local.iter().any(|b| b == branch);
+    // Pushed from another computer and not fetched here yet, it would look
+    // new, and a fresh branch made from the base could not be pushed later.
+    if !local && git::fetch_branch(repo, branch) {
+        branches = git::branches(repo).map_err(said)?;
+    }
+    let path = crate::model::worktree_path(project, branch);
+    let on_origin = branches
+        .remote
+        .iter()
+        .any(|b| b == &format!("origin/{branch}"));
+    if !local && on_origin {
+        git::add_branch_worktree(repo, &path, branch).map_err(said)?;
+    } else {
+        let base = git::new_env_base(repo, start);
+        git::add_worktree(repo, &path, branch, base.as_deref(), false).map_err(said)?;
+    }
+    Ok((path, true))
 }
 
 #[cfg(test)]

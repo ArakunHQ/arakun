@@ -61,8 +61,9 @@ pub struct Host {
     /// The account may use the Linear opt-in.
     pub flagged: bool,
     pub relay_on: bool,
-    /// The projects on this computer: name and root.
-    pub projects: Vec<(String, PathBuf)>,
+    /// The projects an issue can go to: this computer's, then the main
+    /// folders on paired servers.
+    pub projects: Vec<Target>,
     pub install_url: String,
 }
 
@@ -77,6 +78,23 @@ impl Host {
             projects: vec![],
             install_url: "https://app.arakun.dev/linear/install".into(),
         }
+    }
+}
+
+/// A project a Linear team or project can be mapped to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    /// As the menu and the mapping's row name it.
+    pub name: String,
+    /// The project's root, here or on the server.
+    pub root: PathBuf,
+    /// The paired server it is on, or None for this computer.
+    pub server: Option<String>,
+}
+
+impl Target {
+    pub fn is(&self, root: &std::path::Path, server: Option<&str>) -> bool {
+        self.root == root && self.server.as_deref() == server
     }
 }
 

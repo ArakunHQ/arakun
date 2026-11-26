@@ -335,6 +335,9 @@ const GONE: &str = "gone:";
 
 /// Whether `message` is a server refusing one of `kinds` because it is older
 /// than them: it cannot read the message (`bad message: unknown variant ...`).
+/// What the Computers tab says of a server too old for a Linear mapping.
+const LINEAR_TOO_OLD: &str = "This server is too old to take work from Linear. Update Arakun on it, then map the project again.";
+
 fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
     // The variant refused comes first; the ones expected after it may name
     // a kind here without being about it.
@@ -3178,6 +3181,9 @@ impl Shell {
                     self.server_terms_back(id, cx);
                     self.server_files_back(id, cx);
                     self.server_mirror(id, cx);
+                    // A new connection is a new client there: it hears its
+                    // Linear settings again, in case they changed meanwhile.
+                    self.linear_push_server(id, cx);
                 } else {
                     self.servers_drop_rewinds(id, cx);
                 }
@@ -3192,6 +3198,14 @@ impl Shell {
                 // panel, and none of what else was asked.
                 if kind == "error" && older_server_refused(&text(&msg, "message"), &["git"]) {
                     link.git_asks.older(id);
+                    return;
+                }
+                // A server from before it took Linear's work.
+                if kind == "error"
+                    && older_server_refused(&text(&msg, "message"), &["linear_settings"])
+                {
+                    link.error = Some(LINEAR_TOO_OLD.into());
+                    self.sync_servers_view(cx);
                     return;
                 }
                 // Knows `git`, but not this request: only that one fails.
@@ -3766,6 +3780,12 @@ impl Shell {
                 };
                 let (notice, error) = crate::agent::staged_notice(staged);
                 thread.update(cx, |t, cx| t.post_notice(notice, error, cx));
+            }
+            // The server took its Linear settings, or says why not.
+            "linear_settings" => {
+                if let Some(e) = msg["error"].as_str() {
+                    link.error = Some(format!("Linear: {e}"));
+                }
             }
             "error" => {
                 let message = text(msg, "message");

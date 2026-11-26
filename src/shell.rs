@@ -50,6 +50,7 @@ mod linear_events;
 mod linear_follow;
 mod linear_outbox;
 mod linear_run;
+mod linear_servers;
 mod linear_sync;
 mod menus;
 mod naming;

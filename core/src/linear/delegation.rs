@@ -24,8 +24,12 @@ pub struct Mapping {
     pub target: String,
     /// What Linear calls the target, so a gone one still reads well.
     pub name: String,
-    /// The root of the Arakun project.
+    /// The root of the Arakun project: here, or on the server.
     pub project: PathBuf,
+    /// The paired server (`servers::Saved::id`) the project is on, or None
+    /// for this computer. A server is sent its own mappings without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
 }
 
 /// Each field defaults, so a file from an older or newer Arakun still loads
@@ -100,6 +104,36 @@ impl Delegation {
             .retain(|m| !(m.workspace == workspace && m.kind == kind && m.target == target));
     }
 
+    /// The settings as one machine sees them: only its own mappings, with no
+    /// server named. `server` None is this computer.
+    pub fn on(&self, server: Option<&str>) -> Delegation {
+        Delegation {
+            enabled: self.enabled,
+            mappings: self
+                .mappings
+                .iter()
+                .filter(|m| m.server.as_deref() == server)
+                .map(|m| Mapping {
+                    server: None,
+                    ..m.clone()
+                })
+                .collect(),
+            consented: self.consented.clone(),
+        }
+    }
+
+    /// The servers that have a mapping.
+    pub fn servers(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .mappings
+            .iter()
+            .filter_map(|m| m.server.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     fn find(&self, workspace: &str, kind: Kind, target: &str) -> Option<&Mapping> {
         self.mappings
             .iter()
@@ -114,7 +148,8 @@ pub struct Routes {
     pub projects: Vec<String>,
 }
 
-/// Empty when off. Otherwise the targets of `workspace` whose project is still open here.
+/// Empty when off. Otherwise the targets of `workspace` whose project is
+/// still open here. A mapping to a server's project is that server's to send.
 pub fn routes(d: &Delegation, workspace: &str, local_projects: &[PathBuf]) -> Routes {
     let mut r = Routes::default();
     if !d.enabled {
@@ -123,7 +158,7 @@ pub fn routes(d: &Delegation, workspace: &str, local_projects: &[PathBuf]) -> Ro
     for m in d
         .mappings
         .iter()
-        .filter(|m| m.workspace == workspace && !broken(m, local_projects))
+        .filter(|m| m.workspace == workspace && m.server.is_none() && !broken(m, local_projects))
     {
         match m.kind {
             Kind::Team => r.teams.push(m.target.clone()),
@@ -196,6 +231,7 @@ mod tests {
             target: target.into(),
             name: target.into(),
             project: p(path),
+            server: None,
         }
     }
     fn team(workspace: &str, target: &str, path: &str) -> Mapping {

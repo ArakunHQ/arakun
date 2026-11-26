@@ -3,7 +3,7 @@
 //! team or project to a project here. The page only saves the choice; the
 //! shell tells Arakun.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::*;
 use crate::linear::delegation::{Kind, Mapping};
@@ -72,7 +72,7 @@ pub(super) fn notes(
 /// Under the switch while it is off. It names the workspace whose key goes.
 fn help_text(workspace: &str) -> String {
     format!(
-        "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key for {workspace} to Arakun, to prove the Linear user is you. It is not stored there."
+        "When you assign an issue to Arakun in Linear, a session starts in the project you map. Turning this on sends your Linear key for {workspace} to Arakun, to prove the Linear user is you. It is not stored there. A project on one of your servers runs there, and that server keeps the key to read its issues."
     )
 }
 
@@ -84,14 +84,11 @@ fn connect_text(workspace: &str) -> String {
 
 /// The kind, the Linear name, and the project's name, or None when the
 /// project is no longer in Arakun.
-pub(super) fn row_text(
-    m: &Mapping,
-    projects: &[(String, PathBuf)],
-) -> (&'static str, String, Option<String>) {
+pub(super) fn row_text(m: &Mapping, projects: &[Target]) -> (&'static str, String, Option<String>) {
     (
         kind_name(m.kind),
         m.name.clone(),
-        project_name(projects, &m.project).map(str::to_string),
+        project_name(projects, m).map(str::to_string),
     )
 }
 
@@ -102,11 +99,20 @@ fn kind_name(k: Kind) -> &'static str {
     }
 }
 
-fn project_name<'a>(projects: &'a [(String, PathBuf)], root: &Path) -> Option<&'a str> {
+fn project_name<'a>(projects: &'a [Target], m: &Mapping) -> Option<&'a str> {
     projects
         .iter()
-        .find(|(_, p)| p == root)
-        .map(|(n, _)| n.as_str())
+        .find(|t| t.is(&m.project, m.server.as_deref()))
+        .map(|t| t.name.as_str())
+}
+
+/// Under a row whose project is not in the list.
+fn gone_text(m: &Mapping) -> &'static str {
+    if m.server.is_some() {
+        "This project is not in Arakun now. Its server may not be connected."
+    } else {
+        "This project is no longer in Arakun."
+    }
 }
 
 /// What the add menu offers in `workspace`: teams, then projects, leaving
@@ -255,6 +261,7 @@ impl LinearView {
         target: String,
         name: String,
         project: PathBuf,
+        server: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.adding = None;
@@ -270,6 +277,7 @@ impl LinearView {
                     target,
                     name,
                     project,
+                    server,
                 });
             },
             cx,
@@ -533,11 +541,7 @@ impl LinearView {
                     .gap(crate::ui::sp(2.))
                     .child(line)
                     .when(broken, |d| {
-                        d.child(ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            "This project is no longer in Arakun.",
-                        ))
+                        d.child(ui::text(Type::Caption, theme::text_faint(), gone_text(m)))
                     }),
             )
             .child(
@@ -634,31 +638,32 @@ impl LinearView {
                     .into_any_element()
             }
             Adding::Project { kind, target, name } => {
-                let panel = panel.child(ui::menu_heading("Project on this computer"));
+                let panel = panel.child(ui::menu_heading("Project"));
                 if self.host.projects.is_empty() {
                     return panel
                         .child(note("Add a project to Arakun first."))
                         .into_any_element();
                 }
-                let rows = self
-                    .host
-                    .projects
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (pname, root))| {
-                        let (kind, target, name, root) =
-                            (*kind, target.clone(), name.clone(), root.clone());
-                        ui::menu_item(
-                            ("lin-add-project", i),
-                            "folder01",
-                            pname.clone(),
-                            false,
-                            true,
-                        )
+                let rows = self.host.projects.iter().enumerate().map(|(i, t)| {
+                    let (kind, target, name) = (*kind, target.clone(), name.clone());
+                    let (root, server) = (t.root.clone(), t.server.clone());
+                    let icon = if server.is_some() {
+                        "server"
+                    } else {
+                        "folder01"
+                    };
+                    ui::menu_item(("lin-add-project", i), icon, t.name.clone(), false, true)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.add_mapping(kind, target.clone(), name.clone(), root.clone(), cx)
+                            this.add_mapping(
+                                kind,
+                                target.clone(),
+                                name.clone(),
+                                root.clone(),
+                                server.clone(),
+                                cx,
+                            )
                         }))
-                    });
+                });
                 panel
                     .child(
                         div()
@@ -743,6 +748,7 @@ mod tests {
             target: target.into(),
             name: name.into(),
             project: PathBuf::from(project),
+            server: None,
         }
     }
 
@@ -821,7 +827,7 @@ mod tests {
     fn the_texts_name_the_workspace_whose_key_goes() {
         assert_eq!(
             help_text("Acme"),
-            "When you assign an issue to Arakun in Linear, a session starts here in the project you map. Turning this on sends your Linear key for Acme to Arakun, to prove the Linear user is you. It is not stored there."
+            "When you assign an issue to Arakun in Linear, a session starts in the project you map. Turning this on sends your Linear key for Acme to Arakun, to prove the Linear user is you. It is not stored there. A project on one of your servers runs there, and that server keeps the key to read its issues."
         );
         assert_eq!(
             connect_text("Acme"),
@@ -831,7 +837,30 @@ mod tests {
 
     #[test]
     fn rows_name_the_project_or_say_it_is_gone() {
-        let projects = vec![("arakun".to_string(), PathBuf::from("/p/arakun"))];
+        let projects = vec![
+            Target {
+                name: "arakun".into(),
+                root: PathBuf::from("/p/arakun"),
+                server: None,
+            },
+            Target {
+                name: "arakun on box".into(),
+                root: PathBuf::from("/srv/arakun"),
+                server: Some("s1".into()),
+            },
+        ];
+        // The same folder on another machine is another project.
+        let mut on_box = mapping(Kind::Team, "t1", "Eng", "/srv/arakun");
+        assert_eq!(row_text(&on_box, &projects).2, None);
+        on_box.server = Some("s1".into());
+        assert_eq!(
+            row_text(&on_box, &projects).2.as_deref(),
+            Some("arakun on box")
+        );
+        assert_ne!(
+            gone_text(&on_box),
+            gone_text(&mapping(Kind::Team, "t1", "Eng", "/x"))
+        );
         assert_eq!(
             row_text(&mapping(Kind::Team, "t1", "Eng", "/p/arakun"), &projects),
             ("Team", "Eng".to_string(), Some("arakun".to_string()))

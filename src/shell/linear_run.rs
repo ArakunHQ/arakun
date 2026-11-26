@@ -303,7 +303,8 @@ impl Shell {
     /// The guard, on what this window has now: the switch, the mappings and
     /// the projects open here.
     fn linear_guard(&self, organization: &str, detail: &Detail) -> Result<PathBuf, Refusal> {
-        let d = Delegation::load();
+        // Only this computer's mappings: a server takes its own.
+        let d = Delegation::load().on(None);
         let local: Vec<PathBuf> = self
             .projects
             .iter()

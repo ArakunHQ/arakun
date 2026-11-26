@@ -17,7 +17,7 @@ use crate::arakun_teams::api::DEFAULT_URL;
 use crate::cloud;
 use crate::linear::delegation::{Delegation, Routes, routes};
 use crate::linear::{self, Session};
-use crate::linear_view::{Host, Sync};
+use crate::linear_view::{Host, Sync, Target};
 use crate::phone;
 
 /// Where the shell stands with the server. No `Debug`: it holds the session.
@@ -218,12 +218,30 @@ pub(super) fn may_sync(
 impl Shell {
     /// What the Linear page needs to know of this window.
     pub(super) fn linear_host(&self, cx: &Context<Self>) -> Host {
-        let projects = self
+        let here = self
             .projects
             .iter()
             .filter(|p| !p.is_remote())
-            .map(|p| (p.name.to_string(), p.path.clone()))
-            .collect();
+            .map(|p| Target {
+                name: p.name.to_string(),
+                root: p.path.clone(),
+                server: None,
+            });
+        // A server's main folder of a repository: its worktrees are made from it.
+        let servers = self.projects.iter().flat_map(|p| {
+            p.environments
+                .iter()
+                .filter(|e| e.is_checkout)
+                .filter_map(move |e| {
+                    let r = e.remote.as_ref()?;
+                    Some(Target {
+                        name: format!("{} on {}", p.name, r.machine),
+                        root: PathBuf::from(&r.place),
+                        server: Some(r.server.clone()),
+                    })
+                })
+        });
+        let projects = here.chain(servers).collect();
         // A test Arakun with a Linear fixture cannot sign in to an account.
         if linear::fixture::active() {
             return Host {
@@ -412,7 +430,12 @@ pub fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) ->
     let mut steps = Vec::new();
     for (workspace, linked) in workspaces {
         let routes = routes(d, workspace, local);
-        let sendable = !routes.teams.is_empty() || !routes.projects.is_empty();
+        // A server sends its own routes, and they need the link too.
+        let on_server = d.enabled
+            && d.mappings
+                .iter()
+                .any(|m| m.workspace == *workspace && m.server.is_some());
+        let sendable = on_server || !routes.teams.is_empty() || !routes.projects.is_empty();
         // Unlinked and not agreed to: its routes would only be refused. A
         // consented workspace whose link went (deleted or taken over on the
         // server) is linked again, since the person agreed for it.
@@ -469,6 +492,7 @@ pub(super) mod tests {
             target: target.into(),
             name: target.into(),
             project: p(path),
+            server: None,
         }
     }
     fn team(workspace: &str, target: &str, path: &str) -> Mapping {
@@ -681,6 +705,31 @@ pub(super) mod tests {
                 workspace: "w1".into()
             }
         );
+    }
+
+    #[test]
+    fn a_mapping_on_a_server_links_the_workspace_but_sends_no_route_from_here() {
+        let mut m = team("w1", "t1", "/srv/app");
+        m.server = Some("s1".into());
+        let steps = plan(
+            &on(vec![m.clone()]),
+            &[("w1".into(), false)],
+            &[p("/srv/app")],
+        );
+        assert_eq!(
+            steps,
+            vec![
+                Step::Link {
+                    workspace: "w1".into()
+                },
+                Step::Routes {
+                    workspace: "w1".into(),
+                    routes: Routes::default(),
+                },
+            ]
+        );
+        // Off, it links nothing.
+        assert!(plan(&off(vec![m]), &[("w1".into(), false)], &[]).is_empty());
     }
 
     #[test]

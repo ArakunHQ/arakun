@@ -73,8 +73,7 @@ fn cache_file(cwd: &Path) -> std::path::PathBuf {
     use std::hash::{Hash as _, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut h);
-    crate::platform::app_dir()
-        .join("cache")
+    crate::paths::shared("cache")
         .join("extensions")
         .join(format!("droid-{:016x}.json", h.finish()))
 }

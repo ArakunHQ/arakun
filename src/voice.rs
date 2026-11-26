@@ -65,10 +65,7 @@ impl Tone {
 }
 
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("voice.json"),
-        None => crate::state::data_dir().join("voice.json"),
-    }
+    crate::paths::store("voice.json")
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -92,7 +92,7 @@ impl Todos {
 }
 
 fn file() -> PathBuf {
-    super::store_path("todos.json")
+    crate::paths::store("todos.json")
 }
 
 /// What to add when a sentence asks for a to-do: "to-do: call Dani",

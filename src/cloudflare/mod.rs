@@ -556,7 +556,7 @@ struct Session {
 }
 
 fn cache_dir() -> PathBuf {
-    crate::platform::app_dir().join("cache")
+    crate::paths::shared("cache")
 }
 
 /// What the last load found, to show while the next one runs.

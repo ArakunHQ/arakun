@@ -61,10 +61,7 @@ fn config_file_from(state: Option<PathBuf>, xdg: Option<PathBuf>, home: PathBuf)
 
 /// What was seen and handled, next to the app's other state.
 fn book_file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("pilot.json"),
-        None => crate::state::data_dir().join("pilot.json"),
-    }
+    crate::paths::store("pilot.json")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

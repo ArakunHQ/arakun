@@ -1358,14 +1358,7 @@ fn shift(to: Path, removed: Path) -> Path {
 }
 
 fn file() -> PathBuf {
-    near_state("sidebar.json")
-}
-
-fn near_state(name: &str) -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name(name),
-        None => crate::state::data_dir().join(name),
-    }
+    crate::paths::store("sidebar.json")
 }
 
 /// The extension views turned on in the Marketplace. Kept apart from the
@@ -1453,7 +1446,7 @@ impl Extensions {
 }
 
 fn extensions_file() -> PathBuf {
-    near_state("extensions.json")
+    crate::paths::store("extensions.json")
 }
 
 #[cfg(test)]

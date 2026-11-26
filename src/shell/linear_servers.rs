@@ -20,9 +20,7 @@ use crate::linear::{self, Session};
 use crate::servers_view::Reach;
 
 fn told_file() -> PathBuf {
-    crate::platform::app_dir()
-        .join("linear")
-        .join("servers.json")
+    crate::paths::shared("linear").join("servers.json")
 }
 
 /// The servers that were sent mappings and not cleared since.

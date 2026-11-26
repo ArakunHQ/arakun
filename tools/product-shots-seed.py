@@ -11,9 +11,10 @@ project and the session open, and data/arakun/sessions/<id>.json, the session's
 transcript. It also gets mock-acp.py, a stand-in for Claude Code's ACP adapter
 to put in ARAKUN_CLAUDE_ACP: a restored session connects to its agent, and
 without one the shot shows an offer to install it. Its edits are the ones left in PROJECT, so the session, the Changes
-list and the diffs agree. `arakun dev start --seed SEED` reads this layout, and
-so does a test Arakun run with ARAKUN_STATE=SEED/state.json and
-XDG_DATA_HOME=SEED/data.
+list and the diffs agree. `arakun dev start --seed SEED` reads this layout. To run a
+test Arakun on it by hand, copy state.json to SEED/data/arakun/ and start it
+with ARAKUN_STATE=SEED/data/arakun/state.json and XDG_DATA_HOME=SEED/data:
+its files are next to its state.
 
 Everything here is made up: no real person, path, host or account.
 """

@@ -2776,10 +2776,7 @@ impl Draft {
 
 fn drafts_dir() -> PathBuf {
     // Next to the state file, so a test Arakun keeps its drafts apart.
-    let base = match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("github"),
-        None => crate::state::data_dir().join("github"),
-    };
+    let base = crate::paths::store("github");
     base.join("drafts")
 }
 

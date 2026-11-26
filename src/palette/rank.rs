@@ -336,7 +336,7 @@ impl Frecency {
 }
 
 fn file() -> PathBuf {
-    super::store_path("palette-frecency.json")
+    crate::paths::store("palette-frecency.json")
 }
 
 #[cfg(test)]

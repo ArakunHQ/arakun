@@ -128,10 +128,7 @@ impl Saved {
 }
 
 fn file() -> PathBuf {
-    match std::env::var_os("ARAKUN_STATE").map(PathBuf::from) {
-        Some(state) => state.with_file_name("palettes.json"),
-        None => crate::state::data_dir().join("palettes.json"),
-    }
+    crate::paths::store("palettes.json")
 }
 
 pub fn load() -> Saved {

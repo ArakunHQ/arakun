@@ -140,7 +140,7 @@ pub(crate) fn blocked() -> bool {
 }
 
 fn consent_file() -> PathBuf {
-    crate::platform::app_dir().join("telemetry.json")
+    crate::paths::store("telemetry.json")
 }
 
 fn saved() -> &'static Mutex<Option<Option<Consent>>> {
@@ -639,7 +639,7 @@ pub fn timestamp(unix_ms: u64) -> String {
 pub(crate) fn install_id() -> String {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
-        let path = crate::platform::app_dir().join("telemetry-id");
+        let path = crate::paths::shared("telemetry-id");
         if let Ok(id) = std::fs::read_to_string(&path) {
             let id = id.trim();
             if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) {

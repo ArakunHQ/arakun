@@ -123,10 +123,10 @@ shoot_macos() {
   local mode=$1 dir="$scratch/$1"
   mkdir -p "$dir/home" "$dir/data/arakun" "$dir/run"
   if [ -n "$seed" ]; then
-    cp "$seed/state.json" "$dir/state.json"
+    cp "$seed/state.json" "$dir/data/arakun/state.json"
     cp -R "$seed/data/." "$dir/data/"
   fi
-  palettes "$mode" > "$dir/palettes.json"
+  palettes "$mode" > "$dir/data/arakun/palettes.json"
   neutral_shell "$dir/zdot"
   # The largest on-screen window of a process, by its CoreGraphics number.
   if [ ! -x "$scratch/winid" ]; then
@@ -149,7 +149,7 @@ SWIFT
   # notifications off the desktop.
   env -i HOME="$dir/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR="$dir/run" \
     LANG=en_US.UTF-8 USER=demo LOGNAME=demo SHELL=/bin/zsh ZDOTDIR="$dir/zdot" \
-    ARAKUN_STATE="$dir/state.json" XDG_DATA_HOME="$dir/data" XDG_RUNTIME_DIR="$dir/run" \
+    ARAKUN_STATE="$dir/data/arakun/state.json" XDG_DATA_HOME="$dir/data" XDG_RUNTIME_DIR="$dir/run" \
     ARAKUN_CI=off ARAKUN_GITHUB=readonly ARAKUN_DEV="$size" \
     ${ARAKUN_CLAUDE_ACP:+ARAKUN_CLAUDE_ACP="$ARAKUN_CLAUDE_ACP"} \
     "$bin" "$project" > "$dir/arakun.log" 2>&1 &
@@ -190,15 +190,15 @@ SWIFT
 shoot_linux() {
   local mode=$1
   "$bin" dev stop >/dev/null 2>&1 || true
-  # The test Arakun keeps palettes.json next to its state, which
-  # `arakun dev start` leaves in place.
-  local devroot
-  devroot=$(dirname "$("$bin" dev socket)")
-  mkdir -p "$devroot"
-  palettes "$mode" > "$devroot/palettes.json"
+  # `arakun dev start` clears the test Arakun's files, so palettes.json goes
+  # in through a seed of this mode's own, with the mock data if there is any.
+  local modeseed="$scratch/seed-$mode"
+  rm -rf "$modeseed"
+  mkdir -p "$modeseed/data/arakun"
+  [ -n "$seed" ] && cp -R "$seed/." "$modeseed/"
+  palettes "$mode" > "$modeseed/data/arakun/palettes.json"
   dev_running=1
-  local args=("$project" --size "$size")
-  [ -n "$seed" ] && args+=(--seed "$seed")
+  local args=("$project" --size "$size" --seed "$modeseed")
   if command -v zsh >/dev/null; then
     neutral_shell "$scratch/zdot"
     SHELL=$(command -v zsh) ZDOTDIR="$scratch/zdot" "$bin" dev start "${args[@]}"

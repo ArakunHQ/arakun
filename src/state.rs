@@ -881,14 +881,13 @@ pub fn exists() -> bool {
     file().exists()
 }
 
+/// This instance's own folder, next to its state (see `crate::paths`).
 pub fn data_dir() -> PathBuf {
-    crate::platform::app_dir()
+    crate::paths::data_dir()
 }
 
 fn file() -> PathBuf {
-    std::env::var_os("ARAKUN_STATE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir().join("state.json"))
+    crate::paths::state_file()
 }
 
 pub fn load() -> State {

@@ -95,7 +95,7 @@ impl Pins {
 }
 
 fn file() -> PathBuf {
-    super::store_path("pins.json")
+    crate::paths::store("pins.json")
 }
 
 #[cfg(test)]

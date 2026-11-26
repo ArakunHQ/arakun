@@ -24,5 +24,5 @@ pub fn set_any_page(on: bool) {
 }
 
 fn marker() -> PathBuf {
-    crate::platform::app_dir().join("drive-any-page")
+    crate::paths::store("drive-any-page")
 }

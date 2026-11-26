@@ -162,7 +162,7 @@ impl Turn {
 pub fn path() -> PathBuf {
     std::env::var_os("ARAKUN_USAGE_LOG")
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::platform::app_dir().join("usage.jsonl"))
+        .unwrap_or_else(|| crate::paths::shared("usage.jsonl"))
 }
 
 /// About 60,000 turns. Past it the log moves to `usage.old.jsonl`, so the

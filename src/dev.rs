@@ -22,8 +22,9 @@ arakun dev start [dir] [--size WxH] [--seed DIR]
                                   start a fresh test arakun (Linux: on a virtual display;
                                   macOS: in a window that never takes the focus), with
                                   dir (default: here) as its project; restarts one.
-                                  --seed starts it from DIR/state.json and DIR/data
-                                  (its XDG data home) instead of an empty state
+                                  --seed starts it from DIR/state.json (if there is
+                                  one) and DIR/data (its XDG data home) instead of
+                                  an empty state
 arakun dev shot [file.png]          screenshot its window, in the pixels click takes
                                   (on a Retina Mac, 2 a point)
 arakun dev click <x> <y> [--right] [--double] [--ctrl] [--shift]
@@ -66,7 +67,9 @@ fn root() -> PathBuf {
 }
 
 fn state_file() -> PathBuf {
-    root().join("state.json")
+    // In the data folder, so every file of the test Arakun is in `data/` and
+    // a new start clears them all.
+    root().join("data").join("arakun").join("state.json")
 }
 
 /// The test arakun's control socket (see `control::socket_path`).
@@ -266,11 +269,15 @@ fn start_args(args: &[String]) -> Result<StartArgs, String> {
     Ok(out)
 }
 
-/// Copies the seed's state.json over the default one and its data folder
-/// into the test arakun's, so it opens with sessions already there.
+/// Copies the seed's state.json, if it has one, over the default one and its
+/// data folder into the test arakun's, so it opens with sessions already there.
 fn plant_seed(seed: &Path, root: &Path) -> Result<(), String> {
+    // A seed without a state of its own starts from the plain one.
     let state = seed.join("state.json");
-    std::fs::copy(&state, state_file()).map_err(|e| format!("seed: {}: {e}", state.display()))?;
+    if state.exists() {
+        std::fs::copy(&state, state_file())
+            .map_err(|e| format!("seed: {}: {e}", state.display()))?;
+    }
     let data = seed.join("data");
     if data.is_dir() {
         copy_dir(&data, &root.join("data")).map_err(|e| format!("seed: {e}"))?;

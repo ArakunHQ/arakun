@@ -304,7 +304,7 @@ fn needed_marketplaces(plugins: &[String], known: &Value) -> BTreeMap<String, Va
 
 /// The skills.sh skills installed here, as [`remember_skill`] kept them.
 fn skills_file() -> PathBuf {
-    crate::platform::app_dir().join("skills-installed.json")
+    crate::paths::shared("skills-installed.json")
 }
 
 fn remembered_skills() -> Vec<SkillEntry> {
@@ -342,7 +342,7 @@ pub enum RepoItem {
 }
 
 fn repo_installs_file() -> PathBuf {
-    crate::platform::app_dir().join("repo-installs.json")
+    crate::paths::shared("repo-installs.json")
 }
 
 fn remembered_repo_installs() -> Vec<RepoInstall> {

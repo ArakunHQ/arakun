@@ -231,7 +231,7 @@ fn to_image(icon: Icon) -> Option<Arc<RenderImage>> {
 }
 
 fn dir() -> PathBuf {
-    crate::platform::app_dir().join("cache").join("favicons")
+    crate::paths::shared("cache").join("favicons")
 }
 
 /// An icon's pixels, BGRA with premultiplied alpha, as the tab draws them.

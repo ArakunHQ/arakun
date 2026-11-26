@@ -132,7 +132,7 @@ fn set(c: Choice) {
 }
 
 fn choice_path() -> std::path::PathBuf {
-    crate::platform::app_dir().join("env-cleanup")
+    crate::paths::store("env-cleanup")
 }
 
 /// "Off", "7 days"…
@@ -322,7 +322,7 @@ pub fn sweep_leftovers(images: &Path) {
         data.clone(),
         data.join("sessions"),
         data.join("linked"),
-        crate::platform::app_dir().join("cache"),
+        crate::paths::shared("cache"),
     ] {
         removed += remove_write_leftovers(&dir);
     }

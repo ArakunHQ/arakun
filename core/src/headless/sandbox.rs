@@ -868,6 +868,18 @@ pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
         config.join("himalaya"),
         config.join("gh"),
     ]);
+    // A test Arakun's own files (`ARAKUN_STATE`) may be outside the data
+    // folder. Not that whole folder: it could be the home or a project.
+    paths.extend(
+        [
+            crate::paths::state_file(),
+            crate::paths::store("sessions"),
+            crate::paths::store("linked"),
+            crate::paths::store("pastes"),
+        ]
+        .into_iter()
+        .filter(|p| p.is_absolute()),
+    );
     if let Some(h) = std::env::var_os("HIMALAYA_CONFIG") {
         paths.extend(std::env::split_paths(&h));
     }

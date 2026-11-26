@@ -168,7 +168,7 @@ pub fn default_model(agent: AgentKind) -> &'static str {
 }
 
 fn namer_path() -> PathBuf {
-    crate::platform::app_dir().join("branch-namer.json")
+    crate::paths::store("branch-namer.json")
 }
 
 /// The namer set in this run. `set_namer` saves in the background, so the

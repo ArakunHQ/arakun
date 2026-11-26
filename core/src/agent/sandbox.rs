@@ -622,7 +622,7 @@ impl Session {
             }
         }
         // Not under the control socket's folder, which a sandbox is shown.
-        let dir = crate::platform::app_dir().join("sandboxes").join(format!(
+        let dir = crate::paths::shared("sandboxes").join(format!(
             "{}-{}-{}",
             kind.id(),
             std::process::id(),

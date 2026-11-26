@@ -286,6 +286,18 @@ sees the project's skills.
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
   global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
   project's sessions, worth keeping as a script of the project.
+- **Secrets on a card.** When an agent needs something only you can give, such as a
+  login, an API token, a PIN or a pairing code, it asks with a card in the session
+  instead of a message. The card shows what it is, why the agent needs it and, when
+  there is one, the page to sign in or make it. Its inputs are masked (the eye shows
+  what you typed, and nothing copies out of them), and **Save** or **Decline**
+  answers. The agent gets a `secret-ref:` handle per field, never the value, and the
+  transcript records only whether you saved, declined or the request was cancelled.
+  A request is cancelled when you stop the run, send a new message, the turn ends,
+  or 10 minutes pass. Claude Code, Codex and Droid sessions on this computer have it
+  through Arakun's MCP server (`arakun mcp`, which Arakun starts for each session);
+  the phone and sessions on a server don't show the card yet. Saved values stay in
+  Arakun's memory only, for 24 hours or until a handle is used.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
   going with the app closed. Its tools run inside a sandbox (workspace writable, the
   rest read-only, no credentials, no network unless `--allow net`), and a policy
@@ -1492,6 +1504,8 @@ arakun github pilot connect <url> --token -
                                   # from stdin (-) or ARAKUN_PILOT_TOKEN and
                                   # ARAKUN_PILOT_ADMIN_TOKEN; also --admin-token -,
                                   # --no-admin-token, --no-check
+arakun mcp                        # Arakun's MCP server on stdio (request_secret); Arakun
+                                  # starts it for each agent session, not you
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)

@@ -2517,6 +2517,8 @@ fn desktop_input_text(t: &Thread) -> String {
         }
     } else if t.pending_question().is_some() {
         "Has a question for you.".into()
+    } else if let Some(r) = t.pending_secret() {
+        format!("Asks for a secret: {}", r.label)
     } else {
         "Needs your input.".into()
     }

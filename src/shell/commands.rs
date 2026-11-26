@@ -38,6 +38,11 @@ impl Shell {
                     let _ = this.update(cx, |this, cx| this.rename_command(req, done, cx));
                     continue;
                 }
+                // The card answers once the user did, so it waits on its own.
+                if req.cmd == "secret" {
+                    secret_command(&req, done, cx);
+                    continue;
+                }
                 if req.cmd == "peer-review" {
                     let _ = this.update(cx, |shell, cx| {
                         // No fallback to the visible project for a caller elsewhere.
@@ -744,6 +749,32 @@ fn agent_label(id: &str) -> String {
     .into_iter()
     .find(|k| k.id() == id)
     .map_or_else(|| "An agent".into(), |k| k.label().to_string())
+}
+
+/// `request_secret` from Arakun's MCP server: `[token, arguments]`. The chat
+/// the token names shows the card; the reply is the outcome, never a value.
+fn secret_command(req: &Request, done: oneshot::Sender<Reply>, cx: &mut gpui::AsyncWindowContext) {
+    use crate::agent::secret;
+    let [token, args] = req.args.as_slice() else {
+        let _ = done.send(Reply::err("usage: secret <token> <arguments>"));
+        return;
+    };
+    let asked = serde_json::from_str(args)
+        .map_err(|e| format!("bad arguments: {e}"))
+        .and_then(|args| secret::ask(token, &args));
+    match asked {
+        Ok(outcome) => cx
+            .spawn(async move |_| {
+                let outcome = outcome
+                    .await
+                    .unwrap_or(secret::Outcome::Cancelled(secret::Why::Closed));
+                let _ = done.send(Reply::ok(outcome.to_json().to_string()));
+            })
+            .detach(),
+        Err(e) => {
+            let _ = done.send(Reply::err(e));
+        }
+    }
 }
 
 #[cfg(test)]

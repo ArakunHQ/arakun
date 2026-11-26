@@ -26,6 +26,7 @@ use gpui::{
 use super::diff::{self, LineKind};
 use super::markdown::{self, Block, Doc, Fade, MdStyle};
 use super::search::{self, Find, Spot};
+use super::secret::SecretRequest;
 use super::selection::{SelText, TextMap};
 use super::shell_diff::ShellChange;
 use super::thread::{
@@ -278,6 +279,17 @@ struct AskState {
     _subs: Vec<Subscription>,
 }
 
+/// The inputs of the secret card on show (`request_secret`).
+struct SecretState {
+    id: u64,
+    inputs: Vec<Entity<TextInput>>,
+    /// Per input, whether it shows what was typed.
+    revealed: Vec<bool>,
+    /// Why the last Save did not go through.
+    error: Option<SharedString>,
+    _subs: Vec<Subscription>,
+}
+
 /// A selection in one markdown surface, in its [`TextMap`] numbering.
 struct Selection {
     surface: usize,
@@ -363,6 +375,7 @@ pub struct ThreadView {
     ssh: ssh::State,
     can_tell_us: bool,
     ask: Option<AskState>,
+    secret: Option<SecretState>,
     /// The parsed spec-mode plan on screen, keyed by its text.
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
     list: ListState,
@@ -463,6 +476,7 @@ impl ThreadView {
             ssh: ssh::State::default(),
             can_tell_us: true,
             ask: None,
+            secret: None,
             plan_md: RefCell::new(None),
             list,
             turns,
@@ -501,6 +515,7 @@ impl ThreadView {
         this.sync_mascot(cx);
         this.sync_tick(window, cx);
         this.sync_ask(window, cx);
+        this.sync_secret(window, cx);
         this
     }
 
@@ -614,6 +629,7 @@ impl ThreadView {
             ThreadEvent::NeedsPermission => {
                 self.remeasure_footer();
                 self.sync_ask(window, cx);
+                self.sync_secret(window, cx);
                 if self.thread.read(cx).pending_permission().is_some()
                     && !self.focus.is_focused(window)
                 {
@@ -623,7 +639,8 @@ impl ThreadView {
             }
             ThreadEvent::Changed => {
                 self.remeasure_footer();
-                self.sync_ask(window, cx)
+                self.sync_ask(window, cx);
+                self.sync_secret(window, cx);
             }
             ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry, cx),
             // A background subagent keeps the timers ticking after the turn.
@@ -672,6 +689,7 @@ impl ThreadView {
         }
         self.sync_tick(window, cx);
         self.sync_ask(window, cx);
+        self.sync_secret(window, cx);
     }
 
     fn flush_pending(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1217,6 +1235,114 @@ impl ThreadView {
         }
     }
 
+    /// Keeps the secret card's inputs in step with the request on show. A card
+    /// that closed takes what was typed with it.
+    fn sync_secret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pending = self
+            .thread
+            .read(cx)
+            .pending_secret()
+            .map(|r| (r.id, r.fields.len()));
+        if self.secret.as_ref().map(|s| s.id) == pending.map(|(id, _)| id) {
+            return;
+        }
+        if let Some(old) = self.secret.take() {
+            for input in &old.inputs {
+                input.update(cx, |i, cx| i.clear(cx));
+            }
+        }
+        if let Some((id, n)) = pending {
+            let inputs: Vec<Entity<TextInput>> = (0..n)
+                .map(|_| cx.new(|cx| TextInput::new("", cx).secret()))
+                .collect();
+            let subs = inputs
+                .iter()
+                .map(|input| {
+                    cx.subscribe_in(input, window, |this, _, ev: &InputEvent, _, cx| match ev {
+                        InputEvent::Submit => this.save_secret(cx),
+                        InputEvent::Changed => cx.notify(),
+                        _ => {}
+                    })
+                })
+                .collect();
+            self.secret = Some(SecretState {
+                id,
+                inputs,
+                revealed: vec![false; n],
+                error: None,
+                _subs: subs,
+            });
+        }
+        self.remeasure_last();
+        cx.notify();
+    }
+
+    fn secret_ready(&self, cx: &App) -> bool {
+        self.secret
+            .as_ref()
+            .is_some_and(|s| s.inputs.iter().all(|i| !i.read(cx).text().is_empty()))
+    }
+
+    /// Empties the inputs before the card can close, and puts the values back
+    /// if saving fails, so the user need not type them again.
+    fn save_secret(&mut self, cx: &mut Context<Self>) {
+        if !self.secret_ready(cx) {
+            return;
+        }
+        let Some(state) = self.secret.as_mut() else {
+            return;
+        };
+        let values: Vec<String> = state
+            .inputs
+            .iter()
+            .map(|i| i.read(cx).text().to_string())
+            .collect();
+        for input in &state.inputs {
+            input.update(cx, |i, cx| i.clear(cx));
+        }
+        let id = state.id;
+        let saved = self
+            .thread
+            .update(cx, |t, cx| t.save_secret(id, values.clone(), cx));
+        if let Err(e) = saved
+            && let Some(state) = self.secret.as_mut().filter(|s| s.id == id)
+        {
+            for (input, value) in state.inputs.iter().zip(values) {
+                input.update(cx, |i, cx| i.set_text(value, cx));
+            }
+            state.error = Some(e.into());
+        }
+        self.remeasure_last();
+        cx.notify();
+    }
+
+    fn decline_secret(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = self.secret.as_ref() else {
+            return;
+        };
+        for input in &state.inputs {
+            input.update(cx, |i, cx| i.clear(cx));
+        }
+        let id = state.id;
+        self.thread.update(cx, |t, cx| t.decline_secret(id, cx));
+        self.remeasure_last();
+        cx.notify();
+    }
+
+    fn toggle_reveal(&mut self, field: usize, cx: &mut Context<Self>) {
+        let Some(state) = self.secret.as_mut() else {
+            return;
+        };
+        let (Some(on), Some(input)) = (state.revealed.get_mut(field), state.inputs.get(field))
+        else {
+            return;
+        };
+        *on = !*on;
+        let on = *on;
+        input.update(cx, |i, cx| i.set_revealed(on, cx));
+        cx.notify();
+    }
+
     /// One answer per question, or None while any is still blank.
     fn answers(&self, req: &AskUserRequest, cx: &App) -> Option<Vec<String>> {
         let ask = self.ask.as_ref()?;
@@ -1397,7 +1523,8 @@ impl ThreadView {
                 .any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
         });
         let question = t.pending_question();
-        if permission.is_none() && question.is_none() {
+        let secret = t.pending_secret();
+        if permission.is_none() && question.is_none() && secret.is_none() {
             return None;
         }
         let cwd = t.cwd().to_path_buf();
@@ -1409,6 +1536,7 @@ impl ThreadView {
                 .px(crate::ui::sp(16.))
                 .children(permission.map(|p| self.permission_card(p, None, &cwd, window, cx)))
                 .children(question.map(|q| self.question_card(q, cx)))
+                .children(secret.map(|r| self.secret_card(r, cx)))
                 .into_any_element(),
         )
     }
@@ -1491,6 +1619,7 @@ impl ThreadView {
         let live = self.is_live(ix, t);
         let permission = t.pending_permission().cloned();
         let question = t.pending_question().cloned();
+        let secret = t.pending_secret().cloned();
         let status = t.status();
         let cancelling = t.is_cancelling();
         let elapsed_live = t.turn_elapsed();
@@ -1784,6 +1913,10 @@ impl ThreadView {
                     .px(crate::ui::sp(16.))
                     .child(self.question_card(q, cx)),
             );
+        }
+
+        if live && let Some(r) = &secret {
+            col = col.child(div().px(crate::ui::sp(16.)).child(self.secret_card(r, cx)));
         }
 
         let notices_from = body.len() - trailing_notices;

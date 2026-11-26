@@ -31,6 +31,8 @@ use super::shell_diff::{self, ShellChange, Snapshot};
 mod acp;
 #[path = "native.rs"]
 mod native;
+#[path = "secret_card.rs"]
+mod secret_card;
 #[path = "subagents.rs"]
 mod subagents;
 pub use native::{
@@ -725,6 +727,8 @@ pub struct Thread {
     /// the files are on the server, not here.
     fetched_images: HashMap<String, PathBuf>,
     native: native::State,
+    /// What the agent asked for with `request_secret`.
+    secrets: secret_card::Secrets,
     cwd: PathBuf,
     meta: SessionMeta,
     status: ThreadStatus,
@@ -870,7 +874,7 @@ fn summarize(text: &str) -> String {
 /// What Claude's adapter appends to its system prompt: the window's commands
 /// when there is a window, and always how to draw a picture in the chat.
 fn claude_system_hint(cwd: &Path) -> String {
-    match launch::agent_hint(Some(cwd)) {
+    match launch::agent_hint(AgentKind::Claude, Some(cwd)) {
         Some(hint) => format!("{hint}\n\n{}", super::chart::DRAW_NOTE),
         None => super::chart::DRAW_NOTE.to_string(),
     }
@@ -1252,6 +1256,7 @@ impl Thread {
             remote: false,
             fetched_images: HashMap::new(),
             native: native::State::default(),
+            secrets: secret_card::Secrets::default(),
             session_id: meta.session_id.clone(),
             title_locked: !meta.title.is_empty(),
             meta,
@@ -1660,6 +1665,8 @@ impl Thread {
 
     /// Kills the agent now instead of when the entity is dropped.
     pub fn shutdown(&mut self) {
+        // Dropping the route ends what the agent waits on as cancelled.
+        self.secrets = secret_card::Secrets::default();
         self._setup = None;
         self._prompt = None;
         self._pump = None;
@@ -1842,11 +1849,24 @@ impl Thread {
         let install = self.take_install_approval();
         let pinned = self.meta.seat.clone();
         let pinned_key = self.meta.seat_key.clone();
+        let secret_token = self.open_secret_route(cx);
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
+                // A sandboxed agent reaches arakun through the sandbox's socket.
+                let server = |sandboxed: bool| {
+                    let socket = if sandboxed {
+                        Some((crate::host::get().sandbox_socket)())
+                    } else {
+                        std::env::var_os("ARAKUN_SOCKET").map(PathBuf::from)
+                    };
+                    secret_token.as_deref().and_then(|token| {
+                        super::secret::McpCommand::for_chat(token, socket.as_deref())
+                    })
+                };
                 if native {
-                    return launch::resolve_droid_native(Some(&cwd)).map(|s| (s, None, None));
+                    return launch::resolve_droid_native(Some(&cwd))
+                        .map(|s| (s, None, None, server(false)));
                 }
                 let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
@@ -1854,6 +1874,12 @@ impl Thread {
                 let sandboxed = super::sandbox::wanted(&cwd).map_err(|e| {
                     anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
                 })?;
+                let server = server(sandboxed);
+                if kind == AgentKind::Codex
+                    && let Some(server) = &server
+                {
+                    launch::codex_add_mcp(&mut spec, super::secret::SERVER, server.codex());
+                }
                 // Each Claude Code session on a seat of its own, in its own
                 // environment only; none in the sandbox. See `seats`.
                 let seat = (kind == AgentKind::Claude).then(|| {
@@ -1865,7 +1891,7 @@ impl Thread {
                     spec.unset.extend(unset);
                 }
                 if !sandboxed {
-                    return Ok((spec, seat, None));
+                    return Ok((spec, seat, None, server));
                 }
                 // Its tools would run in arakun itself, outside any sandbox.
                 if kind == AgentKind::WorkersAi {
@@ -1875,7 +1901,7 @@ impl Thread {
                 }
                 let sandbox = super::sandbox::Session::new(kind, &cwd)?;
                 let spec = sandbox.wrap(spec);
-                Ok((spec, seat, Some(Arc::new(sandbox))))
+                Ok((spec, seat, Some(Arc::new(sandbox)), server))
             });
             let progress = {
                 let this = this.clone();
@@ -1891,7 +1917,8 @@ impl Thread {
             let spec = resolve.await;
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
-                Ok((spec, seat, sandbox)) => {
+                Ok((spec, seat, sandbox, server)) => {
+                    t.secrets.server = server;
                     match seat {
                         Some(seats::Seating::On(seat)) => t.take_seat(seat, cx),
                         // Off its seat for this run; the pin stays for the next.
@@ -1968,6 +1995,7 @@ impl Thread {
         let have_history = self.suppress_replay;
         // Droid gets the arakun hint on its command line, OpenCode and Codex in
         // their environment (`launch::resolve`); Claude's adapter takes it here.
+        let servers = self.acp_mcp_servers();
         let meta = match self.kind {
             AgentKind::Claude => json!({"systemPrompt": {"append": claude_system_hint(&self.cwd)}}),
             _ => json!({}),
@@ -2042,7 +2070,8 @@ impl Thread {
 
             let mut session = None;
             if let Some(id) = resume {
-                let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": [], "_meta": meta});
+                let params =
+                    json!({"sessionId": id, "cwd": cwd, "mcpServers": servers, "_meta": meta});
                 // With a transcript on screen a plain resume is enough; replaying
                 // the whole history over ACP would only be thrown away.
                 if have_history && resume_cap {
@@ -2077,7 +2106,10 @@ impl Thread {
             let fresh = session.is_none();
             if fresh {
                 match conn
-                    .request("session/new", json!({"cwd": cwd, "mcpServers": [], "_meta": meta}))
+                    .request(
+                        "session/new",
+                        json!({"cwd": cwd, "mcpServers": servers, "_meta": meta}),
+                    )
                     .await
                 {
                     Ok(v) => match str_of(&v, "sessionId") {
@@ -2412,6 +2444,8 @@ impl Thread {
             }));
             return;
         }
+        // The user moved on: the card's question is no longer theirs to answer.
+        self.cancel_secrets(super::secret::Why::NewMessage, cx);
         if !self.title_locked && self.meta.title.is_empty() {
             self.meta.title = summarize(&prompt);
             cx.emit(ThreadEvent::TitleChanged);
@@ -2675,6 +2709,7 @@ impl Thread {
 
     fn end_auto_turn(&mut self, cx: &mut Context<Self>) {
         self.auto_turn = false;
+        self.cancel_secrets(super::secret::Why::TurnEnded, cx);
         self.set_retry(None, cx);
         let elapsed = self
             .turn_started
@@ -2692,7 +2727,9 @@ impl Thread {
 
     /// What the session is doing once nothing waits for the user.
     pub(super) fn resting_status(&self) -> ThreadStatus {
-        let asking = !self.permissions.is_empty() || !self.native.questions.is_empty();
+        let asking = !self.permissions.is_empty()
+            || !self.native.questions.is_empty()
+            || self.pending_secret().is_some();
         let working = self.backend == Backend::Native
             || (self.prompting && !self.held)
             || self.auto_turn
@@ -3017,6 +3054,8 @@ impl Thread {
         if self.status == ThreadStatus::Idle && !self.permissions.is_empty() {
             self.set_status(ThreadStatus::NeedsInput, cx);
         }
+        // No tool call waits on a card after its turn.
+        self.cancel_secrets(super::secret::Why::TurnEnded, cx);
         cx.emit(ThreadEvent::Finished { stop_reason });
         if self.status == ThreadStatus::Idle {
             self.drain_queue(cx);
@@ -3069,6 +3108,7 @@ impl Thread {
         // ACP asks the client to answer what it still waits on once it cancels;
         // an AskUserQuestion form left open would hold the turn.
         self.drop_questions(false, cx);
+        self.cancel_secrets(super::secret::Why::Stopped, cx);
         if self.auto_turn && !self.prompting {
             // No response ends a turn the agent took by itself.
             self.notice("Stopped", false, cx);

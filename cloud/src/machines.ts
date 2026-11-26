@@ -163,6 +163,58 @@ async function recheckMachine(env: Env, label: string): Promise<void> {
   }
 }
 
+/// One piece of Linear work for a computer: ids that say which session and
+/// issue, never text. The relay keeps it until the computer says it is done.
+export interface Delivery {
+  /// 32 hex characters, unique per delivery.
+  id: string;
+  kind: "created" | "prompt" | "stop";
+  agent_session: string;
+  issue: string;
+  organization: string;
+  activity: string | null;
+  /// Unix seconds.
+  created: number;
+}
+
+/// The computer already has as many deliveries waiting as the relay keeps.
+/// Its own class, so a caller can tell the person why instead of failing.
+export class QueueFull extends Error {
+  constructor(label: string) {
+    super(`the queue of ${label} is full`);
+    this.name = "QueueFull";
+  }
+}
+
+/// Hands a delivery to the label's relay, which keeps it and sends it to the
+/// computer now if it is connected. `body` (a follow-up's text) goes only in
+/// that live frame; the relay never stores it. Throws `QueueFull` when the
+/// computer's queue is full, and an `Error` for any other refusal.
+export async function deliver(env: Env, label: string, d: Delivery, body: string | null): Promise<{ online: boolean }> {
+  const res = await relayStub(env, label).fetch("https://relay/_linear", {
+    method: "POST",
+    headers: { "x-arakun-label": label, "Content-Type": "application/json" },
+    body: JSON.stringify({ delivery: d, body }),
+  });
+  if (!res.ok) {
+    await discard(res);
+    if (res.status === 429) throw new QueueFull(label);
+    throw new Error(`delivery to ${label} answered ${res.status}`);
+  }
+  return { online: ((await res.json()) as { online?: unknown }).online === true };
+}
+
+/// Tells the label's relay to forget a delivery.
+export async function dropDelivery(env: Env, label: string, id: string): Promise<void> {
+  const res = await relayStub(env, label).fetch("https://relay/_linear_drop", {
+    method: "POST",
+    headers: { "x-arakun-label": label, "Content-Type": "application/json" },
+    body: JSON.stringify({ id }),
+  });
+  await discard(res);
+  if (!res.ok) throw new Error(`dropping a delivery at ${label} answered ${res.status}`);
+}
+
 async function isOnline(env: Env, label: string): Promise<boolean> {
   try {
     const res = await relayStub(env, label).fetch("https://relay/_state", { headers: { "x-arakun-label": label } });

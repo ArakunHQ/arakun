@@ -577,14 +577,20 @@ pub struct Settings {
     pub port: u16,
     #[serde(default)]
     pub reach: Reach,
-    /// The key pair push requests are signed with (PKCS#8, base64url), made on
-    /// first use and kept: phones bind their subscriptions to its public half.
+    /// The key pair push requests are signed with (PKCS#8, base64url), as a
+    /// file from before the keyring kept it. The keyring keeps it now
+    /// (`vapid`); this holds it only until it is moved there, or while the
+    /// keyring will not take it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vapid: Option<String>,
-    /// Who this computer is to the relay (PKCS#8, base64url): its label derives
-    /// from this key, so a new one is a new address for every phone.
+    vapid: Option<String>,
+    /// Who this computer is to the relay (PKCS#8, base64url), as a file from
+    /// before the keyring kept it, until it is moved there (`identity`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<String>,
+    identity: Option<String>,
+    /// The public half of the relay identity (the raw point, base64url). The
+    /// label derives from it, so `relay_label` needs no keyring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_public: Option<String>,
     /// The relay's origin (scheme and host). Changed by hand to point at a
     /// relay of one's own, together with `ARAKUN_TEAMS_URL` for the session.
     #[serde(
@@ -611,6 +617,7 @@ impl Default for Settings {
             reach: Reach::Lan,
             vapid: None,
             identity: None,
+            identity_public: None,
             relay_base: default_relay_base(),
             devices: Vec::new(),
             relay_account: None,
@@ -626,76 +633,292 @@ impl Settings {
         relay::page_url(&self.relay_base)
     }
 
-    /// Forgets the relay identity and every paired phone, and saves them on the
-    /// background writer (`save_soon`), for the window's click handler: the
-    /// computer gets a new address, and nothing paired against the old one may
-    /// keep working.
-    pub fn renew_identity(&mut self) -> identity::Identity {
+    /// Forgets the relay identity and every paired phone, with a new key in
+    /// the keyring: the computer gets a new address, and nothing paired
+    /// against the old one may keep working. When the keyring does not take
+    /// the new key, nothing changes. The caller saves. Asks the keyring, so
+    /// never on the UI thread.
+    pub fn renew_identity(&mut self) -> Result<identity::Identity, String> {
+        self.renew_identity_in(&Keyring, &key_account(IDENTITY))
+    }
+
+    fn renew_identity_in(
+        &mut self,
+        vault: &impl Vault,
+        account: &str,
+    ) -> Result<identity::Identity, String> {
+        let _held = KEYS.lock().unwrap_or_else(|e| e.into_inner());
+        let id = identity::Identity::generate();
+        vault
+            .set(account, &label(IDENTITY_KEY), &id.pkcs8_b64())
+            .map_err(|e| format!("The keyring could not keep the new {IDENTITY_KEY}: {e}"))?;
         self.identity = None;
+        self.identity_public = Some(b64(id.public_raw()));
         self.devices.clear();
-        self.identity_soon()
+        Ok(id)
     }
 
     /// This computer's label on the relay, when it has a key yet. Unlike
-    /// `identity`, makes none.
+    /// `identity`, makes none and reads no keyring: the label comes from the
+    /// public half in the file.
     pub fn relay_label(&self) -> Option<String> {
-        use base64::Engine as _;
-        let pkcs8 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(self.identity.as_ref()?)
-            .ok()?;
-        Some(identity::Identity::from_pkcs8(&pkcs8)?.label())
-    }
-
-    /// The computer's relay identity, made and saved the first time.
-    pub fn identity(&mut self) -> identity::Identity {
-        self.identity_saving(Self::save)
-    }
-
-    /// `identity`, saved with `save_soon`.
-    pub fn identity_soon(&mut self) -> identity::Identity {
-        self.identity_saving(Self::save_soon)
-    }
-
-    fn identity_saving(&mut self, save: impl FnOnce(&Self)) -> identity::Identity {
-        use base64::Engine as _;
-        let kept = self.identity.as_ref().and_then(|s| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(s)
-                .ok()
-        });
-        if let Some(id) = kept.and_then(|b| identity::Identity::from_pkcs8(&b)) {
-            return id;
+        if let Some(id) = self.identity.as_deref().and_then(identity_from) {
+            return Some(id.label());
         }
-        let id = identity::Identity::generate();
-        self.identity = Some(id.pkcs8_b64());
-        save(self);
-        id
+        let public = base64::Engine::decode(&B64, self.identity_public.as_ref()?).ok()?;
+        Some(identity::label_of(&public))
     }
 
-    /// The push signing keys, made and saved the first time.
-    pub fn vapid(&mut self) -> push::Vapid {
-        self.vapid_saving(Self::save)
-    }
-
-    /// `vapid`, saved with `save_soon`.
-    pub fn vapid_soon(&mut self) -> push::Vapid {
-        self.vapid_saving(Self::save_soon)
-    }
-
-    fn vapid_saving(&mut self, save: impl FnOnce(&Self)) -> push::Vapid {
-        use base64::Engine as _;
-        let kept = self.vapid.as_ref().and_then(|s| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(s)
-                .ok()
-        });
-        if let Some(v) = kept.and_then(|b| push::Vapid::from_pkcs8(&b)) {
-            return v;
+    /// The computer's relay identity, from the keyring, made the first time,
+    /// and saved when the file changed. Asks the keyring, so never on the UI
+    /// thread. An error is a keyring that could not say (locked, or its
+    /// prompt dismissed): no key is made then, as the one it holds may be
+    /// what every phone is paired with.
+    pub fn identity(&mut self) -> Result<identity::Identity, String> {
+        let (id, changed) = self.identity_in(&Keyring, &key_account(IDENTITY))?;
+        if changed {
+            self.save();
         }
-        let v = push::Vapid::generate();
-        self.vapid = Some(v.pkcs8_b64());
-        save(self);
-        v
+        Ok(id)
+    }
+
+    fn identity_in(
+        &mut self,
+        vault: &impl Vault,
+        account: &str,
+    ) -> Result<(identity::Identity, bool), String> {
+        let before = (self.identity.clone(), self.identity_public.clone());
+        let id = private_key(
+            &mut self.identity,
+            vault,
+            account,
+            IDENTITY_KEY,
+            identity_from,
+            || {
+                let id = identity::Identity::generate();
+                let secret = id.pkcs8_b64();
+                (id, secret)
+            },
+        )?;
+        self.identity_public = Some(b64(id.public_raw()));
+        let changed = before != (self.identity.clone(), self.identity_public.clone());
+        Ok((id, changed))
+    }
+
+    /// The push signing keys, from the keyring, made the first time, and
+    /// saved when the file changed. Like `identity`, never on the UI thread.
+    pub fn vapid(&mut self) -> Result<push::Vapid, String> {
+        let (v, changed) = self.vapid_in(&Keyring, &key_account(VAPID))?;
+        if changed {
+            self.save();
+        }
+        Ok(v)
+    }
+
+    fn vapid_in(
+        &mut self,
+        vault: &impl Vault,
+        account: &str,
+    ) -> Result<(push::Vapid, bool), String> {
+        let before = self.vapid.clone();
+        let v = private_key(
+            &mut self.vapid,
+            vault,
+            account,
+            VAPID_KEY,
+            vapid_from,
+            || {
+                let v = push::Vapid::generate();
+                let secret = v.pkcs8_b64();
+                (v, secret)
+            },
+        )?;
+        Ok((v, before != self.vapid))
+    }
+
+    /// The keys a phone link runs with: the push keys, and the relay identity
+    /// when `relay`. Reads the file and the keyring, so it runs on a
+    /// background thread. Only the key fields are written back, to a fresh
+    /// read of the file, so a save the window made meanwhile is kept.
+    pub fn load_keys(relay: bool) -> Result<Keys, String> {
+        let mut settings = Settings::load();
+        let (vapid, mut changed) = settings.vapid_in(&Keyring, &key_account(VAPID))?;
+        let identity = if relay {
+            let (id, c) = settings.identity_in(&Keyring, &key_account(IDENTITY))?;
+            changed |= c;
+            Some(id)
+        } else {
+            None
+        };
+        if changed {
+            let mut now = Settings::load();
+            now.vapid = settings.vapid;
+            now.identity = settings.identity;
+            now.identity_public = settings.identity_public;
+            now.save_soon();
+        }
+        Ok(Keys { vapid, identity })
+    }
+}
+
+/// The private keys a phone link runs with, as `Settings::load_keys` gives them.
+pub struct Keys {
+    pub vapid: push::Vapid,
+    /// The relay identity, when it was asked for.
+    pub identity: Option<identity::Identity>,
+}
+
+/// The keyring names of the private keys, before `key_account` scopes them.
+const IDENTITY: &str = "phone-identity";
+const VAPID: &str = "phone-vapid";
+/// What errors call them; the keyring's own app shows them with `label`.
+const IDENTITY_KEY: &str = "phone relay key";
+const VAPID_KEY: &str = "phone push key";
+
+fn label(what: &str) -> String {
+    format!("arakun: {what}")
+}
+
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+/// The keyring account for `name`, for the phone file this process uses. A
+/// test Arakun (`ARAKUN_STATE`) and `arakun server` each have a phone file
+/// of their own, so each keeps keys of its own too: with the app's keys,
+/// the server would take the app's place at the relay.
+fn key_account(name: &str) -> String {
+    match SETTINGS_FILE.get() {
+        Some(path) => crate::secret_store::account_for(
+            name,
+            Some(&crate::secret_store::profile(&path.to_string_lossy())),
+        ),
+        None => crate::secret_store::account(name),
+    }
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::Engine::encode(&B64, bytes)
+}
+
+fn identity_from(s: &str) -> Option<identity::Identity> {
+    identity::Identity::from_pkcs8(&base64::Engine::decode(&B64, s).ok()?)
+}
+
+fn vapid_from(s: &str) -> Option<push::Vapid> {
+    push::Vapid::from_pkcs8(&base64::Engine::decode(&B64, s).ok()?)
+}
+
+/// Where the private keys are kept: the keyring, or a fake one in the tests.
+trait Vault {
+    fn get(&self, account: &str) -> Result<Option<String>, String>;
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String>;
+    /// Whether to try moving a file's key to the keyring now. Once a run is
+    /// enough: a keyring that said no would be asked again on every relay
+    /// restart, and may prompt each time.
+    fn try_move(&self, account: &str) -> bool;
+}
+
+/// The OS keyring (`secret_store`), with what it gave kept in memory: the
+/// keys are asked for on every link start, and a prompt each time would be
+/// too many.
+struct Keyring;
+
+static CACHE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static MOVES: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+impl Vault for Keyring {
+    fn get(&self, account: &str) -> Result<Option<String>, String> {
+        let cached = CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_default()
+            .get(account)
+            .cloned();
+        if cached.is_some() {
+            return Ok(cached);
+        }
+        let got = crate::secret_store::get(account)?;
+        if let Some(secret) = &got {
+            remember(account, secret);
+        }
+        Ok(got)
+    }
+
+    fn set(&self, account: &str, label: &str, secret: &str) -> Result<(), String> {
+        crate::secret_store::set(account, label, secret)?;
+        remember(account, secret);
+        Ok(())
+    }
+
+    fn try_move(&self, account: &str) -> bool {
+        MOVES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_default()
+            .insert(account.to_string())
+    }
+}
+
+fn remember(account: &str, secret: &str) {
+    CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_default()
+        .insert(account.to_string(), secret.to_string());
+}
+
+/// One key is looked up, or made, at a time: two threads that both found
+/// none would each make one, and phones would pair with the one that lost.
+static KEYS: Mutex<()> = Mutex::new(());
+
+/// A private key: the copy an old file holds first, else the keyring's, else
+/// a new one when the keyring says it has none.
+///
+/// The file's copy is what phones were paired with, so it wins and moves to
+/// the keyring; `file` is cleared only once the keyring took it, and the
+/// caller saves. When the keyring refuses, the file's copy is still used. A
+/// keyring that cannot say (`Err`) never leads to a new key: a locked one
+/// must not look like a first run.
+fn private_key<T>(
+    file: &mut Option<String>,
+    vault: &impl Vault,
+    account: &str,
+    what: &str,
+    parse: impl Fn(&str) -> Option<T>,
+    make: impl FnOnce() -> (T, String),
+) -> Result<T, String> {
+    let _held = KEYS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(kept) = file.clone()
+        && let Some(key) = parse(&kept)
+    {
+        if vault.try_move(account) {
+            match vault.set(account, &label(what), &kept) {
+                Ok(()) => *file = None,
+                Err(e) => eprintln!(
+                    "arakun: the keyring did not take the {what}, so it stays in the phone settings: {e}"
+                ),
+            }
+        }
+        return Ok(key);
+    }
+    match vault.get(account) {
+        Ok(Some(secret)) => {
+            let key =
+                parse(&secret).ok_or_else(|| format!("The {what} in the keyring is damaged"))?;
+            // A copy in the file that does not parse is of no use.
+            *file = None;
+            Ok(key)
+        }
+        Ok(None) => {
+            let (key, secret) = make();
+            // Used only once the keyring has it: a key kept nowhere would be
+            // paired with and then lost.
+            vault
+                .set(account, &label(what), &secret)
+                .map_err(|e| format!("The keyring could not keep the new {what}: {e}"))?;
+            *file = None;
+            Ok(key)
+        }
+        Err(e) => Err(format!("The keyring could not give the {what}: {e}")),
     }
 }
 
@@ -1160,9 +1383,10 @@ fn percent_decode(s: &str) -> Option<String> {
 /// Where `arakun server` keeps its settings; the app's own file when unset.
 static SETTINGS_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Makes this process keep its phones, its relay identity and its push keys in
-/// `path`. `arakun server` calls it before anything loads the settings: with
-/// the app's file it would take the app's place at the relay.
+/// Makes this process keep its phones in `path`, and its relay identity and
+/// push keys under keyring names of that file's own (`key_account`). `arakun
+/// server` calls it before anything loads the settings: with the app's file
+/// and keys it would take the app's place at the relay.
 pub fn use_settings_file(path: PathBuf) {
     let _ = SETTINGS_FILE.set(path);
 }
@@ -1205,8 +1429,9 @@ impl Settings {
         }
     }
 
-    /// Whole or not at all, and for this user only: the file holds the relay
-    /// identity, and it is rewritten each time a device connects. A plain
+    /// Whole or not at all, and for this user only: the file holds the paired
+    /// devices (and an old file the relay identity, until the keyring takes
+    /// it), and it is rewritten each time a device connects. A plain
     /// write cut short (a full disk) would leave it empty.
     pub fn save(&self) {
         let path = settings_file();
@@ -2271,20 +2496,218 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A keyring in memory. `locked` makes every call fail, as a keyring
+    /// that stayed locked does; `refuses` makes only storing fail.
+    #[derive(Default)]
+    struct FakeVault {
+        entries: std::cell::RefCell<HashMap<String, String>>,
+        locked: bool,
+        refuses: bool,
+        moves: std::cell::RefCell<std::collections::HashSet<String>>,
+    }
+
+    impl Vault for FakeVault {
+        fn get(&self, account: &str) -> Result<Option<String>, String> {
+            if self.locked {
+                return Err("locked".into());
+            }
+            Ok(self.entries.borrow().get(account).cloned())
+        }
+
+        fn set(&self, account: &str, _label: &str, secret: &str) -> Result<(), String> {
+            if self.locked || self.refuses {
+                return Err("locked".into());
+            }
+            self.entries
+                .borrow_mut()
+                .insert(account.to_string(), secret.to_string());
+            Ok(())
+        }
+
+        fn try_move(&self, account: &str) -> bool {
+            self.moves.borrow_mut().insert(account.to_string())
+        }
+    }
+
+    /// A phone.json from before the keyring, with both private keys in it.
+    fn old_file(id: &identity::Identity, vapid: &push::Vapid) -> Settings {
+        let json = serde_json::json!({
+            "enabled": true,
+            "port": 8765,
+            "reach": "relay",
+            "identity": id.pkcs8_b64(),
+            "vapid": vapid.pkcs8_b64(),
+        });
+        serde_json::from_value(json).unwrap()
+    }
+
     #[test]
-    fn keys_are_made_once_and_saved_the_way_the_caller_asks() {
+    fn keys_are_made_once_in_the_keyring_and_never_written_to_the_file() {
+        let ring = FakeVault::default();
         let mut settings = Settings::default();
-        let mut saves = 0;
-        let id = settings.identity_saving(|_| saves += 1);
-        let vapid = settings.vapid_saving(|_| saves += 1);
-        assert_eq!(saves, 2);
-        assert!(settings.identity.is_some() && settings.vapid.is_some());
-        assert_eq!(settings.identity_saving(|_| saves += 1).label(), id.label());
+        let (id, changed) = settings.identity_in(&ring, "id").unwrap();
+        assert!(changed, "the public half is new");
+        let (vapid, _) = settings.vapid_in(&ring, "vapid").unwrap();
+        assert_eq!(ring.entries.borrow()["id"], id.pkcs8_b64());
+        assert_eq!(ring.entries.borrow()["vapid"], vapid.pkcs8_b64());
+        let (again, changed) = settings.identity_in(&ring, "id").unwrap();
+        assert_eq!(again.label(), id.label());
+        assert!(!changed, "keys that are kept are not saved again");
+        let (v2, changed) = settings.vapid_in(&ring, "vapid").unwrap();
+        assert_eq!(v2.public_key(), vapid.public_key());
+        assert!(!changed);
+        assert_eq!(settings.relay_label(), Some(id.label()));
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains(&id.pkcs8_b64()), "{json}");
+        assert!(!json.contains(&vapid.pkcs8_b64()), "{json}");
+        assert!(!json.contains("\"identity\"") && !json.contains("\"vapid\""));
+        let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            settings.vapid_saving(|_| saves += 1).public_key(),
-            vapid.public_key()
+            back.relay_label(),
+            Some(id.label()),
+            "the label needs no keyring"
         );
-        assert_eq!(saves, 2, "keys that are kept are not saved again");
+    }
+
+    #[test]
+    fn an_old_files_keys_move_to_the_keyring_and_leave_the_file() {
+        let (id, vapid) = (identity::Identity::generate(), push::Vapid::generate());
+        let mut settings = old_file(&id, &vapid);
+        assert_eq!(settings.relay_label(), Some(id.label()));
+        let ring = FakeVault::default();
+        let (got, changed) = settings.identity_in(&ring, "id").unwrap();
+        assert!(changed);
+        assert_eq!(got.label(), id.label(), "the phones' key is kept");
+        let (v, changed) = settings.vapid_in(&ring, "vapid").unwrap();
+        assert!(changed);
+        assert_eq!(v.public_key(), vapid.public_key());
+        assert_eq!(ring.entries.borrow()["id"], id.pkcs8_b64());
+        assert_eq!(ring.entries.borrow()["vapid"], vapid.pkcs8_b64());
+        assert_eq!(settings.identity, None);
+        assert_eq!(settings.vapid, None);
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(!json.contains(&id.pkcs8_b64()) && !json.contains(&vapid.pkcs8_b64()));
+        assert_eq!(settings.relay_label(), Some(id.label()));
+        // Read back, the keys come from the keyring.
+        let mut back: Settings = serde_json::from_str(&json).unwrap();
+        let (got, changed) = back.identity_in(&ring, "id").unwrap();
+        assert_eq!(got.label(), id.label());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn a_keyring_that_does_not_take_the_old_key_leaves_it_in_the_file() {
+        let (id, vapid) = (identity::Identity::generate(), push::Vapid::generate());
+        let mut settings = old_file(&id, &vapid);
+        let ring = FakeVault {
+            refuses: true,
+            ..FakeVault::default()
+        };
+        let (got, _) = settings.identity_in(&ring, "id").unwrap();
+        assert_eq!(got.label(), id.label());
+        let (v, changed) = settings.vapid_in(&ring, "vapid").unwrap();
+        assert_eq!(v.public_key(), vapid.public_key());
+        assert!(!changed);
+        assert_eq!(settings.identity.as_deref(), Some(id.pkcs8_b64().as_str()));
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(&id.pkcs8_b64()), "still saved, so not lost");
+        // Asked once a run: the next call uses the file's copy without asking.
+        let (again, _) = settings.identity_in(&ring, "id").unwrap();
+        assert_eq!(again.label(), id.label());
+    }
+
+    #[test]
+    fn a_locked_keyring_makes_no_new_key() {
+        let ring = FakeVault {
+            locked: true,
+            ..FakeVault::default()
+        };
+        let mut settings = Settings::default();
+        assert!(settings.identity_in(&ring, "id").is_err());
+        assert!(settings.vapid_in(&ring, "vapid").is_err());
+        assert_eq!(settings.identity, None);
+        assert_eq!(settings.identity_public, None);
+        assert_eq!(settings.vapid, None);
+        assert!(ring.entries.borrow().is_empty());
+        // Unlocked, the key it had is the one used.
+        let ring = FakeVault::default();
+        let kept = identity::Identity::generate();
+        ring.entries
+            .borrow_mut()
+            .insert("id".into(), kept.pkcs8_b64());
+        assert_eq!(
+            settings.identity_in(&ring, "id").unwrap().0.label(),
+            kept.label()
+        );
+    }
+
+    #[test]
+    fn a_locked_keyring_still_runs_on_an_old_files_key() {
+        let (id, vapid) = (identity::Identity::generate(), push::Vapid::generate());
+        let mut settings = old_file(&id, &vapid);
+        let ring = FakeVault {
+            locked: true,
+            ..FakeVault::default()
+        };
+        assert_eq!(
+            settings.identity_in(&ring, "id").unwrap().0.label(),
+            id.label()
+        );
+        assert!(settings.identity.is_some());
+    }
+
+    #[test]
+    fn a_new_key_that_the_keyring_does_not_take_is_not_used() {
+        let ring = FakeVault {
+            refuses: true,
+            ..FakeVault::default()
+        };
+        let mut settings = Settings::default();
+        assert!(settings.identity_in(&ring, "id").is_err());
+        assert_eq!(settings.identity, None);
+        assert_eq!(settings.identity_public, None);
+    }
+
+    #[test]
+    fn a_damaged_key_in_the_keyring_is_an_error_not_a_new_key() {
+        let ring = FakeVault::default();
+        ring.entries.borrow_mut().insert("id".into(), "junk".into());
+        let mut settings = Settings::default();
+        assert!(settings.identity_in(&ring, "id").is_err());
+        assert_eq!(ring.entries.borrow()["id"], "junk");
+    }
+
+    #[test]
+    fn renewing_replaces_the_key_and_forgets_the_phones_or_changes_nothing() {
+        let ring = FakeVault::default();
+        let mut settings = Settings::default();
+        let (old, _) = settings.identity_in(&ring, "id").unwrap();
+        settings.devices.push(Device {
+            id: "d".into(),
+            name: "Phone".into(),
+            token_hash: String::new(),
+            ticket_hash: String::new(),
+            paired_at: 1,
+            last_seen: 1,
+            push: None,
+            notices: Notices::default(),
+            muted: Vec::new(),
+        });
+        let locked = FakeVault {
+            locked: true,
+            ..FakeVault::default()
+        };
+        assert!(settings.renew_identity_in(&locked, "id").is_err());
+        assert_eq!(settings.devices.len(), 1);
+        assert_eq!(settings.relay_label(), Some(old.label()));
+        let new = settings.renew_identity_in(&ring, "id").unwrap();
+        assert_ne!(new.label(), old.label());
+        assert!(settings.devices.is_empty());
+        assert_eq!(settings.relay_label(), Some(new.label()));
+        assert_eq!(
+            settings.identity_in(&ring, "id").unwrap().0.label(),
+            new.label()
+        );
     }
 
     #[test]

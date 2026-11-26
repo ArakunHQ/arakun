@@ -242,9 +242,12 @@ impl ToolCall {
     }
 
     /// A call that runs a subagent (Claude's Agent/Task, Droid's Task).
+    /// Droid's Task is titled "Task <description>"; the title must not match
+    /// other Task* tools such as TaskStop or TaskOutput.
     pub fn is_subagent(&self) -> bool {
         matches!(self.tool_name.as_deref(), Some("Agent" | "Task"))
-            || self.title.starts_with("Task")
+            || self.title == "Task"
+            || self.title.starts_with("Task ")
             || self
                 .raw_input
                 .as_ref()
@@ -4690,6 +4693,43 @@ mod tests {
         assert_eq!(config.len(), 2);
         assert_eq!(config[0].options.len(), 2, "the models stay");
         assert_eq!(config[1].current, "general-purpose");
+    }
+
+    #[test]
+    fn only_calls_that_run_a_subagent_are_subagents() {
+        use serde_json::json;
+        let call =
+            |name: Option<&str>, title: &str, input: Option<serde_json::Value>| super::ToolCall {
+                id: "t".into(),
+                title: title.into(),
+                kind: "other".into(),
+                status: super::ToolStatus::InProgress,
+                content: Vec::new(),
+                locations: Vec::new(),
+                raw_input: input,
+                raw_output: None,
+                added: 0,
+                removed: 0,
+                terminal_output: String::new(),
+                terminal_dropped_lines: 0,
+                exit_code: None,
+                parent: None,
+                tool_name: name.map(str::to_string),
+            };
+        let task_id = Some(json!({"task_id": "b1"}));
+        assert!(call(Some("Agent"), "Run tests", None).is_subagent());
+        assert!(call(Some("Task"), "Run tests", None).is_subagent());
+        // Droid names the call only in its title.
+        assert!(call(None, "Task Run tests", None).is_subagent());
+        assert!(call(None, "Task", None).is_subagent());
+        assert!(call(None, "x", Some(json!({"subagent_type": "Explore"}))).is_subagent());
+        for name in ["TaskStop", "TaskOutput"] {
+            assert!(
+                !call(Some(name), name, task_id.clone()).is_subagent(),
+                "{name}"
+            );
+            assert!(!call(None, name, task_id.clone()).is_subagent(), "{name}");
+        }
     }
 
     #[test]

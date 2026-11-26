@@ -6,14 +6,14 @@
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 #[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
-use uds_windows::{UnixListener, UnixStream};
+use uds_windows::UnixStream;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Request {
@@ -91,7 +91,7 @@ pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let listener = match UnixListener::bind(path) {
+    let listener = match crate::private_socket::bind(path) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             if UnixStream::connect(path).is_ok() {
@@ -102,16 +102,10 @@ pub fn serve(path: &Path) -> Result<(Listening, mpsc::UnboundedReceiver<Incoming
             }
             // Left behind by a crash.
             let _ = std::fs::remove_file(path);
-            UnixListener::bind(path).map_err(|e| format!("{}: {e}", path.display()))?
+            crate::private_socket::bind(path).map_err(|e| format!("{}: {e}", path.display()))?
         }
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-    }
     let (tx, rx) = mpsc::unbounded();
     std::thread::Builder::new()
         .name("arakun-server-local".into())
@@ -176,6 +170,10 @@ pub fn send(path: &Path, req: &Request, wait: Duration) -> std::io::Result<Reply
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(windows)]
+    use uds_windows::UnixListener;
 
     fn socket(name: &str) -> PathBuf {
         // Short: a socket path has room for about a hundred bytes.

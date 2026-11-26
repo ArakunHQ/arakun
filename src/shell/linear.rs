@@ -64,7 +64,7 @@ impl Shell {
                     cx,
                 );
             }
-            LinearEvent::DelegationChanged => {
+            LinearEvent::DelegationChanged | LinearEvent::WorkspacesChanged => {
                 self.push_linear_host(cx);
                 self.sync_linear(window, cx);
             }

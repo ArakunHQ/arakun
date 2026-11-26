@@ -45,6 +45,9 @@ pub enum LinearEvent {
     Ask { title: String, prompt: String },
     /// The switch, a mapping or a consent changed and is saved.
     DelegationChanged,
+    /// A Linear sign-in was added or removed: a new workspace may need
+    /// connecting, and a gone one gets no call.
+    WorkspacesChanged,
     /// Open the Phone tab, where the relay is turned on.
     OpenPhoneTab,
     /// Sign in to the Arakun account.

@@ -40,6 +40,7 @@ impl LinearView {
                 this.signing_in.settle(got);
                 if signed_in {
                     this.read(false, cx);
+                    cx.emit(LinearEvent::WorkspacesChanged);
                 }
             },
         );
@@ -53,6 +54,7 @@ impl LinearView {
         }
         self.reload(cx);
         self.read(false, cx);
+        cx.emit(LinearEvent::WorkspacesChanged);
     }
 
     pub(super) fn render_accounts(&self, cx: &mut Context<Self>) -> AnyElement {

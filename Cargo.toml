@@ -139,8 +139,11 @@ windows-sys = { version = "0.61", features = [
     # What listens on a TCP port, and its pid (src/running.rs)
     "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
+    # Owner-only control sockets (core/src/private_socket.rs)
+    "Win32_Security_Authorization",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",

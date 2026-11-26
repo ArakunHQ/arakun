@@ -1,11 +1,12 @@
-import { env } from "cloudflare:test";
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
+import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
 import { verified } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
-import { account, claim, connectedComputer, openPc, untilStored, type Computer, type PcSocket } from "./relay/helpers";
+import { account, claim, connectedComputer, openPc, stored, untilStored, type Computer, type PcSocket } from "./relay/helpers";
 
 const ORG = HOOK_ORG;
 const SESSION = HOOK_SESSION;
@@ -321,13 +322,6 @@ describe("Linear's webhook", () => {
     expect(await count("linear_deliveries")).toBe(0);
   });
 
-  it("answers a follow-up with 200 for now", async () => {
-    await linkedComputerWithRoute();
-    const res = await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: crypto.randomUUID() })));
-    expect(res.status).toBe(200);
-    expect(linearFake.calls).toEqual([]);
-  });
-
   it.each([
     ["organizationId", { ...body, organizationId: "org" }],
     ["agentSession.id", { ...body, agentSession: { ...(body["agentSession"] as object), id: "s" } }],
@@ -357,6 +351,358 @@ describe("Linear's webhook", () => {
     await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
     const [row] = await deliveries();
     expect(row).toMatchObject({ github_id: mine.owner.github_id, label: mine.me.label });
+  });
+});
+
+const ACT = "77777777-7777-4777-8777-777777777777";
+const SENT = { agentSessionId: SESSION, type: "thought", body: "Sent to Desk. A session starts there now." };
+const SOMEONE_ELSE = { agentSessionId: SESSION, type: "thought", body: "Only the person who delegated this can steer it." };
+
+/// A delegated issue the computer has heard of: the created delivery's id with it.
+async function delegatedIssue(opts: Parameters<typeof linkedComputerWithRoute>[0] = {}) {
+  const got = await linkedComputerWithRoute(opts);
+  expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, promptContext: "SECRET-CONTEXT" })))).status).toBe(200);
+  const frame = await got.pc.inbox.control();
+  return { ...got, id: frame["id"] as string };
+}
+
+/// Everything the label's object keeps, as JSON.
+async function storedAll(label: string): Promise<string> {
+  const stub = env.RELAY.get(env.RELAY.idFromName(label));
+  return runInDurableObject(stub, async (_i, state) => JSON.stringify(Object.fromEntries(await state.storage.list())));
+}
+
+/// Another account with the flag: a stranger to the delegated issue.
+async function stranger() {
+  const s = await account();
+  await call("PUT", `/admin/users/${s.github_id}/flags/linear`, ADMIN);
+  return s;
+}
+
+describe("follow-ups from Linear", () => {
+  it("sends the delegator's follow-up to the same computer with its text, and stores no text", async () => {
+    const { me, pc, owner, id } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT })))).status).toBe(200);
+    const frame = await pc.inbox.control();
+    expect(frame).toMatchObject({ type: "linear", kind: "prompt", agent_session: SESSION, issue: ISSUE, organization: ORG, activity: ACT, body: "SECRET-FOLLOW-UP" });
+    expect(frame["id"]).not.toBe(id);
+    // A follow-up says nothing in the session itself.
+    expect(linearFake.activities()).toEqual([SENT]);
+    const rows = await env.DB.prepare("SELECT * FROM linear_deliveries WHERE kind = 'prompt'").all<Record<string, unknown>>();
+    expect(rows.results).toEqual([
+      expect.objectContaining({ id: frame["id"], agent_session_id: SESSION, organization_id: ORG, issue_id: ISSUE, activity_id: ACT, github_id: owner.github_id, label: me.label, accepted_at: null, expired_at: null }),
+    ]);
+    expect(rows.results[0]!["announced_at"]).toBeTypeOf("number");
+    const everything = (await dump(env.DB)) + (await storedAll(me.label));
+    expect(everything).toContain(ACT);
+    expect(everything).not.toMatch(/SECRET-CONTEXT|SECRET-FOLLOW-UP/);
+  });
+
+  it("reads the text where Linear's schema puts it, in the activity's content", async () => {
+    const { pc } = await delegatedIssue();
+    const b = prompted({ userId: LU, body: "make it red", activityId: ACT });
+    delete (b["agentActivity"] as Record<string, unknown>)["body"];
+    expect((await send(signedWebhook(b))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "make it red" });
+  });
+
+  it("passes a text over 16,000 characters as null, never cut", async () => {
+    const { pc } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "x".repeat(16_001), activityId: ACT })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", activity: ACT, body: null });
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "y".repeat(16_000), activityId: ACT })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", body: "y".repeat(16_000) });
+  });
+
+  it("a stop arrives as a stop with no text", async () => {
+    const { pc, me } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", activityId: ACT, signal: "stop" })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "stop", agent_session: SESSION, activity: ACT, body: null });
+    expect(linearFake.activities()).toEqual([SENT]);
+    const rows = await env.DB.prepare("SELECT kind, label, activity_id FROM linear_deliveries ORDER BY kind").all();
+    expect(rows.results).toEqual([
+      { kind: "created", label: me.label, activity_id: null },
+      { kind: "stop", label: me.label, activity_id: ACT },
+    ]);
+  });
+
+  it.each([
+    ["linked to another account", OTHER, true],
+    ["not linked", OTHER, false],
+  ])("someone else's follow-up never reaches the computer (%s)", async (_n, author, linkIt) => {
+    const { pc } = await delegatedIssue();
+    const theirs = linkIt ? await linkedComputerWithRoute({ linearUser: author }) : null;
+    expect((await send(signedWebhook(prompted({ userId: author, body: "do this instead", activityId: ACT })))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    if (theirs) await expect(theirs.pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("a follow-up with no readable author is treated as someone else's", async () => {
+    const { pc } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: null, body: "do this instead", activityId: ACT })))).status).toBe(200);
+    const odd = prompted({ userId: null, body: "do this instead", activityId: ACT });
+    (odd["agentActivity"] as Record<string, unknown>)["userId"] = 7;
+    expect((await send(signedWebhook(odd))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, SOMEONE_ELSE, SOMEONE_ELSE]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("a follow-up for a session we never saw gets an error", async () => {
+    const { pc, id } = await delegatedIssue();
+    const unknown = { agentSessionId: SESSION, type: "error", body: "Arakun has no session for this. Delegate the issue again." };
+    const OTHER_SESSION = "55555555-5555-4555-8555-000000000000";
+    const res = await send(signedWebhook(prompted({ userId: LU, body: "hello", activityId: ACT, agentSessionId: OTHER_SESSION })));
+    expect(res.status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, { ...unknown, agentSessionId: OTHER_SESSION }]);
+    // A delivery that ran out of time is no session either.
+    await env.DB.prepare("UPDATE linear_deliveries SET expired_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "hello", activityId: ACT })))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, { ...unknown, agentSessionId: OTHER_SESSION }, unknown]);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("goes to the delegator's computer even before it took the issue", async () => {
+    const { me, pc, owner } = await linkedComputerWithRoute();
+    await away(me.label, pc);
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT })))).status).toBe(200);
+    expect(await count("linear_deliveries")).toBe(2);
+    const back = await connectedComputerAgain(me, owner.session);
+    const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
+    expect(kinds).toEqual(["created", "prompt"]);
+    expect(await storedAll(me.label)).not.toContain("SECRET-FOLLOW-UP");
+  });
+
+  it("the same follow-up twice is one delivery and one frame", async () => {
+    const { pc } = await delegatedIssue();
+    const hook = signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT }));
+    expect((await send(hook)).status).toBe(200);
+    expect((await send(hook)).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt" });
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(2);
+    expect(linearFake.activities()).toEqual([SENT]);
+  });
+
+  it("a retry of a follow-up the computer already took does not send it again", async () => {
+    const { me, pc } = await delegatedIssue();
+    const b = prompted({ userId: LU, body: "make it red", activityId: ACT });
+    expect((await send(signedWebhook(b))).status).toBe(200);
+    const first = await pc.inbox.control();
+    // As if the first try died before it marked the row announced.
+    await env.DB.prepare("UPDATE linear_deliveries SET announced_at = NULL, accepted_at = ? WHERE id = ?").bind(nowSeconds(), first["id"]).run();
+    await dropDelivery(env, me.label, first["id"] as string);
+    expect((await send(signedWebhook(b))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    const row = await env.DB.prepare("SELECT announced_at FROM linear_deliveries WHERE id = ?").bind(first["id"]).first<{ announced_at: number | null }>();
+    expect(row!.announced_at).toBeTypeOf("number");
+  });
+
+  it("says the queue is full and keeps no follow-up", async () => {
+    const { me, pc } = await delegatedIssue();
+    await away(me.label, pc);
+    // The created delivery is the first of the 50 the relay keeps.
+    const waiting = () => ({ id: crypto.randomUUID().replaceAll("-", ""), kind: "created" as const, agent_session: SESSION, issue: ISSUE, organization: ORG, activity: null, created: nowSeconds() });
+    for (let i = 0; i < 49; i++) await deliver(env, me.label, waiting(), null);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT })))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, { agentSessionId: SESSION, type: "error", body: "Too many requests are waiting for Desk. Try again when it has caught up." }]);
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("refuses a follow-up without an activity id", async () => {
+    await delegatedIssue();
+    const res = await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: "not-a-uuid" })));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad webhook" });
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+});
+
+describe("what the computer sends back", () => {
+  const accept = (id: string, session: string) => call("POST", `/linear/deliveries/${id}/accept`, as(session));
+  const activity = (session: string, body: unknown, agentSession = SESSION) =>
+    call("POST", `/linear/sessions/${agentSession}/activity`, as(session), typeof body === "string" ? body : JSON.stringify(body));
+  const accepted = async (id: string) =>
+    (await env.DB.prepare("SELECT accepted_at FROM linear_deliveries WHERE id = ?").bind(id).first<{ accepted_at: number | null }>())?.accepted_at;
+
+  it("accepting removes the delivery from the relay, once or twice, and only for its owner", async () => {
+    const { me, owner, id } = await delegatedIssue();
+    const other = await stranger();
+    expect(await stored(me.label, `linear:${id}`)).toBeDefined();
+    const notYours = await accept(id, other.session);
+    expect(notYours.status).toBe(404);
+    expect(await notYours.json()).toEqual({ error: "no such delivery" });
+    expect(await stored(me.label, `linear:${id}`)).toBeDefined();
+    expect(await accepted(id)).toBeNull();
+
+    expect((await accept(id, owner.session)).status).toBe(204);
+    expect(await stored(me.label, `linear:${id}`)).toBeUndefined();
+    const at = await accepted(id);
+    expect(at).toBeTypeOf("number");
+    // The first time stays.
+    await env.DB.prepare("UPDATE linear_deliveries SET accepted_at = 1 WHERE id = ?").bind(id).run();
+    expect((await accept(id, owner.session)).status).toBe(204);
+    expect(await accepted(id)).toBe(1);
+    expect((await accept(id, other.session)).status).toBe(404);
+  });
+
+  it("accepts an expired delivery, and refuses an unknown or malformed id", async () => {
+    const { owner, id } = await delegatedIssue();
+    await env.DB.prepare("UPDATE linear_deliveries SET expired_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
+    expect((await accept(id, owner.session)).status).toBe(204);
+    expect(await accepted(id)).toBeTypeOf("number");
+    const unknown = await accept("0".repeat(32), owner.session);
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: "no such delivery" });
+    expect((await accept(id.toUpperCase(), owner.session)).status).toBe(404);
+    expect((await accept(id.slice(1), owner.session)).status).toBe(404);
+  });
+
+  it("needs a session with the flag for both routes", async () => {
+    const { id } = await delegatedIssue();
+    expect((await call("POST", `/linear/deliveries/${id}/accept`)).status).toBe(401);
+    expect((await call("POST", `/linear/sessions/${SESSION}/activity`, {}, JSON.stringify({ type: "thought", body: "x" }))).status).toBe(401);
+    const unflagged = await account();
+    expect((await accept(id, unflagged.session)).status).toBe(403);
+    expect((await activity(unflagged.session, { type: "thought", body: "x" })).status).toBe(403);
+    expect(await accepted(id)).toBeNull();
+    expect(linearFake.activities()).toEqual([SENT]);
+  });
+
+  it("posts the computer's activity as Arakun, with links", async () => {
+    const { owner } = await delegatedIssue();
+    const res = await activity(owner.session, {
+      type: "response",
+      body: "Done.",
+      links: [{ label: "Pull request", url: "https://github.com/a/b/pull/1" }],
+      extra: "ignored",
+    });
+    expect(res.status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "response", body: "Done." });
+    expect(linearFake.links()).toEqual([{ agentSessionId: SESSION, label: "Pull request", url: "https://github.com/a/b/pull/1" }]);
+    // Without links, no session update.
+    expect((await activity(owner.session, { type: "thought", body: "Working on it." })).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: "Working on it." });
+    expect(linearFake.links()).toHaveLength(1);
+    expect(await dump(env.DB)).not.toMatch(/Done\.|Working on it/);
+  });
+
+  it("refuses an activity for a session of another account, a bad type, an empty or oversized body, or a link that is not https", async () => {
+    const { owner } = await delegatedIssue();
+    const other = await stranger();
+    const notYours = await activity(other.session, { type: "response", body: "Done." });
+    expect(notYours.status).toBe(404);
+    expect(await notYours.json()).toEqual({ error: "no such session" });
+    expect((await activity(owner.session, { type: "response", body: "Done." }, "55555555-5555-4555-8555-000000000000")).status).toBe(404);
+    expect((await activity(owner.session, { type: "response", body: "Done." }, "not-a-session")).status).toBe(404);
+    const link = { label: "Pull request", url: "https://github.com/a/b/pull/1" };
+    for (const bad of [
+      { type: "prompt", body: "Done." },
+      { type: "response", body: "" },
+      { type: "response", body: "x".repeat(8001) },
+      { type: "response", body: "Done.", links: [{ label: "Pull request", url: "http://github.com/a/b/pull/1" }] },
+      { type: "response", body: 7 },
+      { type: "response", body: "Done.", links: [{ ...link, url: "https://github.com/a b" }] },
+      { type: "response", body: "Done.", links: [{ ...link, url: `https://x.dev/${"a".repeat(2048)}` }] },
+      { type: "response", body: "Done.", links: [{ ...link, label: "" }] },
+      { type: "response", body: "Done.", links: [{ ...link, label: "x".repeat(81) }] },
+      { type: "response", body: "Done.", links: Array(6).fill(link) },
+      { type: "response", body: "Done.", links: link },
+      [{ type: "response", body: "Done." }],
+      "{not json",
+      JSON.stringify({ type: "response", body: "Done.", pad: "x".repeat(64 * 1024) }),
+    ]) {
+      const res = await activity(owner.session, bad);
+      expect(res.status, JSON.stringify(bad).slice(0, 100)).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad activity" });
+    }
+    // At the limits it goes through: 8000 characters, counted as characters.
+    expect((await activity(owner.session, { type: "response", body: "é".repeat(8000), links: Array(5).fill({ ...link, label: "x".repeat(80) }) })).status).toBe(204);
+    expect(linearFake.activities()).toHaveLength(2);
+  });
+
+  it("a refusal from Linear is a 502 for the computer", async () => {
+    const { owner } = await delegatedIssue();
+    linearFake.refuse = 500;
+    linearFake.refuseOnly = "agentActivityCreate";
+    const res = await activity(owner.session, { type: "response", body: "Done." });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "linear refused" });
+    linearFake.refuse = 400;
+    linearFake.refuseOnly = "agentSessionUpdate";
+    const links = await activity(owner.session, { type: "response", body: "Done.", links: [{ label: "PR", url: "https://github.com/a/b/pull/1" }] });
+    expect(links.status).toBe(502);
+  });
+
+  it("counts activities per account", async () => {
+    const { owner } = await delegatedIssue();
+    let last = 0;
+    for (let i = 0; i < 40 && last !== 429; i++) last = (await activity(owner.session, { type: "thought", body: "x" })).status;
+    expect(last).toBe(429);
+    expect(await (await activity(owner.session, { type: "thought", body: "x" })).json()).toEqual({ error: "too many requests" });
+  });
+});
+
+describe("a delivery dropped after 7 days", () => {
+  const dropped = (machine: string) => ({
+    agentSessionId: SESSION,
+    type: "error",
+    body: `${machine} stayed offline for 7 days, so this was dropped. Delegate it again when the computer is on.`,
+  });
+  const expiredAt = async (id: string) =>
+    (await env.DB.prepare("SELECT expired_at FROM linear_deliveries WHERE id = ?").bind(id).first<{ expired_at: number | null }>())?.expired_at;
+
+  it("tells Linear when a delivery was dropped after 7 days", async () => {
+    const { id } = await delegatedIssue();
+    await expired(env, id);
+    expect(linearFake.activities()).toEqual([SENT, dropped("Desk")]);
+    expect(await expiredAt(id)).toBeTypeOf("number");
+    // Once only.
+    await expired(env, id);
+    expect(linearFake.activities()).toEqual([SENT, dropped("Desk")]);
+  });
+
+  it("says nothing for a follow-up or a delivery the computer took", async () => {
+    const { owner, id, pc } = await delegatedIssue();
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "make it red", activityId: ACT })))).status).toBe(200);
+    const follow = (await pc.inbox.control())["id"] as string;
+    await expired(env, follow);
+    expect(await expiredAt(follow)).toBeTypeOf("number");
+    expect((await call("POST", `/linear/deliveries/${id}/accept`, as(owner.session))).status).toBe(204);
+    await expired(env, id);
+    expect(await expiredAt(id)).toBeTypeOf("number");
+    expect(linearFake.activities()).toEqual([SENT]);
+  });
+
+  it("expired() never throws", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    // A missing delivery.
+    await expect(expired(env, "0".repeat(32))).resolves.toBeUndefined();
+    // Linear refusing.
+    const { id, owner } = await delegatedIssue();
+    linearFake.refuse = 500;
+    await expect(expired(env, id)).resolves.toBeUndefined();
+    expect(await expiredAt(id)).toBeTypeOf("number");
+    expect(log.mock.calls).toEqual([[`linear expiry of ${id}: 500`]]);
+    linearFake.refuse = null;
+    // A machine that is gone.
+    const gone = "f".repeat(32);
+    await env.DB.prepare(
+      `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, 'aaaaaaaaaaaaaaaa', ?)`,
+    )
+      .bind(gone, crypto.randomUUID(), SESSION, ORG, ISSUE, owner.github_id, nowSeconds())
+      .run();
+    await expect(expired(env, gone)).resolves.toBeUndefined();
+    expect(linearFake.activities()).toEqual([SENT, dropped("This computer")]);
+    // The database failing.
+    const broken = { ...env, DB: { prepare: () => { throw new TypeError("D1 is down"); } } } as unknown as typeof env;
+    await expect(expired(broken, id)).resolves.toBeUndefined();
+    expect(log.mock.calls.at(-1)).toEqual([`linear expiry of ${id}: TypeError`]);
   });
 });
 

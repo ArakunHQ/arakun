@@ -22,6 +22,10 @@ const NO_ISSUE = "Arakun works on issues. Mention it on an issue instead.";
 const NOT_LINKED =
   'The person who delegated this has not connected Linear in Arakun. In Arakun, open the Linear tab and turn on "Let Linear start sessions on this computer".';
 const NO_ROUTE = "No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer.";
+const NO_SESSION = "Arakun has no session for this. Delegate the issue again.";
+const NOT_DELEGATOR = "Only the person who delegated this can steer it.";
+/// A computer's name when its row is gone.
+const THIS_COMPUTER = "this computer";
 const queueFull = (machine: string) => `Too many requests are waiting for ${machine}. Try again when it has caught up.`;
 const sent = (machine: string) => `Sent to ${machine}. A session starts there now.`;
 const offline = (machine: string) => `${machine} is offline. The session starts when it is back, for up to 7 days.`;
@@ -89,10 +93,107 @@ function isUuid(v: unknown): v is string {
   return typeof v === "string" && UUID.test(v);
 }
 
-/// A follow-up in a session. Task 7 hands it to the computer that has the
-/// session; until then it is taken and dropped.
-async function followUp(_env: Env, _hook: Hook, _body: Record<string, unknown>): Promise<Response> {
+/// A follow-up's text goes to the computer only up to this length. A longer
+/// one is not cut: the computer reads it from Linear by the activity id.
+const MAX_PROMPT = 16_000;
+
+/// The author of a follow-up. Linear's schema has it as `userId` and again as
+/// `user.id`; anything else counts as someone else.
+function authorOf(activity: Record<string, unknown>): string | null {
+  const user = activity["user"];
+  const id = activity["userId"] ?? (isObject(user) ? user["id"] : undefined);
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/// The follow-up's text, or null when there is none to pass on. Linear's
+/// schema puts it in `content.body`; `body` is read too, in case.
+function promptText(activity: Record<string, unknown>): string | null {
+  const content = activity["content"];
+  const text = isObject(content) && typeof content["body"] === "string" ? content["body"] : activity["body"];
+  return typeof text === "string" && text.length <= MAX_PROMPT ? text : null;
+}
+
+/// A follow-up in a session: a message or a stop. It goes to the computer
+/// that has the session, and only from the person who delegated it there.
+async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Promise<Response> {
+  const activity = body["agentActivity"];
+  if (!isObject(activity) || !isUuid(activity["id"])) return error(400, "bad webhook");
+  const activityId = activity["id"];
+  const author = authorOf(activity);
+  const say = (type: "thought" | "error", text: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, text);
+  // The newest delegation still waiting or taken. One that ran out of time
+  // left nothing on the computer to steer.
+  const session = await env.DB.prepare(
+    `SELECT github_id, label, issue_id FROM linear_deliveries
+     WHERE agent_session_id = ? AND organization_id = ? AND kind = 'created' AND expired_at IS NULL
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  )
+    .bind(hook.agentSessionId, hook.organizationId)
+    .first<{ github_id: number; label: string; issue_id: string }>();
+  if (!session) return (await say("error", NO_SESSION), ok());
+  // Anyone in the workspace can write in the session. Only the delegator's
+  // words reach their computer.
+  const mine =
+    author !== null &&
+    (await env.DB.prepare("SELECT 1 AS yes FROM linear_links WHERE organization_id = ? AND linear_user_id = ? AND github_id = ?")
+      .bind(hook.organizationId, author, session.github_id)
+      .first());
+  if (!mine) return (await say("thought", NOT_DELEGATOR), ok());
+
+  const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const [, read] = await env.DB.batch<Row>([
+    env.DB.prepare(
+      `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (webhook_id) DO NOTHING`,
+    ).bind(
+      id,
+      hook.webhookId,
+      hook.agentSessionId,
+      hook.organizationId,
+      session.issue_id,
+      activity["signal"] === "stop" ? "stop" : "prompt",
+      activityId,
+      session.github_id,
+      session.label,
+      now(),
+    ),
+    readBack(env, hook.webhookId),
+  ]);
+  const row = read!.results[0]!;
+  if (row.announced_at !== null) return ok();
+  const done = () => env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
+  // As for a delegation: the relay forgot it, so it would arrive twice.
+  if (row.accepted_at !== null || row.expired_at !== null) return (await done(), ok());
+  const delivery: Delivery = {
+    id: row.id,
+    kind: row.kind,
+    agent_session: row.agent_session_id,
+    issue: row.issue_id,
+    organization: row.organization_id,
+    activity: row.activity_id,
+    created: row.created_at,
+  };
+  try {
+    // The text goes in the live frame and nowhere else.
+    await deliver(env, row.label, delivery, row.kind === "prompt" ? promptText(activity) : null);
+  } catch (e) {
+    if (!(e instanceof QueueFull)) throw e;
+    await env.DB.prepare("DELETE FROM linear_deliveries WHERE id = ?").bind(row.id).run();
+    await say("error", queueFull(row.machine ?? THIS_COMPUTER));
+    return ok();
+  }
+  await done();
   return ok();
+}
+
+/// The delivery a webhook made, with its computer's name now.
+function readBack(env: Env, webhookId: string): D1PreparedStatement {
+  return env.DB.prepare(
+    `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.label, d.created_at, d.announced_at,
+       d.accepted_at, d.expired_at, m.name AS machine
+     FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
+     WHERE d.webhook_id = ?`,
+  ).bind(webhookId);
 }
 
 interface Row {
@@ -100,6 +201,8 @@ interface Row {
   agent_session_id: string;
   organization_id: string;
   issue_id: string;
+  kind: Delivery["kind"];
+  activity_id: string | null;
   label: string;
   created_at: number;
   announced_at: number | null;
@@ -144,12 +247,7 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
       `INSERT INTO linear_deliveries (id, webhook_id, agent_session_id, organization_id, issue_id, kind, activity_id, github_id, label, created_at)
        VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (webhook_id) DO NOTHING`,
     ).bind(id, hook.webhookId, hook.agentSessionId, hook.organizationId, hook.issueId, link.github_id, route.label, now()),
-    env.DB.prepare(
-      `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.label, d.created_at, d.announced_at, d.accepted_at, d.expired_at,
-         m.name AS machine
-       FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.github_id = d.github_id
-       WHERE d.webhook_id = ?`,
-    ).bind(hook.webhookId),
+    readBack(env, hook.webhookId),
   ]);
   const row = read!.results[0]!;
   if (row.announced_at !== null) return ok();

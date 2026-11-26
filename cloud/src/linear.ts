@@ -8,14 +8,19 @@
 //   GET /linear/install   → a redirect to Linear's consent page
 //   GET /linear/callback  → where Linear sends the admin back to
 //   POST /linear/webhook  → Linear's events (linear_webhook.ts)
+//   POST /linear/deliveries/<id>/accept
+//                         → the computer took a delivery
+//   POST /linear/sessions/<agent_session>/activity
+//                         → the computer's progress, posted as Arakun
 //
 // Without all four LINEAR_* secrets every /linear path is a 404. All routes
 // but the webhook and the OAuth callback (which Linear calls) need a session
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
-import { exchangeCode, LinearRefused, saveWorkspace, viewer } from "./linear_api";
+import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, viewer } from "./linear_api";
 import { webhook } from "./linear_webhook";
+import { dropDelivery } from "./machines";
 import { b64url, error, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 export const FLAG = "linear";
@@ -62,6 +67,10 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
     default: {
       const unlink = request.method === "DELETE" ? /^\/linear\/link\/([^/]+)$/.exec(pathname) : null;
       if (unlink && UUID.test(unlink[1]!)) return removeLink(env, who, unlink[1]!);
+      const taken = request.method === "POST" ? /^\/linear\/deliveries\/([^/]+)\/accept$/.exec(pathname) : null;
+      if (taken) return accept(env, who, taken[1]!);
+      const said = request.method === "POST" ? /^\/linear\/sessions\/([^/]+)\/activity$/.exec(pathname) : null;
+      if (said) return sessionActivity(request, env, who, said[1]!);
       return error(404, "not found");
     }
   }
@@ -151,14 +160,8 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
   const body = await jsonBody(request, MAX_TOKEN + 64);
   const token = isObject(body) ? body["token"] : undefined;
   if (typeof token !== "string" || token.length === 0 || new TextEncoder().encode(token).length > MAX_TOKEN) return error(400, "bad token");
-  let limited: boolean;
-  try {
-    limited = !(await env.LINEAR_LIMIT.limit({ key: String(who.githubId) })).success;
-  } catch (e) {
-    console.error("linear limit failed:", e);
-    return error(503, "the server could not check the request: try again");
-  }
-  if (limited) return error(429, "too many requests");
+  const refused = await overLimit(env, who);
+  if (refused) return refused;
   let seen: Awaited<ReturnType<typeof viewer>>;
   try {
     seen = await viewer(token);
@@ -254,4 +257,94 @@ export async function routeFor(
     .bind(githubId, organizationId, place.teamId, place.projectId)
     .first<{ label: string; machine: string }>();
   return row;
+}
+
+/// The 429 or 503 to send when the account has asked Linear too often, or
+/// null to go on. Counted per account, as everything here asks Linear.
+async function overLimit(env: Env, who: Session): Promise<Response | null> {
+  let limited: boolean;
+  try {
+    limited = !(await env.LINEAR_LIMIT.limit({ key: String(who.githubId) })).success;
+  } catch (e) {
+    console.error("linear limit failed:", e);
+    return error(503, "the server could not check the request: try again");
+  }
+  return limited ? error(429, "too many requests") : null;
+}
+
+const DELIVERY_ID = /^[0-9a-f]{32}$/;
+
+/// The computer took a delivery: the relay need not keep it any longer.
+async function accept(env: Env, who: Session, id: string): Promise<Response> {
+  if (!DELIVERY_ID.test(id)) return error(404, "no such delivery");
+  // Owner and id in one statement, so another account's id looks unknown.
+  const row = await env.DB.prepare(
+    "UPDATE linear_deliveries SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ? AND github_id = ? RETURNING label",
+  )
+    .bind(now(), id, who.githubId)
+    .first<{ label: string }>();
+  if (!row) return error(404, "no such delivery");
+  // Every time: a first accept may have failed after the update.
+  await dropDelivery(env, row.label, id);
+  return new Response(null, { status: 204 });
+}
+
+const ACTIVITY_TYPES = ["thought", "elicitation", "response", "error"] as const;
+const MAX_ACTIVITY_BODY = 64 * 1024;
+const MAX_ACTIVITY_TEXT = 8000;
+const MAX_LINKS = 5;
+const MAX_LINK_LABEL = 80;
+const MAX_URL = 2048;
+
+/// Length in characters, not UTF-16 units, so an emoji counts once.
+const chars = (s: string) => [...s].length;
+
+interface Activity {
+  type: (typeof ACTIVITY_TYPES)[number];
+  body: string;
+  links: { label: string; url: string }[];
+}
+
+/// The activity, checked, or null. Only the known fields are copied out.
+function parseActivity(v: unknown): Activity | null {
+  if (!isObject(v)) return null;
+  const { type, body, links = [] } = v;
+  if (!ACTIVITY_TYPES.includes(type as Activity["type"])) return null;
+  if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
+  if (!Array.isArray(links) || links.length > MAX_LINKS) return null;
+  const out: Activity["links"] = [];
+  for (const l of links) {
+    if (!isObject(l)) return null;
+    const { label, url } = l;
+    if (typeof label !== "string" || label.length === 0 || chars(label) > MAX_LINK_LABEL) return null;
+    if (typeof url !== "string" || !url.startsWith("https://") || /\s/.test(url) || url.length > MAX_URL) return null;
+    out.push({ label, url });
+  }
+  return { type: type as Activity["type"], body, links: out };
+}
+
+/// The computer's progress in a session it was given, posted as Arakun. The
+/// text goes to Linear and nowhere else.
+async function sessionActivity(request: Request, env: Env, who: Session, agentSessionId: string): Promise<Response> {
+  if (!UUID.test(agentSessionId)) return error(404, "no such session");
+  const activity = parseActivity(await jsonBody(request, MAX_ACTIVITY_BODY));
+  if (!activity) return error(400, "bad activity");
+  const refused = await overLimit(env, who);
+  if (refused) return refused;
+  // The workspace comes from the delivery, not the caller.
+  const owned = await env.DB.prepare(
+    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND github_id = ? AND kind = 'created'
+     ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(agentSessionId, who.githubId)
+    .first<{ organization_id: string }>();
+  if (!owned) return error(404, "no such session");
+  try {
+    await postActivity(env, owned.organization_id, agentSessionId, activity.type, activity.body);
+    if (activity.links.length > 0) await addLinks(env, owned.organization_id, agentSessionId, activity.links);
+  } catch (e) {
+    if (e instanceof LinearRefused) return error(502, "linear refused");
+    throw e;
+  }
+  return new Response(null, { status: 204 });
 }

@@ -416,6 +416,8 @@ export function created({
 }
 
 /// The body of a `prompted` AgentSessionEvent: a follow-up in the session.
+/// Linear's schema has the author twice, as `userId` and `user.id`; a null
+/// `userId` leaves both out.
 export function prompted({
   userId,
   body,
@@ -426,7 +428,7 @@ export function prompted({
   organizationId = HOOK_ORG,
   agentSessionId = HOOK_SESSION,
 }: {
-  userId: string;
+  userId: string | null;
   body: string;
   activityId: string;
   signal?: string | null;
@@ -435,6 +437,7 @@ export function prompted({
   organizationId?: string;
   agentSessionId?: string;
 }): Record<string, unknown> {
+  const author = userId === null ? {} : { userId, user: { id: userId, name: "Some One", email: "someone@example.com" } };
   return {
     type: "AgentSessionEvent",
     action: "prompted",
@@ -442,6 +445,6 @@ export function prompted({
     webhookId,
     appUserId: "app-user",
     agentSession: { id: agentSessionId, issueId, creatorId: null, comment: null },
-    agentActivity: { id: activityId, userId, body, signal, content: { type: "prompt", body } },
+    agentActivity: { id: activityId, ...author, body, signal, content: { type: "prompt", body } },
   };
 }

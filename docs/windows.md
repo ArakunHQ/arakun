@@ -158,7 +158,8 @@ With `--service` a server that is not signed in yet stays up and waits for
 | arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key, typed address and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-address`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
-| Claude seats' tokens (`arakun seat add`), one file per seat | `%LOCALAPPDATA%\arakun\seats\<name>` |
+| Claude seats' tokens (`arakun seat add`) | Credential Manager, as `arakun:seat:<name>` |
+| Claude seats, one empty file per seat that lists it | `%LOCALAPPDATA%\arakun\seats\<name>` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
@@ -190,11 +191,11 @@ Manager (Windows Credentials, Generic Credentials).
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
 - **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
-  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' tokens in
+  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' files in
   `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
   Windows has no such modes, so there they get the default access rules of
-  `%LOCALAPPDATA%\arakun\`. A seat's token signs in to that Claude subscription, so
-  check those rules before you add one.
+  `%LOCALAPPDATA%\arakun\`. A seat's token is in the Credential Manager, not in
+  `seats\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
   `SYSTEM` and the Administrators can read it. To check who can read the folder and the

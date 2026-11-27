@@ -13,7 +13,8 @@
 #   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
 #   --ci-tools also cargo-deny and zizmor, with cargo install (each one compiles for a
 #              few minutes the first time)
-#   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
+#   --hooks    turn on the Git hooks in lefthook.yml (lefthook install), and install
+#              gitleaks for the secret scan before a commit
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt, dnf or pacman; on macOS the Xcode Command
@@ -41,7 +42,7 @@ while [ $# -gt 0 ]; do
     --ci-tools) ci_tools=1 ;;
     --hooks) hooks=1 ;;
     --build) build=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "setup-dev: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -399,6 +400,45 @@ if [ $hooks = 1 ]; then
     { [ -x "$hookdir/$h" ] && grep -qs lefthook "$hookdir/$h"; } || on=0
   done
   command -v lefthook >/dev/null || on=0
+
+  # The pre-commit secret scan needs gitleaks. A release binary, checked against
+  # the hash below, into Cargo's bin folder, which is on PATH already. To bump
+  # it, take the hashes from the release's gitleaks_<version>_checksums.txt.
+  gitleaks_version=8.30.1
+  case $os/$(uname -m) in
+    Linux/x86_64) gl_arch=linux_x64 gl_sum=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb ;;
+    Linux/aarch64|Linux/arm64) gl_arch=linux_arm64 gl_sum=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 ;;
+    Darwin/arm64) gl_arch=darwin_arm64 gl_sum=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5 ;;
+    Darwin/x86_64) gl_arch=darwin_x64 gl_sum=dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709 ;;
+    *) gl_arch= gl_sum= ;;
+  esac
+  gl_url=https://github.com/gitleaks/gitleaks/releases/download/v$gitleaks_version/gitleaks_${gitleaks_version}_$gl_arch.tar.gz
+  if have=$(gitleaks version 2>/dev/null); then
+    ok "gitleaks $have"
+  elif [ $check = 1 ] || [ -z "$gl_arch" ]; then
+    lack "gitleaks, for the secret scan before a commit (https://github.com/gitleaks/gitleaks#installing)"
+  elif ask "install gitleaks $gitleaks_version into $cargo_bin?"; then
+    gl_tmp=$(mktemp -d)
+    curl --proto '=https' --tlsv1.2 -sSfL "$gl_url" -o "$gl_tmp/gitleaks.tar.gz"
+    if command -v sha256sum >/dev/null; then
+      got=$(sha256sum "$gl_tmp/gitleaks.tar.gz")
+    else
+      got=$(shasum -a 256 "$gl_tmp/gitleaks.tar.gz")
+    fi
+    if [ "${got%% *}" != "$gl_sum" ]; then
+      rm -rf "$gl_tmp"
+      say "gitleaks download does not match its hash; not installed" >&2
+      exit 1
+    fi
+    tar -xzf "$gl_tmp/gitleaks.tar.gz" -C "$gl_tmp" gitleaks
+    mkdir -p "$cargo_bin"
+    mv "$gl_tmp/gitleaks" "$cargo_bin/gitleaks"
+    rm -rf "$gl_tmp"
+    ok "gitleaks $gitleaks_version"
+  else
+    lack "gitleaks, for the secret scan before a commit (https://github.com/gitleaks/gitleaks#installing)"
+  fi
+
   if [ $on = 1 ]; then
     ok "lefthook hooks are on"
   elif ! command -v lefthook >/dev/null; then

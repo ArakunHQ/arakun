@@ -73,7 +73,9 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 ```
 
 `--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
-first, and elsewhere it says how to install it if it is missing.
+first, and elsewhere it says how to install it if it is missing. It also installs
+[gitleaks](https://github.com/gitleaks/gitleaks), which the secret scan before a commit
+needs (winget on Windows, a release binary in Cargo's `bin` folder elsewhere).
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
 tesseract for `arakun dev` (on macOS only tesseract, through Homebrew), `--browser`
 fetches the CEF SDK a macOS build with the browser needs and links it at `.cef-sdk`,
@@ -117,8 +119,11 @@ jobs, the cloud job runs only when `cloud/`, `phone/` or CI itself changes, the 
 the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
 alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
 when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
-`.github/` changes. Every pull request is scanned for secrets (TruffleHog, failing only
-on a secret it verified as live), and one that changes a manifest, lockfile or workflow
+`.github/` changes. Every pull request is scanned for secrets by TruffleHog, a required
+check: it fails on a secret in the new commits that it verified as live, and on any
+secret, verified or not, in a file the pull request adds. A fake secret in a new file,
+such as a test fixture, ends its line with a `trufflehog:ignore` comment. A pull request that changes a manifest,
+lockfile or workflow
 gets a dependency review that fails on a new high or critical advisory. CodeQL and
 OpenSSF Scorecard run on `main` and weekly, with results in the Security tab.
 
@@ -219,8 +224,10 @@ then turn the hooks on in your checkout:
 lefthook install
 ```
 
-- **On commit:** clippy if Rust files changed, the cloud Worker's types if `cloud/` changed, and the phone tests if `phone/` or
-  `core/src/phone/` changed. They check the files on disk, not only what you staged.
+- **On commit:** a secret scan of the staged changes with gitleaks, every time
+  (`tools/setup-dev.sh --hooks` installs it; a fake secret in a test ends its line with
+  `gitleaks:allow`), clippy if Rust files changed, the cloud Worker's types if `cloud/` changed, and the phone tests if `phone/` or
+  `core/src/phone/` changed. Apart from the secret scan, they check the files on disk, not only what you staged.
 - **On push:** `cargo test`, the cloud tests, on macOS the iOS
   protocol tests (`swift test` in `ios/ArakunKit`), and the Android app's tests, lint
   and build, if the commits you push change those parts.

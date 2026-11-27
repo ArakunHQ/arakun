@@ -26,6 +26,7 @@ summary.
 | Clippy and tests (macOS, no browser) | not reproducible on Linux; see below |
 | Cloud (types and tests) | `(cd cloud && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && npm ci && npm test && tools/check-dist.sh)` |
 | Dependencies (cargo-deny) | `cargo deny check` |
+| TruffleHog | `gitleaks git --staged --redact --verbose .` on the change; a real secret has to be revoked, not only removed (it stays in the history); a fake one in a new file ends its line with `trufflehog:ignore` |
 | Conventional Commits | `tools/conventional-commits.sh title "<title>"` |
 | CLA | only the person can sign; tell the user |
 

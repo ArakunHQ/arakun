@@ -53,7 +53,7 @@ RUN package=$(sed -n 's/^pub const CLAUDE_ACP_PACKAGE: &str = "\(.*\)";$/\1/p' /
     && test -x /opt/arakun/agent/node_modules/.bin/claude-agent-acp \
     && rm /tmp/launch.rs
 
-COPY cloud/machine/entrypoint.sh cloud/machine/claude-acp cloud/machine/as-agent /opt/arakun/bin/
+COPY cloud/machine/entrypoint.sh cloud/machine/claude-acp cloud/machine/as-agent cloud/machine/model-env /opt/arakun/bin/
 COPY cloud/machine/sudoers /etc/sudoers.d/arakun
 RUN chown root:root /opt/arakun/bin/* /etc/sudoers.d/arakun \
     && chmod 755 /opt/arakun/bin/* \

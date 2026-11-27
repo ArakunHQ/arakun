@@ -10,6 +10,8 @@ import {
   IDLE_MS,
   IMAGE,
   INSTANCE,
+  MODEL_DIR,
+  MODEL_ENV,
   MachineLife,
   SERVER_DIR,
   newMachineKey,
@@ -19,6 +21,7 @@ import {
   type Box,
   type MachineRecord,
 } from "../src/cloud_machine";
+import { MODEL_VAR, VERTEX_FILE, VERTEX_VAR, open, parseModel, seal } from "../src/cloud_model";
 import { labelOf } from "../src/relay/label";
 import { fromB64url } from "../src/util";
 import { ADMIN, as, call, signIn, type SignedIn } from "./helpers";
@@ -65,6 +68,8 @@ class FakeBox implements Box {
   status: string | null = statusText(0, 0, 0);
   /// The next exec of `true` throws, as when a snapshot does not restore.
   failNextStart = false;
+  /// What removing the model credentials exits with.
+  modelRemoval = 0;
 
   start(options?: ContainerStartupOptions): void {
     if (this.running) throw new Error("already running");
@@ -93,7 +98,7 @@ class FakeBox implements Box {
     }
     const isStatus = cmd.join(" ") === "/usr/local/bin/arakun-server status";
     const text = isStatus ? (this.status ?? "") : "";
-    const exitCode = isStatus && this.status === null ? 1 : 0;
+    const exitCode = isStatus && this.status === null ? 1 : cmd.join(" ") === `rm -rf ${MODEL_DIR}` ? this.modelRemoval : 0;
     return {
       stdin: null,
       stdout: null,
@@ -505,6 +510,203 @@ describe("a machine's lifecycle", () => {
       expect(await life.record()).toBeNull();
       expect(await storage.getAlarm()).toBeNull();
       expect(await cloudSessions(m.label)).toBe(0);
+    });
+  });
+});
+
+function put(path: string, session: string, body: unknown): Promise<Response> {
+  return call("PUT", path, { ...as(session), "Content-Type": "application/json" }, JSON.stringify(body));
+}
+
+const KEY = "sk-ant-api03-not-a-real-key";
+
+describe("the model credentials in a request", () => {
+  it("become the variables each provider's agent reads", () => {
+    expect(parseModel("anthropic", { api_key: KEY })).toEqual({ env: { ANTHROPIC_API_KEY: KEY } });
+    expect(parseModel("openai", { api_key: "sk-proj-12345678" })).toEqual({ env: { OPENAI_API_KEY: "sk-proj-12345678" } });
+    expect(parseModel("bedrock", { region: "us-east-1", api_key: "bedrock-key-1" })).toEqual({
+      env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_REGION: "us-east-1", AWS_BEARER_TOKEN_BEDROCK: "bedrock-key-1" },
+    });
+    expect(parseModel("bedrock", { region: "eu-west-1", access_key_id: "AKIAEXAMPLE0", secret_access_key: "secret/Key+1", session_token: "token123" })).toEqual({
+      env: {
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_REGION: "eu-west-1",
+        AWS_ACCESS_KEY_ID: "AKIAEXAMPLE0",
+        AWS_SECRET_ACCESS_KEY: "secret/Key+1",
+        AWS_SESSION_TOKEN: "token123",
+      },
+    });
+  });
+
+  it("put a Google credentials file on one line, next to where it will be", () => {
+    const file = '{\n  "type": "service_account",\n  "private_key": "-----BEGIN\\nEND-----\\n"\n}';
+    const model = parseModel("vertex", { region: "us-east5", project_id: "my-project", credentials: file });
+    expect(model).toEqual({
+      env: { CLAUDE_CODE_USE_VERTEX: "1", CLOUD_ML_REGION: "us-east5", ANTHROPIC_VERTEX_PROJECT_ID: "my-project", GOOGLE_APPLICATION_CREDENTIALS: VERTEX_FILE },
+      file: '{"type":"service_account","private_key":"-----BEGIN\\nEND-----\\n"}',
+    });
+    // The object form reads the same.
+    expect(parseModel("vertex", { region: "us-east5", project_id: "my-project", credentials: JSON.parse(file) })).toEqual(model);
+  });
+
+  it("are refused when a value could not be one line of the variables file", () => {
+    for (const bad of [undefined, 7, "", "short", "has space in it", "line\nANTHROPIC_BASE_URL=https://evil.example", "x".repeat(4097)]) {
+      expect(typeof parseModel("anthropic", { api_key: bad })).toBe("string");
+    }
+    expect(typeof parseModel("anthropic", null)).toBe("string");
+    expect(typeof parseModel("bedrock", { region: "us-east-1" })).toBe("string");
+    expect(typeof parseModel("bedrock", { region: "US EAST", api_key: "bedrock-key-1" })).toBe("string");
+    expect(typeof parseModel("bedrock", { region: "us-east-1", api_key: "bedrock-key-1", access_key_id: "AKIAEXAMPLE0" })).toBe("string");
+    expect(typeof parseModel("vertex", { region: "us-east5", project_id: "my-project", credentials: "not json" })).toBe("string");
+    expect(typeof parseModel("vertex", { region: "us-east5", project_id: "my-project", credentials: [] })).toBe("string");
+    expect(typeof parseModel("vertex", { region: "us-east5", project_id: "My Project", credentials: { type: "service_account" } })).toBe("string");
+  });
+
+  it("open only for the machine and provider they were sealed for", async () => {
+    const sealed = await seal(env, "a".repeat(16), "anthropic", { env: { ANTHROPIC_API_KEY: KEY } });
+    expect(sealed).not.toContain(KEY);
+    expect(await open(env, "a".repeat(16), "anthropic", sealed)).toEqual({ env: { ANTHROPIC_API_KEY: KEY } });
+    expect(await open(env, "b".repeat(16), "anthropic", sealed)).toBeNull();
+    expect(await open(env, "a".repeat(16), "openai", sealed)).toBeNull();
+    expect(await open({ ...env, CLOUD_MODEL_KEY: "C".repeat(42) + "A" }, "a".repeat(16), "anthropic", sealed)).toBeNull();
+    expect(await open(env, "a".repeat(16), "anthropic", sealed.slice(0, -2) + "AA")).toBeNull();
+  });
+});
+
+describe("the model credential routes", () => {
+  it("keep a key and say only which provider has one", async () => {
+    const me = await owner();
+    const made = (await (await post("/cloud/machines", me.session)).json()) as { label: string };
+    const base = `/cloud/machines/${made.label}/model`;
+    expect(await (await call("GET", base, as(me.session))).json()).toEqual([]);
+
+    const set = await put(`${base}/anthropic`, me.session, { api_key: KEY });
+    expect(set.status).toBe(200);
+    const text = await set.text();
+    expect(text).not.toContain(KEY);
+    expect(JSON.parse(text)).toMatchObject({ model: [{ provider: "anthropic" }], applied: true });
+    const listed = await (await call("GET", base, as(me.session))).text();
+    expect(listed).not.toContain(KEY);
+    expect(JSON.parse(listed)).toMatchObject([{ provider: "anthropic" }]);
+
+    // Another way to run Claude Code takes the place of the first; OpenAI's key stands next to it.
+    expect((await put(`${base}/openai`, me.session, { api_key: "sk-proj-12345678" })).status).toBe(200);
+    const bedrock = (await (await put(`${base}/bedrock`, me.session, { region: "us-east-1", api_key: "bedrock-key-1" })).json()) as { model: { provider: string }[] };
+    expect(bedrock.model.map((m) => m.provider)).toEqual(["bedrock", "openai"]);
+
+    const cleared = (await (await call("DELETE", `${base}/bedrock`, as(me.session))).json()) as { model: { provider: string }[] };
+    expect(cleared.model.map((m) => m.provider)).toEqual(["openai"]);
+  });
+
+  it("refuse a bad key, an unknown provider and another account", async () => {
+    const me = await owner();
+    const made = (await (await post("/cloud/machines", me.session)).json()) as { label: string };
+    const base = `/cloud/machines/${made.label}/model`;
+    expect((await put(`${base}/anthropic`, me.session, { api_key: "has space" })).status).toBe(400);
+    expect((await put(`${base}/anthropic`, me.session, [])).status).toBe(400);
+    expect((await put(`${base}/mistral`, me.session, { api_key: KEY })).status).toBe(404);
+    expect((await put(base, me.session, { api_key: KEY })).status).toBe(404);
+    expect((await call("GET", `/cloud/machines/${made.label}/wake/anthropic`, as(me.session))).status).toBe(404);
+    const other = await owner();
+    expect((await put(`${base}/anthropic`, other.session, { api_key: KEY })).status).toBe(404);
+    expect((await call("GET", base, as(other.session))).status).toBe(404);
+    expect((await call("GET", base)).status).toBe(401);
+    expect(await (await call("GET", base, as(me.session))).json()).toEqual([]);
+  });
+});
+
+describe("a machine's model credentials", () => {
+  it("are stored sealed and go in with every start", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    await withLife(m, box, async (life, storage) => {
+      expect(await life.setModel("anthropic", { env: { ANTHROPIC_API_KEY: KEY } })).toMatchObject({ applied: true });
+      expect(JSON.stringify(await storage.get("model"))).not.toContain(KEY);
+      // Nothing runs yet, so nothing was written into a container.
+      expect(box.execs).toHaveLength(0);
+
+      await life.wake();
+      expect(box.starts[0]!.env?.[MODEL_VAR]).toBe(`ANTHROPIC_API_KEY=${KEY}`);
+      expect(box.starts[0]!.env?.[VERTEX_VAR]).toBeUndefined();
+      await life.sleep("idle");
+      await life.wake();
+      expect(box.starts[1]!.containerSnapshot).toBeDefined();
+      expect(box.starts[1]!.env?.[MODEL_VAR]).toBe(`ANTHROPIC_API_KEY=${KEY}`);
+    });
+  });
+
+  it("reach a running machine when they change, and leave it when removed", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    await withLife(m, box, async (life) => {
+      await life.wake();
+      expect(box.starts[0]!.env?.[MODEL_VAR]).toBeUndefined();
+      const file = '{"type":"service_account"}';
+      const vertex = parseModel("vertex", { region: "global", project_id: "my-project", credentials: file });
+      if (typeof vertex === "string") throw new Error(vertex);
+      expect(await life.setModel("vertex", vertex)).toMatchObject({ applied: true });
+      const wrote = box.execs.at(-1)!;
+      expect(wrote.cmd).toEqual([MODEL_ENV]);
+      expect(wrote.options?.user).toBeUndefined();
+      expect(wrote.options?.env?.[MODEL_VAR]).toContain(`GOOGLE_APPLICATION_CREDENTIALS=${VERTEX_FILE}`);
+      expect(wrote.options?.env?.[VERTEX_VAR]).toBe(file);
+
+      expect(await life.clearModel("vertex")).toEqual({ model: [], applied: true });
+      const cleared = box.execs.at(-1)!;
+      expect(cleared.cmd).toEqual([MODEL_ENV]);
+      // With neither variable, model-env removes both files.
+      expect(cleared.options?.env).toEqual({});
+    });
+  });
+
+  it("are removed before the snapshot", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    const order: string[] = [];
+    const snapshot = box.snapshotContainer.bind(box);
+    box.snapshotContainer = async (options) => {
+      order.push("snapshot");
+      return snapshot(options);
+    };
+    await withLife(m, box, async (life) => {
+      await life.setModel("anthropic", { env: { ANTHROPIC_API_KEY: KEY } });
+      await life.wake();
+      const exec = box.exec.bind(box);
+      box.exec = async (cmd, options) => {
+        order.push(cmd.join(" "));
+        return exec(cmd, options);
+      };
+      await life.sleep("idle");
+      expect(order.slice(-2)).toEqual([`rm -rf ${MODEL_DIR}`, "snapshot"]);
+    });
+  });
+
+  it("keep a machine from a snapshot when they would not go", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    box.modelRemoval = 1;
+    await withLife(m, box, async (life) => {
+      await life.setModel("anthropic", { env: { ANTHROPIC_API_KEY: KEY } });
+      await life.wake();
+      await life.sleep("idle");
+      expect(box.snapshots).toBe(0);
+      expect(box.running).toBe(false);
+      expect(await life.state()).toMatchObject({ running: false, snapshot: false });
+    });
+  });
+
+  it("go when the machine is removed", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    await withLife(m, new FakeBox(), async (life, storage) => {
+      await life.setModel("openai", { env: { OPENAI_API_KEY: "sk-proj-12345678" } });
+      await life.remove();
+      expect(await storage.get("model")).toBeUndefined();
+      expect(await life.setModel("openai", { env: { OPENAI_API_KEY: "sk-proj-12345678" } })).toBeNull();
     });
   });
 });

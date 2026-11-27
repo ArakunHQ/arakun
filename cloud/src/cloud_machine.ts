@@ -18,6 +18,10 @@
 // reads it, and sleep removes that file and ends the session before the
 // snapshot, so a snapshot never holds a live token.
 //
+// Model credentials. The owner's API key for the agents (cloud_model.ts) is
+// kept here sealed and goes in on every start, to a file under /run/arakun
+// that sleep removes before the snapshot. No removal, no snapshot.
+//
 // Lifecycle. A device knocking at the machine's door wakes it (machines.ts).
 // An alarm checks every few minutes: while the server says an agent turn runs
 // or a device is connected, the container stays up and its inactivity timeout
@@ -28,8 +32,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { newCloudSession } from "./auth";
 import { CLOUD_FLAG } from "./cloud_access";
+import { modelVars, replacedBy, seal, PROVIDERS, type Model, type Provider, type Stored } from "./cloud_model";
 import { labelOf } from "./relay/label";
-import { b64url, fromB64url, type Env } from "./util";
+import { b64url, fromB64url, now, type Env } from "./util";
 
 /// Asleep after this long with no agent turn and no device connected.
 export const IDLE_MS = 15 * 60 * 1000;
@@ -49,6 +54,11 @@ export const IMAGE = "server";
 /// Where the image keeps the server's files, and who runs it (machine/).
 export const SERVER_DIR = "/home/arakun/.local/share/arakun/server";
 export const SERVER_USER = "arakun";
+/// Where the image keeps the owner's model credentials while it runs
+/// (machine/model-env). Never in a snapshot.
+export const MODEL_DIR = "/run/arakun";
+/// What writes them there.
+export const MODEL_ENV = "/opt/arakun/bin/model-env";
 /// How long one `arakun-server status` may take.
 const STATUS_TIMEOUT_MS = 10_000;
 
@@ -93,6 +103,13 @@ export interface MachineState {
   snapshot: boolean;
   /// Unix milliseconds of the last activity seen, or null before the first.
   last_active: number | null;
+}
+
+/// A provider the machine has credentials for, never the credentials.
+export interface ModelState {
+  provider: Provider;
+  /// Unix seconds when they were set.
+  set_at: number;
 }
 
 /// The part of `ctx.container` the lifecycle uses, so tests can stand in for it.
@@ -169,9 +186,10 @@ export async function endCloudSession(env: Env, label: string): Promise<void> {
 
 /// The environment the container starts with: what the entrypoint
 /// (machine/entrypoint.sh) needs to sign the server in and, on a start from
-/// the image, its relay key. Makes a new cloud session, which ends the one
-/// before. Null when the owner may not run a machine.
-export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean): Promise<Record<string, string> | null> {
+/// the image, its relay key, and the owner's model credentials when there are
+/// any. Makes a new cloud session, which ends the one before. Null when the
+/// owner may not run a machine.
+export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean, stored: Stored = {}): Promise<Record<string, string> | null> {
   const login = await allowedOwner(env, m.githubId);
   if (login === null) return null;
   const made = await newCloudSession(env, m.githubId, m.label, m.name);
@@ -185,6 +203,7 @@ export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean
     // login's `github_id`, the name clients still use for the account ID.
     ARAKUN_CLOUD_GITHUB_ID: String(m.githubId),
     ARAKUN_CLOUD_LOGIN: login,
+    ...(await modelVars(env, m.label, stored)),
   };
   if (withIdentity) {
     vars["ARAKUN_CLOUD_IDENTITY"] = m.identity;
@@ -238,8 +257,9 @@ export class MachineLife {
     const image = box.images[IMAGE];
     if (!image) return "no_container";
     const snap = await this.storage.get<Snap>("snap");
+    const stored = await this.stored();
     if (snap && snap.image === image) {
-      const vars = await startEnv(this.env, m, false);
+      const vars = await startEnv(this.env, m, false, stored);
       if (!vars) return "not_allowed";
       try {
         box.start({ containerSnapshot: { id: snap.id }, instance: INSTANCE, enableInternet: true, env: vars });
@@ -253,7 +273,7 @@ export class MachineLife {
         if (box.running) await box.destroy("snapshot restore failed");
       }
     }
-    const vars = await startEnv(this.env, m, true);
+    const vars = await startEnv(this.env, m, true, stored);
     if (!vars) return "not_allowed";
     box.start({ image, instance: INSTANCE, enableInternet: true, env: vars });
     try {
@@ -320,9 +340,60 @@ export class MachineLife {
     }
   }
 
+  private async stored(): Promise<Stored> {
+    return (await this.storage.get<Stored>("model")) ?? {};
+  }
+
+  /// The providers the machine has credentials for, in a fixed order.
+  async model(): Promise<ModelState[]> {
+    const stored = await this.stored();
+    return PROVIDERS.flatMap((provider) => (stored[provider] ? [{ provider, set_at: stored[provider].at }] : []));
+  }
+
+  /// Keeps the owner's credentials for a provider, sealed, in place of the
+  /// ones it replaces, and gives them to a running machine. Null without a
+  /// machine. `applied` is false when the machine runs and did not take them:
+  /// they are kept, and its next start has them.
+  async setModel(provider: Provider, model: Model): Promise<{ model: ModelState[]; applied: boolean } | null> {
+    const m = await this.record();
+    if (!m) return null;
+    const stored = await this.stored();
+    for (const other of replacedBy(provider)) delete stored[other];
+    stored[provider] = { sealed: await seal(this.env, m.label, provider, model), at: now() };
+    await this.storage.put("model", stored);
+    return { model: await this.model(), applied: await this.apply(m, stored) };
+  }
+
+  /// Forgets a provider's credentials, on a running machine too.
+  async clearModel(provider: Provider): Promise<{ model: ModelState[]; applied: boolean } | null> {
+    const m = await this.record();
+    if (!m) return null;
+    const stored = await this.stored();
+    delete stored[provider];
+    await this.storage.put("model", stored);
+    return { model: await this.model(), applied: await this.apply(m, stored) };
+  }
+
+  /// Writes the credentials into a running container. The sessions that run
+  /// keep the ones they started with; the next one has these.
+  private async apply(m: MachineRecord, stored: Stored): Promise<boolean> {
+    const box = this.box;
+    if (!box?.running) return true;
+    try {
+      const vars = await modelVars(this.env, m.label, stored);
+      const code = await (await box.exec([MODEL_ENV], { env: vars, stdout: "ignore", stderr: "ignore" })).exitCode;
+      if (code === 0) return true;
+      console.error(`cloud machine ${m.label}: model-env exited ${code}`);
+    } catch (e) {
+      console.error(`cloud machine ${m.label}: could not write the model credentials:`, e);
+    }
+    return false;
+  }
+
   /// Ends the session, snapshots the disk and stops the container. A failed
-  /// snapshot (over 20 GB, or the API) still stops it; the next start is then
-  /// from the image, and the work since the last snapshot is lost.
+  /// snapshot (over 20 GB, the API, or model credentials that would not go)
+  /// still stops it; the next start is then from the image, and the work
+  /// since the last snapshot is lost.
   async sleep(reason: string): Promise<void> {
     const box = this.box;
     const m = await this.record();
@@ -338,6 +409,9 @@ export class MachineLife {
     const image = await this.storage.get<string>("image");
     try {
       if (!image) throw new Error("the image it runs is unknown");
+      // The owner's key is worth more than the work since the last snapshot.
+      const gone = await (await box.exec(["rm", "-rf", MODEL_DIR], { stdout: "ignore", stderr: "ignore" })).exitCode;
+      if (gone !== 0) throw new Error(`the model credentials could not be removed (rm exited ${gone})`);
       const s = await box.snapshotContainer({ name: `${m.label}-${Date.now()}` });
       await this.storage.put("snap", { id: s.id, size: s.size, image, at: Date.now() } satisfies Snap);
     } catch (e) {
@@ -347,7 +421,8 @@ export class MachineLife {
     await this.storage.deleteAlarm();
   }
 
-  /// Stops the container and forgets everything: the key, the snapshot.
+  /// Stops the container and forgets everything: the key, the snapshot, the
+  /// model credentials.
   async remove(): Promise<void> {
     const m = await this.record();
     if (m) await endCloudSession(this.env, m.label);
@@ -389,6 +464,18 @@ export class CloudMachine extends DurableObject<Env> {
 
   remove(): Promise<void> {
     return this.life.remove();
+  }
+
+  model(): Promise<ModelState[]> {
+    return this.life.model();
+  }
+
+  setModel(provider: Provider, model: Model): Promise<{ model: ModelState[]; applied: boolean } | null> {
+    return this.life.setModel(provider, model);
+  }
+
+  clearModel(provider: Provider): Promise<{ model: ModelState[]; applied: boolean } | null> {
+    return this.life.clearModel(provider);
   }
 
   override async alarm(): Promise<void> {

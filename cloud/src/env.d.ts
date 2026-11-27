@@ -32,6 +32,9 @@ declare namespace Cloudflare {
     /// runs `arakun-server` (cloud_machine.ts). Unset where cloud machines are
     /// not set up, as in production for now.
     CLOUD_MACHINE?: DurableObjectNamespace<import("./cloud_machine").CloudMachine>;
+    /// 32 bytes in base64url: the key the owners' model credentials are sealed
+    /// with (cloud_model.ts). Unset = cloud machines take no API key.
+    CLOUD_MODEL_KEY?: string;
     /// One object per channel: its messages and live sockets.
     CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.

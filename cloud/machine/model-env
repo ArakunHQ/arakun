@@ -1,0 +1,34 @@
+#!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# Writes the owner's model credentials where as-agent reads them, as root: the
+# entrypoint runs it on every start, and the machine's object runs it when the
+# owner sets or removes a key (cloud/src/cloud_model.ts). It gets:
+#
+#   ARAKUN_CLOUD_MODEL   the agents' variables, one NAME=value a line
+#   ARAKUN_CLOUD_VERTEX  the JSON of a Google credentials file, on one line
+#
+# An empty one removes its file, so a key the owner took away is gone from the
+# disk too. /run/arakun is not for the snapshot: the object removes it before
+# it takes one.
+set -eu
+umask 077
+
+dir=/run/arakun
+install -d -o root -g root -m 755 "$dir"
+
+# Writes $1 to $2 for the user $3 alone, in one rename; removes $2 when $1 is empty.
+put() {
+  if [ -z "$1" ]; then
+    rm -f "$2"
+    return
+  fi
+  printf '%s\n' "$1" >"$2.new"
+  chown "$3:$3" "$2.new"
+  chmod 600 "$2.new"
+  mv -f "$2.new" "$2"
+}
+
+# The variables stay with root: as-agent reads them before it drops to `agent`.
+put "${ARAKUN_CLOUD_MODEL:-}" "$dir/model.env" root
+# Google's libraries read this one from the agent's own process.
+put "${ARAKUN_CLOUD_VERTEX:-}" "$dir/vertex.json" agent

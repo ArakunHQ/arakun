@@ -5,9 +5,20 @@
 # included, so nothing the agent starts can get them back; no_new_privs keeps
 # setuid programs (sudo among them) from raising it again. Group `work` and
 # umask 002 let the server and the agent share the files under /work.
+#
+# The owner's model credentials (model-env) are root's file: they go into the
+# agent's environment here and nowhere else, so the server never holds them.
 set -eu
 umask 0002
 export HOME=/home/agent USER=agent LOGNAME=agent
+model=/run/arakun/model.env
+if [ -r "$model" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      [A-Z]*=*) export "$line" ;;
+    esac
+  done <"$model"
+fi
 exec /usr/bin/setpriv --reuid=agent --regid=agent --init-groups \
   --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
   -- /opt/arakun/agent/node_modules/.bin/claude-agent-acp "$@"

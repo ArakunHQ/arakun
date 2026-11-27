@@ -242,12 +242,25 @@ impl Tone {
 // Small labels.
 
 /// A status word on a tinted ground: "Live", "Failed", "Team · Max 5x".
-pub fn badge(content: impl Into<SharedString>, tone: Tone) -> gpui::Div {
-    if tone == Tone::Neutral {
-        tag(content, tone.color()).bg(theme::fill_selected())
+/// Screen readers read the word: see `said`.
+pub fn badge(content: impl Into<SharedString>, tone: Tone) -> gpui::Stateful<gpui::Div> {
+    let content = content.into();
+    let badge = if tone == Tone::Neutral {
+        tag(content.clone(), tone.color()).bg(theme::fill_selected())
     } else {
-        tag(content, tone.color())
-    }
+        tag(content.clone(), tone.color())
+    };
+    said(badge, "badge", content)
+}
+
+/// Gives a piece of status text a node that screen readers read: plain text
+/// never reaches them. The id comes from the words, so two of these with the
+/// same words need an ancestor with an id of its own between them, or gpui
+/// drops one (and stops a debug build while a screen reader is on).
+fn said(d: gpui::Div, kind: &'static str, words: SharedString) -> gpui::Stateful<gpui::Div> {
+    d.id((ElementId::Name(kind.into()), words.clone()))
+        .role(Role::Label)
+        .aria_label(words)
 }
 
 /// `badge` in any color: a kind of record, a category, a PR state.
@@ -268,9 +281,11 @@ pub fn tag(content: impl Into<SharedString>, color: impl Into<Hsla>) -> gpui::Di
         .child(content.into())
 }
 
-/// A dot and a word, for states in dense lists.
-pub fn status_dot(content: impl Into<SharedString>, tone: Tone) -> gpui::Div {
-    legend(content, tone.color())
+/// A dot and a word, for states in dense lists. Screen readers read the
+/// word: see `said`.
+pub fn status_dot(content: impl Into<SharedString>, tone: Tone) -> gpui::Stateful<gpui::Div> {
+    let content = content.into();
+    said(legend(content.clone(), tone.color()), "status", content)
 }
 
 /// A colored dot and a name: a chart's series, a category.
@@ -563,10 +578,25 @@ pub fn switch_row(id: impl Into<ElementId>, name: &str, on: bool) -> gpui::State
 // ---------------------------------------------------------------------------
 // Data.
 
-/// A thin bar filled to `pct` (0-100) in the tone's color.
-pub fn meter(pct: f32, tone: Tone, height: f32) -> gpui::Div {
+/// A thin bar filled to `pct` (0-100) in the tone's color. `name` is what
+/// screen readers call it, with how full it is ("80% used"); it is also the
+/// bar's id, so two meters in one place need different names.
+pub fn meter(
+    name: impl Into<SharedString>,
+    pct: f32,
+    tone: Tone,
+    height: f32,
+) -> gpui::Stateful<gpui::Div> {
+    let name = name.into();
     let fill = (pct / 100.).clamp(0., 1.);
     div()
+        .id((ElementId::Name("meter".into()), name.clone()))
+        .role(Role::Meter)
+        .aria_label(name)
+        .aria_numeric_value(f64::from(pct.clamp(0., 100.)))
+        .aria_min_numeric_value(0.)
+        .aria_max_numeric_value(100.)
+        .aria_value(format!("{:.0}% used", pct.ceil()))
         .h(px(height))
         .rounded_full()
         .bg(theme::fill_selected())
@@ -606,7 +636,11 @@ pub fn limit_line(label: &str, pct: f32, detail: Option<String>) -> AnyElement {
                 .text_color(theme::text_faint())
                 .child(detail.unwrap_or_default()),
         )
-        .child(meter(pct, tone, 4.).w(px(56.)).flex_none())
+        .child(
+            meter(label.to_string(), pct, tone, 4.)
+                .w(px(56.))
+                .flex_none(),
+        )
         .child(
             div()
                 .w(px(36.))
@@ -884,8 +918,14 @@ pub fn key_pill(
         PillKind::Normal => theme::text(),
         PillKind::Quiet => theme::text_muted(),
     };
+    let label = label.into();
     let base = div()
         .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .when_some(key, |d, k| {
+            d.aria_keyshortcuts(SharedString::from(k.to_ascii_uppercase()))
+        })
         .flex()
         .flex_none()
         .items_center()
@@ -900,7 +940,7 @@ pub fn key_pill(
         .when_some(leading, |d, (name, color)| {
             d.child(icon(name, 14.).text_color(color.unwrap_or(fg)))
         })
-        .child(label.into())
+        .child(label)
         .when_some(key, |d, k| {
             d.child(
                 div()
@@ -1378,10 +1418,18 @@ pub fn palette_section(
         .when_some(count, |d, n| d.child(n))
 }
 
-/// A row of results. The caller adds its lead, title, sub and end.
-pub fn palette_row(id: impl Into<ElementId>, selected: bool) -> gpui::Stateful<gpui::Div> {
+/// A row of results. The caller adds its lead, title, sub and end; `label`
+/// is what screen readers call it, as an option of the list, selected or not.
+pub fn palette_row(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::ListBoxOption)
+        .aria_label(label)
+        .aria_selected(selected)
         .relative()
         .flex()
         .flex_none()
@@ -1647,8 +1695,10 @@ pub fn check_box(on: bool) -> gpui::Div {
 }
 
 /// A card at the top of the list (clipboard, ask an agent, an answer).
+/// Screen readers take it as an option of the list, like `palette_row`.
 pub fn palette_card(
     id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
     tint: Tint,
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1656,6 +1706,9 @@ pub fn palette_card(
     let strong = matches!(tint, Tint::Amber | Tint::Violet);
     div()
         .id(id)
+        .role(Role::ListBoxOption)
+        .aria_label(label)
+        .aria_selected(selected)
         .relative()
         .flex()
         .flex_none()
@@ -2355,14 +2408,19 @@ pub fn blend_track(from: Hsla, to: Hsla) -> gpui::Div {
     ))
 }
 
-/// A round color to pick, ringed when it is the one chosen.
+/// A round color to pick, ringed when it is the one chosen. `name` is what
+/// screen readers call it ("#e5484d"), one of a group of radio buttons.
 pub fn swatch(
     id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
     color: impl Into<gpui::Fill>,
     chosen: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::RadioButton)
+        .aria_label(name)
+        .aria_toggled(crate::ui::toggled(chosen))
         .flex_none()
         .size(px(26.))
         .rounded_full()

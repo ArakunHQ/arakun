@@ -1365,10 +1365,11 @@ impl ExtensionsView {
             return None;
         }
         let mut cards = div().flex().flex_col().gap(crate::ui::sp(10.));
-        for s in needy {
+        for (i, s) in needy.into_iter().enumerate() {
             let (word, tone) = health_badge(&s.health);
             cards = cards.child(
                 div()
+                    .id(("ext-needy", i))
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(12.))
@@ -1541,6 +1542,7 @@ impl ExtensionsView {
         } else {
             div()
                 .id(SharedString::from(format!("ext-switch-{id}")))
+                .map(|d| ui::as_switch(d, p.short().to_string(), on))
                 .cursor_pointer()
                 .child(ui::switch(on))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1700,7 +1702,11 @@ impl ExtensionsView {
             ordered.extend(rules.iter().filter(|r| r.kind == kind));
         }
         let fold = 30;
-        for r in ordered.iter().take(if all { usize::MAX } else { fold }) {
+        for (i, r) in ordered
+            .iter()
+            .take(if all { usize::MAX } else { fold })
+            .enumerate()
+        {
             let (tool, target) = split_rule(&r.rule);
             let tone = rule_tone(r.kind);
             let lead = match tool.strip_prefix("mcp__") {
@@ -1727,6 +1733,7 @@ impl ExtensionsView {
             };
             rows.push(
                 div()
+                    .id(("ext-rule", i))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(16.))
@@ -1925,6 +1932,7 @@ impl ExtensionsView {
                         let spinning = busy == Some(Busy::Server(name.clone()));
                         rows.push(
                             row_base(SharedString::from(format!("droid-server-{i}")), ROW_H)
+                                .map(|d| ui::as_switch(d, s.name.clone(), on))
                                 .child(name_cell(
                                     logos::mark(&s.name, ""),
                                     32.,
@@ -1987,6 +1995,7 @@ impl ExtensionsView {
                         let spinning = busy == Some(Busy::Skill(name.clone()));
                         rows.push(
                             row_base(SharedString::from(format!("droid-skill-{i}")), 52.)
+                                .map(|d| ui::as_switch(d, s.name.clone(), on))
                                 .child(name_cell(
                                     logos::mark(&s.name, ""),
                                     28.,
@@ -2848,6 +2857,8 @@ impl ExtensionsView {
             SharedString::from(format!("ext-view-{}", view.label())),
             ROW_H,
         )
+        .map(|d| ui::as_switch(d, view.label(), on))
+        .aria_description(view.blurb())
         .child(
             cell(None)
                 .gap(crate::ui::sp(12.))

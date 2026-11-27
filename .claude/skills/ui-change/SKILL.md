@@ -29,7 +29,17 @@ component. A new reusable component goes in `ui`, and shows up in
 Screen readers only see what has a role and a label. The kit's controls set
 both (`icon_button` takes its label, which is also its tooltip). A clickable
 `div` of your own needs `.role(Role::…)` and `.aria_label(…)`, or
-`ui::labelled(d, Role::Button, "Name (Ctrl+K)")`.
+`ui::labelled(d, Role::Button, "Name (Ctrl+K)")`. A row that holds a `switch`
+is the switch to them: `ui::as_switch(d, "Name", on)`.
+
+`src/a11y_lint.rs` fails `cargo test` on an `on_click` element without a role.
+Files that had some when it came in are counted in `src/a11y_baseline.txt`;
+the count may only go down. Something clickable that is not a control (a
+backdrop that closes a dialog) says why in an `// a11y: …` comment instead.
+
+```sh
+cargo test --locked --no-default-features --bin arakun a11y_lint
+```
 
 `src/design_lint.rs` fails `cargo test` on hand-written text colors, faint
 borders and fills from `theme::mix(..)`, literal `.text_size(px(N))` and font

@@ -774,6 +774,7 @@ impl CloudflareView {
             out = out
                 .child(
                     div()
+                        .id(SharedString::from(format!("{id}-row")))
                         .flex()
                         .items_center()
                         .gap(crate::ui::sp(10.))
@@ -1223,6 +1224,7 @@ impl CloudflareView {
                 };
                 rows = rows.child(
                     div()
+                        .id(SharedString::from(format!("cf-ins-{sev}-{n}")))
                         .flex()
                         .items_center()
                         .gap(crate::ui::sp(12.))
@@ -1354,6 +1356,7 @@ impl CloudflareView {
                     0.
                 };
                 div()
+                    .id(SharedString::from(format!("cf-container-{}", c.name)))
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(12.))
@@ -1402,7 +1405,7 @@ impl CloudflareView {
                                         c.instances, c.max_instances
                                     )),
                             )
-                            .child(ui::meter(pct, tone, 4.)),
+                            .child(ui::meter(format!("{} instances", c.name), pct, tone, 4.)),
                     )
                     .child(
                         div()
@@ -1485,6 +1488,7 @@ impl CloudflareView {
             let path = format!("{name}/email/routing/overview");
             out = out.child(
                 div()
+                    .id(SharedString::from(format!("cf-email-{name}")))
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(12.))
@@ -1878,6 +1882,7 @@ impl CloudflareView {
             );
             list = list.child(
                 div()
+                    .id(("cf-tail-row", n))
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(4.))

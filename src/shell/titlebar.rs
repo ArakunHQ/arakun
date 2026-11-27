@@ -37,6 +37,14 @@ impl Shell {
                 strip = strip.child(
                     div()
                         .id(id)
+                        .map(|d| {
+                            let label = if rail {
+                                "Show sidebar"
+                            } else {
+                                "Workspace panel"
+                            };
+                            ui::labelled(d, gpui::Role::Button, label)
+                        })
                         .flex()
                         .flex_none()
                         .items_center()
@@ -87,6 +95,10 @@ impl Shell {
             strip = strip.child(
                 div()
                     .id(id)
+                    .map(|d| {
+                        let label = if go_back { "Back" } else { "Forward" };
+                        ui::labelled(d, gpui::Role::Button, label)
+                    })
                     .flex()
                     .flex_none()
                     .items_center()
@@ -559,6 +571,8 @@ impl Shell {
                 d.child(
                     div()
                         .id("title-redacted")
+                        .map(|d| ui::labelled(d, gpui::Role::Button, "Redacted mode (Ctrl+Shift+H)"))
+                        .aria_description("Emails, keys and codes are hidden. Press to show them.")
                         .flex_none()
                         .mr(crate::ui::sp(6.))
                         .cursor_pointer()
@@ -775,8 +789,16 @@ pub(super) fn window_button(
     size: f32,
     close: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    // The icon is all a sighted person sees; screen readers need the word.
+    let label = match id {
+        "win-min" => "Minimize",
+        "win-max" if icon_name == "copy01" => "Restore",
+        "win-max" => "Maximize",
+        _ => "Close window",
+    };
     div()
         .id(id)
+        .map(|d| ui::labelled(d, gpui::Role::Button, label))
         .group(id)
         .flex()
         .items_center()

@@ -1150,37 +1150,42 @@ impl UsageView {
                 seats::OWN | seats::BORROWED => seats::label(id),
                 name => crate::redact::value(name),
             };
-            let mut seat = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(ui::TEXT_SM))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::text_muted())
-                            .child(name),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(if live > 0 {
-                                theme::text_muted()
-                            } else {
-                                theme::text_faint()
-                            })
-                            .child(match live {
-                                0 => "No live sessions".to_string(),
-                                1 => "1 live session".to_string(),
-                                n => format!("{n} live sessions"),
-                            }),
-                    ),
-            );
+            let mut seat = div()
+                .id(gpui::SharedString::from(format!("usage-seat-{id}")))
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(ui::TEXT_SM))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text_muted())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(if live > 0 {
+                                    theme::text_muted()
+                                } else {
+                                    theme::text_faint()
+                                })
+                                .child(match live {
+                                    0 => "No live sessions".to_string(),
+                                    1 => "1 live session".to_string(),
+                                    n => format!("{n} live sessions"),
+                                }),
+                        ),
+                );
             let windows: Vec<_> = usage
                 .map(|u| {
                     [u.five_hour_window(), u.weekly()]
@@ -1761,6 +1766,9 @@ fn limits_block(
     body: gpui::Div,
 ) -> AnyElement {
     div()
+        .id(gpui::SharedString::from(format!(
+            "limits-{agent:?}-{title}"
+        )))
         .flex()
         .flex_col()
         .gap(crate::ui::sp(14.))
@@ -1838,31 +1846,36 @@ fn proxy_note(text: String, color: Hsla) -> gpui::Div {
 /// One account behind CLIProxyAPI: its name and plan, whether the proxy
 /// routes to it, and its windows.
 fn proxy_account(a: &cliproxy::Account, at: u64) -> AnyElement {
-    let mut account = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
-        div()
-            .flex()
-            .items_center()
-            .gap(crate::ui::sp(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(ui::TEXT_SM))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text_muted())
-                    .child(crate::redact::value(&a.name).to_string()),
-            )
-            .when(!a.plan.is_empty(), |d| {
-                d.child(
+    let mut account = div()
+        .id(gpui::SharedString::from(format!("usage-proxy-{}", a.name)))
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(8.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .child(
                     div()
-                        .flex_none()
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(theme::text_faint())
-                        .child(proxy_plan(&a.plan)),
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(ui::TEXT_SM))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text_muted())
+                        .child(crate::redact::value(&a.name).to_string()),
                 )
-            }),
-    );
+                .when(!a.plan.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(proxy_plan(&a.plan)),
+                    )
+                }),
+        );
     let state = match &a.state {
         cliproxy::State::Ready => None,
         cliproxy::State::Cooling { until, why } => {

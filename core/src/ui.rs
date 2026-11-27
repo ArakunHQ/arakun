@@ -255,6 +255,16 @@ pub fn labelled(
     }
 }
 
+/// Makes a clickable row or control that holds a `switch` read as one:
+/// its name and whether it is on. The `switch` itself is only the picture.
+pub fn as_switch(
+    d: gpui::Stateful<gpui::Div>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
+    labelled(d, Role::Switch, label).aria_toggled(toggled(on))
+}
+
 /// The on or off state of a switch or radio, as screen readers take it.
 pub fn toggled(on: bool) -> Toggled {
     if on { Toggled::True } else { Toggled::False }

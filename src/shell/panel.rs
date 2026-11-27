@@ -545,6 +545,8 @@ pub(super) fn archived_toggle(
     };
     div()
         .id(id)
+        .map(|d| ui::labelled(d, gpui::Role::Button, label.clone()))
+        .aria_expanded(open)
         .flex()
         .items_center()
         .gap(crate::ui::sp(6.))

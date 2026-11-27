@@ -2268,9 +2268,10 @@ impl ExtensionsView {
                 },
             ));
         }
-        for (input, field) in &ins.fields {
+        for (i, (input, field)) in ins.fields.iter().enumerate() {
             out = out.child(
                 div()
+                    .id(("market-field", i))
                     .flex()
                     .flex_col()
                     .gap(crate::ui::sp(4.))

@@ -428,6 +428,7 @@ impl ThreadView {
             .child(
                 div()
                     .id(("secret-show", ix))
+                    .map(|d| crate::ui::labelled(d, gpui::Role::Button, "Show secret"))
                     .flex_none()
                     .h(px(24.))
                     .px(crate::ui::sp(10.))

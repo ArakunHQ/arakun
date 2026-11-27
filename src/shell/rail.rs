@@ -426,6 +426,16 @@ fn mark(shape: Shape, color: Hsla) -> gpui::Div {
         .child(inner)
 }
 
+/// What a status dot says, for screen readers: nothing when idle.
+fn status_words(status: Status) -> Option<&'static str> {
+    match status {
+        Status::Idle => None,
+        Status::Working => Some("Working"),
+        Status::NeedsInput => Some("Needs you"),
+        Status::Error => Some("Failed"),
+    }
+}
+
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
@@ -568,6 +578,7 @@ impl Shell {
             .child(
                 div()
                     .id("panel-toggle")
+                    .map(|d| ui::labelled(d, gpui::Role::Button, "Workspace panel"))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -811,6 +822,14 @@ impl Shell {
             projects = projects.child(
                 div()
                     .id(("project", pi))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, project.name.clone()))
+                    .aria_selected(selected)
+                    .when_some(
+                        (!selected)
+                            .then(|| self.project_activity(pi, cx).label())
+                            .flatten(),
+                        |d, words| d.aria_description(words),
+                    )
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
@@ -947,6 +966,7 @@ impl Shell {
                     envs = envs.child(
                         div()
                             .id(("env-add-row", pi))
+                            .map(|d| ui::labelled(d, gpui::Role::Button, NEW_ENV_TIP))
                             .group("env-add-row")
                             .flex()
                             .items_center()
@@ -986,6 +1006,7 @@ impl Shell {
             projects = projects.child(
                 div()
                     .id("project-add-empty")
+                    .map(|d| ui::labelled(d, gpui::Role::Button, "Add project"))
                     .group("project-add-empty")
                     .flex()
                     .items_center()
@@ -1034,6 +1055,10 @@ impl Shell {
             panel = panel.child(
                 div()
                     .id(("project-switch", pi))
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_label(project.name.clone())
+                    .aria_toggled(ui::toggled(selected))
+                    .when_some(label.clone(), |d, words| d.aria_description(words))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
@@ -1172,6 +1197,14 @@ impl Shell {
             list = list.child(
                 div()
                     .id(("env-away", pi * 1000 + ei))
+                    .map(|d| {
+                        ui::labelled(
+                            d,
+                            gpui::Role::Button,
+                            format!("{}/{}", project.name, env.name),
+                        )
+                    })
+                    .when_some(status_words(status), |d, words| d.aria_description(words))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
@@ -1296,6 +1329,8 @@ impl Shell {
             .child(
                 div()
                     .id(("env-add", pi))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, "New session"))
+                    .aria_description(NEW_SESSION_TIP)
                     .group("env-add")
                     .flex()
                     .items_center()
@@ -1404,6 +1439,8 @@ impl Shell {
             EnvSignal::CiFailed => github.failed_run.map(|id| {
                 div()
                     .id(("env-ci", pi * 1000 + ei))
+                    .map(|d| ui::labelled(d, gpui::Role::Link, "CI failed"))
+                    .aria_description("Open the failed run")
                     .px(crate::ui::sp(4.))
                     .rounded(crate::ui::rad(4.))
                     .text_size(px(ui::TEXT_XS))
@@ -1421,6 +1458,8 @@ impl Shell {
             EnvSignal::Review(what) => github.review.clone().map(|(_, url)| {
                 div()
                     .id(("env-review", pi * 1000 + ei))
+                    .map(|d| ui::labelled(d, gpui::Role::Link, what.to_string()))
+                    .aria_description("Open the pull request")
                     .px(crate::ui::sp(4.))
                     .rounded(crate::ui::rad(4.))
                     .text_size(px(ui::TEXT_XS))
@@ -1449,6 +1488,8 @@ impl Shell {
             let url = pr.url.clone();
             div()
                 .id(("env-pr", pi * 1000 + ei))
+                .map(|d| ui::labelled(d, gpui::Role::Link, format!("Pull request #{}", pr.number)))
+                .aria_description(pr.tip())
                 .flex_none()
                 .px(crate::ui::sp(4.))
                 .rounded(crate::ui::rad(4.))
@@ -1463,8 +1504,17 @@ impl Shell {
                     this.open_url(url.clone(), window, cx);
                 }))
         });
+        // What screen readers call the row: what it shows as its title.
+        let spoken = match &label {
+            Some((title, _, _)) => title.to_string(),
+            None if env.placeholder.is_some() && env.sessions.is_empty() => "New session".into(),
+            None => env.name.to_string(),
+        };
         div()
             .id(("env", pi * 1000 + ei))
+            .map(|d| ui::labelled(d, gpui::Role::Button, spoken))
+            .aria_selected(active)
+            .when_some(status_words(status), |d, words| d.aria_description(words))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {

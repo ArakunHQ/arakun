@@ -834,6 +834,7 @@ impl PhoneView {
     ) -> impl IntoElement {
         let id = d.id.clone();
         div()
+            .id(SharedString::from(format!("phone-device-{}", d.id)))
             .flex()
             .items_center()
             .gap(crate::ui::sp(12.))
@@ -929,6 +930,7 @@ impl PhoneView {
             format!("last seen {}", crate::memory::ago(c.last_seen_at, now))
         };
         let row = div()
+            .id(SharedString::from(format!("phone-computer-{}", c.name)))
             .flex()
             .items_center()
             .gap(crate::ui::sp(12.))

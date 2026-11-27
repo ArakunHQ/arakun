@@ -502,6 +502,7 @@ impl AutomationsDialog {
                 d.child(
                     div()
                         .id(("auto-enabled", i))
+                        .map(|d| ui::as_switch(d, format!("Run {} on its schedule", a.name), on))
                         .cursor_pointer()
                         .child(crate::settings_view::switch(on))
                         .on_click(cx.listener(move |_, _, _, cx| {

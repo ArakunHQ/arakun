@@ -381,6 +381,7 @@ impl DoopView {
             let shown = self.current.as_ref() == Some(&s.id);
             list = list.child(
                 div()
+                    .id(("doop-session", i))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(12.))

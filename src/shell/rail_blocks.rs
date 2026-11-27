@@ -535,6 +535,10 @@ impl Shell {
             let collapsible = section.collapsible;
             div()
                 .id(("rail-section", si))
+                .when(collapsible, |d| {
+                    ui::labelled(d, gpui::Role::Button, section.title.clone())
+                        .aria_expanded(!folded)
+                })
                 .group("rail-section")
                 .flex()
                 .items_center()
@@ -746,6 +750,7 @@ impl Shell {
         let row = |end: Option<AnyElement>| {
             div()
                 .id(gpui::ElementId::Name(row_id.clone()))
+                .map(|d| ui::labelled(d, gpui::Role::Button, name.clone()))
                 .group("rail-row")
                 .flex()
                 .items_center()
@@ -900,6 +905,7 @@ impl Shell {
             // Signed out of GitHub: the row signs in, as Teams needs.
             Piece::User if self.teams.read(cx).ready() && !self.teams.read(cx).signed_in() => div()
                 .id(gpui::ElementId::Name(row_id.clone()))
+                .map(|d| ui::labelled(d, gpui::Role::Button, "Sign in with GitHub"))
                 .group("rail-row")
                 .flex()
                 .items_center()
@@ -968,6 +974,7 @@ impl Shell {
                 };
                 div()
                     .id(gpui::ElementId::Name(row_id.clone()))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, shown.clone()))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
@@ -1046,6 +1053,7 @@ impl Shell {
                 };
                 div()
                     .id(gpui::ElementId::Name(row_id.clone()))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, shown.clone()))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(8.))
@@ -1233,6 +1241,8 @@ impl Shell {
         Some(
             div()
                 .id(view_id(View::Inbox))
+                .map(|d| ui::labelled(d, gpui::Role::Button, item.name()))
+                .aria_selected(open)
                 .relative()
                 .flex()
                 .flex_none()
@@ -1334,6 +1344,8 @@ impl Shell {
                 let selected = pi == self.active_project;
                 div()
                     .id(("rail-project-icon", pi))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, project.name.clone()))
+                    .aria_selected(selected)
                     .flex()
                     .items_center()
                     .justify_center()

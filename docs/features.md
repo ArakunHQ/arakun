@@ -1039,7 +1039,12 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   the User row, where you sign in; a layout saved without it gets it once,
   next to Help. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
-  sidebar. While this tab is open the sidebar is being arranged: it shows in full,
+  sidebar. When Ctrl+B folds it to icons, the sidebar shows one tile per project, with
+  a dot for its worst state (amber needs you, red failed, blue working) and a marker on
+  the open one. Point at a tile to see that project's sessions and New session beside
+  it; a click on a session opens it, and Esc or moving the pointer away closes the list.
+  Search, the Inbox, Add project, More views, Settings and the account stay; the other
+  views wait in More views. While this tab is open the sidebar is being arranged: it shows in full,
   every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of
   opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,

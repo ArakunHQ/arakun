@@ -2,6 +2,8 @@
 //! session of every project, under its project, each with a mark for its
 //! state. It takes the place of the projects and environments list.
 
+pub(super) mod folded;
+
 use super::*;
 use crate::tab_layout::{LongTitles, Quiet, Sort, StateMark, TabLayout};
 

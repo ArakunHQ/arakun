@@ -375,7 +375,16 @@ impl Shell {
     }
 
     pub(super) fn rail_section_hidden(&self, section: &Section, cx: &App) -> bool {
-        !section.items.is_empty() && section.items.iter().all(|i| !self.rail_shows(&i.piece, cx))
+        !section.items.is_empty()
+            && section
+                .items
+                .iter()
+                .all(|i| !self.rail_shows(&i.piece, cx) || self.folded_away(&i.piece))
+    }
+
+    /// Whether `piece` waits in More views while the rail is folded to icons.
+    fn folded_away(&self, piece: &Piece) -> bool {
+        self.rail_narrow() && self.sidebar.folds_away(piece)
     }
 
     pub(super) fn hide_rail_item(&mut self, path: crate::sidebar::Path, cx: &mut Context<Self>) {
@@ -708,7 +717,7 @@ impl Shell {
         in_row: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.rail_shows(&item.piece, cx) {
+        if !self.rail_shows(&item.piece, cx) || self.folded_away(&item.piece) {
             return None;
         }
         // In a row, a piece is drawn as it is when the rail is narrowed: its icon alone.
@@ -1188,7 +1197,7 @@ impl Shell {
                 only_open,
             } => {
                 if narrow {
-                    self.render_projects_narrow(cx).into_any_element()
+                    self.render_project_tiles(cx)
                 } else if crate::tab_layout::current().tree() {
                     // A segment that shows its title heads the tree already.
                     let titled = self
@@ -1354,10 +1363,7 @@ impl Shell {
     /// The Inbox button's badge: a filled count on its top-right corner,
     /// ringed in the rail's ground so it stands off the button.
     fn inbox_mark(&self, b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
-        let ground = match self.sidebar.style.variant {
-            crate::sidebar::Variant::Flush => theme::window_bg(),
-            _ => theme::sidebar(),
-        };
+        let ground = self.rail_ground();
         let mark = div()
             .absolute()
             .rounded_full()
@@ -1387,6 +1393,14 @@ impl Shell {
                     })
                     .child(inbox_count_label(b.count)),
             ),
+        }
+    }
+
+    /// The rail's own color, which a mark on a corner is ringed in.
+    pub(super) fn rail_ground(&self) -> Hsla {
+        match self.sidebar.style.variant {
+            crate::sidebar::Variant::Flush => theme::window_bg(),
+            _ => theme::sidebar(),
         }
     }
 
@@ -1432,8 +1446,12 @@ impl Shell {
 
     /// The views More views lists: turned on, without a row of their own.
     pub(super) fn more_views(&self, cx: &App) -> Vec<View> {
-        self.sidebar
-            .hidden_views()
+        let views = if self.rail_narrow() {
+            self.sidebar.folded_views()
+        } else {
+            self.sidebar.hidden_views()
+        };
+        views
             .into_iter()
             .filter(|v| self.rail_shows(&Piece::view(*v), cx))
             .collect()
@@ -1465,53 +1483,6 @@ impl Shell {
             );
         }
         panel.into_any_element()
-    }
-
-    /// Projects narrowed to icons: each project's art, the open one lit.
-    fn render_projects_narrow(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().flex().flex_col().gap(crate::ui::sp(2.)).children(
-            self.projects.iter().enumerate().map(|(pi, project)| {
-                let selected = pi == self.active_project;
-                div()
-                    .id(("rail-project-icon", pi))
-                    .map(|d| ui::labelled(d, gpui::Role::Button, project.name.clone()))
-                    .aria_selected(selected)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .h(px(32.))
-                    .rounded(crate::ui::rad(8.))
-                    .cursor_pointer()
-                    .relative()
-                    .tooltip(ui::tip_text(project.name.clone()))
-                    .when(selected, |d| d.bg(theme::selection_strong()))
-                    .when(!selected, |d| {
-                        d.opacity(0.65).hover(|s| s.bg(theme::hover()).opacity(1.))
-                    })
-                    .child(ui::project_icon(
-                        project.icon,
-                        1.5,
-                        gpui::rgb(project.logo).into(),
-                    ))
-                    // Every project's work shows here, the open one's too, as
-                    // the narrowed rail has no rows.
-                    .map(|d| {
-                        let status = self.project_activity(pi, cx).status();
-                        d.when(status != Status::Idle, |d| {
-                            d.child(
-                                div()
-                                    .absolute()
-                                    .top(px(4.))
-                                    .right(px(4.))
-                                    .child(super::rail::status_dot(status)),
-                            )
-                        })
-                    })
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.select_project(pi, window, cx)),
-                    )
-            }),
-        )
     }
 
     /// The right-click menu of a rail item.

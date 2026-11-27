@@ -1206,17 +1206,13 @@ impl SettingsDialog {
             Section::Privacy => {
                 let redacted = toggle_row("set-redacted", "Redacted mode", "For streams, demos and screen sharing: hides account emails, keys and tokens, pairing codes, addresses and your user name, in the views, the terminals and the agents' replies. Ctrl+Shift+H turns it on and off.", crate::redact::on())
                 .on_click(cx.listener(|_, _, _, cx| {
-                    if let Err(e) = crate::redact::set(!crate::redact::on()) {
-                        eprintln!("arakun: redacted mode will not last past a restart: {e}");
-                    }
+                    crate::redact::set(!crate::redact::on());
                     cx.refresh_windows();
                 }))
                 .into_any_element();
                 let secrets = toggle_row("set-hide-secrets", "Hide secrets in sessions", "Keys, tokens and passwords an agent prints show as stars until you click them, and copying one asks first. Redacted mode hides them too, and doesn't show them on a click.", crate::redact::hides_secrets())
                 .on_click(cx.listener(|_, _, _, cx| {
-                    if let Err(e) = crate::redact::set_hides_secrets(!crate::redact::hides_secrets()) {
-                        eprintln!("arakun: hiding secrets in sessions will not last past a restart: {e}");
-                    }
+                    crate::redact::set_hides_secrets(!crate::redact::hides_secrets());
                     cx.refresh_windows();
                 }))
                 .into_any_element();
@@ -1601,9 +1597,7 @@ impl SettingsDialog {
         let automatic = update::automatic();
         let auto = toggle_row("set-auto-update", "Update automatically", "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.", automatic)
         .on_click(cx.listener(move |_, _, _, cx| {
-            if let Err(e) = update::set_automatic(!automatic) {
-                eprintln!("arakun: the update setting will not last past a restart: {e}");
-            }
+            update::set_automatic(!automatic);
             cx.notify();
         }))
         .into_any_element();

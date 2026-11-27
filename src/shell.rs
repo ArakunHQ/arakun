@@ -3292,9 +3292,7 @@ impl Shell {
     /// Turns redacted mode on or off. Every window draws again at once, so
     /// nothing private stays on screen for a frame longer than it must.
     pub(super) fn toggle_redacted(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = crate::redact::set(!crate::redact::on()) {
-            eprintln!("arakun: redacted mode will not last past a restart: {e}");
-        }
+        crate::redact::set(!crate::redact::on());
         cx.refresh_windows();
     }
 

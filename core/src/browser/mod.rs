@@ -290,45 +290,20 @@ pub const ENABLED: bool = cfg!(all(
 /// Without a choice, builds that can show pages keep links in Arakun, and the
 /// others send them out, where they can actually load.
 pub fn links_in_arakun() -> bool {
-    match LINKS_CHOICE.load(std::sync::atomic::Ordering::Relaxed) {
-        LINKS_ARAKUN => return true,
-        LINKS_SYSTEM => return false,
-        _ => {}
-    }
-    match std::fs::read_to_string(links_path()) {
-        Ok(choice) => parse_links_choice(&choice).unwrap_or(ENABLED),
-        Err(_) => ENABLED,
+    match crate::settings::read(|s| s.general.open_links) {
+        Some(crate::settings::OpenLinks::Arakun) => true,
+        Some(crate::settings::OpenLinks::System) => false,
+        None => ENABLED,
     }
 }
 
 pub fn set_links_in_arakun(on: bool) {
-    // Kept in memory too, so the switch works for this run even when the file
-    // cannot be written.
-    let choice = if on { LINKS_ARAKUN } else { LINKS_SYSTEM };
-    LINKS_CHOICE.store(choice, std::sync::atomic::Ordering::Relaxed);
-    crate::durable::write_soon(
-        links_path(),
-        if on { "arakun\n" } else { "system\n" }.into(),
-        "where links open will not last past a restart",
-    );
-}
-
-/// The choice made in this run: [`LINKS_UNSET`] until the switch is used.
-static LINKS_CHOICE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(LINKS_UNSET);
-const LINKS_UNSET: u8 = 0;
-const LINKS_ARAKUN: u8 = 1;
-const LINKS_SYSTEM: u8 = 2;
-
-fn links_path() -> std::path::PathBuf {
-    crate::paths::store(crate::paths::OPEN_LINKS)
-}
-
-fn parse_links_choice(text: &str) -> Option<bool> {
-    match text.trim() {
-        "arakun" => Some(true),
-        "system" => Some(false),
-        _ => None,
-    }
+    let choice = if on {
+        crate::settings::OpenLinks::Arakun
+    } else {
+        crate::settings::OpenLinks::System
+    };
+    crate::settings::change(|s| s.general.open_links = Some(choice));
 }
 
 #[cfg(test)]
@@ -337,10 +312,7 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{
-        SANDBOX_PROBE, ScriptContexts, cdp_port_from, is_sandbox_probe, parse_links_choice,
-        url_port,
-    };
+    use super::{SANDBOX_PROBE, ScriptContexts, cdp_port_from, is_sandbox_probe, url_port};
 
     #[test]
     fn the_debugging_port_is_off_unless_asked_for() {
@@ -374,15 +346,6 @@ mod tests {
         ] {
             assert_eq!(url_port(url), port, "{url}");
         }
-    }
-
-    #[test]
-    fn reads_the_links_choice() {
-        assert_eq!(parse_links_choice("arakun\n"), Some(true));
-        assert_eq!(parse_links_choice("system"), Some(false));
-        // Anything else falls back to what the build can do.
-        assert_eq!(parse_links_choice(""), None);
-        assert_eq!(parse_links_choice("chrome"), None);
     }
 
     #[test]

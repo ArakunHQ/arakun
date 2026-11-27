@@ -142,6 +142,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Images pasted into the composer or sent from the phone | `%LOCALAPPDATA%\arakun\pastes\` |
 | Sessions that run without a window | `%LOCALAPPDATA%\arakun\headless\` |
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `%LOCALAPPDATA%\arakun\memory\` |
+| Your settings from Settings › General, Privacy and Branches | `%LOCALAPPDATA%\arakun\settings.json` |
 | The sidebar's layout | `%LOCALAPPDATA%\arakun\sidebar.json` |
 | The extension views turned on in the Marketplace | `%LOCALAPPDATA%\arakun\extensions.json` |
 | Prompts sent from the composer, for ↑ and ↓ | `%LOCALAPPDATA%\arakun\history.json` |
@@ -159,20 +160,11 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | GitHub tab settings | `%LOCALAPPDATA%\arakun\github.json` |
 | Review drafts (GitHub tab) | `%LOCALAPPDATA%\arakun\github\drafts\` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | `%LOCALAPPDATA%\arakun\pilot.json` |
-| Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
-| Archive after merge, while it is on (Settings › Branches) | `%LOCALAPPDATA%\arakun\settle-after-merge` |
 | The merges archived | `%LOCALAPPDATA%\arakun\settled.json` |
-| Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
-| Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
-| Agents may drive external pages, while it is on | `%LOCALAPPDATA%\arakun\drive-any-page` |
-| Redacted mode, while it is on (Settings › Privacy) | `%LOCALAPPDATA%\arakun\redacted` |
-| Secrets in sessions shown, while hiding them is off (Settings › Privacy) | `%LOCALAPPDATA%\arakun\show-secrets` |
 | Your answer about crash reports and usage counts (Settings › Privacy) | `%LOCALAPPDATA%\arakun\telemetry.json` |
+| Held while the update channel switches | `%LOCALAPPDATA%\arakun\update-channel.lock` |
 | Every panic, kept on this machine | `%LOCALAPPDATA%\arakun\crash.log` |
 | That Arakun is running: one left behind means the last run crashed | `%LOCALAPPDATA%\arakun\running` |
-| The update channel (Settings › General) | `%LOCALAPPDATA%\arakun\update-channel` |
-| Held while the channel switches | `%LOCALAPPDATA%\arakun\update-channel.lock` |
-| Automatic updates are off (Settings › General) | `%LOCALAPPDATA%\arakun\no-auto-update` |
 
 ### Shared by every Arakun on this computer
 

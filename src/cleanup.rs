@@ -9,7 +9,6 @@
 //! commit is in the pull request.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -19,84 +18,10 @@ pub const CHOICES: [u8; 4] = [0, 7, 14, 30];
 /// What the one-time suggestion counts with, before the user picked.
 pub const SUGGEST_DAYS: u8 = 14;
 
-/// The user's choice, as it is in the file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Choice {
-    /// Never picked, nor suggested yet: off.
-    Unset,
-    /// Off, after the suggestion was shown and left alone.
-    Suggested,
-    Off,
-    Days(u8),
-}
-
-impl Choice {
-    /// Days an environment must sit unused; None when off.
-    pub fn days(self) -> Option<u8> {
-        match self {
-            Choice::Days(d) if d > 0 => Some(d),
-            _ => None,
-        }
-    }
-
-    fn parse(text: &str) -> Choice {
-        match text.trim() {
-            "off" => Choice::Off,
-            "suggested" => Choice::Suggested,
-            n => match n.parse::<u8>() {
-                Ok(0) => Choice::Off,
-                Ok(d) => Choice::Days(d),
-                Err(_) => Choice::Unset,
-            },
-        }
-    }
-
-    fn text(self) -> String {
-        match self {
-            Choice::Unset => String::new(),
-            Choice::Suggested => "suggested\n".into(),
-            Choice::Off | Choice::Days(0) => "off\n".into(),
-            Choice::Days(d) => format!("{d}\n"),
-        }
-    }
-
-    fn code(self) -> u8 {
-        match self {
-            Choice::Unset => LOADED_UNSET,
-            Choice::Suggested => LOADED_SUGGESTED,
-            Choice::Off | Choice::Days(0) => LOADED_OFF,
-            Choice::Days(d) => d,
-        }
-    }
-
-    fn from_code(code: u8) -> Option<Choice> {
-        match code {
-            NOT_LOADED => None,
-            LOADED_UNSET => Some(Choice::Unset),
-            LOADED_SUGGESTED => Some(Choice::Suggested),
-            LOADED_OFF => Some(Choice::Off),
-            d => Some(Choice::Days(d)),
-        }
-    }
-}
-
-/// The choice in memory, so the setting works for this run even when the file
-/// cannot be written. Days are stored as themselves; the rest at the top.
-static CHOICE: AtomicU8 = AtomicU8::new(NOT_LOADED);
-const NOT_LOADED: u8 = 255;
-const LOADED_UNSET: u8 = 254;
-const LOADED_SUGGESTED: u8 = 253;
-const LOADED_OFF: u8 = 252;
+pub use crate::settings::Cleanup as Choice;
 
 pub fn choice() -> Choice {
-    if let Some(c) = Choice::from_code(CHOICE.load(Ordering::Relaxed)) {
-        return c;
-    }
-    let c = std::fs::read_to_string(choice_path())
-        .map(|t| Choice::parse(&t))
-        .unwrap_or(Choice::Unset);
-    CHOICE.store(c.code(), Ordering::Relaxed);
-    c
+    crate::settings::read(|s| s.branches.remove_old_environments)
 }
 
 /// Days an environment must sit unused before it goes; None when off.
@@ -109,7 +34,7 @@ pub fn set_days(days: u8) {
     set(if days == 0 {
         Choice::Off
     } else {
-        Choice::Days(days.min(LOADED_OFF - 1))
+        Choice::Days(days)
     });
 }
 
@@ -121,18 +46,7 @@ pub fn set_suggested() {
 }
 
 fn set(c: Choice) {
-    CHOICE.store(c.code(), Ordering::Relaxed);
-    let path = choice_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, c.text()) {
-        eprintln!("arakun: the environment cleanup setting will not last past a restart: {e}");
-    }
-}
-
-fn choice_path() -> std::path::PathBuf {
-    crate::paths::store(crate::paths::ENV_CLEANUP)
+    crate::settings::change(|s| s.branches.remove_old_environments = c);
 }
 
 /// "Off", "7 days"…
@@ -369,22 +283,6 @@ mod tests {
             scheduled: false,
             used,
         }
-    }
-
-    #[test]
-    fn the_choice_reads_back_what_it_wrote() {
-        for c in [
-            Choice::Suggested,
-            Choice::Off,
-            Choice::Days(7),
-            Choice::Days(30),
-        ] {
-            assert_eq!(Choice::parse(&c.text()), c);
-            assert_eq!(Choice::from_code(c.code()), Some(c));
-        }
-        assert_eq!(Choice::parse(""), Choice::Unset);
-        assert_eq!(Choice::parse("soon"), Choice::Unset);
-        assert_eq!(Choice::parse("0"), Choice::Off);
     }
 
     #[test]

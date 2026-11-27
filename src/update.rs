@@ -58,51 +58,24 @@ fn keys_for(version: Version) -> Vec<&'static str> {
     keys
 }
 
-/// Which builds the updater installs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Channel {
-    Stable,
-    Nightly,
-}
-
-impl Channel {
-    fn parse(s: &str) -> Option<Channel> {
-        match s.trim() {
-            "stable" => Some(Channel::Stable),
-            "nightly" => Some(Channel::Nightly),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Channel::Stable => "stable",
-            Channel::Nightly => "nightly",
-        }
-    }
-}
+pub use crate::settings::Channel;
 
 /// The channel the user picked, or else the one this build came from, so a
 /// nightly installed by hand keeps getting nightlies.
 pub fn channel() -> Channel {
-    std::fs::read_to_string(channel_file())
-        .ok()
-        .and_then(|s| Channel::parse(&s))
-        .unwrap_or(if Version::current().is_nightly() {
+    crate::settings::read(|s| s.general.update_channel).unwrap_or(
+        if Version::current().is_nightly() {
             Channel::Nightly
         } else {
             Channel::Stable
-        })
+        },
+    )
 }
 
 pub fn set_channel(channel: Channel) -> std::io::Result<()> {
-    let path = channel_file();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     // Waits out an install that is checking the channel (see apply_locked).
     let _held = channel_lock()?;
-    crate::durable::write(&path, format!("{}\n", channel.name()).as_bytes())?;
+    crate::settings::change_now(|s| s.general.update_channel = Some(channel))?;
     // What the last check found was for the other channel.
     set_status(Status::Idle);
     Ok(())
@@ -125,10 +98,6 @@ fn channel_lock() -> std::io::Result<std::fs::File> {
         .open(&path)?;
     file.lock()?;
     Ok(file)
-}
-
-fn channel_file() -> PathBuf {
-    crate::paths::store(crate::paths::UPDATE_CHANNEL)
 }
 
 /// Whether the release workflow built this binary.
@@ -200,29 +169,13 @@ pub fn automatic() -> bool {
             std::env::var("ARAKUN_UPDATES").as_deref(),
             Ok("0" | "off" | "false" | "no")
         )
-        && !off_marker().exists()
+        && crate::settings::read(|s| s.general.automatic_updates)
         && crate::dev::size().is_none()
 }
 
-/// Turns the automatic checks on or off and remembers it, as a marker file
-/// like redacted mode.
-pub fn set_automatic(on: bool) -> std::io::Result<()> {
-    let path = off_marker();
-    if on {
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    } else {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, "do not update arakun by itself\n")
-    }
-}
-
-fn off_marker() -> PathBuf {
-    crate::paths::store(crate::paths::NO_AUTO_UPDATE)
+/// Turns the automatic checks on or off and remembers it.
+pub fn set_automatic(on: bool) {
+    crate::settings::change(|s| s.general.automatic_updates = on);
 }
 
 /// `vX.Y.Z` as numbers, or a nightly `X.Y.Z-nightly.N`, which comes before

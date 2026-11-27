@@ -66,12 +66,21 @@ you added, with three shortcuts worth knowing. Open it again with "Show onboardi
 the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
-If Arakun can't read one of its files there (`state.json`, `history.json`,
+If Arakun can't read one of its files there (`state.json`, `settings.json`, `history.json`,
 `prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
 store), say one written by a newer version or edited by hand, it renames it to
 `<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
 saves over the copy. To restore it, quit Arakun first (it saves on quit), keep a second
 copy of it, rename it back, and start a version that can read it.
+
+What you pick in Settings › General, Privacy and Branches is kept in one file,
+`settings.json` in the same folder, with one section per page. You can back it up, copy
+it to another computer or edit it by hand; a setting it leaves out keeps its default.
+A running Arakun reads it again when it changes, except for the two Privacy switches,
+which a hand edit changes at the next start. Older versions kept each of these
+settings in a file of its own (`redacted`, `show-secrets`, `drive-any-page`, `no-auto-update`,
+`open-links`, `update-channel`, `settle-after-merge`, `env-cleanup` and
+`branch-namer.json`); the first start moves them into `settings.json` and removes them.
 
 ### Workspace
 
@@ -176,8 +185,7 @@ copy of it, rename it back, and start a version that can read it.
   default the agent the prompt went to names it, when that is Claude Code (with `haiku`)
   or Droid, so the prompt goes nowhere else; other agents leave the name alone.
   Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
-  off; it saves that in `~/.local/share/arakun/branch-namer.json`
-  (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
+  off; it saves that in `settings.json` (see above).
 - **Archive.** Right-click an environment in the sidebar and pick Archive (or pick
   several rows and use the bar's archive button): its sessions that aren't working stop
   asking for you and leave the lists, the open review threads of its branch's pull
@@ -195,7 +203,7 @@ copy of it, rename it back, and start a version that can read it.
   archived once, within a week of it; threads that fail to resolve are tried again at the
   next few checks. Archived merges are noted in `~/.local/share/arakun/settled.json`.
   On by default; turn off Settings › Branches › Archive after merge (saved in
-  `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
+  `settings.json`).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
   or 30 days) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
@@ -203,8 +211,7 @@ copy of it, rename it back, and start a version that can read it.
   git-ignored files other than build output (`target/`, `node_modules/` and the like),
   a commit that isn't in the pull request, an agent working or waiting for you, an
   automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
-  would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`
-  (`%LOCALAPPDATA%\arakun\` on Windows).
+  would have gone, a notice suggests it once. Saved in `settings.json`.
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
 - **Running servers.** While a local server runs in one of your projects, the status
@@ -222,8 +229,7 @@ copy of it, rename it back, and start a version that can read it.
   own browser instead. That covers links from sessions, the GitHub view and pins; a link
   clicked inside a browser tab always stays in Arakun. Builds without the browser open
   links in your own browser from the start. The choice is
-  saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
-  Windows). A link to a pull request or issue on the host `gh` is signed in to opens in
+  saved in `settings.json`. A link to a pull request or issue on the host `gh` is signed in to opens in
   the GitHub tab instead, from a chat, a terminal (⌘-click, Ctrl-click elsewhere), the
   palette, the pull request button or a session card's pull request chip; its "Open on
   GitHub" opens the page. A tab shows its site's icon even before its page loads again:
@@ -1184,8 +1190,8 @@ Click a hidden secret to show it in that session's view until the view closes. C
 text that holds one asks first: the copy button asks "Copy the secret too?" and copies
 on a second click, and the selection menu offers "Copy as shown" or "Copy with secret".
 
-Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept as a
-`show-secrets` file in Arakun's data folder while it is off. Redacted mode hides more
+Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept in
+`settings.json`. Redacted mode hides more
 (see below), and a click there shows nothing.
 
 ### Redacted mode
@@ -1206,9 +1212,9 @@ off. While it is on, Arakun hides:
   and the computer's name, as a shell prompt shows them (`you@laptop`).
 
 It works on what it can recognize, so check a view before you share it: a secret that
-looks like a plain word still shows. The choice is kept in a `redacted` file in Arakun's
-data folder, so it is still on after a restart. `ARAKUN_REDACTED=1` turns it on for one
-run without changing that file.
+looks like a plain word still shows. The choice is kept in `settings.json`, so it is
+still on after a restart. `ARAKUN_REDACTED=1` turns it on for one run without changing
+that file.
 
 ### Usage and crash reports
 
@@ -1391,12 +1397,13 @@ see nightlies. The newest 14 are kept on the
 The updater keeps its files in Arakun's data folder (`~/.local/share/arakun` on Linux
 and macOS, `%LOCALAPPDATA%\arakun` on Windows): `update.json` (the version waiting to be
 installed, its checksum, and the last one you were told about), `update.lock` (held while
-one updater runs), `no-auto-update` (there while **Update automatically** is off),
-`update-channel` (`stable` or `nightly`, once you pick one; without it a nightly build
-follows nightlies and a release follows releases), `update-channel.lock` (held while the
+one updater runs), `update-channel.lock` (held while the
 channel changes or an update is installed) and `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
 on Windows, with its `.pdb` as `.arakun.exe.update.pdb`), unpacked first as `.arakun.incoming`.
+**Update automatically** and the channel (`stable` or `nightly`, once you pick one;
+without it a nightly build follows nightlies and a release follows releases) are kept in
+`settings.json` as `general.automatic_updates` and `general.update_channel`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a

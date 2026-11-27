@@ -1,6 +1,6 @@
 //! Whether agents may click, type and run scripts on any page, not only local
 //! ones (`arakun page`). Off by default: those tabs carry the user's signed-in
-//! sessions. Turned on in Settings → General.
+//! sessions. Turned on in Settings › Privacy › Agents drive any web page.
 //!
 //! Kept out of `shell` so Settings can read and set it without depending on the
 //! shell that shows it.

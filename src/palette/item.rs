@@ -73,6 +73,8 @@ pub enum Target {
     },
     Url(String),
     Setting(Setting),
+    /// A row of Settings that isn't a switch: the dialog opens on it.
+    OpenSetting(crate::settings_registry::Id),
     Memory,
     /// Re-run a CI run.
     Rerun {
@@ -105,10 +107,10 @@ pub enum Target {
 /// Settings the palette turns on and off in place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Setting {
-    Redacted,
-    Island,
+    /// A switch in Settings, under its name there.
+    Row(crate::settings_registry::Id),
+    /// Customize › Shape › Glass, which is not in Settings.
     Glass,
-    Arcade,
 }
 
 /// What a row is; decides its tab, its icon and its actions.
@@ -250,7 +252,8 @@ pub enum Preview {
     Setting {
         path: String,
         blurb: String,
-        on: bool,
+        /// `None` for a row that opens Settings instead.
+        on: Option<bool>,
     },
     Project {
         path: String,

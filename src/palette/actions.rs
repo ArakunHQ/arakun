@@ -179,6 +179,9 @@ pub fn for_item(item: &Item, pinned: bool, read_only: bool) -> Vec<Action> {
                 Do::Go(Target::Copy(name.clone())),
             ));
         }
+        (Kind::Setting, _) if matches!(item.target, Target::OpenSetting(_)) => {
+            out.push(open("Open in Settings", "settings01"))
+        }
         (Kind::Setting, _) => out.push(a(
             "Turn on or off",
             "preference-horizontal",

@@ -162,7 +162,7 @@ See [Features](docs/features.md) for all of it.
 - **Memory**: agents keep what they learn about a project across sessions.
 - **Secrets on a card**: an agent asks for a token or password, and never sees the value.
 - **Terminals** per environment, which agents can read with `arakun logs`.
-- **Browser tabs** that agents can drive on localhost ([Browser tabs](docs/browser.md)).
+- **Browser tabs** that agents can drive on localhost, or on any page once you allow it in Settings › Privacy ([Browser tabs](docs/browser.md)).
 - **GitHub tab**: CI, pull requests, reviews and issues, with agents that fix conflicts, checks and comments.
 - **Pull request agent**: connect [arakun-pilot](docs/github-pilot.md) and its board fills the GitHub tab.
 - **Dynamic Island**: a small overlay that shows what every agent is doing.

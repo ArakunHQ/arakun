@@ -91,6 +91,11 @@ pub fn set_animated(on: bool) {
     ANIMATED.store(on, Ordering::Relaxed);
 }
 
+/// The Raccoon animation setting as chosen, whatever reduce motion says.
+pub fn chosen() -> bool {
+    ANIMATED.load(Ordering::Relaxed)
+}
+
 /// gpui's reduce motion, as the last drawing rendered saw it. A global, not
 /// read from `App`, as `animated` is asked where there is none. Changing it
 /// redraws every window, so this follows within a frame.

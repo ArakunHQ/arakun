@@ -7,7 +7,8 @@ Browser tabs are based on CEF (Chromium Embedded Framework), behind the optional
 
 Browser tabs based on CEF (Chromium Embedded Framework), behind
 the optional `browser` cargo feature. Agents can drive pages on localhost through
-`arakun page` (screenshot, console, click, type, eval). Links you click open in a
+`arakun page` (screenshot, console, click, type, eval), and only read other pages
+unless you turn on Settings › Privacy › Agents drive any web page. Links you click open in a
 browser tab; turn off Settings › General › Open links in Arakun to open them in your
 own browser instead. That covers links from sessions, the GitHub view and pins; a link
 clicked inside a browser tab always stays in Arakun. Builds without the browser open

@@ -322,6 +322,7 @@ mod tests {
             organization: "w1".into(),
             activity: None,
             body: None,
+            guidance: Vec::new(),
         }
     }
 

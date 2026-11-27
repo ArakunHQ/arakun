@@ -23,9 +23,10 @@ function delivery(kind: Delivery["kind"] = "created", ago = 0): Delivery {
   };
 }
 
-/// What a frame carries of a delivery: everything but its time.
+/// What a frame carries of a delivery: everything but its time, and no
+/// guidance unless a test passes some.
 function frame(d: Delivery): Record<string, unknown> {
-  return { id: d.id, kind: d.kind, agent_session: d.agent_session, issue: d.issue, organization: d.organization, activity: d.activity };
+  return { id: d.id, kind: d.kind, agent_session: d.agent_session, issue: d.issue, organization: d.organization, activity: d.activity, guidance: null };
 }
 
 function stub(label: string) {
@@ -154,6 +155,33 @@ describe("Linear deliveries in the relay", () => {
     expect(await again.inbox.control()).toEqual({ type: "linear", ...frame(PROMPT), body: null });
   });
 
+  it("sends a delegation's guidance live and never stores it", async () => {
+    const { me, pc, owner } = await connectedComputer();
+    const D1 = delivery();
+    const guidance = [
+      { team: null, body: "Add a changelog entry." },
+      { team: "Eng / Web", body: "Branch from develop." },
+    ];
+    expect(await deliver(env, me.label, D1, null, guidance)).toEqual({ online: true });
+    expect(await pc.inbox.control()).toEqual({ type: "linear", ...frame(D1), body: null, guidance });
+    expect(JSON.stringify(await stored(me.label, `linear:${D1.id}`))).not.toMatch(/changelog|develop/);
+    const again = await reconnect(me, owner.session);
+    expect(await again.inbox.control()).toEqual({ type: "linear", ...frame(D1), body: null });
+  });
+
+  it("passes only a rule's text and team", async () => {
+    const { me, pc } = await connectedComputer();
+    const D1 = delivery();
+    const res = await stub(me.label).fetch("https://relay/_linear", {
+      method: "POST",
+      headers: { "x-arakun-label": me.label },
+      body: JSON.stringify({ delivery: D1, body: null, guidance: [{ team: "Web", body: "b", extra: "x" }] }),
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(await pc.inbox.control()).toEqual({ type: "linear", ...frame(D1), body: null, guidance: [{ team: "Web", body: "b" }] });
+  });
+
   it("the same id twice is one frame", async () => {
     const { me, pc } = await connectedComputer();
     const D1 = delivery();
@@ -255,13 +283,17 @@ describe("Linear deliveries in the relay", () => {
       { ...good, activity: undefined },
       { ...good, created: "now" },
     ];
-    for (const d of bad) {
+    const sent: object[] = [
+      ...bad.map((d) => ({ delivery: d, body: null })),
+      ...[{}, "rule", [{ body: 5, team: null }], [{ body: "b", team: 5 }], ["b"]].map((guidance) => ({ delivery: good, body: null, guidance })),
+    ];
+    for (const msg of sent) {
       const res = await stub(me.label).fetch("https://relay/_linear", {
         method: "POST",
         headers: { "x-arakun-label": me.label },
-        body: JSON.stringify({ delivery: d, body: null }),
+        body: JSON.stringify(msg),
       });
-      expect(res.status, JSON.stringify(d)).toBe(400);
+      expect(res.status, JSON.stringify(msg)).toBe(400);
       await res.text();
     }
     const keys = await runInDurableObject(stub(me.label), async (_i, state) => [...(await state.storage.list({ prefix: "linear:" })).keys()]);

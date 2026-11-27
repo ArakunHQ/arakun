@@ -186,6 +186,13 @@ export interface Delivery {
   created: number;
 }
 
+/// One rule of the guidance a Linear workspace or team set for agents. `team`
+/// is the display name of the team that set it, or null for the workspace.
+export interface GuidanceRule {
+  team: string | null;
+  body: string;
+}
+
 /// The computer already has as many deliveries waiting as the relay keeps.
 /// Its own class, so a caller can tell the person why instead of failing.
 export class QueueFull extends Error {
@@ -196,14 +203,21 @@ export class QueueFull extends Error {
 }
 
 /// Hands a delivery to the label's relay, which keeps it and sends it to the
-/// computer now if it is connected. `body` (a follow-up's text) goes only in
-/// that live frame; the relay never stores it. Throws `QueueFull` when the
+/// computer now if it is connected. `body` (a follow-up's text) and
+/// `guidance` (a delegation's rules for agents) go only in that live frame;
+/// the relay never stores them. Throws `QueueFull` when the
 /// computer's queue is full, and an `Error` for any other refusal.
-export async function deliver(env: Env, label: string, d: Delivery, body: string | null): Promise<{ online: boolean }> {
+export async function deliver(
+  env: Env,
+  label: string,
+  d: Delivery,
+  body: string | null,
+  guidance: GuidanceRule[] | null = null,
+): Promise<{ online: boolean }> {
   const res = await relayStub(env, label).fetch("https://relay/_linear", {
     method: "POST",
     headers: { "x-arakun-label": label, "Content-Type": "application/json" },
-    body: JSON.stringify({ delivery: d, body }),
+    body: JSON.stringify({ delivery: d, body, guidance }),
   });
   if (!res.ok) {
     await discard(res);

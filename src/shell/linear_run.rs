@@ -22,7 +22,7 @@ use crate::linear::delegation::{Delegation, Refusal, target_for};
 use crate::linear::issues::{self, Detail};
 use crate::linear::runs::{Added, ReportKind, Run, RunState};
 use crate::linear::{ApiError, Session, prompt};
-use crate::phone::linear::{Delivery, DeliveryKind};
+use crate::phone::linear::{Delivery, DeliveryKind, GuidanceRule};
 
 // The rules are in core, which the server shares; the shell's other Linear
 // files reach them through here.
@@ -42,6 +42,9 @@ struct Start {
     /// The delivery to accept once handled. None for a run from the queue:
     /// its delivery was accepted when it began to wait.
     delivery: Option<String>,
+    /// The guidance Linear sent with the delegation: from the live frame,
+    /// or kept in memory with the run while it waited.
+    guidance: Vec<GuidanceRule>,
 }
 
 impl Shell {
@@ -86,6 +89,7 @@ impl Shell {
                     organization: d.organization,
                     issue: d.issue,
                     delivery: Some(d.id),
+                    guidance: d.guidance,
                 };
                 self.linear_read(start, sign_in, window, cx);
             }
@@ -147,6 +151,7 @@ impl Shell {
                 organization: run.organization.clone(),
                 issue: run.issue.clone(),
                 delivery: None,
+                guidance: run.guidance.clone(),
             };
             self.linear_save();
             let sessions = crate::linear::sessions();
@@ -226,6 +231,7 @@ impl Shell {
                     organization: start.organization,
                     activity: None,
                     body: None,
+                    guidance: start.guidance,
                 };
                 return self.linear_keep(again, cx);
             }
@@ -291,6 +297,7 @@ impl Shell {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            guidance: start.guidance.clone(),
         });
         self.linear_save();
         match added {
@@ -454,7 +461,7 @@ impl Shell {
             settings.settle_in(env);
         }
         let title = prompt::title(&detail).into();
-        let text = prompt::delegated(&detail);
+        let text = prompt::delegated(&detail, &start.guidance);
         let started =
             self.start_session_with(&env_path, agent, title, text, false, Vec::new(), window, cx);
         let Some(session) = started else {
@@ -467,6 +474,8 @@ impl Shell {
             run.environment = Some(env_path);
             run.branch = branch.clone();
             run.state = RunState::Running;
+            // In the first prompt now: no need to hold Linear's text longer.
+            run.guidance = Vec::new();
         }
         self.linear_save();
         self.linear_watch(cx);

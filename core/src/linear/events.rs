@@ -527,6 +527,7 @@ mod tests {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            guidance: Vec::new(),
         }
     }
 

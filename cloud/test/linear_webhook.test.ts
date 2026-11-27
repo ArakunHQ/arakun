@@ -4,7 +4,7 @@ import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
-import { verified, webhook } from "../src/linear_webhook";
+import { guidanceOf, MAX_GUIDANCE, verified, webhook } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
 import { account, away, claim, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./relay/helpers";
 
@@ -168,6 +168,35 @@ describe("Linear's webhook", () => {
     expect(await count("linear_deliveries")).toBe(1);
     const back = await connectedComputerAgain(me, owner.session);
     expect(await back.inbox.control()).toMatchObject({ type: "linear", kind: "created", issue: ISSUE });
+  });
+
+  it("passes the guidance in the live frame and stores none of it", async () => {
+    const { me, pc } = await linkedComputerWithRoute({ team: TEAM });
+    const guidance = [
+      { body: "SECRET-WORKSPACE-RULE", origin: { type: "Organization" } },
+      { body: "SECRET-TEAM-RULE", origin: { type: "Team", team: { id: TEAM, key: "ENG", name: "Web", displayName: "Eng / Web", parentId: null } } },
+    ];
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION, guidance })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({
+      kind: "created",
+      body: null,
+      guidance: [
+        { team: null, body: "SECRET-WORKSPACE-RULE" },
+        { team: "Eng / Web", body: "SECRET-TEAM-RULE" },
+      ],
+    });
+    const everything = (await dump(env.DB)) + (await storedAll(me.label));
+    expect(everything).toContain(SESSION);
+    expect(everything).not.toMatch(/SECRET-/);
+  });
+
+  it("an offline computer gets the delegation without its guidance", async () => {
+    const { me, pc, owner } = await linkedComputerWithRoute();
+    await away(me.label, pc);
+    const guidance = [{ body: "Branch from develop.", origin: { type: "Organization" } }];
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION, guidance })))).status).toBe(200);
+    const back = await connectedComputerAgain(me, owner.session);
+    expect(await back.inbox.control()).toMatchObject({ kind: "created", issue: ISSUE, guidance: null });
   });
 
   it("the same delegation twice is one delivery and one activity", async () => {
@@ -956,3 +985,32 @@ async function connectedComputerAgain(me: Computer, session: string): Promise<Pc
   expect(await claim(pc, me)).toEqual({ type: "claimed" });
   return pc;
 }
+
+describe("guidanceOf", () => {
+  const rule = (body: unknown, origin: unknown = { type: "Organization" }) => ({ body, origin });
+
+  it("keeps each rule's text and its team, in Linear's order", () => {
+    const team = { type: "Team", team: { id: TEAM, key: "ENG", name: "Web", displayName: "Eng / Web", parentId: TEAM2 } };
+    expect(guidanceOf({ guidance: [rule("a"), rule("b", team)] })).toEqual([
+      { team: null, body: "a" },
+      { team: "Eng / Web", body: "b" },
+    ]);
+    // The name when there is no display name.
+    expect(guidanceOf({ guidance: [rule("b", { type: "Team", team: { name: "Web" } })] })).toEqual([{ team: "Web", body: "b" }]);
+  });
+
+  it("is null when there is none", () => {
+    for (const g of [undefined, null, "Branch from develop.", [], [rule(""), rule("  "), rule(5), null, "x"]]) {
+      expect(guidanceOf({ guidance: g })).toBeNull();
+    }
+  });
+
+  it("skips a broken rule and keeps the rest", () => {
+    expect(guidanceOf({ guidance: [rule(5), "x", rule("ok", "Team")] })).toEqual([{ team: null, body: "ok" }]);
+  });
+
+  it("passes nothing rather than cut it", () => {
+    expect(guidanceOf({ guidance: [rule("x".repeat(MAX_GUIDANCE))] })).toEqual([{ team: null, body: "x".repeat(MAX_GUIDANCE) }]);
+    expect(guidanceOf({ guidance: [rule("x".repeat(MAX_GUIDANCE - 1)), rule("yy")] })).toBeNull();
+  });
+});

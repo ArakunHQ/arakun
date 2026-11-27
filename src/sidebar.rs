@@ -322,7 +322,13 @@ pub enum Piece {
     /// Who is signed in, with the account menu.
     User,
     /// Plan usage of the signed-in agents.
-    Usage,
+    Usage {
+        /// One line (5h, a bar, the percentage) instead of the card.
+        #[serde(default)]
+        line: bool,
+    },
+    /// Every view turned on that has no row of its own, by name in a menu.
+    MoreViews,
     /// Feedback forms and a link to the docs, in a menu.
     Help,
     /// The local servers that run, in a menu, with their count.
@@ -360,6 +366,16 @@ impl Piece {
         Piece::Active
     }
 
+    /// Plan usage as the card.
+    pub fn usage() -> Self {
+        Piece::Usage { line: false }
+    }
+
+    /// Plan usage as one line, for beside Settings.
+    pub fn usage_line() -> Self {
+        Piece::Usage { line: true }
+    }
+
     /// One of a kind: placing it again moves it.
     pub fn unique(&self) -> bool {
         !matches!(
@@ -380,7 +396,8 @@ impl Piece {
     /// The same piece, whatever its options.
     pub fn same(&self, other: &Piece) -> bool {
         match (self, other) {
-            (Piece::Projects { .. }, Piece::Projects { .. }) => true,
+            (Piece::Projects { .. }, Piece::Projects { .. })
+            | (Piece::Usage { .. }, Piece::Usage { .. }) => true,
             (a, b) => a == b,
         }
     }
@@ -393,7 +410,9 @@ impl Piece {
             Piece::Active => "Active".into(),
             Piece::Pin { pin } => pin.title().into(),
             Piece::User => "User".into(),
-            Piece::Usage => "Usage card".into(),
+            Piece::Usage { line: false } => "Usage card".into(),
+            Piece::Usage { line: true } => "Usage line".into(),
+            Piece::MoreViews => "More views".into(),
             Piece::Help => "Help".into(),
             Piece::Running => "Running".into(),
             Piece::Settings => "Settings".into(),
@@ -418,7 +437,8 @@ impl Piece {
             Piece::Active => "clock01",
             Piece::Pin { pin } => pin.icon(),
             Piece::User => "user",
-            Piece::Usage => "dashboard-square01",
+            Piece::Usage { .. } => "dashboard-square01",
+            Piece::MoreViews => "more-horizontal",
             Piece::Help => "help-circle",
             Piece::Running => "server-stack01",
             Piece::Settings => "settings01",
@@ -615,7 +635,8 @@ pub type Path = (usize, usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
-    /// The open project and its environments; the views as a row of icons.
+    /// The open project and its environments; three views by name, the
+    /// rest in More views.
     Switcher,
     /// Search, inbox and projects; the rest folded away.
     Focused,
@@ -652,7 +673,7 @@ impl Preset {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Preset::Switcher => "One project at a time, its environments, the views as icons",
+            Preset::Switcher => "One project at a time, its environments, views by name",
             Preset::Focused => "Inbox and projects; the rest folded away",
             Preset::Developer => "Projects, then runs and branches in a segment of their own",
             Preset::Notion => "Search and inbox up top, your pins, projects, account below",
@@ -722,7 +743,7 @@ impl Preset {
                         only_open: true,
                     }],
                 ),
-                account(vec![Piece::Usage, Piece::User]),
+                // The most used views by name; the rest wait in More views.
                 Section::new(
                     "Views",
                     Mode::Fixed,
@@ -734,23 +755,16 @@ impl Preset {
                             View::Branches,
                             View::GitHub,
                         ]),
-                        views(
-                            &more
-                                .iter()
-                                .copied()
-                                .filter(|v| *v != View::Extensions)
-                                .collect::<Vec<_>>(),
-                        ),
-                        vec![
-                            Piece::view(View::Extensions),
-                            Piece::Spacer,
-                            Piece::Help,
-                            Piece::Settings,
-                        ],
+                        vec![Piece::MoreViews],
                     ]
                     .concat(),
-                )
-                .in_row(),
+                ),
+                account(vec![
+                    Piece::User,
+                    Piece::usage_line(),
+                    Piece::Help,
+                    Piece::Settings,
+                ]),
             ],
             Preset::Focused => vec![
                 Section::new(
@@ -783,7 +797,7 @@ impl Preset {
                 )
                 .folding(true),
                 account(vec![
-                    Piece::Usage,
+                    Piece::usage(),
                     Piece::User,
                     Piece::Help,
                     Piece::Settings,
@@ -811,7 +825,7 @@ impl Preset {
                 .titled(),
                 Section::new("More", Mode::Scroll, views(&more)).folding(true),
                 account(vec![
-                    Piece::Usage,
+                    Piece::usage(),
                     Piece::User,
                     Piece::Help,
                     Piece::Settings,
@@ -903,7 +917,7 @@ impl Preset {
                 active(),
                 projects,
                 account(vec![
-                    Piece::Usage,
+                    Piece::usage(),
                     Piece::User,
                     Piece::Help,
                     Piece::Settings,
@@ -921,6 +935,82 @@ impl Preset {
             trial_of: None,
         }
     }
+}
+
+/// The Switcher as it was before its views had names: a row of icons at the
+/// bottom. A layout saved just so moves to the Switcher of now.
+fn icon_grid_switcher() -> Vec<Section> {
+    let views = |vs: &[View]| vs.iter().map(|v| Piece::view(*v)).collect::<Vec<_>>();
+    let more = [
+        View::Notes,
+        View::Memory,
+        View::Usage,
+        View::Extensions,
+        View::Cloudflare,
+        View::PostHog,
+        View::Linear,
+        View::Doop,
+        #[cfg(feature = "coderlabs")]
+        View::Site,
+        View::Isometric,
+        View::Phone,
+        View::Servers,
+        View::Automations,
+        #[cfg(feature = "team")]
+        View::Team,
+    ];
+    let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
+    let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
+    vec![
+        Section::new(
+            "Top",
+            Mode::Fixed,
+            vec![
+                Piece::Search,
+                Piece::view(View::Inbox),
+                Piece::view(View::Teams),
+            ],
+        ),
+        active(),
+        Section::new(
+            "Projects",
+            Mode::Scroll,
+            vec![Piece::Projects {
+                envs: true,
+                changes: true,
+                only_open: true,
+            }],
+        ),
+        account(vec![Piece::usage(), Piece::User]),
+        Section::new(
+            "Views",
+            Mode::Fixed,
+            [
+                views(&[
+                    #[cfg(feature = "coderlabs")]
+                    View::Tasks,
+                    View::Runs,
+                    View::Branches,
+                    View::GitHub,
+                ]),
+                views(
+                    &more
+                        .iter()
+                        .copied()
+                        .filter(|v| *v != View::Extensions)
+                        .collect::<Vec<_>>(),
+                ),
+                vec![
+                    Piece::view(View::Extensions),
+                    Piece::Spacer,
+                    Piece::Help,
+                    Piece::Settings,
+                ],
+            ]
+            .concat(),
+        )
+        .in_row(),
+    ]
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1022,6 +1112,7 @@ impl Sidebar {
         let mut s: Sidebar = serde_json::from_value(v).ok()?;
         s.trial_of = trial_of;
         s.tidy();
+        s.leave_icon_grid();
         s.offer_active();
         s.offer_help();
         s.offer_user();
@@ -1094,8 +1185,7 @@ impl Sidebar {
         self.find(piece).is_some()
     }
 
-    /// Views not in the rail.
-    #[cfg_attr(not(test), allow(dead_code))] // only the tests ask for it so far
+    /// Views without a row of their own: what More views lists.
     pub fn hidden_views(&self) -> Vec<View> {
         View::ALL
             .iter()
@@ -1300,6 +1390,21 @@ impl Sidebar {
         );
     }
 
+    /// The Switcher saved before its views had names gets them: it was the
+    /// default, not something arranged by hand.
+    fn leave_icon_grid(&mut self) {
+        let old = icon_grid_switcher();
+        let same = old.len() == self.sections.len()
+            && old.iter().zip(&self.sections).all(|(a, b)| {
+                let mut a = a.clone();
+                a.collapsed = b.collapsed;
+                a == *b
+            });
+        if same {
+            self.sections = Preset::Switcher.layout().sections;
+        }
+    }
+
     /// Puts Help just before Settings, once per layout. A layout without
     /// Settings was arranged by hand: Help waits in Customize there.
     fn offer_help(&mut self) {
@@ -1496,17 +1601,58 @@ mod tests {
     }
 
     #[test]
-    fn the_default_holds_every_view() {
+    fn the_default_names_three_views_and_keeps_the_rest_in_more_views() {
         let s = Sidebar::default();
-        // An extension turned on in the Marketplace shows without a trip to the builder.
-        assert!(View::ALL.iter().all(|v| s.has(&Piece::view(*v))));
-        assert!(s.hidden_views().is_empty());
         assert_eq!(s.style, Style::default());
+        assert!(s.sections.iter().all(|x| !x.row), "no icon grid");
+        let views = &s.sections[s.find(&Piece::MoreViews).unwrap().0];
         assert_eq!(
-            s.sections.iter().map(|x| x.row).collect::<Vec<_>>(),
-            [false, false, false, false, true],
-            "the views sit in a row at the bottom"
+            views.items.iter().map(|i| i.name()).collect::<Vec<_>>(),
+            [
+                #[cfg(feature = "coderlabs")]
+                "Tasks",
+                "Runs",
+                "Branches",
+                "GitHub",
+                "More views",
+            ]
         );
+        // An extension turned on in the Marketplace shows without a trip to
+        // the builder: in More views.
+        for v in [View::Notes, View::Extensions, View::Linear, View::Usage] {
+            assert!(s.hidden_views().contains(&v), "{v:?}");
+        }
+        assert!(!s.hidden_views().contains(&View::Runs));
+        // Plan usage is one line, in Settings' segment.
+        let at = s.find(&Piece::usage()).unwrap();
+        assert_eq!(s.get(at).unwrap().piece, Piece::usage_line());
+        assert_eq!(s.find(&Piece::Settings).unwrap().0, at.0);
+    }
+
+    #[test]
+    fn a_saved_icon_grid_switcher_gets_named_views() {
+        let mut old = Preset::Switcher.layout();
+        old.sections = icon_grid_switcher();
+        old.style.side = Side::Right;
+        let s = Sidebar::parse(old.to_json().as_bytes()).unwrap();
+        assert_eq!(s.sections, Preset::Switcher.layout().sections);
+        assert_eq!(s.style.side, Side::Right);
+        // One arranged by hand keeps its row of icons.
+        old.sections[4].items.pop();
+        let s = Sidebar::parse(old.to_json().as_bytes()).unwrap();
+        assert!(s.sections[4].row);
+        assert!(!s.has(&Piece::MoreViews));
+    }
+
+    #[test]
+    fn a_usage_card_saved_before_the_line_stays_a_card() {
+        let json = br#"{"sections":[{"items":[{"type":"usage"},{"type":"more_views"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        let (sec, at) = s.find(&Piece::usage()).unwrap();
+        assert_eq!(s.get((sec, at)).unwrap().piece, Piece::usage());
+        assert_eq!(s.get((sec, at + 1)).unwrap().piece, Piece::MoreViews);
+        // The card and the line are one piece: placing one moves the other.
+        assert!(Piece::usage().same(&Piece::usage_line()));
     }
 
     #[test]

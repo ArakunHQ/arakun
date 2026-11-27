@@ -742,6 +742,25 @@ impl Shell {
             Piece::View { view } => view_id(*view).to_string(),
             _ => format!("rail-item-{}-{}", path.0, path.1),
         });
+        // Built before `row`, which holds on to `cx`. More views: nothing
+        // when it lists no view, else the dot of what wants the user in there.
+        let more_dot = (item.piece == Piece::MoreViews)
+            .then(|| {
+                let more = self.more_views(cx);
+                let badges: Vec<Badge> = more
+                    .iter()
+                    .filter(|_| style.badges)
+                    .filter_map(|v| self.view_badge(*v, cx))
+                    .filter(|b| b.count > 0)
+                    .collect();
+                let dot = badges
+                    .iter()
+                    .find(|b| b.urgent)
+                    .or(badges.first())
+                    .map(|b| b.color());
+                (!more.is_empty()).then_some(dot)
+            })
+            .flatten();
         // Built before `row`, which holds on to `cx`.
         let mut help =
             (!narrow && item.piece == Piece::Settings && self.help_beside_settings(path.0))
@@ -1104,7 +1123,50 @@ impl Shell {
                     )
                     .into_any_element()
             }
-            Piece::Usage => {
+            Piece::Usage { line: true } => {
+                if narrow {
+                    return None;
+                }
+                self.render_usage_line(cx)?
+            }
+            Piece::MoreViews => {
+                let dot = more_dot?;
+                let mark = || div().size(px(7.)).rounded_full().flex_none();
+                let more_open = matches!(
+                    self.menu,
+                    Some(ContextMenu {
+                        target: MenuTarget::MoreViews,
+                        ..
+                    })
+                );
+                row(dot
+                    .filter(|_| !narrow)
+                    .map(|c| mark().bg(c).into_any_element()))
+                .relative()
+                .map(ui::focusable)
+                .aria_expanded(more_open)
+                .when_some(dot.filter(|_| narrow), |d, c| {
+                    d.child(
+                        mark()
+                            .absolute()
+                            .top(px(5.))
+                            .right(px(if in_row { 5. } else { 10. }))
+                            .bg(c),
+                    )
+                })
+                .when(more_open, |d| {
+                    d.bg(theme::fill_selected()).text_color(theme::content())
+                })
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::MoreViews,
+                        at: ev.position(),
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+            }
+            Piece::Usage { line: false } => {
                 if narrow {
                     return None;
                 }
@@ -1330,6 +1392,64 @@ impl Shell {
                 }
             },
         )
+    }
+
+    /// Plan usage as one row, for beside Settings.
+    fn render_usage_line(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let seats = crate::agent::plan::latest_seats();
+        account_view::rail_line(
+            self.account.read(cx),
+            seats.as_ref(),
+            crate::agent::opencode_plan::latest().as_ref(),
+            crate::agent::devin_plan::latest().as_ref(),
+            self.sidebar.style.density.row_h(),
+            cx.listener(|this, _, window, cx| this.open_usage_tab(window, cx)),
+            {
+                let shell = cx.entity().downgrade();
+                move |at, _, cx| {
+                    let _ = shell.update(cx, |this, cx| {
+                        this.open_composer_menu(MenuTarget::RailUsage, at, cx)
+                    });
+                }
+            },
+        )
+    }
+
+    /// The views More views lists: turned on, without a row of their own.
+    pub(super) fn more_views(&self, cx: &App) -> Vec<View> {
+        self.sidebar
+            .hidden_views()
+            .into_iter()
+            .filter(|v| self.rail_shows(&Piece::view(*v), cx))
+            .collect()
+    }
+
+    /// More views' menu: each view by name, with its count.
+    pub(super) fn render_more_views_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = ui::menu_panel("more-views-menu", 220.);
+        for view in self.more_views(cx) {
+            let pill = self
+                .view_badge(view, cx)
+                .filter(|_| self.sidebar.style.badges)
+                .and_then(|b| badge_pill(b, BadgeMode::Count));
+            panel = panel.child(
+                ui::menu_item(
+                    SharedString::from(format!("more-{}", view_id(view))),
+                    view.icon(),
+                    view.label(),
+                    false,
+                    true,
+                )
+                .children(pill)
+                .on_click(cx.listener(
+                    move |this, ev: &gpui::ClickEvent, window, cx| {
+                        this.menu = None;
+                        this.open_view(view, ev.position(), window, cx);
+                    },
+                )),
+            );
+        }
+        panel.into_any_element()
     }
 
     /// Projects narrowed to icons: each project's art, the open one lit.

@@ -392,6 +392,96 @@ pub fn set_rail_shows(agent: AgentKind, on: bool) {
     }
 }
 
+/// The first window the usage card would show, as a short name and its
+/// percentage: the 5-hour limit on most plans.
+fn first_window(
+    account: &Account,
+    seats: Option<&Seats>,
+    go: Option<&PlanUsage>,
+    devin: Option<&PlanUsage>,
+    now: u64,
+) -> Option<(String, f32)> {
+    let plan_window =
+        |p: &PlanUsage| (p.windows.first()).map(|w| (w.short_label(), w.percent as f32));
+    let claude = || {
+        rail_shows(AgentKind::Claude)
+            .then(|| seats.and_then(Seats::active).and_then(plan_window))
+            .flatten()
+    };
+    let droid = || {
+        let limits = account.limits().filter(|_| rail_shows(AgentKind::Droid))?;
+        let pool = match limits.mode(now) {
+            UsageMode::DroidCore => limits.core.or(limits.standard),
+            _ => limits.standard,
+        }?;
+        let (label, b) = pool.buckets().into_iter().next()?;
+        Some((label.to_string(), b.current(now)))
+    };
+    let other =
+        |agent, p: Option<&PlanUsage>| rail_shows(agent).then(|| p.and_then(plan_window)).flatten();
+    claude()
+        .or_else(droid)
+        .or_else(|| other(AgentKind::OpenCode, go))
+        .or_else(|| other(AgentKind::Devin, devin))
+}
+
+/// Plan usage as one rail row: the first window's name, a bar and the
+/// percentage. Clicking opens the Usage tab; right-click picks the providers.
+pub fn rail_line(
+    account: &Account,
+    seats: Option<&Seats>,
+    go: Option<&PlanUsage>,
+    devin: Option<&PlanUsage>,
+    row_h: f32,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    on_options: impl Fn(gpui::Point<gpui::Pixels>, &mut Window, &mut App) + 'static,
+) -> Option<AnyElement> {
+    let (label, pct) = first_window(account, seats, go, devin, account::unix_now())?;
+    let shown = format!("{:.0}%", pct.ceil());
+    let name = format!("Plan usage, {label} {shown}");
+    Some(
+        div()
+            .id("rail-usage-line")
+            .map(|d| ui::labelled(d, gpui::Role::Button, name))
+            .map(ui::focusable)
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .h(px(row_h))
+            .px(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(8.))
+            .w_full()
+            .text_size(px(ui::TEXT_XS))
+            .text_color(theme::text_subtle())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::fill_selected()))
+            .tooltip(ui::tip("Plan usage"))
+            .child(icon("gauge", 15.).text_color(theme::text_faint()))
+            .child(div().flex_none().font_family(theme::FONT_MONO).child(label))
+            .child(bar(pct, 4.))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(30.))
+                    .flex()
+                    .justify_end()
+                    .font_family(theme::FONT_MONO)
+                    .text_color(if pct >= 70. {
+                        bar_color(pct)
+                    } else {
+                        theme::text_muted()
+                    })
+                    .child(shown),
+            )
+            .on_click(on_click)
+            .on_mouse_down(gpui::MouseButton::Right, move |ev, window, cx| {
+                cx.stop_propagation();
+                on_options(ev.position, window, cx);
+            })
+            .into_any_element(),
+    )
+}
+
 /// The usage card at the foot of the rail: each shown provider under its own
 /// name, its windows as short bars. Clicking opens the Usage tab; right-click
 /// or the ⋯ button picks which providers it shows.

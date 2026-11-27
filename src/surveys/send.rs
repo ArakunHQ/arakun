@@ -1,9 +1,11 @@
 //! Turns a survey and its answers into the PostHog `survey sent` event, and
 //! sends it under the feedback consent rules (`telemetry::feedback_allowed`).
 //!
-//! Open answers go twice: as typed, and scrubbed (`_scrubbed`) for anything
-//! that may be shown in public. The optional email of the user survey has no
-//! scrubbed copy, since a scrubbed email is nothing.
+//! Free-text answers never leave as typed. They go twice: under PostHog's own
+//! name with the secrets the shared detector finds taken out, for the team,
+//! and scrubbed harder (`_scrubbed`, no paths, links or emails either) for
+//! anything that may be shown in public. The optional email of the user survey
+//! has no `_scrubbed` copy, since a scrubbed email is nothing.
 
 use serde_json::{Map, Value, json};
 
@@ -59,10 +61,11 @@ pub fn response_props(
             continue;
         };
         let key = format!("$survey_response_{}", q.id);
+        // A pasted chat may hold a key; PostHog's results read this name.
         let value = match a {
-            Answer::Text(t) => Value::from(t.as_str()),
+            Answer::Text(t) => Value::from(crate::secrets::scrub(t)),
             Answer::Rating(n) => Value::from(*n),
-            Answer::Choice(c) => Value::from(c.as_str()),
+            Answer::Choice(c) => Value::from(crate::secrets::scrub(c)),
             Answer::Choices(c) => Value::from(c.clone()),
             Answer::Skipped => continue,
         };
@@ -216,6 +219,33 @@ mod tests {
         let want = telemetry::scrub(SECRET, &telemetry::home());
         assert_eq!(p[&key], want.as_str());
         assert_ne!(want, SECRET);
+    }
+
+    #[test]
+    fn a_pasted_key_is_sent_nowhere() {
+        // Built here so no scanner reads it as a real key.
+        let key = format!("sk-{}", "a1B2".repeat(8));
+        let s = survey(&ids::USER);
+        let mut s2 = s.clone();
+        s2.questions[0].body = Body::Single {
+            choices: vec!["Bug".into()],
+            open_choice: true,
+        };
+        let text = format!("It broke, my log says\nAuthorization: {key}\nsee ~/x");
+        for (s, a) in [
+            (&s, vec![(1, Answer::Text(text.clone()))]),
+            (&s2, vec![(0, Answer::Choice(text.clone()))]),
+        ] {
+            let p = response_props(s, &a, Source::User, &[]);
+            let sent = serde_json::to_string(&p).unwrap();
+            assert!(!sent.contains(&key), "{sent}");
+            let q = &s.questions[a[0].0].id;
+            let typed = p[&format!("$survey_response_{q}")].as_str().unwrap();
+            // Only the secret goes: the team still reads the rest as typed.
+            assert!(typed.starts_with("It broke, my log says\n"), "{typed}");
+            assert!(typed.ends_with("see ~/x"), "{typed}");
+            assert!(typed.contains(crate::secrets::SECRET), "{typed}");
+        }
     }
 
     #[test]

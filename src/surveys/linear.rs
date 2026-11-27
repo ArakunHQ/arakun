@@ -3,8 +3,8 @@
 //! `POST /feedback`. The cloud holds the Linear key; the app never does.
 //!
 //! Linear syncs its issues to the public GitHub repository, so the issue's
-//! title and text are the scrubbed copies. The text as typed goes in the
-//! customer request, which stays in Linear, and the email only names the
+//! title and text are the scrubbed copies. The fuller text, only its secrets
+//! taken out, goes in the customer request, which stays in Linear, and the email only names the
 //! customer. It only runs after `send::submit` passed the feedback consent
 //! check.
 
@@ -86,6 +86,14 @@ mod tests {
         let request = v["request"].as_str().unwrap();
         assert!(request.contains("https://x.io/a?t=1"));
         assert!(!request.contains("ann@example.com"));
+    }
+
+    #[test]
+    fn a_pasted_key_is_in_no_field() {
+        let key = format!("ghp_{}", "a1B2".repeat(9));
+        let v = user("Bug", &format!("Fails with token {key} set"), "").unwrap();
+        assert!(!v.to_string().contains(&key), "{v}");
+        assert!(v["request"].as_str().unwrap().contains("Fails with token"));
     }
 
     #[test]

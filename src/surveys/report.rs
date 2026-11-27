@@ -15,7 +15,8 @@ const MAX_TITLE: usize = 80;
 /// Which copy of the free-text answers goes in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Answers {
-    /// As typed: for places only the team sees.
+    /// As typed but for secrets, which `send` already took out: for places
+    /// only the team sees.
     AsTyped,
     /// The `_scrubbed` copies, with no paths, links, keys or emails: for
     /// places that may become public.

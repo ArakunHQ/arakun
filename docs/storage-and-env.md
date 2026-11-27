@@ -18,6 +18,15 @@ test one `arakun dev` starts, then keeps its own files in that folder.
 If Arakun can't read one of its files, it renames it to `<name>.corrupt-<time>` and
 starts that part fresh. See [First launch](features.md#first-launch) for how to restore it.
 
+What you pick in Settings › General, Privacy and Branches is kept in one file,
+`settings.json` in the same folder, with one section per page. You can back it up, copy
+it to another computer or edit it by hand; a setting it leaves out keeps its default.
+A running Arakun reads it again when it changes, except for the two Privacy switches,
+which a hand edit changes at the next start. Older versions kept each of these
+settings in a file of its own (`redacted`, `show-secrets`, `drive-any-page`, `no-auto-update`,
+`open-links`, `update-channel`, `settle-after-merge`, `env-cleanup` and
+`branch-namer.json`); the first start moves them into `settings.json` and removes them.
+
 <!-- paths: generated from core/src/paths.rs -->
 
 ### This Arakun's own
@@ -31,6 +40,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Images pasted into the composer or sent from the phone | `~/.local/share/arakun/pastes/` |
 | Sessions that run without a window | `~/.local/share/arakun/headless/` |
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `~/.local/share/arakun/memory/` |
+| Your settings from Settings › General, Privacy and Branches | `~/.local/share/arakun/settings.json` |
 | The sidebar's layout | `~/.local/share/arakun/sidebar.json` |
 | The extension views turned on in the Marketplace | `~/.local/share/arakun/extensions.json` |
 | Prompts sent from the composer, for ↑ and ↓ | `~/.local/share/arakun/history.json` |
@@ -48,20 +58,11 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | GitHub tab settings | `~/.local/share/arakun/github.json` |
 | Review drafts (GitHub tab) | `~/.local/share/arakun/github/drafts/` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | `~/.local/share/arakun/pilot.json` |
-| Branch naming agent and model (Settings › Branches) | `~/.local/share/arakun/branch-namer.json` |
-| Archive after merge, while it is on (Settings › Branches) | `~/.local/share/arakun/settle-after-merge` |
 | The merges archived | `~/.local/share/arakun/settled.json` |
-| Remove old environments (Settings › Branches) | `~/.local/share/arakun/env-cleanup` |
-| Where links open (Settings › General) | `~/.local/share/arakun/open-links` |
-| Agents may drive external pages, while it is on | `~/.local/share/arakun/drive-any-page` |
-| Redacted mode, while it is on (Settings › Privacy) | `~/.local/share/arakun/redacted` |
-| Secrets in sessions shown, while hiding them is off (Settings › Privacy) | `~/.local/share/arakun/show-secrets` |
 | Your answer about crash reports and usage counts (Settings › Privacy) | `~/.local/share/arakun/telemetry.json` |
+| Held while the update channel switches | `~/.local/share/arakun/update-channel.lock` |
 | Every panic, kept on this machine | `~/.local/share/arakun/crash.log` |
 | That Arakun is running: one left behind means the last run crashed | `~/.local/share/arakun/running` |
-| The update channel (Settings › General) | `~/.local/share/arakun/update-channel` |
-| Held while the channel switches | `~/.local/share/arakun/update-channel.lock` |
-| Automatic updates are off (Settings › General) | `~/.local/share/arakun/no-auto-update` |
 
 ### Shared by every Arakun on this computer
 

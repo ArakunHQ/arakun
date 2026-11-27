@@ -643,6 +643,9 @@ pub enum ThreadEvent {
     SubagentsChanged {
         spawned: Option<String>,
     },
+    /// The user saved the secrets of a card for the project as well: the
+    /// project's state lists them from now on. Names and ids only.
+    SecretsSaved(Vec<super::saved_secret::Saved>),
     /// What the user did in a session that runs on a server (see
     /// [`Thread::set_remote`]): it is for the server to carry out.
     Remote(RemoteAction),
@@ -1899,6 +1902,9 @@ impl Thread {
                 // Other tools' tokens and keys stay out of an agent outside
                 // the sandbox too; inside, `Session::wrap` drops them.
                 let scrub = |spec: &mut launch::LaunchSpec| {
+                    // The project's saved secrets set as variables (Settings ›
+                    // Project) are set here, so the scrub below keeps them.
+                    spec.env.extend(super::saved_secret::env_for(&cwd));
                     let set: Vec<String> = spec.env.iter().map(|(k, _)| k.clone()).collect();
                     spec.unset
                         .extend(super::sandbox::scrubbed(kind, &cwd, false, &set));
@@ -1941,6 +1947,7 @@ impl Thread {
                         "Workers AI runs its tools inside arakun, which has no sandbox for them yet. Turn off Sandbox agents in Settings › Project to use it here."
                     );
                 }
+                spec.env.extend(super::saved_secret::env_for(&cwd));
                 let sandbox = super::sandbox::Session::new(kind, &cwd)?;
                 let spec = sandbox.wrap(spec);
                 Ok((spec, seat, Some(Arc::new(sandbox)), server))

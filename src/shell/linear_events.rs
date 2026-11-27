@@ -129,13 +129,13 @@ impl Shell {
             return;
         }
         let t = thread.read(cx);
-        let Some(line) = progress_line(t.entries(), t.cwd()) else {
+        let Some(step) = progress_step(t.entries(), t.cwd()) else {
             return;
         };
-        let Some(agent_session) = self.linear_runs.progress(id, &line, unix_now()) else {
+        let Some(agent_session) = self.linear_runs.progress(id, &step.line(), unix_now()) else {
             return;
         };
-        self.linear_report(&agent_session, ReportKind::Progress, line, None, cx);
+        self.linear_report_step(&agent_session, step, cx);
     }
 
     /// The run's pull request, once the session or the CI view knows it: its

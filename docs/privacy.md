@@ -11,8 +11,8 @@ Click a hidden secret to show it in that session's view until the view closes. C
 text that holds one asks first: the copy button asks "Copy the secret too?" and copies
 on a second click, and the selection menu offers "Copy as shown" or "Copy with secret".
 
-Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept as a
-`show-secrets` file in Arakun's data folder while it is off. Redacted mode hides more
+Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept in
+[`settings.json`](storage-and-env.md#the-data-folder). Redacted mode hides more
 (see below), and a click there shows nothing.
 
 ## Redacted mode
@@ -33,9 +33,9 @@ off. While it is on, Arakun hides:
   and the computer's name, as a shell prompt shows them (`you@laptop`).
 
 It works on what it can recognize, so check a view before you share it: a secret that
-looks like a plain word still shows. The choice is kept in a `redacted` file in Arakun's
-data folder, so it is still on after a restart. `ARAKUN_REDACTED=1` turns it on for one
-run without changing that file.
+looks like a plain word still shows. The choice is kept in
+[`settings.json`](storage-and-env.md#the-data-folder), so it is still on after a restart.
+`ARAKUN_REDACTED=1` turns it on for one run without changing that file.
 
 ## Usage and crash reports
 

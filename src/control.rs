@@ -323,147 +323,37 @@ fn answer(stream: UnixStream, tx: mpsc::UnboundedSender<Incoming>, sandboxed: bo
     );
 }
 
-const HELP: &str = "\
+const HELP_TITLE: &str = "\
 arakun — command line for the running arakun window
 
 Usage:
-  arakun                       start arakun
-  arakun --version             print the version
-  arakun <dir> | add [dir]     add a project (or switch to it) and show it
-  arakun browse [-s] <url>     open a browser tab (a path opens as file://)
-  arakun open [-s] <file[:N]>  open a file tab, at line N
-  arakun palette               bring the window up with Ctrl+K open (bind it
-                             to a global key, such as Super+K)
-  arakun run [--ready <text>] [--port <n>] [--timeout <secs>] <command…>
-                             run a command in a new terminal of the dock; with
-                             --ready, --port or both, wait until its output
-                             shows the text (any case) and the port answers,
-                             and fail with its output if it exits first or is
-                             not up after --timeout seconds (default 60)
-  arakun logs [-n N] [term]    print a dock terminal's last N lines (its number
-                             or a word of its title; lists them when unclear)
-  arakun logs [term] --until <text> [--timeout <secs>]
-                             wait until the terminal prints the text (any
-                             case) after this call, and print what it printed;
-                             fail if it is not there after --timeout (60 s)
-  arakun check                 run the project's check command here, as arakun
-                             does after agent turns that edit files
-  arakun check --set <command…>
-                             make it the project's check command
-  arakun rename <branch>       rename this environment's branch (not yet
-                             pushed); its folder stays where it is
-  arakun notify <message…>     send a desktop notification
-  arakun shrink [--] <command…>
-                             run a command and print a summary of its output
-                             (failures of a test run, a log's repeated lines
-                             collapsed, JSON's outline); the whole output goes
-                             to a file it names. Needs no running Arakun
-  arakun feedback --kind <bug|feature|ux|other> <text…|->
-                             tell the Arakun team about a problem or a missing
-                             feature in Arakun itself (up to 4000 characters;
-                             - reads stdin; needs usage telemetry on)
-  arakun notices [--unseen]    the notifications Arakun has shown, newest first
-  arakun usage tools [--days N] [--json]
-                             where the tokens of Workers AI sessions' tool
-                             results go: each tool's calls and tokens, bash by
-                             the program it runs (cargo, git…), largest first
-  arakun usage where [--days N] [--json]
-                             where the tokens of Claude Code sessions go, from
-                             their transcripts: unused skills, plugins and MCP
-                             servers, long CLAUDE.md files, noisy tools and
-                             full sessions, what to fix first (estimates)
-  arakun seat add <name>       save a Claude seat: a token from `claude setup-token`,
-                             read from stdin and checked with one small call;
-                             each new Claude Code session then runs on the seat
-                             with the most room in its 5-hour window, for life
-  arakun seat ls               the seats and their 5-hour and weekly usage
-  arakun seat rm <name>        forget a seat
-  arakun ls                    list projects, environments and their sessions
-  arakun island [state]        show the Dynamic Island in a state, to try it:
-                             sleeping, idle, working, speaking, listening;
-                             list pins or unpins the agents' list; auto
-                             follows the agents again; fps prints the frames
-                             it painted in the last 2 s; with no state, print
-                             the one it shows. The island is a program of its
-                             own (arakun island-host, which arakun starts when
-                             none runs), so these work with arakun closed
-  arakun island alert <title> [subtitle]
-                             show a card on the island
-  arakun island view | later | approve | deny
-                             press the card's button (approve and deny
-                             answer a headless agent's request)
-  arakun agent new [--model <provider/model>] [--effort <level>] [--mode <id>] [--dir <dir>] [--title <text>] [--ask] <prompt…>
-                             start a background agent, listed in the sidebar,
-                             and print its id: OpenCode, or arakun's own Workers
-                             AI agent for a workers-ai/@cf/… model; --effort sets
-                             the reasoning (none, low, high, max: per model); it
-                             allows its own tool calls unless --ask
-  arakun agent ls              list the OpenCode and Workers AI sessions and their status
-  arakun agent log [-n N] <id> print a session's status and last N entries (30)
-  arakun agent wait [--timeout <secs>] <id>
-                             wait until it stops working (at most 3600 s) and
-                             print its status and last message; fail on error
-  arakun agent send <id> <text…>
-                             send it a follow-up
-  arakun agent stop <id>       stop its running turn
-  arakun agent run [--model <id>] [--dir <dir>] [--title <text>] [--effort <level>]
-                   [--policy readonly|workspace|full] <prompt…>
-                             start a headless agent (Workers AI) in a process of
-                             its own: it goes on with arakun closed; prints its
-                             id. ls, log, wait, send and stop work on it too.
-                             The policy (default workspace) picks the tool calls
-                             it runs alone; the rest wait for approve/deny, and
-                             mail, git push, publishing and system changes always do.
-                             --wait [--timeout <s>] [--result <file>]: block until
-                             the turn ends and print its summary as JSON (what
-                             would ask is declined); --no-sandbox --yes confirms
-                             no sandbox here; --append-system-prompt <file>
-  arakun agent pending [--json]
-                             tool calls headless agents wait on you for
-  arakun agent approve|deny <id> <req_id>
-                             answer one (it times out denied after 24 h)
-  arakun agent rm <id>         delete a finished headless session
-  arakun server …              arakun without a window, for a machine nobody sits
-                             at: it runs agent sessions there, and paired
-                             devices follow and answer them (arakun server help)
-  arakun fetch [--html | --links] <url>
-                             a web page as Markdown (or HTML, or its links),
-                             loaded in Cloudflare Browser Run: for sites that
-                             turn curl away (arakun fetch --help)
-  arakun crawl [--limit N] [--depth N] <url>
-                             a site's pages as Markdown, through Browser Run
-  arakun show                  bring the window up, also when it was closed
-                             with Keep running in the background on
-  arakun quit                  quit Arakun
-  arakun restart               quit and start again, on the installed build;
-                             agent turns running go on by themselves after it
-  arakun update [--check]      download the latest release and install it (a
-                             running Arakun installs it when it quits);
-                             --check only says whether there is one;
-                             --channel nightly|stable picks nightly builds
-                             of main (they can break) or releases
-  arakun mem …                 memory agents keep across sessions: save, search,
-                             get, context, list, forget (arakun mem help)
-  arakun peer-review <goal>    use one review paired in Teams for this environment
-                             and print the team's recommendation
-  arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
-                             save a review as a draft for the GitHub tab (v:
-                             approve, request-changes or comment; - reads stdin;
-                             --head is the commit read, which an approval needs);
-                             nothing is sent to GitHub until you post it there
-  arakun github pilot connect <url> --token -
-                             connect arakun-pilot, the pull request agent: checks
-                             the Worker, then saves its settings (also status,
-                             disconnect; arakun github pilot help)
-  arakun dev …                 a test arakun on a virtual display, to screenshot
-                             and click without touching this screen (arakun dev help)
 ";
 
-/// The heading of the browser commands, printed after the commands of the features built in.
-const HELP_BROWSER: &str = "
-Browser tabs of the environment (click, type, press and eval only act on
-pages served from this machine: localhost, 127.0.0.1, file://):
-";
+/// `arakun help`; `all` adds the commands for Arakun itself and its tests.
+fn help_text(all: bool) -> String {
+    let extra: &[&str] = &[
+        #[cfg(feature = "coderlabs")]
+        HELP_CODERLABS,
+        #[cfg(feature = "coderlabs")]
+        crate::lab::HELP,
+        #[cfg(feature = "team")]
+        crate::team::HELP,
+    ];
+    help_with(all, &extra.concat())
+}
+
+/// `arakun help` with `extra`, the commands of the private builds.
+fn help_with(all: bool, extra: &str) -> String {
+    let more = if all {
+        ""
+    } else {
+        "arakun help --all also lists the commands Arakun runs itself.\n"
+    };
+    format!(
+        "{HELP_TITLE}{}{extra}{HELP_END}{more}",
+        crate::cli::list(all)
+    )
+}
 
 /// `arakun help` lines of the commands only some builds have.
 #[cfg(feature = "coderlabs")]
@@ -482,11 +372,6 @@ const HELP_CODERLABS: &str = "\
                              assistant (no word flips it; so does a click on
                              the island's raccoon)
 ";
-
-/// The page commands, indented as `arakun help` lists them.
-fn page_help() -> String {
-    PAGE_USAGE.lines().map(|l| format!("  {l}\n")).collect()
-}
 
 const HELP_END: &str = "
 Commands act on the environment the current directory belongs to.
@@ -718,9 +603,13 @@ fn cli(args: Vec<String>) -> Cli {
         return stopped(first, Stop::Help);
     }
     if first == "agent" && rest.get(1).is_some_and(|a| is_help(a)) {
-        return match rest[0].as_str() {
-            "run" => Cli::Exit(report(Stop::Help, crate::headless::RUN_USAGE)),
-            _ => stopped(first, Stop::Help),
+        let sub = format!("agent {}", rest[0]);
+        return match crate::cli::help(&sub) {
+            Some(help) => {
+                print!("{help}");
+                Cli::Exit(0)
+            }
+            None => stopped(first, Stop::Help),
         };
     }
     // These take no flags of their own: a dash there is a typo, unless `--`
@@ -740,19 +629,17 @@ fn cli(args: Vec<String>) -> Cli {
         side,
     };
     let req = match first.as_str() {
-        "help" | "-h" | "--help" => {
-            let page = page_help();
-            let extra: &[&str] = &[
-                #[cfg(feature = "coderlabs")]
-                HELP_CODERLABS,
-                #[cfg(feature = "coderlabs")]
-                crate::lab::HELP,
-                #[cfg(feature = "team")]
-                crate::team::HELP,
-            ];
-            print!("{HELP}{}{HELP_BROWSER}{page}{HELP_END}", extra.concat());
-            return Cli::Exit(0);
-        }
+        "help" | "-h" | "--help" => match rest.as_slice() {
+            [] => {
+                print!("{}", help_text(false));
+                return Cli::Exit(0);
+            }
+            [all] if all == "--all" => {
+                print!("{}", help_text(true));
+                return Cli::Exit(0);
+            }
+            _ => return usage("arakun help [--all]"),
+        },
         #[cfg(feature = "coderlabs")]
         "canvas" => match rest.as_slice() {
             [flag] if flag == "--stats" => request("canvas", vec![flag.clone()]),
@@ -904,14 +791,19 @@ fn cli(args: Vec<String>) -> Cli {
     }
 }
 
-#[cfg(not(windows))]
-pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|view|later|approve|deny] \
-     | arakun island alert <title> [subtitle]";
-#[cfg(windows)]
-pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|view|later|approve|deny] \
-     | arakun island alert <title> [subtitle] \
-     | arakun island session <id> <working|waiting|done|error|ended> [project] [doing] \
-     | arakun island hook [agent]";
+/// `arakun island`'s usage, for the island's own mistakes.
+pub(crate) fn island_usage() -> String {
+    usage_of("island").unwrap_or_default()
+}
+
+/// The island card's buttons, by the word that presses each.
+pub(crate) const ISLAND_BUTTONS: &[&str] = &["view", "later", "approve", "deny"];
+
+/// Other words that still press them: "open" was "view" for a while.
+pub(crate) const ISLAND_BUTTONS_OLD: &[&str] = &["open"];
+
+/// The Spanish words the buttons had first, which still press them.
+pub(crate) const ISLAND_BUTTONS_ES: &[&str] = &["ver", "luego", "aprobar", "rechazar"];
 
 /// `arakun island`'s state, or `alert` with its title and subtitle.
 fn island_args(rest: &[String]) -> Option<Vec<String>> {
@@ -926,17 +818,12 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
                 "listening",
                 "list",
                 "auto",
-                "ver",
-                "luego",
-                "aprobar",
-                "rechazar",
                 "fps",
-                "view",
-                "later",
-                "approve",
-                "deny",
             ]
-            .contains(&state.as_str()) =>
+            .contains(&state.as_str())
+                || ISLAND_BUTTONS.contains(&state.as_str())
+                || ISLAND_BUTTONS_ES.contains(&state.as_str())
+                || ISLAND_BUTTONS_OLD.contains(&state.as_str()) =>
         {
             Some(vec![state.clone()])
         }
@@ -1253,12 +1140,6 @@ fn ask(req: &Request) -> Result<String, String> {
     }
 }
 
-const AGENT_USAGE: &str = "\
-arakun agent new [--model <provider/model>] [--effort <level>] [--dir <dir>] [--title <text>] [--ask] <prompt…>
-       arakun agent ls [--all] | log [-n N] <id> | wait [--timeout <secs>] <id> | send <id> <text…> | stop <id>
-       arakun agent run [--model <id>] [--dir <dir>] [--title <t>] [--effort <e>] [--policy <p>] <prompt…>
-       arakun agent pending [--json] | approve <id> <req_id> | deny <id> <req_id> [reason…] | rm <id>";
-
 /// Entries `arakun agent log` prints, and seconds `arakun agent wait` waits,
 /// unless told otherwise.
 pub const AGENT_LOG: usize = 30;
@@ -1392,17 +1273,6 @@ fn agent_wait(req: &Request, timeout: Duration) -> Cli {
     }
 }
 
-pub const PAGE_USAGE: &str = "\
-arakun page [-t N]                 list the browser tabs (-t N picks one for a command)
-arakun page screenshot [file]      save a PNG of the page and print where
-arakun page console                what the page logged since it loaded
-arakun page text                   the page's title, address and visible text
-arakun page open <url> | reload    load a page in the tab and wait for it
-arakun page click <selector|text>  click an element like a user would
-arakun page type <field> <text>    type into a field (CSS selector, label or placeholder)
-arakun page press <key>            press Enter, Tab, Escape, Backspace, an arrow…
-arakun page eval <js>              run JavaScript in the page and print the result";
-
 /// `[-t N] [command args…]`, sent as `[N or "", command, args…]`; the app checks the rest.
 fn page_args(rest: &[String]) -> Result<Vec<String>, Stop> {
     let is_flag = |a: &String| a == "-t" || a == "--tab";
@@ -1474,27 +1344,9 @@ fn fail(message: &str) -> Cli {
     Cli::Exit(1)
 }
 
-/// The usage of each command `cli` parses itself, for `--help` and mistakes.
-fn usage_of(cmd: &str) -> Option<&'static str> {
-    Some(match cmd {
-        "browse" => "arakun browse [-s] <url>",
-        "palette" => "arakun palette",
-        "open" => "arakun open [-s] <file[:line]>",
-        "run" => "arakun run [--ready <text>] [--port <n>] [--timeout <secs>] [--] <command…>",
-        "logs" => "arakun logs [-n lines] [terminal] [--until <text> [--timeout <secs>]]",
-        "check" => "arakun check [--set <command…>]",
-        "page" => "arakun page [-t N] [command…]  (see arakun page --help)",
-        "agent" => AGENT_USAGE,
-        "island" => ISLAND_USAGE,
-        "rename" => "arakun rename <branch>",
-        "notify" => "arakun notify [--] <message…>",
-        "peer-review" => "arakun peer-review <goal>",
-        "ls" => "arakun ls",
-        "feedback" => "arakun feedback --kind <bug|feature|ux|other> <text…|->",
-        "restart" => "arakun restart",
-        "add" => "arakun add [dir]",
-        _ => return None,
-    })
+/// The usage of a command, for `--help` and mistakes.
+fn usage_of(cmd: &str) -> Option<String> {
+    crate::cli::usage(cmd)
 }
 
 /// Commands whose arguments are only a payload, without flags of their own.
@@ -1577,12 +1429,14 @@ pub(crate) fn report(stop: Stop, usage: &str) -> i32 {
 
 /// `report` for a command `cli` parses itself.
 fn stopped(cmd: &str, stop: Stop) -> Cli {
-    // `arakun page` has a line for each of its commands.
-    if cmd == "page" && stop == Stop::Help {
-        println!("{PAGE_USAGE}");
+    if stop == Stop::Help
+        && let Some(help) = crate::cli::help(cmd)
+    {
+        print!("{help}");
         return Cli::Exit(0);
     }
-    Cli::Exit(report(stop, usage_of(cmd).unwrap_or("arakun help")))
+    let usage = usage_of(cmd).unwrap_or_else(|| "arakun help".into());
+    Cli::Exit(report(stop, &usage))
 }
 
 /// A first word that is not a command, a flag or a directory.
@@ -1894,9 +1748,13 @@ mod tests {
             &["agent", "log", "-n", "5", "--help"],
             &["agent", "send", "--help"],
             &["agent", "stop", "-h"],
+            &["agent", "deny", "--help"],
+            &["help"],
+            &["help", "--all"],
         ] {
             assert!(matches!(cli(args), Cli::Exit(0)), "{args:?}");
         }
+        assert!(matches!(cli(&["help", "--every"]), Cli::Exit(2)));
         for args in [
             &["run", "--verbose", "npm"][..],
             &["notify", "--loud", "hi"],
@@ -2140,8 +1998,11 @@ mod tests {
         assert_eq!(a(&[]), Some(vec![]));
         assert_eq!(a(&["working"]), Some(vec!["working".to_string()]));
         assert_eq!(a(&["view"]), Some(vec!["view".to_string()]));
-        assert_eq!(a(&["deny"]), Some(vec!["deny".to_string()]));
+        assert_eq!(a(&["open"]), Some(vec!["open".to_string()]));
         assert_eq!(a(&["rechazar"]), Some(vec!["rechazar".to_string()]));
+        for button in ISLAND_BUTTONS {
+            assert_eq!(a(&[button]), Some(vec![button.to_string()]));
+        }
         assert_eq!(
             a(&["alert", "GLM terminó"]),
             Some(vec!["alert".to_string(), "GLM terminó".to_string()])
@@ -2331,7 +2192,7 @@ mod tests {
         }
     }
 
-    const DOC_BEGIN: &str = "<!-- cli: begin; written from src/control.rs -->\n";
+    const DOC_BEGIN: &str = "<!-- cli: begin; written from core/src/cli.rs -->\n";
     const DOC_END: &str = "<!-- cli: end -->\n";
 
     /// Run with `ARAKUN_BLESS=1` to write `arakun help` into the docs. Only the
@@ -2349,8 +2210,8 @@ mod tests {
             + start
             + DOC_END.len();
         let want = format!(
-            "{DOC_BEGIN}\n```text\n{HELP}{HELP_BROWSER}{}{HELP_END}```\n\n{DOC_END}",
-            page_help()
+            "{DOC_BEGIN}\n```text\n{}```\n\n{DOC_END}",
+            help_with(false, "")
         );
         if doc[start..end] == want {
             return;

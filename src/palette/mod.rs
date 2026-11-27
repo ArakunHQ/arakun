@@ -21,6 +21,7 @@ pub mod query;
 pub mod rank;
 pub mod rules;
 pub mod sources;
+pub mod tips;
 pub mod todos;
 mod view;
 
@@ -218,6 +219,8 @@ pub enum Row {
         count: Option<String>,
     },
     Pins,
+    /// What to type for more, under an empty palette.
+    Tips,
     Entry(usize),
 }
 
@@ -1619,6 +1622,9 @@ impl Palette {
                 });
             }
         }
+        if empty_home {
+            rows.push(Row::Tips);
+        }
         self.entries = entries;
         self.count_lines(cx);
         self.rows = rows;
@@ -2096,6 +2102,21 @@ impl Palette {
     /// The pull request a task can go to: (number, title).
     fn cloud_pull(&self) -> Option<&(u64, String)> {
         self.seed.pilot.as_ref()?.pull.as_ref()
+    }
+
+    /// A tip under the empty palette, clicked: types the start of what it shows.
+    fn type_tip(&mut self, fill: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.scope = None;
+        self.chips.clear();
+        self.tab = Tab::All;
+        self.pages.clear();
+        self.menu = None;
+        self.confirm = None;
+        self.marked.clear();
+        self.input
+            .update(cx, |i, cx| i.set_text(fill.to_string(), cx));
+        window.focus(&self.input.focus_handle(cx), cx);
+        cx.notify();
     }
 
     /// "Send to the cloud agent…": the input becomes the task's line.

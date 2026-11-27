@@ -2,9 +2,9 @@
 //! window hides what identifies the user or opens something of theirs:
 //! emails and account names, keys and tokens, pairing codes and addresses.
 //!
-//! It is kept as a marker file, so a demo that starts with it on does not
+//! It is kept in the settings, so a demo that starts with it on does not
 //! show anything in the first frames after a restart. `ARAKUN_REDACTED=1`
-//! turns it on for one run without touching the file.
+//! turns it on for one run without touching the settings.
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -23,8 +23,8 @@ static STATE: AtomicU8 = AtomicU8::new(0);
 pub fn on() -> bool {
     match STATE.load(Ordering::Relaxed) {
         0 => {
-            let on =
-                std::env::var("ARAKUN_REDACTED").is_ok_and(|v| v == "1") || marker_path().is_file();
+            let on = std::env::var("ARAKUN_REDACTED").is_ok_and(|v| v == "1")
+                || crate::settings::read(|s| s.privacy.redacted);
             STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
             on
         }
@@ -32,26 +32,10 @@ pub fn on() -> bool {
     }
 }
 
-/// Turns the mode on or off and remembers it. The switch takes effect even
-/// when the marker file cannot be written; the error says it will not last.
-pub fn set(on: bool) -> std::io::Result<()> {
+/// Turns the mode on or off and remembers it in the settings.
+pub fn set(on: bool) {
     STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-    let path = marker_path();
-    if on {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, "hide personal data on screen\n")
-    } else {
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    }
-}
-
-fn marker_path() -> std::path::PathBuf {
-    crate::paths::store(crate::paths::REDACTED)
+    crate::settings::change(|s| s.privacy.redacted = on);
 }
 
 /// `value` as it is, or [`MASK`] while the mode is on. For what is private as
@@ -115,7 +99,7 @@ static CHAT: AtomicU8 = AtomicU8::new(0);
 pub fn hides_secrets() -> bool {
     match CHAT.load(Ordering::Relaxed) {
         0 => {
-            let hides = !shows_secrets_path().is_file();
+            let hides = crate::settings::read(|s| s.privacy.hide_secrets);
             CHAT.store(if hides { 2 } else { 1 }, Ordering::Relaxed);
             hides
         }
@@ -124,24 +108,9 @@ pub fn hides_secrets() -> bool {
 }
 
 /// Turns hiding secrets in chats on or off and remembers it, as [`set`] does.
-pub fn set_hides_secrets(hides: bool) -> std::io::Result<()> {
+pub fn set_hides_secrets(hides: bool) {
     CHAT.store(if hides { 2 } else { 1 }, Ordering::Relaxed);
-    let path = shows_secrets_path();
-    if hides {
-        match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    } else {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, "show secrets in sessions\n")
-    }
-}
-
-fn shows_secrets_path() -> std::path::PathBuf {
-    crate::paths::store(crate::paths::SHOW_SECRETS)
+    crate::settings::change(|s| s.privacy.hide_secrets = hides);
 }
 
 /// Secrets the user clicked to see, with how many chat views show each. A

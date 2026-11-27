@@ -448,6 +448,7 @@ fn main() {
                 | ThreadEvent::SubagentsChanged { .. }
                 | ThreadEvent::ShellChanges
                 | ThreadEvent::CheckOffer { .. }
+                | ThreadEvent::SecretsSaved(_)
                 | ThreadEvent::Remote(_) => {}
                 ThreadEvent::Finished { stop_reason } => {
                     let t = thread.read(cx);

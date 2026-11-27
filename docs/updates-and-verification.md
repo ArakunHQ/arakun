@@ -64,12 +64,14 @@ see nightlies. The newest 14 are kept on the
 The updater keeps its files in Arakun's data folder (`~/.local/share/arakun` on Linux
 and macOS, `%LOCALAPPDATA%\arakun` on Windows): `update.json` (the version waiting to be
 installed, its checksum, and the last one you were told about), `update.lock` (held while
-one updater runs), `no-auto-update` (there while **Update automatically** is off),
-`update-channel` (`stable` or `nightly`, once you pick one; without it a nightly build
-follows nightlies and a release follows releases), `update-channel.lock` (held while the
+one updater runs), `update-channel.lock` (held while the
 channel changes or an update is installed) and `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
 on Windows, with its `.pdb` as `.arakun.exe.update.pdb`), unpacked first as `.arakun.incoming`.
+**Update automatically** and the channel (`stable` or `nightly`, once you pick one;
+without it a nightly build follows nightlies and a release follows releases) are kept in
+[`settings.json`](storage-and-env.md#the-data-folder) as `general.automatic_updates` and
+`general.update_channel`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a

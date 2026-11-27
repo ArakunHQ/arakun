@@ -697,6 +697,8 @@ impl ThreadView {
         let ready = private && self.secret_ready(cx);
         let state = self.secret.as_ref().filter(|s| s.id == req.id);
         let error = state.and_then(|s| s.error.clone());
+        let can_keep = private && self.thread.read(cx).can_keep_secrets();
+        let keep = state.is_some_and(|s| s.keep);
         let button = |id: &'static str, label: &'static str, primary: bool, on: bool| {
             crate::ui::labelled(div().id(id), gpui::Role::Button, label)
                 .flex()
@@ -831,6 +833,49 @@ impl ThreadView {
                             ))
                     }),
             )
+            .when(can_keep, |d| {
+                d.child(
+                    crate::ui::as_switch(div().id("secret-keep"), "Save for this project", keep)
+                        .ml(crate::ui::sp(22.))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .cursor_pointer()
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(crate::ui::switch(keep))
+                        .child("Save for this project")
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_keep_secret(cx))),
+                )
+            })
+            .when_some(state.filter(|_| can_keep && keep), |d, s| {
+                d.child(
+                    div()
+                        .pl(crate::ui::sp(22.))
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(4.))
+                        .child(
+                            div()
+                                .text_size(px(crate::ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child("Name, for agents to ask for it again"),
+                        )
+                        .child(
+                            div()
+                                .h(px(28.))
+                                .flex()
+                                .items_center()
+                                .px(crate::ui::sp(8.))
+                                .rounded(crate::ui::rad(8.))
+                                .border_1()
+                                .border_color(theme::border_strong())
+                                .bg(theme::fill_raised())
+                                .text_size(px(crate::ui::TEXT_MD))
+                                .child(s.name.clone()),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()

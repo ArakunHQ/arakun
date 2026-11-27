@@ -117,15 +117,30 @@ pub fn closed_line(computer: &str) -> String {
     format!("Arakun was closed on {computer} while this ran. Reply here to continue.")
 }
 
-/// The most characters of a file's path in a progress line.
+/// The most characters of a file's path in a step.
 pub const PATH_LIMIT: usize = 120;
+
+/// A step of a working session as Linear shows a tool call: what it does
+/// (`Editing`) and on what (`src/main.rs`, or `a command`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    pub action: &'static str,
+    pub parameter: String,
+}
+
+impl Action {
+    /// The step as one line, to tell it from the last one sent.
+    pub fn line(&self) -> String {
+        format!("{} {}", self.action, self.parameter)
+    }
+}
 
 /// The step the session works on now, as Linear shows it while the session
 /// runs: the latest tool call of the turn that has not ended, named by its
 /// kind. A step on a file names the file, relative to `cwd`; any other step
 /// says only what kind it is, never its command, query or address. None
 /// when no step runs, or its kind says nothing.
-pub fn progress_line(entries: &[Entry], cwd: &Path) -> Option<String> {
+pub fn progress_step(entries: &[Entry], cwd: &Path) -> Option<Action> {
     let turn = entries
         .iter()
         .rposition(|e| matches!(e, Entry::User { .. }))
@@ -137,26 +152,36 @@ pub fn progress_line(entries: &[Entry], cwd: &Path) -> Option<String> {
     if !matches!(tc.status, ToolStatus::Pending | ToolStatus::InProgress) {
         return None;
     }
-    let on_file = |verb: &str| {
+    let fixed = |action, parameter: &str| {
+        Some(Action {
+            action,
+            parameter: parameter.into(),
+        })
+    };
+    let on_file = |action| {
         let path = tc.locations.first().map(|p| shown_path(p, cwd))?;
-        (!path.is_empty()).then(|| format!("{verb} `{path}`"))
+        (!path.is_empty()).then_some(Action {
+            action,
+            parameter: path,
+        })
     };
     match tc.kind.as_str() {
         "read" => on_file("Reading"),
         "edit" => on_file("Editing"),
         "delete" => on_file("Deleting"),
         "move" => on_file("Moving"),
-        "search" => Some("Searching the code".into()),
-        "execute" => Some("Running a command".into()),
-        "fetch" => Some("Reading a web page".into()),
-        "think" => Some("Thinking it through".into()),
+        "search" => fixed("Searching", "the code"),
+        "execute" => fixed("Running", "a command"),
+        "fetch" => fixed("Reading", "a web page"),
+        "think" => fixed("Thinking", "it through"),
         _ => None,
     }
 }
 
-/// A path as a progress line shows it: inside `cwd` relative to it, else
-/// only its file name, so a home folder or user name stays here. Only its
-/// end when long, and never anything that breaks out of the code span.
+/// A path as a step shows it: inside `cwd` relative to it, else only its
+/// file name, so a home folder or user name stays here. Only its end when
+/// long, and no control character or backtick, which Linear could take for
+/// markup.
 fn shown_path(path: &Path, cwd: &Path) -> String {
     let shown = match path.strip_prefix(cwd) {
         Ok(rel) => rel.to_string_lossy(),
@@ -708,32 +733,42 @@ mod tests {
         serde_json::from_value(serde_json::json!({"type": "user", "text": "go", "at": 0})).unwrap()
     }
 
+    fn act(action: &'static str, parameter: &str) -> Option<Action> {
+        Some(Action {
+            action,
+            parameter: parameter.into(),
+        })
+    }
+
     #[test]
     fn progress_names_the_running_step_and_its_file() {
         let cwd = Path::new("/home/rik/app");
-        let line = |e: Entry| progress_line(&[user(), e], cwd);
+        let at = |e: Entry| progress_step(&[user(), e], cwd);
         assert_eq!(
-            line(tool("edit", "in_progress", &["/home/rik/app/src/main.rs"])).as_deref(),
-            Some("Editing `src/main.rs`")
+            at(tool("edit", "in_progress", &["/home/rik/app/src/main.rs"])),
+            act("Editing", "src/main.rs")
         );
         assert_eq!(
-            line(tool("read", "pending", &["/etc/hosts"])).as_deref(),
-            Some("Reading `hosts`"),
+            at(tool("read", "pending", &["/etc/hosts"])),
+            act("Reading", "hosts"),
             "outside the folder only the file name goes"
         );
-        for (kind, want) in [
-            ("execute", "Running a command"),
-            ("search", "Searching the code"),
-            ("fetch", "Reading a web page"),
+        for (kind, action, parameter) in [
+            ("execute", "Running", "a command"),
+            ("search", "Searching", "the code"),
+            ("fetch", "Reading", "a web page"),
         ] {
-            let got = line(tool(kind, "in_progress", &["/home/rik/app/secrets.env"])).unwrap();
-            assert_eq!(got, want);
-            assert!(!got.contains("hunter2") && !got.contains("curl"));
+            let got = at(tool(kind, "in_progress", &["/home/rik/app/secrets.env"])).unwrap();
+            assert_eq!(Some(got.clone()), act(action, parameter));
+            let line = got.line();
+            assert!(
+                !line.contains("hunter2") && !line.contains("curl") && !line.contains("secrets")
+            );
         }
         // A step on a file with no file known yet, or a kind that says
         // nothing, is not shown.
-        assert_eq!(line(tool("edit", "in_progress", &[])), None);
-        assert_eq!(line(tool("other", "in_progress", &[])), None);
+        assert_eq!(at(tool("edit", "in_progress", &[])), None);
+        assert_eq!(at(tool("other", "in_progress", &[])), None);
     }
 
     #[test]
@@ -741,29 +776,28 @@ mod tests {
         let cwd = Path::new("/a");
         let done = tool("edit", "completed", &["/a/x.rs"]);
         let running = tool("execute", "in_progress", &[]);
-        assert_eq!(progress_line(&[user(), done.clone()], cwd), None);
-        assert_eq!(progress_line(&[running.clone(), user()], cwd), None);
+        assert_eq!(progress_step(&[user(), done.clone()], cwd), None);
+        assert_eq!(progress_step(&[running.clone(), user()], cwd), None);
         let text = Entry::Agent {
             text: "Now the tests.".into(),
         };
         assert_eq!(
-            progress_line(&[user(), running, text], cwd).as_deref(),
-            Some("Running a command")
+            progress_step(&[user(), running, text], cwd),
+            act("Running", "a command")
         );
     }
 
     #[test]
-    fn a_progress_path_cannot_break_out_or_run_long() {
+    fn a_step_path_cannot_hold_markup_or_run_long() {
         let cwd = Path::new("/a");
         let odd = tool("edit", "in_progress", &["/a/x`y\nz.rs"]);
-        assert_eq!(
-            progress_line(&[odd], cwd).as_deref(),
-            Some("Editing `xyz.rs`")
-        );
+        assert_eq!(progress_step(&[odd], cwd), act("Editing", "xyz.rs"));
         let deep = format!("/a/{}/end.rs", "d/".repeat(200));
-        let line = progress_line(&[tool("read", "pending", &[&deep])], cwd).unwrap();
-        assert!(line.ends_with("/end.rs`") && line.contains('…'), "{line}");
-        assert_eq!(line.chars().count(), "Reading ``".len() + PATH_LIMIT);
+        let got = progress_step(&[tool("read", "pending", &[&deep])], cwd).unwrap();
+        let path = &got.parameter;
+        assert!(path.ends_with("/end.rs") && path.starts_with('…'), "{path}");
+        assert_eq!(path.chars().count(), PATH_LIMIT);
+        assert_eq!(got.line(), format!("Reading {path}"));
     }
 
     #[test]

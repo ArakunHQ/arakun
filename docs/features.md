@@ -14,7 +14,7 @@ leaves it at once. It ends on the start screen of the project
 you added, with three shortcuts worth knowing. Open it again with "Show onboarding" in
 the palette (`Ctrl+K`).
 
-If Arakun can't read one of its files in its [data folder](storage-and-env.md) (`state.json`, `history.json`,
+If Arakun can't read one of its files in its [data folder](storage-and-env.md) (`state.json`, `settings.json`, `history.json`,
 `prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
 store), say one written by a newer version or edited by hand, it renames it to
 `<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
@@ -84,8 +84,8 @@ copy of it, rename it back, and start a version that can read it.
   worktree at once on a random branch from origin's default branch (usually `main`),
   fetched first, or from the project's **Base branch** set in Settings › Project. When
   origin has no such branch it starts from the local one, else the local commit; on a
-  server, from that server's checkout, with no fetch. File › New Environment with
-  Options… asks for the branch and where to start from, the local commit among them. Every environment
+  server, from that server's checkout, with no fetch. New environment with options…
+  (`Ctrl+Alt+N`, in the palette) asks for the branch and where to start from, the local commit among them. Every environment
   has its own sessions, terminals and draft prompt. The window has one row of tabs for
   all of them: a session, file, diff or browser tab belongs to its environment, and
   going to the tab shows that environment. Going to an environment shows the tab it
@@ -232,6 +232,17 @@ sees the project's skills.
   file instead: the card says the agent's commands can read it, and the value goes
   to a file only you can read in `secret-files` in the data folder. `secret_to_file` moves a secret you pasted in a message
   to such a file. Files are deleted after 24 hours.
+- **Saved secrets.** Turn on **Save for this project** on a card, and give it a name,
+  to keep the secret for the project's later sessions too. The project's entry in
+  Arakun's state keeps only the name; the value stays in the keyring. Agents call
+  `list_saved_secrets` for the names (never the values) and `use_saved_secret` for a
+  fresh `secret-ref:` handle, which works once like any other, or with
+  `deliver: "file"` for a private file. A card with several fields saves each as
+  "name (field)". Settings › Project › Saved secrets lists them, masked, to rename,
+  replace or remove; no screen shows a stored value. **Variable** there sets one as
+  an environment variable (such as `STRIPE_KEY`) that the project's agents start
+  with, sandboxed or not, so tools that read it work without the value passing
+  through the chat. The agent's commands can read it, as they can a file.
 
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that
@@ -606,8 +617,8 @@ again after a week) in its [data folder](storage-and-env.md).
   is never answered from Linear); the result; the pull request's link, added to the
   session in Linear as soon as Arakun knows it, also after the result; `The session failed: {reason}` on a failure; and `Still working.`
   after 25 quiet minutes. While the session works, the issue also shows the step it
-  is on, such as Editing `src/main.rs`, Reading `README.md`, `Running a command` or
-  `Searching the code`: only the kind of step and, for a file, its path in the
+  is on, shown as Linear shows a tool call: Editing `src/main.rs`, Reading `README.md`,
+  Running a command or Searching the code. It holds only the kind of step and, for a file, its path in the
   project, never a command, a search or a web address. A step shows until the next
   activity replaces it, and at most one goes every 30 seconds. If you close Arakun
   while a session runs, the issue hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
@@ -933,7 +944,7 @@ again after a week) in its [data folder](storage-and-env.md).
 
 How the app looks is changed in the **Customize** panel, at the right of the window where
 the workspace panel is, so the work stays in view while you change it. Open it from the
-palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
+palette (`Customize`), the View menu on macOS or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
 Settings › Appearance › Tabs and sessions sets where sessions and tabs show. Three
@@ -1002,7 +1013,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   first) can also be dragged onto the sidebar where they should go. Pieces and segment
   titles drag into another order on the sidebar itself. The panel's header has undo
   and redo for these changes; what is typed into one field is one step. Done closes the panel, and "Customize sidebar…" in the
-  sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
+  palette or the sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
   or removes a segment, a note at the foot of the sidebar says so for ten seconds, with an Undo button; it stays while the pointer is on it. Reset sidebar goes back to the default
   layout and width.
 - **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,

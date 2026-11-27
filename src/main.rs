@@ -1,9 +1,9 @@
 // The code shared with `arakun-server` and the examples (core/), named as if it were here.
 use arakun_core::{
-    accept, account, agent, assets, browser, caret, clone_source, cloud, durable, explorer, fetch,
-    frame_timer, git, git_call, guard, highlight, housekeep, input, island, mascot, paths, phone,
-    platform, poll, private_socket, redact, schedule, secret, secret_store, secrets, server,
-    signals, terminal, theme, ui, when, zoom,
+    accept, account, agent, assets, browser, caret, cli, clone_source, cloud, durable, explorer,
+    fetch, frame_timer, git, git_call, guard, highlight, housekeep, input, island, mascot, paths,
+    phone, platform, poll, private_socket, redact, schedule, secret, secret_store, secrets, server,
+    settings, signals, terminal, theme, ui, when, zoom,
 };
 #[cfg(test)]
 mod a11y_lint;

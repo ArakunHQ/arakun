@@ -10,7 +10,6 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentKind;
 
@@ -93,99 +92,10 @@ fn is_random(name: &str) -> bool {
 
 // ---- the namer -------------------------------------------------------------------
 
-/// Who names a new environment's branch after its first prompt.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Choice {
-    /// The agent the first prompt went to, when it is one of [`AGENTS`], so the prompt
-    /// reaches no service the user didn't pick. Other agents leave the branch alone.
-    #[default]
-    Session,
-    Off,
-    Claude,
-    Droid,
-}
-
-impl Choice {
-    pub const ALL: [Choice; 4] = [Choice::Session, Choice::Off, Choice::Claude, Choice::Droid];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Choice::Session => "Session's agent",
-            Choice::Off => "Off",
-            Choice::Claude => AgentKind::Claude.label(),
-            Choice::Droid => AgentKind::Droid.label(),
-        }
-    }
-
-    /// The agent picked for every environment, whatever its sessions use.
-    pub fn agent(self) -> Option<AgentKind> {
-        match self {
-            Choice::Claude => Some(AgentKind::Claude),
-            Choice::Droid => Some(AgentKind::Droid),
-            Choice::Session | Choice::Off => None,
-        }
-    }
-}
-
-/// Who names branches, and with what model.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Namer {
-    #[serde(default)]
-    pub choice: Choice,
-    /// The model of an agent picked in Settings; empty uses the CLI's own default.
-    /// Following the session uses [`default_model`].
-    #[serde(default)]
-    pub model: String,
-}
-
-impl Namer {
-    /// The agent and model that name a branch whose first prompt went to `session`;
-    /// None when nobody does.
-    pub fn pick(&self, session: AgentKind) -> Option<(AgentKind, String)> {
-        match self.choice {
-            Choice::Off => None,
-            Choice::Session => AGENTS
-                .contains(&session)
-                .then(|| (session, default_model(session).to_string())),
-            Choice::Claude | Choice::Droid => self.choice.agent().map(|a| (a, self.model.clone())),
-        }
-    }
-}
-
-/// The agents that can name a branch: CLIs that answer one prompt, then exit, without
-/// running tools. OpenCode is not one: `opencode run` may run shell commands and edit
-/// files by default, and its permission config differs between versions.
-pub const AGENTS: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Droid];
-
-/// A small, fast model for each CLI. Droid's model ids depend on the user's plan, so it
-/// starts on the CLI's default.
-pub fn default_model(agent: AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Claude => "haiku",
-        _ => "",
-    }
-}
-
-fn namer_path() -> PathBuf {
-    crate::paths::store(crate::paths::BRANCH_NAMER)
-}
-
-/// The namer set in this run. `set_namer` saves in the background, so the
-/// file can lag behind it, and waiting for the disk would stall the window.
-static SET: std::sync::Mutex<Option<Namer>> = std::sync::Mutex::new(None);
+pub use crate::settings::{Namer, NamerChoice as Choice, default_namer_model as default_model};
 
 pub fn namer() -> Namer {
-    let set = SET
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(namer) = set.as_ref() {
-        return namer.clone();
-    }
-    std::fs::read(namer_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
-        .unwrap_or_default()
+    crate::settings::read(|s| s.branches.namer.clone())
 }
 
 /// Whether `agent` can [`ask`]: its CLI is there, or Workers AI has its key. Looks on
@@ -198,16 +108,9 @@ pub fn installed(agent: AgentKind) -> bool {
 }
 
 pub fn set_namer(namer: &Namer) {
-    // Kept in memory too, so `namer` gives it back at once, and for this run
-    // even when the file cannot be written.
-    *SET.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(namer.clone());
-    // Saved on every key typed in the model field.
-    crate::durable::write_soon(
-        namer_path(),
-        serde_json::to_vec_pretty(namer).unwrap_or_default(),
-        "could not save the branch namer",
-    );
+    // Saved on every key typed in the model field: in the background.
+    let namer = namer.clone();
+    crate::settings::change(|s| s.branches.namer = namer);
 }
 
 /// The longest part of the first prompt the model reads; the start says what the task is.
@@ -553,6 +456,7 @@ fn clean(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::NAMER_AGENTS as AGENTS;
 
     #[test]
     fn the_branch_namer_never_reads_a_secret() {

@@ -9,7 +9,6 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -20,47 +19,13 @@ pub const RECENT_SECS: u64 = 7 * 86_400;
 /// Pull requests kept in the book: far more than a week of merges.
 const BOOK_MAX: usize = 500;
 
-static CHOICE: AtomicU8 = AtomicU8::new(UNSET);
-const UNSET: u8 = 0;
-const ON: u8 = 1;
-const OFF: u8 = 2;
-
 /// Whether merges are settled. On by default.
 pub fn on() -> bool {
-    match CHOICE.load(Ordering::Relaxed) {
-        ON => return true,
-        OFF => return false,
-        _ => {}
-    }
-    let on = std::fs::read_to_string(choice_path())
-        .ok()
-        .and_then(|t| parse_choice(&t))
-        .unwrap_or(true);
-    CHOICE.store(if on { ON } else { OFF }, Ordering::Relaxed);
-    on
+    crate::settings::read(|s| s.branches.archive_after_merge)
 }
 
 pub fn set(on: bool) {
-    // Kept in memory too, so the switch works for this run even when the file
-    // cannot be written.
-    CHOICE.store(if on { ON } else { OFF }, Ordering::Relaxed);
-    crate::durable::write_soon(
-        choice_path(),
-        if on { "on\n" } else { "off\n" }.into(),
-        "the settle-after-merge setting will not last past a restart",
-    );
-}
-
-fn choice_path() -> PathBuf {
-    crate::paths::store(crate::paths::SETTLE_AFTER_MERGE)
-}
-
-fn parse_choice(text: &str) -> Option<bool> {
-    match text.trim() {
-        "on" => Some(true),
-        "off" => Some(false),
-        _ => None,
-    }
+    crate::settings::change(|s| s.branches.archive_after_merge = on);
 }
 
 /// A pull request of the user's that was merged.
@@ -203,13 +168,6 @@ fn book_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn reads_the_choice() {
-        assert_eq!(parse_choice("on\n"), Some(true));
-        assert_eq!(parse_choice("off"), Some(false));
-        assert_eq!(parse_choice("maybe"), None);
-    }
 
     #[test]
     fn only_a_recent_merge_counts() {

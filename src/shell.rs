@@ -722,6 +722,7 @@ impl Shell {
                     path: path.clone(),
                     sandbox: p.sandbox,
                     pass: p.pass_env.clone(),
+                    secrets: p.secrets.clone(),
                 })
         }));
         theme::set_diff_palette(layout.diff_palette);
@@ -1269,6 +1270,7 @@ impl Shell {
                     path: path.clone(),
                     sandbox: p.sandbox,
                     pass: p.pass_env.clone(),
+                    secrets: p.secrets.clone(),
                 })
         }));
         let envs: std::collections::HashSet<&std::path::Path> = self
@@ -2914,6 +2916,7 @@ impl Shell {
                 base: p.base.clone(),
                 sandbox: p.sandbox,
                 pass_env: p.pass_env.join(" "),
+                secrets: p.secrets.clone(),
                 remote: p.is_remote(),
             }
         });
@@ -3010,6 +3013,34 @@ impl Shell {
                 SettingsEvent::ProjectPassEnv { project, names } => {
                     if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
                         p.pass_env = names.clone();
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSecretRename { project, id, name } => {
+                    if let Some(s) = this
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.path == *project)
+                        .and_then(|p| p.secrets.iter_mut().find(|s| s.id == *id))
+                    {
+                        s.name = name.clone();
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSecretEnv { project, id, env } => {
+                    if let Some(s) = this
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.path == *project)
+                        .and_then(|p| p.secrets.iter_mut().find(|s| s.id == *id))
+                    {
+                        s.env = env.clone();
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSecretRemove { project, id } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.secrets.retain(|s| s.id != *id);
                         this.save(cx);
                     }
                 }
@@ -3292,9 +3323,7 @@ impl Shell {
     /// Turns redacted mode on or off. Every window draws again at once, so
     /// nothing private stays on screen for a frame longer than it must.
     pub(super) fn toggle_redacted(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = crate::redact::set(!crate::redact::on()) {
-            eprintln!("arakun: redacted mode will not last past a restart: {e}");
-        }
+        crate::redact::set(!crate::redact::on());
         cx.refresh_windows();
     }
 

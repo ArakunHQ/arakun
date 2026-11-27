@@ -142,8 +142,9 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
                 brand: SharedString::default(),
             },
         }),
-        // The Spanish words were the first ones; scripts may still use them.
-        ["view" | "ver"] => button(Button::View),
+        // The Spanish words were the first ones and "open" came before "view";
+        // scripts may still use them.
+        ["view" | "open" | "ver"] => button(Button::View),
         ["later" | "luego"] => button(Button::Later),
         ["approve" | "aprobar"] => button(Button::Approve),
         ["deny" | "rechazar"] => button(Button::Deny),
@@ -331,6 +332,7 @@ mod tests {
             ("later", Button::Later),
             ("approve", Button::Approve),
             ("deny", Button::Deny),
+            ("open", Button::View),
             ("rechazar", Button::Deny),
         ] {
             assert_eq!(

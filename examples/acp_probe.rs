@@ -468,6 +468,7 @@ fn main() {
                     | ThreadEvent::LoginRequested
                     | ThreadEvent::ShellChanges
                     | ThreadEvent::CheckOffer { .. }
+                    | ThreadEvent::SecretsSaved(_)
                     | ThreadEvent::Remote(_) => {}
                 }
             }

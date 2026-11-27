@@ -554,6 +554,21 @@ impl Shell {
                 self.save(cx);
                 cx.notify();
             }
+            ThreadEvent::SecretsSaved(saved) => {
+                let project = self
+                    .projects
+                    .iter_mut()
+                    .find(|p| p.env_index(env_path).is_some());
+                match project {
+                    Some(p) => {
+                        p.secrets.extend(saved.iter().cloned());
+                        self.save(cx);
+                    }
+                    // Nothing lists them, so nothing could use or remove them.
+                    None => saved.iter().for_each(crate::agent::saved_secret::remove),
+                }
+                cx.notify();
+            }
             ThreadEvent::CheckOffer { command, answer } => {
                 self.check_offer_answered(
                     env_path,

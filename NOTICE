@@ -4,6 +4,10 @@ Copyright (C) 2026 Karlo Aldrete
 Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
 Commercial licenses are available from the copyright holder.
 
+The cloud machine container image (cloud/machine/) is the exception: it is
+licensed under the PolyForm Noncommercial License 1.0.0 (see
+cloud/machine/LICENSE). Only Arakun may use it commercially or sell it.
+
 This product includes software developed by third parties:
 
 - GPUI and related crates, Copyright Zed Industries, Inc., licensed under the

@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
 # A cloud machine (cloud/src/cloud_machine.ts): `arakun-server` from the latest
 # release, the Claude Code ACP adapter it runs sessions with, and git. The build
 # context is the repository; /.dockerignore lets in only what this file copies.

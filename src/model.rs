@@ -1109,6 +1109,9 @@ pub struct Project {
     /// own (the tree menu's Applies to); `None` follows the order for every
     /// project.
     pub sort: Option<crate::tab_layout::Sort>,
+    /// Its finished sessions show under the "N done" line in the sidebar's
+    /// tree, instead of folded into it.
+    pub done_open: bool,
     /// CoderSpace project (`rp<id>`) this project works on; set the first time
     /// one of its tasks starts a session here.
     #[cfg(feature = "coderlabs")]

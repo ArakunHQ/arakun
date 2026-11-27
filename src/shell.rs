@@ -4660,6 +4660,12 @@ impl Render for Shell {
             .env_menu
             .track(self.env_menu_open.then_some(&self.env_menu_at), window)
             .map(|(at, t)| self.render_env_menu(at, viewport_h, Some(t), cx));
+        let rail = (chrome && self.rail_shown()).then(|| self.cached_rail(cx));
+        let (rail_start, rail_end) = if rail_right {
+            (None, rail)
+        } else {
+            (rail, None)
+        };
 
         div()
             .id("shell")
@@ -4889,18 +4895,16 @@ impl Render for Shell {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .when(chrome && self.rail_shown() && !rail_right, |d| {
-                        d.child(self.render_rail(window, cx))
-                            .child(self.rail_handle(cx))
+                    .when_some(rail_start, |d, rail| {
+                        d.child(rail).child(self.rail_handle(cx))
                     })
                     .child(body)
                     .when(chrome && self.panel_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
                             .child(self.render_panel(cx))
                     })
-                    .when(chrome && self.rail_shown() && rail_right, |d| {
-                        d.child(self.rail_handle(cx))
-                            .child(self.render_rail(window, cx))
+                    .when_some(rail_end, |d, rail| {
+                        d.child(self.rail_handle(cx)).child(rail)
                     }),
             )
             .when(chrome && has_projects, |d| {

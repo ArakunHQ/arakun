@@ -237,8 +237,11 @@ request that also fixes the new lints.
   it. Keep its SPDX line on every file there, and don't copy code between it and the
   rest of the repository.
 - Comments say why, not what. Docs and comments use plain, short sentences.
-- If you change a command, flag, shortcut or storage path, update the README (and
+- If you change a command, flag, shortcut or storage path, update the docs: the README
+  for the main commands and first steps, the page in `docs/` it belongs to (and
   `docs/windows.md` if it differs on Windows).
 - A new file in the data folder goes in the list in `core/src/paths.rs`. Then run
   `ARAKUN_BLESS=1 cargo test --no-default-features -p arakun-core paths` to write
-  the storage tables in `docs/windows.md`.
+  the storage tables in `docs/windows.md` and `docs/storage-and-env.md`. The tables
+  of shortcuts (`docs/shortcuts.md`) and commands (`docs/cli.md`) are written the same
+  way from `src/keymap.rs` and `src/control.rs`.

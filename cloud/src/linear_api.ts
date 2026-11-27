@@ -127,11 +127,11 @@ export async function saveWorkspace(
   const access = await seal(env, w.organizationId, w.access);
   const refresh = await seal(env, w.organizationId, w.refresh);
   await env.DB.prepare(
-    `INSERT INTO linear_workspaces (organization_id, name, app_user_id, access_token, refresh_token, expires_at, installed_by, installed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO linear_workspaces (organization_id, name, app_user_id, access_token, refresh_token, expires_at, installed_by, installed_at, refreshed_at, refused_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, NULL)
      ON CONFLICT (organization_id) DO UPDATE SET name = excluded.name, app_user_id = excluded.app_user_id,
        access_token = excluded.access_token, refresh_token = excluded.refresh_token, expires_at = excluded.expires_at,
-       installed_by = excluded.installed_by, installed_at = excluded.installed_at`,
+       installed_by = excluded.installed_by, installed_at = excluded.installed_at, refreshed_at = excluded.refreshed_at, refused_at = NULL`,
   )
     .bind(w.organizationId, w.name, w.appUserId, access, refresh, w.expiresAt, w.installedBy, now())
     .run();
@@ -162,6 +162,9 @@ async function unseal(env: Env, organizationId: string, sealed: string): Promise
 /// refresh token we used. If it does not, another request refreshed first and
 /// its pair is the one to use; Linear takes the old refresh token again for
 /// 30 minutes, so our call was harmless.
+///
+/// A refresh token Linear refuses, or one that will not open, is marked on
+/// the row: only installing again mends it, and the Linear tab says so.
 async function refreshed(env: Env, organizationId: string, row: Row): Promise<string> {
   let fresh: Tokens;
   try {
@@ -170,15 +173,33 @@ async function refreshed(env: Env, organizationId: string, row: Row): Promise<st
     // The other request may have used the token up already.
     const again = await readRow(env, organizationId);
     if (again.refresh_token !== row.refresh_token) return unseal(env, organizationId, again.access_token);
+    if (e instanceof TokenUnopened || (e instanceof LinearRefused && e.status === 401))
+      // Only where the row still holds that token: an install since is fine.
+      await env.DB.prepare("UPDATE linear_workspaces SET refused_at = COALESCE(refused_at, ?) WHERE organization_id = ? AND refresh_token = ?")
+        .bind(now(), organizationId, row.refresh_token)
+        .run();
     throw e;
   }
   const done = await env.DB.prepare(
-    "UPDATE linear_workspaces SET access_token = ?, refresh_token = ?, expires_at = ? WHERE organization_id = ? AND refresh_token = ?",
+    "UPDATE linear_workspaces SET access_token = ?, refresh_token = ?, expires_at = ?, refreshed_at = ? WHERE organization_id = ? AND refresh_token = ?",
   )
-    .bind(await seal(env, organizationId, fresh.access), await seal(env, organizationId, fresh.refresh), fresh.expiresAt, organizationId, row.refresh_token)
+    .bind(
+      await seal(env, organizationId, fresh.access),
+      await seal(env, organizationId, fresh.refresh),
+      fresh.expiresAt,
+      now(),
+      organizationId,
+      row.refresh_token,
+    )
     .run();
   if (done.meta.changes > 0) return fresh.access;
   return unseal(env, organizationId, (await readRow(env, organizationId)).access_token);
+}
+
+/// Refreshes the workspace's tokens, used or not, so its refresh token does
+/// not run out while the workspace is quiet. Throws as `asApp` does.
+export async function keepAlive(env: Env, organizationId: string): Promise<void> {
+  await refreshed(env, organizationId, await readRow(env, organizationId));
 }
 
 /// Runs a query as the app in a workspace: refreshes a token that is close to

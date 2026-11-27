@@ -14,8 +14,8 @@ order to apply them in. If the two disagree, CONTRIBUTING.md is right.
   feature per pull request. If the diff holds an unrelated cleanup, split it out.
   If a later step needs an earlier one, use the `stack-pr` skill instead.
 - You are on `main`? Branch first: `git switch -c pr/<topic>`.
-- A changed command, flag, shortcut or storage path needs the README updated (and
-  `docs/windows.md` if Windows differs). A changed skill workflow needs its
+- A changed command, flag, shortcut or storage path needs the docs updated: the
+  README or its page in `docs/` (and `docs/windows.md` if Windows differs). A changed skill workflow needs its
   `.claude/skills/*/SKILL.md` updated.
 
 ## 2. Run the quick checks the diff needs

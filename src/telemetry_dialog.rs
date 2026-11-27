@@ -11,7 +11,8 @@ use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
 /// What is sent, said in full.
-pub const DETAILS_URL: &str = "https://github.com/ArakunHQ/arakun#usage-and-crash-reports";
+pub const DETAILS_URL: &str =
+    "https://github.com/ArakunHQ/arakun/blob/main/docs/privacy.md#usage-and-crash-reports";
 
 pub enum TelemetryEvent {
     /// The user chose; Settings › Privacy can change it later.

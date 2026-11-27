@@ -1,6 +1,6 @@
 ---
 name: ui-change
-description: Make a visual change to Arakun's GPUI interface the way the project expects - use the theme and ui design tokens so design_lint passes, see the result in a headless test Arakun with `arakun dev`, take before and after screenshots, and update the README for changed shortcuts or settings. Use when editing a view, panel, dialog, tab or component in src/, or when the user asks to restyle, lay out or fix how something looks.
+description: Make a visual change to Arakun's GPUI interface the way the project expects - use the theme and ui design tokens so design_lint passes, see the result in a headless test Arakun with `arakun dev`, take before and after screenshots, and update the docs for changed shortcuts or settings. Use when editing a view, panel, dialog, tab or component in src/, or when the user asks to restyle, lay out or fix how something looks.
 ---
 
 # Change the UI
@@ -105,7 +105,7 @@ first edit, and save it as `before.png` the same way.
   bar shows the project's path; the test Arakun can show your GitHub
   notifications). Without push access the script says so: give the user the
   paths and say they need to be dragged into the pull request.
-- Changed a shortcut, a setting or a command? Update the README, and
-  `docs/windows.md` if Windows differs.
+- Changed a shortcut, a setting or a command? Update its page in `docs/`
+  (`docs/features.md` for settings), and `docs/windows.md` if Windows differs.
 - Code for one platform goes behind `cfg(...)`. Say in the pull request which
   platforms you saw it on: `arakun dev` runs on Linux and macOS.

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
+import { KEEP_SECONDS, keepWorkspaces } from "../src/linear_keep";
 import { deliver, dropDelivery } from "../src/machines";
 import { guidanceOf, MAX_GUIDANCE, verified, webhook } from "../src/linear_webhook";
 import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, notification, nowSeconds, prompted, signedWebhook } from "./helpers";
@@ -883,6 +884,37 @@ describe("stops Linear did not ask for", () => {
     // A retry after the tokens are gone still answers 200 and sends nothing again.
     expect((await send(signedWebhook(removed))).status).toBe(200);
     await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("a workspace quiet for weeks still takes a delegation", async () => {
+    const { pc } = await linkedComputerWithRoute({ team: TEAM });
+    linearFake.refreshTokens.set("lin_refresh_ws", ACCESS);
+    await env.DB.prepare("UPDATE linear_workspaces SET refreshed_at = ?").bind(nowSeconds() - KEEP_SECONDS - 60).run();
+    await keepWorkspaces(env);
+    // Weeks on: the pair from the install is long gone, and the access token
+    // from the keep-alive has run out too. Its refresh token is what is left.
+    linearFake.grace = false;
+    await env.DB.prepare("UPDATE linear_workspaces SET expires_at = ?").bind(nowSeconds() - 1).run();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "created", agent_session: SESSION });
+    expect(linearFake.exchanges.filter((f) => f.get("grant_type") === "refresh_token")).toHaveLength(2);
+  });
+
+  it("when Linear refuses the refresh token, shows the workspace as not installed until it is installed again", async () => {
+    const { owner } = await linkedComputerWithRoute({ team: TEAM });
+    const installed = async () =>
+      ((await (await call("GET", "/linear/link", as(owner.session))).json()) as { links: { installed: boolean }[] }).links.map((l) => l.installed);
+    expect(await installed()).toEqual([true]);
+    // The app was removed without the webhook reaching us, or the token ran out.
+    linearFake.tokens.clear();
+    linearFake.refreshTokens.clear();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await installed()).toEqual([false]);
+    // Proving the link again says the same.
+    linearFake.tokens.set("lin_api_lu", { userId: LU, organizationId: ORG, organizationName: "Acme" });
+    expect(await (await call("POST", "/linear/link", as(owner.session), JSON.stringify({ token: "lin_api_lu" }))).json()).toMatchObject({ installed: false });
+    await workspace(owner.account_id);
+    expect(await installed()).toEqual([true]);
   });
 
   it("refuses a notification without its ids", async () => {

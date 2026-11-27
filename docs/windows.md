@@ -314,7 +314,7 @@ Manager (Windows Credentials, Generic Credentials).
   place. If that move fails, the update still goes through, and crash reports lack
   function names until the next one. A release without a `.pdb` updates the same way.
   Settings has no **Restart now** button on Windows: quit Arakun and open it again. The
-  dialog the `update-policy` feature flag opens (see "Updates" in the README) says
+  dialog the `update-policy` feature flag opens (see [Updates](updates-and-verification.md#updates)) says
   **Quit and update** instead of **Restart now**: it quits Arakun, which installs the
   release, and you open it again. A forced one can't be closed: it offers that, **Quit
   Arakun**, and **Try again** after a failed download. Not tested on real Windows yet.

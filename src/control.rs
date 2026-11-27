@@ -483,6 +483,11 @@ const HELP_CODERLABS: &str = "\
                              the island's raccoon)
 ";
 
+/// The page commands, indented as `arakun help` lists them.
+fn page_help() -> String {
+    PAGE_USAGE.lines().map(|l| format!("  {l}\n")).collect()
+}
+
 const HELP_END: &str = "
 Commands act on the environment the current directory belongs to.
 -s, --side shows the tab in the pane beside the active one.
@@ -736,10 +741,7 @@ fn cli(args: Vec<String>) -> Cli {
     };
     let req = match first.as_str() {
         "help" | "-h" | "--help" => {
-            let page = PAGE_USAGE
-                .lines()
-                .map(|l| format!("  {l}\n"))
-                .collect::<String>();
+            let page = page_help();
             let extra: &[&str] = &[
                 #[cfg(feature = "coderlabs")]
                 HELP_CODERLABS,
@@ -2322,5 +2324,39 @@ mod tests {
         for cmd in ["run", "agent", "restart", "quit", "dev", "add", "team"] {
             assert!(sandbox_allows(&req(cmd, &["x"])).is_err(), "{cmd}");
         }
+    }
+
+    const DOC_BEGIN: &str = "<!-- cli: begin; written from src/control.rs -->\n";
+    const DOC_END: &str = "<!-- cli: end -->\n";
+
+    /// Run with `ARAKUN_BLESS=1` to write `arakun help` into the docs. Only the
+    /// commands every build has: the private features' are left out.
+    #[test]
+    fn the_docs_list_every_command() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli.md");
+        let doc = std::fs::read_to_string(&path).unwrap();
+        let start = doc
+            .find(DOC_BEGIN)
+            .expect("docs/cli.md has no cli: begin marker");
+        let end = doc[start..]
+            .find(DOC_END)
+            .expect("docs/cli.md has no cli: end marker")
+            + start
+            + DOC_END.len();
+        let want = format!(
+            "{DOC_BEGIN}\n```text\n{HELP}{HELP_BROWSER}{}{HELP_END}```\n\n{DOC_END}",
+            page_help()
+        );
+        if doc[start..end] == want {
+            return;
+        }
+        if std::env::var_os("ARAKUN_BLESS").is_some() {
+            std::fs::write(&path, format!("{}{want}{}", &doc[..start], &doc[end..])).unwrap();
+            return;
+        }
+        panic!(
+            "the commands in docs/cli.md are not `arakun help`; \
+             write them with `ARAKUN_BLESS=1 cargo test --no-default-features control`"
+        );
     }
 }

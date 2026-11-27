@@ -1,5 +1,5 @@
 //! Every keyboard shortcut in one table. The window's bindings, the cheat
-//! sheet in Settings › Keyboard shortcuts and the README's section all come
+//! sheet in Settings › Keyboard shortcuts and docs/shortcuts.md all come
 //! from `SHORTCUTS`, so they cannot disagree.
 //!
 //! Keys are written the Windows and Linux way ("ctrl-shift-t");
@@ -16,7 +16,7 @@ type Make = fn(&'static str, Option<&str>) -> KeyBinding;
 
 /// One line of the cheat sheet, and the bindings behind it.
 pub struct Shortcut {
-    /// The cheat sheet's heading, and the README's.
+    /// The cheat sheet's heading, and docs/shortcuts.md's.
     pub group: &'static str,
     /// What the keys do. Rows of a group with the same label show as one line.
     pub label: &'static str,
@@ -525,9 +525,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// The README's table, between its markers.
-    fn readme_section() -> String {
-        let mut out = String::from(README_BEGIN);
+    /// The table in docs/shortcuts.md, between its markers.
+    fn doc_section() -> String {
+        let mut out = String::from(DOC_BEGIN);
         out.push('\n');
         let mut group = "";
         for line in sheet() {
@@ -550,7 +550,7 @@ mod tests {
             out.push_str(&format!("| {} | {} |\n", keys.join(" / "), line.label));
         }
         out.push('\n');
-        out.push_str(README_END);
+        out.push_str(DOC_END);
         out
     }
 
@@ -563,8 +563,8 @@ mod tests {
         }
     }
 
-    const README_BEGIN: &str = "<!-- shortcuts: begin; written from src/keymap.rs -->";
-    const README_END: &str = "<!-- shortcuts: end -->";
+    const DOC_BEGIN: &str = "<!-- shortcuts: begin; written from src/keymap.rs -->";
+    const DOC_END: &str = "<!-- shortcuts: end -->";
 
     /// A key gpui cannot read would panic at start.
     #[test]
@@ -667,20 +667,20 @@ mod tests {
         assert_eq!(dock.keys, ["ctrl-j", "ctrl-`"]);
     }
 
-    /// Run with `ARAKUN_BLESS=1` to write the table into the README.
+    /// Run with `ARAKUN_BLESS=1` to write the table into the docs.
     #[test]
-    fn the_readme_lists_every_shortcut() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md");
+    fn the_docs_list_every_shortcut() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/shortcuts.md");
         let doc = std::fs::read_to_string(&path).unwrap();
         let start = doc
-            .find(README_BEGIN)
-            .expect("README.md has no shortcuts: begin marker");
+            .find(DOC_BEGIN)
+            .expect("docs/shortcuts.md has no shortcuts: begin marker");
         let end = doc[start..]
-            .find(README_END)
-            .expect("README.md has no shortcuts: end marker")
+            .find(DOC_END)
+            .expect("docs/shortcuts.md has no shortcuts: end marker")
             + start
-            + README_END.len();
-        let want = readme_section();
+            + DOC_END.len();
+        let want = doc_section();
         if doc[start..end] == want {
             return;
         }
@@ -689,7 +689,7 @@ mod tests {
             return;
         }
         panic!(
-            "the shortcuts in README.md are not the table in src/keymap.rs; \
+            "the shortcuts in docs/shortcuts.md are not the table in src/keymap.rs; \
              write them with `ARAKUN_BLESS=1 cargo test --no-default-features keymap`"
         );
     }

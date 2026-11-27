@@ -11,8 +11,8 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
   -CiTools  also cargo-deny and zizmor, with cargo install (each one compiles for a few
             minutes the first time)
   -Hooks    turn on the Git hooks in lefthook.yml (lefthook install; installs lefthook
-            with winget if it is missing); lefthook runs them through sh, so commits
-            need Git for Windows' sh
+            and gitleaks, for the secret scan before a commit, with winget if they are
+            missing); lefthook runs them through sh, so commits need Git for Windows' sh
   -Build    build the tests once, so the first clippy or test run is quick
 
 Always: Git, Visual Studio Build Tools 2022 with the C++ workload (MSVC and a Windows
@@ -327,6 +327,16 @@ if ($Hooks) {
     foreach ($h in 'pre-commit', 'pre-push', 'commit-msg') {
         $file = if ($hookDir) { Join-Path $hookDir $h } else { '' }
         if (-not ($file -and (Test-Path $file) -and (Select-String -Quiet -Path $file -Pattern 'lefthook'))) { $on = $false }
+    }
+    # The pre-commit secret scan needs gitleaks.
+    if (Has 'gitleaks') {
+        Ok "gitleaks $(Quiet { gitleaks version })"
+    } elseif ($Check) {
+        Lack 'gitleaks, for the secret scan before a commit (winget install Gitleaks.Gitleaks)'
+    } elseif (Ask 'install gitleaks with winget?') {
+        Install-Winget 'Gitleaks.Gitleaks'
+    } else {
+        Lack 'gitleaks, for the secret scan before a commit (winget install Gitleaks.Gitleaks)'
     }
     if ($on) {
         Ok 'lefthook hooks are on'

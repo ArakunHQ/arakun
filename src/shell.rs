@@ -480,7 +480,8 @@ pub struct Shell {
     linear_in_flight: std::collections::HashMap<String, String>,
     /// Stops that came while other work for their agent session was in flight.
     linear_held_stops: Vec<crate::phone::linear::Delivery>,
-    /// Deliveries that came before the Arakun account was loaded.
+    /// Deliveries that came before the Arakun account was loaded, or while
+    /// the most issues were being read.
     linear_kept: Vec<crate::phone::linear::Delivery>,
     /// New issues being read from Linear now.
     linear_reads: usize,

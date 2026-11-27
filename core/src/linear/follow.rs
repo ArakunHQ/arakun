@@ -180,6 +180,15 @@ pub fn stopped_after_reply(stopped: bool, state: RunState, winding_down: bool) -
     winding_down || (stopped && matches!(state, RunState::Running | RunState::Asked))
 }
 
+/// Whether a reply goes ahead of the queue once the turn at work stopped,
+/// rather than at its end. A stop's cancel paused the queue and the turn
+/// still winds down: queued now, the reply would wait behind the paused
+/// queue for good. A moment later it would start a turn of its own and
+/// leave the queue paused, so it does that.
+pub fn jumps_paused_queue(busy: bool, cancelling: bool, paused: bool) -> bool {
+    busy && cancelling && paused
+}
+
 /// What waits on a person in the session a reply is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pending {
@@ -564,6 +573,18 @@ mod tests {
         // A stop marked it Done: the reply revives it and the guard goes.
         assert!(!stopped_after_reply(true, RunState::Done, false));
         assert!(!stopped_after_reply(true, RunState::Interrupted, false));
+    }
+
+    #[test]
+    fn a_reply_goes_ahead_only_of_a_queue_a_stop_paused() {
+        // A stop's cancel still winds down, and paused what was queued.
+        assert!(jumps_paused_queue(true, true, true));
+        // Nothing paused: the queue goes on after the turn, the reply with it.
+        assert!(!jumps_paused_queue(true, true, false));
+        // A turn at work, not stopping: the reply waits for its end.
+        assert!(!jumps_paused_queue(true, false, true));
+        // Idle: the reply starts a turn of its own.
+        assert!(!jumps_paused_queue(false, false, true));
     }
 
     fn reply(activity: Option<&str>, body: Option<&str>) -> Delivery {

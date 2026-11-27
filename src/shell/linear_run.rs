@@ -5,9 +5,9 @@
 //! person's own Linear key, and the guard (`target_for`) must say yes for it
 //! on this computer. Text from Linear goes only into the prompt, never a log.
 //!
-//! A delivery that comes before the Arakun account is loaded is kept in
-//! memory and handled once it is, without waiting for the relay to send it
-//! again.
+//! A delivery that comes before the Arakun account is loaded, or while
+//! [`MAX_READS`] issues are being read, is kept in memory and handled once
+//! it may be, without waiting for the relay to send it again.
 
 use std::path::{Path, PathBuf};
 
@@ -65,7 +65,20 @@ impl Shell {
         }
         let in_flight = self.linear_in_flight.contains_key(&d.id);
         let handled = self.linear_runs.was_seen(&d.id);
-        let sessions = if gate && !in_flight && !handled {
+        let fresh = !in_flight && !handled;
+        // Something for this agent session is kept, such as its delegation
+        // over the read limit: this one goes after it, or a stop would find
+        // no run and the delegation start anyway.
+        if fresh && waits_behind(&self.linear_kept, &d.agent_session) {
+            return keep(&mut self.linear_kept, d);
+        }
+        // Kept for when a read ends: the relay only sends an unaccepted
+        // delivery again after the next connect. Before the sessions file
+        // is read, which a long kept list would do on each replay.
+        if fresh && d.kind == DeliveryKind::Created && !may_read(self.linear_reads) {
+            return keep(&mut self.linear_kept, d);
+        }
+        let sessions = if fresh {
             crate::linear::sessions()
         } else {
             Vec::new()
@@ -77,11 +90,6 @@ impl Shell {
             (First::Ignore, _) => {}
             (First::AcceptOnly, _) => self.linear_accept(&d.id, cx),
             (First::Read, Some(sign_in)) if d.kind == DeliveryKind::Created => {
-                // Kept for when a read ends: the relay only sends an
-                // unaccepted delivery again after the next connect.
-                if !may_read(self.linear_reads) {
-                    return keep(&mut self.linear_kept, d);
-                }
                 self.linear_reads += 1;
                 // Recorded as handled only with its outcome, so a crash
                 // while the issue is read leaves it for the relay to send again.
@@ -118,6 +126,15 @@ impl Shell {
     pub(super) fn linear_keep(&mut self, d: Delivery, cx: &Context<Self>) {
         if self.teams.read(cx).me().is_none() {
             keep(&mut self.linear_kept, d);
+        }
+    }
+
+    /// Like [`Self::linear_keep`], for a delivery that was in flight: it
+    /// goes ahead of the stops and replies for its agent session kept
+    /// meanwhile, as it came before them.
+    pub(super) fn linear_keep_first(&mut self, d: Delivery, cx: &Context<Self>) {
+        if self.teams.read(cx).me().is_none() {
+            keep_first(&mut self.linear_kept, d);
         }
     }
 
@@ -241,7 +258,7 @@ impl Shell {
                     body: None,
                     guidance: start.guidance,
                 };
-                return self.linear_keep(again, cx);
+                return self.linear_keep_first(again, cx);
             }
         }
         let detail = match read {

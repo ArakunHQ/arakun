@@ -2218,6 +2218,8 @@ impl ThreadView {
             let entry_ix = base + reply.start + k;
             if let Entry::Agent { text } = e {
                 let reply = div()
+                    .id(("reply", entry_ix))
+                    .map(|d| crate::ui::article(d, kind.label(), text.trim().to_string()))
                     .min_w_0()
                     .px(crate::ui::sp(16.))
                     .pt(crate::ui::sp(12.))
@@ -2352,6 +2354,7 @@ impl ThreadView {
         let copy = full.to_string();
         div()
             .id(("user", ix))
+            .map(|d| crate::ui::article(d, "You", full.trim().to_string()))
             .group(group.clone())
             .flex()
             .flex_col()

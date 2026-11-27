@@ -6,7 +6,7 @@ core/src/agent/view/cards.rs 7
 core/src/agent/view/diffs.rs 1
 core/src/agent/view/footer.rs 6
 core/src/agent/view/note_box.rs 1
-core/src/agent/view/tool_rows.rs 4
+core/src/agent/view/tool_rows.rs 3
 core/src/browser/chrome.rs 1
 core/src/browser/home.rs 2
 core/src/browser/view.rs 1

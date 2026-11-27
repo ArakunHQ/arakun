@@ -265,6 +265,44 @@ pub fn as_switch(
     labelled(d, Role::Switch, label).aria_toggled(toggled(on))
 }
 
+/// Makes a block of text the app draws itself (a chat message, a tool call)
+/// one stop for a screen reader: what it is as the name, its words as the
+/// value. Drawn text never reaches screen readers on its own.
+pub fn article(
+    d: gpui::Stateful<gpui::Div>,
+    name: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    d.role(Role::Article)
+        .aria_label(name.into())
+        .aria_value(text.into())
+}
+
+/// The polite live region: screen readers say `text` when it comes, without
+/// moving focus. `n` counts the announcements. Each one is a new node, so the
+/// same words twice are said twice: a node added to a live region is what
+/// every platform announces. Draws nothing.
+pub fn announcer(n: u64, text: SharedString) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("announcer")
+        .role(Role::Status)
+        .absolute()
+        .top_0()
+        .left_0()
+        .size(px(1.))
+        .overflow_hidden()
+        .a11y_synthetic_children(move |b| {
+            b.parent_node().set_live(gpui::accesskit::Live::Polite);
+            if text.is_empty() {
+                return;
+            }
+            let mut node = gpui::accesskit::Node::new(Role::Label);
+            node.set_value(text.to_string());
+            let id = b.synthetic_node_id(n);
+            b.push_child(id, node);
+        })
+}
+
 /// The on or off state of a switch or radio, as screen readers take it.
 pub fn toggled(on: bool) -> Toggled {
     if on { Toggled::True } else { Toggled::False }

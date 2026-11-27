@@ -502,6 +502,97 @@ fn build_frame(term: &super::model::AlacTerm, focused: bool) -> Frame {
     }
 }
 
+/// The rows on screen as text for screen readers, one string per row with
+/// its trailing blanks cut, and where the cursor is: (row, character in it).
+/// Wide glyphs count once, like the characters a reader steps through.
+pub(super) fn screen_text<T: alacritty_terminal::event::EventListener>(
+    term: &alacritty_terminal::Term<T>,
+) -> (Vec<String>, Option<(usize, usize)>) {
+    let grid = term.grid();
+    let lines = grid.screen_lines();
+    let columns = grid.columns();
+    let offset = grid.display_offset();
+    let point = grid.cursor.point;
+    let cursor_row = usize::try_from(point.line.0 + offset as i32)
+        .ok()
+        .filter(|&r| r < lines);
+    let mut out = Vec::with_capacity(lines);
+    let mut cursor = None;
+    for vline in 0..lines {
+        let row = &grid[Line(vline as i32 - offset as i32)];
+        let mut text = String::with_capacity(columns);
+        let mut chars = 0;
+        let mut at = None;
+        for col in 0..columns {
+            if cursor_row == Some(vline) && col == point.column.0 {
+                at = Some(chars);
+            }
+            let cell: &Cell = &row[Column(col)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let c = if cell.flags.contains(Flags::HIDDEN) || matches!(cell.c, '\t' | '\0') {
+                ' '
+            } else {
+                cell.c
+            };
+            text.push(c);
+            chars += 1;
+            if let Some(extra) = cell.zerowidth() {
+                text.extend(extra);
+                chars += extra.len();
+            }
+        }
+        let kept = text.trim_end_matches(' ').len();
+        text.truncate(kept);
+        if cursor_row == Some(vline) {
+            cursor = Some((vline, at.unwrap_or(chars).min(text.chars().count())));
+        }
+        out.push(text);
+    }
+    (out, cursor)
+}
+
+/// Hands screen readers the rows on screen as text runs under the terminal's
+/// node, and the cursor as its caret.
+pub(super) fn a11y_lines(
+    lines: Vec<String>,
+    cursor: Option<(usize, usize)>,
+    b: &mut gpui::A11ySubtreeBuilder,
+) {
+    use gpui::accesskit::{Node, Role, TextPosition, TextSelection};
+    let last = lines.len().saturating_sub(1);
+    let mut caret = None;
+    for (i, mut line) in lines.into_iter().enumerate() {
+        // A run that ends in a line break ends a line, so readers go line by line.
+        if i < last {
+            line.push('\n');
+        }
+        let mut run = Node::new(Role::TextRun);
+        run.set_character_lengths(line.chars().map(|c| c.len_utf8() as u8).collect::<Vec<_>>());
+        run.set_value(line);
+        let id = b.synthetic_node_id(i);
+        if b.push_child(id, run)
+            && let Some((row, at)) = cursor
+            && row == i
+        {
+            caret = Some(TextPosition {
+                node: id,
+                character_index: at,
+            });
+        }
+    }
+    if let Some(caret) = caret {
+        b.parent_node().set_text_selection(TextSelection {
+            anchor: caret,
+            focus: caret,
+        });
+    }
+}
+
 impl Element for TerminalElement {
     type RequestLayoutState = ();
     type PrepaintState = Prepaint;
@@ -851,6 +942,25 @@ impl TerminalElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_text_reads_the_rows_and_finds_the_cursor() {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::term::{Config, Term, test::TermSize};
+        use alacritty_terminal::vte::ansi::Processor;
+        let mut term = Term::new(Config::default(), &TermSize::new(12, 3), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, "$ ls   \r\n界a b\r\n> ".as_bytes());
+        let (lines, cursor) = screen_text(&term);
+        assert_eq!(lines, ["$ ls", "界a b", ">"]);
+        // After "> " the cursor sits past the cut blank: at the row's end.
+        assert_eq!(cursor, Some((2, 1)));
+
+        parser.advance(&mut term, b"\r\x1b[1A\x1b[2C");
+        let (_, cursor) = screen_text(&term);
+        // Column 2 is after the wide glyph, which is one character.
+        assert_eq!(cursor, Some((1, 1)));
+    }
 
     #[test]
     fn the_cursor_stays_visible_on_an_inverse_cell() {

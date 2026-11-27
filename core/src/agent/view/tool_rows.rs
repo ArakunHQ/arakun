@@ -532,8 +532,16 @@ impl ThreadView {
             None
         };
 
+        let spoken = tool_spoken(&label, failed, tool.added, tool.removed);
         div()
             .id(("tool", ix))
+            .map(|d| {
+                if expandable {
+                    crate::ui::labelled(d, gpui::Role::Button, spoken).aria_expanded(open)
+                } else {
+                    crate::ui::article(d, "Tool call", spoken)
+                }
+            })
             .group(group.clone())
             .flex()
             .items_center()
@@ -658,6 +666,29 @@ impl ThreadView {
             })
             .into_any_element()
     }
+}
+
+/// A tool call as a screen reader says it: "Edited src/main.rs, 3 lines
+/// added, 1 removed", with "failed" when it did.
+fn tool_spoken(label: &ToolLabel, failed: bool, added: u32, removed: u32) -> String {
+    let mut out = [label.action, label.target.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('\n', " ");
+    if added > 0 || removed > 0 {
+        let lines = |n: u32| if n == 1 { "line" } else { "lines" };
+        out.push_str(&match (added, removed) {
+            (a, 0) => format!(", {a} {} added", lines(a)),
+            (0, r) => format!(", {r} {} removed", lines(r)),
+            (a, r) => format!(", {a} {} added, {r} removed", lines(a)),
+        });
+    }
+    if failed {
+        out.push_str(", failed");
+    }
+    out
 }
 
 pub(super) fn tool_details(tool: &ToolCall, cwd: &Path, reveal: &Reveal) -> AnyElement {
@@ -940,6 +971,28 @@ mod tests {
             "raw_input": input,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_tool_call_is_said_with_its_changes_and_failure() {
+        let label = |action, target: &str| ToolLabel {
+            action,
+            target: target.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            tool_spoken(&label("Edited", "src/main.rs"), false, 3, 1),
+            "Edited src/main.rs, 3 lines added, 1 removed"
+        );
+        assert_eq!(
+            tool_spoken(&label("Edited", "a.rs"), false, 1, 0),
+            "Edited a.rs, 1 line added"
+        );
+        assert_eq!(
+            tool_spoken(&label("Ran", "cargo test\n--all"), true, 0, 0),
+            "Ran cargo test --all, failed"
+        );
+        assert_eq!(tool_spoken(&label("", "Thinking"), false, 0, 0), "Thinking");
     }
 
     #[test]

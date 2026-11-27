@@ -681,6 +681,17 @@ impl Render for TerminalView {
             .child(
                 div()
                     .id("terminal")
+                    .role(gpui::Role::Terminal)
+                    .aria_label("Terminal")
+                    // The grid is painted cell by cell, so screen readers get
+                    // its rows as text. Only built while one listens.
+                    .when(window.is_a11y_active(), |d| {
+                        let term = self.terminal.read(cx).term().clone();
+                        d.a11y_synthetic_children(move |b| {
+                            let (lines, cursor) = super::element::screen_text(&term.lock());
+                            super::element::a11y_lines(lines, cursor, b);
+                        })
+                    })
                     .key_context("Terminal")
                     .track_focus(&self.focus)
                     .size_full()

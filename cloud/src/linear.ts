@@ -24,7 +24,7 @@
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
-import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, startIssue, UUID, viewer } from "./linear_api";
+import { addLinks, exchangeCode, LinearRefused, postAction, postActivity, saveWorkspace, startIssue, UUID, viewer } from "./linear_api";
 import { keyUsable } from "./linear_seal";
 import { webhook } from "./linear_webhook";
 import { dropDelivery } from "./machines";
@@ -326,12 +326,34 @@ interface Activity {
   started: boolean;
 }
 
+/// A step the session works on, as Linear shows a tool call: what it does
+/// (`Editing`) and on what (`src/main.rs`, or `a command`).
+interface Step {
+  type: "action";
+  action: string;
+  parameter: string;
+  ephemeral: boolean;
+}
+
+const MAX_ACTION = 80;
+const MAX_PARAMETER = 200;
+
+/// A step, checked, or null. It carries no body, links or choices.
+function parseStep(v: Record<string, unknown>): Step | null {
+  const { type, action, parameter, ephemeral = false, ...rest } = v;
+  if (type !== "action" || Object.keys(rest).length > 0 || typeof ephemeral !== "boolean") return null;
+  const text = (s: unknown, max: number) => typeof s === "string" && s.trim().length > 0 && chars(s) <= max && !/[\p{Cc}]/u.test(s);
+  if (!text(action, MAX_ACTION) || !text(parameter, MAX_PARAMETER)) return null;
+  return { type, action: action as string, parameter: parameter as string, ephemeral };
+}
+
 /// The activity, checked, or null. Only the known fields are copied out.
-function parseActivity(v: unknown): Activity | null {
+function parseActivity(v: unknown): Activity | Step | null {
   if (!isObject(v)) return null;
+  if (v["type"] === "action") return parseStep(v);
   const { type, body, ephemeral = false, links = [], options = [], started = false } = v;
   if (!ACTIVITY_TYPES.includes(type as Activity["type"])) return null;
-  // Linear takes it for a thought only.
+  // Linear takes it for a thought or a step only.
   if (typeof ephemeral !== "boolean" || (ephemeral && type !== "thought")) return null;
   if (typeof started !== "boolean" || (started && (type !== "thought" || ephemeral))) return null;
   if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
@@ -382,13 +404,17 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
   if (!owned) return error(404, "no such session");
   const { organizationId, issueId } = owned;
   try {
-    await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral, activity.options);
-    if (activity.links.length > 0) await addLinks(env, organizationId, agentSessionId, activity.links);
+    if (activity.type === "action") {
+      await postAction(env, organizationId, agentSessionId, activity.action, activity.parameter, activity.ephemeral);
+    } else {
+      await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral, activity.options);
+      if (activity.links.length > 0) await addLinks(env, organizationId, agentSessionId, activity.links);
+    }
   } catch (e) {
     if (e instanceof LinearRefused) return error(502, "linear refused");
     throw e;
   }
-  if (activity.started) await markStarted(env, organizationId, issueId);
+  if (activity.type !== "action" && activity.started) await markStarted(env, organizationId, issueId);
   return new Response(null, { status: 204 });
 }
 

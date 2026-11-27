@@ -7,7 +7,7 @@
 use super::runs::{Report, ReportKind};
 use crate::cloud::{self, LinearActivity, LinearLinkOut};
 
-/// The activity a report is posted as, or None for one that is only a link.
+/// The activity a report is posted as, or None for a link or a step.
 fn activity(r: &Report) -> Option<LinearActivity> {
     Some(match r.kind {
         ReportKind::Thought if r.started => LinearActivity::Started,
@@ -15,8 +15,7 @@ fn activity(r: &Report) -> Option<LinearActivity> {
         ReportKind::Elicitation => LinearActivity::Elicitation,
         ReportKind::Response => LinearActivity::Response,
         ReportKind::Error => LinearActivity::Error,
-        ReportKind::Progress => LinearActivity::Progress,
-        ReportKind::Link => return None,
+        ReportKind::Progress | ReportKind::Link => return None,
     })
 }
 
@@ -83,6 +82,12 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
                 let (to, body) = (&r.agent_session, &r.body);
                 cloud::linear_activity_with(base, session, to, kind, body, &links, &r.options)
             }
+            None if r.kind == ReportKind::Progress => match &r.parameter {
+                Some(on) => cloud::linear_step(base, session, &r.agent_session, &r.body, on),
+                // One saved by an older Arakun, a line with no parameter:
+                // a newer step soon takes its place.
+                None => Ok(()),
+            },
             // A link report without its link says nothing: it is let go.
             None if links.is_empty() => Ok(()),
             None => cloud::linear_session_links(base, session, &r.agent_session, &links),
@@ -117,6 +122,7 @@ mod tests {
             link: None,
             options: Vec::new(),
             started: false,
+            parameter: None,
             made_at: 1,
         }
     }
@@ -179,6 +185,30 @@ mod tests {
             got[0]
         );
         assert!(got[1].starts_with("POST /linear/sessions/as-1/activity "));
+    }
+
+    #[test]
+    fn a_step_goes_as_an_action_and_an_old_line_is_let_go() {
+        let (base, rx) = serve(vec![(204, ""), (204, "")]);
+        let mut step = report("Editing");
+        step.kind = ReportKind::Progress;
+        step.parameter = Some("src/main.rs".into());
+        // Saved by an older Arakun: the whole line, and no parameter.
+        let mut old = report("Editing `src/main.rs`");
+        old.kind = ReportKind::Progress;
+        let out = flush(&base, "s", vec![step, old, report("after")]);
+        assert_eq!(out.sent.len(), 3);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(
+            got[0].starts_with("POST /linear/sessions/as-1/activity ")
+                && got[0].ends_with(
+                    r#"{"type":"action","action":"Editing","parameter":"src/main.rs","ephemeral":true}"#
+                ),
+            "{}",
+            got[0]
+        );
+        assert!(got[1].contains(r#""body":"after""#), "{}", got[1]);
     }
 
     #[test]

@@ -239,6 +239,19 @@ export async function postActivity(
   );
 }
 
+/// A step of a session, which Linear shows as its tool call: `action` is
+/// what it does, `parameter` on what. An ephemeral one is replaced by the
+/// next activity.
+export async function postAction(env: Env, organizationId: string, agentSessionId: string, action: string, parameter: string, ephemeral = false): Promise<void> {
+  const input = { agentSessionId, content: { type: "action", action, parameter }, ...(ephemeral ? { ephemeral: true } : {}) };
+  await asApp(
+    env,
+    organizationId,
+    "mutation($input: AgentActivityCreateInput!) { agentActivityCreate(input: $input) { success } }",
+    { input },
+  );
+}
+
 export async function addLinks(env: Env, organizationId: string, agentSessionId: string, links: { label: string; url: string }[]): Promise<void> {
   await asApp(
     env,

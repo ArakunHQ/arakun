@@ -295,6 +295,20 @@ export const linearFake = {
         return { ...sent, ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }), ...select };
       });
   },
+  /// The steps (`action` activities) created, in order. `ephemeral` is
+  /// there only when it was sent.
+  actions(): { agentSessionId: string; action: string; parameter: string; ephemeral?: boolean }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("agentActivityCreate"))
+      .map((c) => (c.variables as { input: { agentSessionId: string; content: Record<string, unknown>; ephemeral?: boolean } }).input)
+      .filter((input) => input.content["type"] === "action")
+      .map((input) => ({
+        agentSessionId: input.agentSessionId,
+        action: input.content["action"] as string,
+        parameter: input.content["parameter"] as string,
+        ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }),
+      }));
+  },
   /// The issue updates, in order.
   issueUpdates(): { id: string; input: { stateId?: string; delegateId?: string } }[] {
     return this.accepted

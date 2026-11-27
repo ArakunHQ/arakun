@@ -1010,8 +1010,9 @@ to pin from or fold. Moving to pinned tabs pins every open session first. The ch
 kept in `state.json` as `tabs`.
 
 Settings › Appearance › Reduce motion holds the mascot, spinners and the island still (its
-working dots, its change of shape and its alert cards), and shows menus and dialogs
-without sliding them in. System (the default)
+working dots, its change of shape and its alert cards), shows menus and dialogs
+without sliding them in, and shows or hides the sidebar and the Workspace panel at
+once instead of sliding them. System (the default)
 follows macOS's Reduce motion, GNOME's Animations switch or Windows' Animation effects,
 and picks up a change when Arakun's window comes to the front; On and Off ignore the
 system. The choice is kept in `state.json` as `reduce_motion`.

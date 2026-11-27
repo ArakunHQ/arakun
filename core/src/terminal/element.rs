@@ -634,23 +634,31 @@ impl Element for TerminalElement {
         let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
 
         let focused = self.focused;
+        // While a side card slides the grid keeps its size and is clipped;
+        // it resizes once the card lands.
+        let held = crate::ui::motion::resizes_held(window);
         let (frame, origin, columns, lines) = self.terminal.update(cx, |terminal, _| {
             terminal.begin_frame();
             let term = terminal.term().clone();
             let mut term = term.lock();
             let alt = term.mode().contains(TermMode::ALT_SCREEN);
             let (pad_x, pad_y) = if alt { (0., 0.) } else { (PAD_X, PAD_Y) };
-            let avail_w = f32::from(bounds.size.width) - 2. * pad_x;
-            let avail_h = f32::from(bounds.size.height) - 2. * pad_y;
-            let columns = ((avail_w / f32::from(cell_width)).floor() as usize).max(2);
-            let lines = ((avail_h / f32::from(line_height)).floor() as usize).max(1);
-            terminal.resize_locked(
-                &mut term,
-                columns,
-                lines,
-                f32::from(cell_width),
-                f32::from(line_height),
-            );
+            let (columns, lines) = if held {
+                terminal.grid_size()
+            } else {
+                let avail_w = f32::from(bounds.size.width) - 2. * pad_x;
+                let avail_h = f32::from(bounds.size.height) - 2. * pad_y;
+                let columns = ((avail_w / f32::from(cell_width)).floor() as usize).max(2);
+                let lines = ((avail_h / f32::from(line_height)).floor() as usize).max(1);
+                terminal.resize_locked(
+                    &mut term,
+                    columns,
+                    lines,
+                    f32::from(cell_width),
+                    f32::from(line_height),
+                );
+                (columns, lines)
+            };
             let origin = point(
                 snap(bounds.origin.x + px(pad_x)),
                 snap(bounds.origin.y + px(pad_y)),

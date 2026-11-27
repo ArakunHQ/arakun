@@ -199,6 +199,143 @@ impl<T: Clone> Leaving<T> {
     }
 }
 
+/// Eases a side card's width (the sidebar, the Workspace panel) over [`BASE`]
+/// when it opens, closes or changes what it holds, instead of snapping. The
+/// view passes a key for what is open and the width it wants on every render.
+/// Only a change of key moves the card: a drag or a window resize keeps the
+/// width under the hand. Snaps while motion is reduced.
+pub struct Slide<K> {
+    key: Option<K>,
+    from: f32,
+    to: f32,
+    since: Option<Instant>,
+    /// The width it last wanted while open, to lay out a closing card at.
+    full: f32,
+    /// The motion opens or closes the card, rather than resizing it.
+    whole: bool,
+}
+
+impl<K> Default for Slide<K> {
+    fn default() -> Self {
+        Self {
+            key: None,
+            from: 0.,
+            to: 0.,
+            since: None,
+            full: 0.,
+            whole: false,
+        }
+    }
+}
+
+/// Where a [`Slide`] is this frame.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SlideAt {
+    /// The width to clip the card to.
+    pub width: f32,
+    /// The width to lay its content out at. While the card opens or closes
+    /// it keeps its full width and is clipped, so it does not reflow on every
+    /// frame.
+    pub content: f32,
+    pub moving: bool,
+}
+
+impl SlideAt {
+    /// Whether anything of the card is drawn.
+    pub fn visible(&self) -> bool {
+        self.width > 0.
+    }
+}
+
+impl<K: PartialEq> Slide<K> {
+    /// Notes what is open now and the width it wants, and returns where the
+    /// card is. Redraws the view on the next frame while it moves: a card
+    /// travels, so it moves at the display's rate, not the clock's.
+    pub fn track(&mut self, key: K, target: f32, window: &Window) -> SlideAt {
+        let at = self.step(key, target, Instant::now(), reduced());
+        if at.moving {
+            window.request_animation_frame();
+        }
+        at
+    }
+
+    fn width_at(&self, at: Instant) -> f32 {
+        match self.since {
+            Some(since) => {
+                let t = at.saturating_duration_since(since).as_secs_f32() / BASE.as_secs_f32();
+                self.from + (self.to - self.from) * ease_out(t.min(1.))
+            }
+            None => self.to,
+        }
+    }
+
+    fn step(&mut self, key: K, target: f32, at: Instant, reduced: bool) -> SlideAt {
+        let target = target.max(0.);
+        if target > 0. {
+            self.full = target;
+        }
+        let changed = self.key.as_ref().is_some_and(|k| *k != key);
+        if changed && !reduced {
+            self.whole = self.to <= 0. || target <= 0.;
+            self.from = self.width_at(at);
+            self.since = Some(at);
+        } else if self.since.is_none() || reduced {
+            // The first frame, a drag or a resize: no motion.
+            self.from = target;
+            self.since = None;
+        }
+        self.key = Some(key);
+        self.to = target;
+        let done = self
+            .since
+            .is_none_or(|since| at.saturating_duration_since(since) >= BASE);
+        if done {
+            self.since = None;
+            self.from = target;
+            return SlideAt {
+                width: target,
+                content: target,
+                moving: false,
+            };
+        }
+        let width = self.width_at(at);
+        SlideAt {
+            width,
+            content: if self.whole { self.full } else { width },
+            moving: true,
+        }
+    }
+}
+
+thread_local! {
+    /// The windows where a side card slides now (see [`hold_resizes`]).
+    static HELD: RefCell<Vec<gpui::WindowId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Holds the terminals in `window` at their size while a side card slides,
+/// so each resizes its grid and its PTY once, at the end width: a resize
+/// redraws the program's whole screen, and a slide is a dozen frames.
+pub fn hold_resizes(window: &Window, hold: bool) {
+    let id = window.window_handle().window_id();
+    HELD.with(|h| {
+        let mut h = h.borrow_mut();
+        let at = h.iter().position(|w| *w == id);
+        match (hold, at) {
+            (true, None) => h.push(id),
+            (false, Some(i)) => {
+                h.swap_remove(i);
+            }
+            _ => {}
+        }
+    });
+}
+
+/// Whether the terminals in `window` keep their size this frame.
+pub fn resizes_held(window: &Window) -> bool {
+    let id = window.window_handle().window_id();
+    HELD.with(|h| h.borrow().contains(&id))
+}
+
 /// Draws `el` as it is but out of reach of the mouse: no clicks, hovers or
 /// scrolls, so they go to whatever is under it. For a surface on its way out.
 /// gpui hit tests a hitbox inside the content mask it was made under, and
@@ -831,6 +968,77 @@ mod tests {
         assert_eq!(l.step(Some(&3), start, false), None);
         assert_eq!(l.step(None, start, true), None);
         assert_eq!(l.step(None, start, false), None);
+    }
+
+    #[test]
+    fn a_card_slides_open_and_closed_at_its_full_width() {
+        let start = Instant::now();
+        let mut s = Slide::default();
+        // The first frame does not move, even when open.
+        assert!(!s.step(false, 0., start, false).moving);
+        let at = s.step(true, 300., start, false);
+        assert!(at.moving);
+        assert_eq!(at.width, 0.);
+        assert_eq!(at.content, 300.);
+        let mid = s.step(true, 300., start + BASE / 2, false);
+        assert!(mid.width > 150. && mid.width < 300., "{mid:?}");
+        assert_eq!(mid.content, 300.);
+        let end = s.step(true, 300., start + BASE, false);
+        assert_eq!(
+            end,
+            SlideAt {
+                width: 300.,
+                content: 300.,
+                moving: false
+            }
+        );
+        // Closing keeps the content at its open width while it goes.
+        let t = start + BASE * 2;
+        let at = s.step(false, 0., t, false);
+        assert!(at.moving);
+        assert_eq!((at.width, at.content), (300., 300.));
+        let mid = s.step(false, 0., t + BASE / 2, false);
+        assert!(mid.width < 300.);
+        assert_eq!(mid.content, 300.);
+        assert!(!s.step(false, 0., t + BASE, false).visible());
+    }
+
+    #[test]
+    fn a_drag_or_reduced_motion_does_not_slide() {
+        let start = Instant::now();
+        let mut s = Slide::default();
+        s.step(true, 300., start, false);
+        // Same key, new width: under the hand at once.
+        let at = s.step(true, 340., start, false);
+        assert_eq!((at.width, at.moving), (340., false));
+        // A new key with motion reduced snaps.
+        let at = s.step(false, 0., start, true);
+        assert_eq!((at.width, at.moving), (0., false));
+    }
+
+    #[test]
+    fn a_slide_turned_back_halfway_starts_from_where_it_is() {
+        let start = Instant::now();
+        let mut s = Slide::default();
+        s.step(false, 0., start, false);
+        s.step(true, 300., start, false);
+        let half = start + BASE / 2;
+        let w = s.step(true, 300., half, false).width;
+        let back = s.step(false, 0., half, false);
+        assert!((back.width - w).abs() < 1e-3);
+        assert_eq!(back.content, 300.);
+        assert!(back.moving);
+    }
+
+    #[test]
+    fn a_resize_between_two_widths_reflows() {
+        let start = Instant::now();
+        let mut s = Slide::default();
+        s.step(1, 300., start, false);
+        s.step(2, 400., start, false);
+        let mid = s.step(2, 400., start + BASE / 2, false);
+        assert!(mid.moving);
+        assert_eq!(mid.content, mid.width);
     }
 
     #[test]

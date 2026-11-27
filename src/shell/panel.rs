@@ -15,6 +15,11 @@ pub(super) struct Panel {
     pub customize: Option<(Entity<CustomizeView>, Subscription)>,
     /// The tab Customize shows: on Sidebar, the rail is being arranged.
     pub customize_tab: CustomizeTab,
+    /// Eases the panel in and out, keyed by whether it shows and whether
+    /// Customize is in it.
+    pub slide: ui::motion::Slide<(bool, bool)>,
+    /// Customize, closed with nothing in its place, drawn while it slides out.
+    pub leaving_customize: Option<Entity<CustomizeView>>,
 }
 
 impl Panel {
@@ -26,6 +31,8 @@ impl Panel {
             explorer_scroll: UniformListScrollHandle::new(),
             customize: None,
             customize_tab: CustomizeTab::Colors,
+            slide: Default::default(),
+            leaving_customize: None,
         }
     }
 }
@@ -66,8 +73,11 @@ impl Shell {
         }
     }
 
+    /// The panel's card: Customize while it is open or slides out, else the
+    /// Workspace panel.
     pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some((view, _)) = &self.panel.customize {
+        let customize = self.panel.customize.as_ref().map(|(view, _)| view);
+        if let Some(view) = customize.or(self.panel.leaving_customize.as_ref()) {
             let look = self.rail_look();
             view.update(cx, |v, cx| v.sync_rail(look, cx));
             return self

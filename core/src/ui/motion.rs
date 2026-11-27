@@ -14,9 +14,9 @@ use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationElement, AnimationExt as _, AnyElement, App, Bounds, Element, ElementId,
-    EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Styled, Window,
-    px,
+    Animation, AnimationElement, AnimationExt as _, AnyElement, App, Bounds, ContentMask, Element,
+    ElementId, EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
+    Styled, Window, px,
 };
 
 /// Tooltips and small menus: there before the hand has stopped.
@@ -131,6 +131,143 @@ pub fn enter_from_right<E: IntoElement + Styled + 'static>(
         let (opacity, offset) = enter_at(t, From::Below, distance);
         el.opacity(opacity).mr(px(-offset))
     })
+}
+
+/// Where a closing surface is `t` (0 to 1) into its way out: its opacity, and
+/// how far it has gone back toward where it came from, in pixels (negative
+/// is above). It fades fast and drifts, so the window is clear early.
+pub fn leave_at(t: f32, from: From, distance: f32) -> (f32, f32) {
+    let t = t.clamp(0., 1.);
+    let opacity = (1. - t).powi(2);
+    let gone = distance * ease_out(t);
+    let offset = match from {
+        From::Above => -gone,
+        From::Below => gone,
+    };
+    (opacity, offset)
+}
+
+/// Keeps a surface drawn for [`FAST`] after it closes, so it can fade out.
+/// gpui has no exit animations: an element is gone the frame it leaves the
+/// tree. The view that draws the surface passes what it shows now to
+/// [`Leaving::track`] on every render, and draws what comes back with
+/// [`leave_at`] and [`inert`]. Nothing leaves while motion is reduced, or
+/// when another surface opens in its place.
+pub struct Leaving<T> {
+    shown: Option<T>,
+    gone: Option<(T, Instant)>,
+}
+
+impl<T> Default for Leaving<T> {
+    fn default() -> Self {
+        Self {
+            shown: None,
+            gone: None,
+        }
+    }
+}
+
+impl<T: Clone> Leaving<T> {
+    /// Notes what is open now. Returns the surface on its way out and how far
+    /// (0 to 1) it is, and redraws the view on the next tick until it is gone.
+    pub fn track(&mut self, now: Option<&T>, window: &Window) -> Option<(T, f32)> {
+        let out = self.step(now, Instant::now(), reduced());
+        if out.is_some() {
+            redraw_on_tick(window);
+        }
+        out
+    }
+
+    fn step(&mut self, now: Option<&T>, at: Instant, reduced: bool) -> Option<(T, f32)> {
+        if let Some(open) = now {
+            self.shown = Some(open.clone());
+            self.gone = None;
+            return None;
+        }
+        if let Some(closed) = self.shown.take()
+            && !reduced
+        {
+            self.gone = Some((closed, at));
+        }
+        let (closed, since) = self.gone.as_ref()?;
+        let t = at.saturating_duration_since(*since).as_secs_f32() / FAST.as_secs_f32();
+        if t >= 1. {
+            self.gone = None;
+            return None;
+        }
+        Some((closed.clone(), t))
+    }
+}
+
+/// Draws `el` as it is but out of reach of the mouse: no clicks, hovers or
+/// scrolls, so they go to whatever is under it. For a surface on its way out.
+/// gpui hit tests a hitbox inside the content mask it was made under, and
+/// here that mask is empty while `el` lays out its hitboxes. A `deferred`
+/// child escapes this, so wrap what is inside a `deferred`, not the
+/// `deferred` itself.
+pub fn inert(el: impl IntoElement) -> AnyElement {
+    Inert(el.into_any_element()).into_any_element()
+}
+
+struct Inert(AnyElement);
+
+impl IntoElement for Inert {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Inert {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let nowhere = ContentMask {
+            bounds: Bounds::default(),
+        };
+        window.with_content_mask(Some(nowhere), |window| self.0.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
+    }
 }
 
 /// Whether Arakun reduces motion: as the system says, or always, or never.
@@ -651,6 +788,49 @@ mod tests {
         assert!(y.abs() < 1e-4);
         // Fully opaque well before it stops moving.
         assert_eq!(enter_at(0.7, From::Below, 8.).0, 1.);
+    }
+
+    #[test]
+    fn a_surface_leaves_back_the_way_it_came() {
+        let (o, y) = leave_at(0., From::Below, 6.);
+        assert_eq!(o, 1.);
+        assert!(y.abs() < 1e-4);
+        let (o, y) = leave_at(1., From::Below, 6.);
+        assert_eq!(o, 0.);
+        assert!((y - 6.).abs() < 1e-4);
+        let (_, y) = leave_at(1., From::Above, 6.);
+        assert!((y + 6.).abs() < 1e-4);
+        // Mostly gone by halfway.
+        assert!(leave_at(0.5, From::Below, 6.).0 <= 0.25);
+    }
+
+    #[test]
+    fn a_closed_surface_stays_for_fast_then_goes() {
+        let start = Instant::now();
+        let mut l = Leaving::default();
+        assert_eq!(l.step(Some(&1), start, false), None);
+        assert_eq!(l.step(Some(&1), start, false), None);
+        // Closed: drawn from the start of its way out.
+        assert_eq!(l.step(None, start, false), Some((1, 0.)));
+        let (v, t) = l.step(None, start + FAST / 2, false).unwrap();
+        assert_eq!(v, 1);
+        assert!((t - 0.5).abs() < 1e-3);
+        assert_eq!(l.step(None, start + FAST, false), None);
+        assert_eq!(l.step(None, start + FAST * 2, false), None);
+    }
+
+    #[test]
+    fn nothing_leaves_when_another_opens_or_motion_is_reduced() {
+        let start = Instant::now();
+        let mut l = Leaving::default();
+        l.step(Some(&1), start, false);
+        // Another surface in its place: the old one goes at once.
+        assert_eq!(l.step(Some(&2), start, false), None);
+        assert!(l.step(None, start, false).is_some());
+        // Opening again while one leaves drops the leaving one.
+        assert_eq!(l.step(Some(&3), start, false), None);
+        assert_eq!(l.step(None, start, true), None);
+        assert_eq!(l.step(None, start, false), None);
     }
 
     #[test]

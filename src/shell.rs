@@ -224,6 +224,24 @@ enum Modal {
     Survey(Entity<crate::survey_dialog::SurveyDialog>),
 }
 
+/// A dialog as it was last drawn, so it can be drawn again on its way out.
+#[derive(Clone)]
+struct ShownModal {
+    view: gpui::AnyView,
+    center: bool,
+    palette: bool,
+}
+
+/// What each closing surface `Shell` draws was last, for `ui::motion::Leaving`.
+#[derive(Default)]
+struct LeavingSurfaces {
+    modal: ui::motion::Leaving<ShownModal>,
+    update: ui::motion::Leaving<Entity<crate::update_dialog::UpdateDialog>>,
+    menu: ui::motion::Leaving<ContextMenu>,
+    /// The environment menu, by where it opened (`env_menu_at`).
+    env_menu: ui::motion::Leaving<Option<gpui::Point<Pixels>>>,
+}
+
 #[derive(Clone, Copy)]
 enum MenuTarget {
     Project(usize),
@@ -282,6 +300,7 @@ struct PendingEnv {
     name: String,
 }
 
+#[derive(Clone)]
 struct ContextMenu {
     target: MenuTarget,
     at: gpui::Point<Pixels>,
@@ -407,6 +426,9 @@ pub struct Shell {
     /// The `update-policy` feature flag's dialog (`shell::updates`), over
     /// everything else, dialogs included.
     update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
+    /// Surfaces on their way out: kept drawn for a moment after they close so
+    /// they fade instead of vanishing (`ui::motion::Leaving`).
+    leaving: LeavingSurfaces,
     /// Reports agents sent with `arakun feedback`, per environment.
     feedback_limits: crate::surveys::agent::RateLimit,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
@@ -1028,6 +1050,7 @@ impl Shell {
             clear_armed: false,
             restarting: false,
             update_dialog: None,
+            leaving: LeavingSurfaces::default(),
             feedback_limits: Default::default(),
             _runs: runs_subs,
             _quit: [
@@ -4295,6 +4318,191 @@ fn types_tab(contexts: &[gpui::KeyContext]) -> bool {
     })
 }
 
+/// A context menu held at its anchor, over everything but dialogs.
+fn anchored_menu(at: gpui::Point<Pixels>, above: bool, menu: AnyElement) -> impl IntoElement {
+    gpui::deferred(
+        gpui::anchored()
+            .when(above, |a| a.anchor(gpui::Anchor::BottomLeft))
+            // Composer chips open their menu just above the chip row, not over it.
+            .position(if above {
+                point(at.x - px(12.), at.y - px(16.))
+            } else {
+                at
+            })
+            .snap_to_window_with_margin(px(8.))
+            .child(menu),
+    )
+}
+
+/// How the backdrop of an open dialog answers a click on it.
+type OnBackdrop = Box<dyn Fn(&gpui::MouseDownEvent, &mut Window, &mut App)>;
+
+/// A dialog over its dimmed backdrop. `Open` takes every click, and hands
+/// the ones on the backdrop to its listener. `Leaving` is how far (0 to 1) it
+/// is on its way out after it closed: it fades and sinks, and the mouse goes
+/// through it to the app.
+enum Layer {
+    Open(OnBackdrop),
+    Leaving(f32),
+}
+
+fn modal_layer(
+    modal: AnyElement,
+    key: u64,
+    center: bool,
+    palette: bool,
+    layer: Layer,
+) -> AnyElement {
+    let id = if matches!(layer, Layer::Leaving(_)) {
+        "modal-backdrop-out"
+    } else {
+        "modal-backdrop"
+    };
+    // The palette dims the app further: gpui has no backdrop blur.
+    let dim = if palette { 0.62 } else { 0.4 };
+    let dialog = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .when(center, |d| d.justify_center())
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .relative();
+    let backdrop = div()
+        .id(id)
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .map(|d| {
+            if center {
+                d.pt(crate::ui::sp(12.))
+            } else {
+                d.pt(relative(0.10))
+            }
+        })
+        .pb(crate::ui::sp(12.))
+        .px(crate::ui::sp(12.));
+    match layer {
+        Layer::Leaving(t) => {
+            let (opacity, offset) = ui::motion::leave_at(t, ui::motion::From::Below, 6.);
+            backdrop
+                .bg(gpui::black().opacity(dim * opacity))
+                .child(ui::motion::inert(
+                    dialog.opacity(opacity).top(px(offset)).child(modal),
+                ))
+                .into_any_element()
+        }
+        Layer::Open(on_backdrop) => backdrop
+            .occlude()
+            .on_mouse_down(MouseButton::Left, on_backdrop)
+            .child(
+                // Keyed by the dialog, so one opened over another arrives too. A
+                // flex column like the backdrop, so a tall dialog still fits the
+                // window.
+                dialog.child(modal).with_animation(
+                    ("modal-in", key as usize),
+                    gpui::Animation::new(ui::motion::BASE),
+                    |d, t| {
+                        let (opacity, offset) =
+                            ui::motion::enter_at(t, ui::motion::From::Below, 10.);
+                        d.opacity(opacity).top(px(offset))
+                    },
+                ),
+            )
+            .with_animation(
+                "modal-backdrop-in",
+                gpui::Animation::new(ui::motion::BASE),
+                move |d, t| d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t))),
+            )
+            .into_any_element(),
+    }
+}
+
+/// The update dialog over its dimmed backdrop, which takes every click.
+/// `leaving` as for `modal_layer`.
+fn update_layer(
+    dialog: Entity<crate::update_dialog::UpdateDialog>,
+    leaving: Option<f32>,
+) -> impl IntoElement {
+    let backdrop = div()
+        .id(if leaving.is_some() {
+            "update-backdrop-out"
+        } else {
+            "update-backdrop"
+        })
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .pt(relative(0.10))
+        .px(crate::ui::sp(12.));
+    let body = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .w_full()
+        .child(dialog);
+    match leaving {
+        Some(t) => {
+            let (opacity, offset) = ui::motion::leave_at(t, ui::motion::From::Below, 6.);
+            backdrop
+                .bg(gpui::black().opacity(0.4 * opacity))
+                .child(ui::motion::inert(body.opacity(opacity).mt(px(offset))))
+                .into_any_element()
+        }
+        None => backdrop
+            .occlude()
+            .child(ui::motion::enter(
+                body,
+                "update-dialog-in",
+                ui::motion::From::Below,
+                10.,
+                ui::motion::BASE,
+            ))
+            .with_animation(
+                "update-backdrop-in",
+                gpui::Animation::new(ui::motion::BASE),
+                |d, t| d.bg(gpui::black().opacity(0.4 * ui::motion::ease_out(t))),
+            )
+            .into_any_element(),
+    }
+}
+
+impl Modal {
+    /// The dialog's view, to draw it.
+    fn view(&self) -> gpui::AnyView {
+        match self {
+            Modal::Picker(e) => e.clone().into(),
+            Modal::Attach(e) => e.clone().into(),
+            Modal::CreateEnv(e) => e.clone().into(),
+            Modal::DeleteEnv(e) => e.clone().into(),
+            Modal::Command(e) => e.clone().into(),
+            Modal::Account(e) => e.clone().into(),
+            Modal::Profile(e) => e.clone().into(),
+            Modal::Commit(e) => e.clone().into(),
+            Modal::GitConfirm(e) => e.clone().into(),
+            Modal::PullRequest(e) => e.clone().into(),
+            Modal::Palette(e) => e.clone().into(),
+            Modal::Settings(e) => e.clone().into(),
+            Modal::Automations(e) => e.clone().into(),
+            Modal::Session(v) => v.clone(),
+            Modal::Telemetry(e) => e.clone().into(),
+            Modal::TeamsSignIn(e) => e.clone().into(),
+            Modal::Pilot(e) => e.clone().into(),
+            Modal::New(e) => e.clone().into(),
+            Modal::Survey(e) => e.clone().into(),
+        }
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_inbox_seen();
@@ -4425,61 +4633,33 @@ impl Render for Shell {
                 _
             ))
         );
-        let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
-            Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Attach(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::CreateEnv(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::DeleteEnv(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Command(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Account(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Profile(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Commit(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::GitConfirm(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::PullRequest(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Palette(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Settings(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
-            Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::TeamsSignIn(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
-            Modal::Survey(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+        let shown_modal = self.modal.as_ref().map(|(m, _)| ShownModal {
+            view: m.view(),
+            center: center_modal,
+            palette: palette_open,
         });
+        let leaving_modal = self.leaving.modal.track(shown_modal.as_ref(), window);
+        let modal: Option<(AnyElement, u64)> = shown_modal.map(|m| {
+            let key = m.view.entity_id().as_u64();
+            (m.view.into_any_element(), key)
+        });
+        let leaving_update = self.leaving.update.track(update_dialog.as_ref(), window);
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
-        let context_menu = self.menu.as_ref().map(|m| {
-            let above = match m.target {
-                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
-                // Help can be anywhere in the rail; low down it opens upward.
-                // So can Running, which the status bar opens too.
-                MenuTarget::Help | MenuTarget::Running | MenuTarget::MoreViews => {
-                    m.at.y.as_f32() > viewport_h / 2.
-                }
-                _ => false,
-            };
-            // The room between the anchor and the window edge the menu opens toward.
-            let room = if above {
-                m.at.y.as_f32() - 24.
-            } else {
-                viewport_h - m.at.y.as_f32() - 8.
-            };
-            let menu = div()
-                .flex()
-                .flex_col()
-                .max_h(px(room.max(120.)))
-                .child(self.render_context_menu(m, cx));
-            // Keyed by where it opened, so a menu opened at another spot
-            // arrives again; it slides out of its anchor.
-            let key = ((m.at.x.as_f32() as usize) << 16) ^ m.at.y.as_f32() as usize;
-            let from = if above {
-                ui::motion::From::Below
-            } else {
-                ui::motion::From::Above
-            };
-            let menu = ui::motion::enter(menu, ("menu-in", key), from, 4., ui::motion::FAST);
-            (m.at, above, menu.into_any_element())
-        });
+        let context_menu = self
+            .menu
+            .as_ref()
+            .map(|m| self.render_menu_layer(m, viewport_h, None, cx));
+        let leaving_menu = self
+            .leaving
+            .menu
+            .track(self.menu.as_ref(), window)
+            .map(|(m, t)| self.render_menu_layer(&m, viewport_h, Some(t), cx));
+        let leaving_env_menu = self
+            .leaving
+            .env_menu
+            .track(self.env_menu_open.then_some(&self.env_menu_at), window)
+            .map(|(at, t)| self.render_env_menu(at, viewport_h, Some(t), cx));
 
         div()
             .id("shell")
@@ -4752,118 +4932,43 @@ impl Render for Shell {
                             }),
                         ),
                 )
-                .child(gpui::deferred(
-                    gpui::anchored()
-                        .when(above, |a| a.anchor(gpui::Anchor::BottomLeft))
-                        // Composer chips open their menu just above the chip row, not over it.
-                        .position(if above {
-                            point(at.x - px(12.), at.y - px(16.))
-                        } else {
-                            at
-                        })
-                        .snap_to_window_with_margin(px(8.))
-                        .child(menu),
-                ))
+                .child(anchored_menu(at, above, menu))
+            })
+            .when_some(leaving_menu, |d, (at, above, menu)| {
+                d.child(anchored_menu(at, above, menu))
             })
             .when_some(floating_sheet, |d, sheet| d.child(sheet))
+            .when_some(leaving_modal, |d, (m, t)| {
+                let key = m.view.entity_id().as_u64();
+                d.child(modal_layer(
+                    m.view.into_any_element(),
+                    key,
+                    m.center,
+                    m.palette,
+                    Layer::Leaving(t),
+                ))
+            })
             .when_some(modal, |d, (modal, key)| {
-                d.child(
-                    div()
-                        .id("modal-backdrop")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .map(|d| {
-                            if center_modal {
-                                d.pt(crate::ui::sp(12.))
-                            } else {
-                                d.pt(relative(0.10))
-                            }
-                        })
-                        .pb(crate::ui::sp(12.))
-                        .px(crate::ui::sp(12.))
-                        .occlude()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                // A running deletion still has to report what
-                                // went, which its event does.
-                                if !this.modal_busy(cx) {
-                                    this.close_modal(window, cx)
-                                }
-                            }),
-                        )
-                        .child(
-                            // Keyed by the dialog, so one opened over another
-                            // arrives too. A flex column like the backdrop, so a
-                            // tall dialog still fits the window.
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .when(center_modal, |d| d.justify_center())
-                                .flex_1()
-                                .min_h_0()
-                                .w_full()
-                                .relative()
-                                .child(modal)
-                                .with_animation(
-                                    ("modal-in", key as usize),
-                                    gpui::Animation::new(ui::motion::BASE),
-                                    |d, t| {
-                                        let (opacity, offset) =
-                                            ui::motion::enter_at(t, ui::motion::From::Below, 10.);
-                                        d.opacity(opacity).top(px(offset))
-                                    },
-                                ),
-                        )
-                        // The palette dims the app further: gpui has no backdrop blur.
-                        .with_animation(
-                            "modal-backdrop-in",
-                            gpui::Animation::new(ui::motion::BASE),
-                            move |d, t| {
-                                let dim = if palette_open { 0.62 } else { 0.4 };
-                                d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t)))
-                            },
-                        ),
-                )
+                let on_backdrop = cx.listener(|this, _, window, cx| {
+                    // A running deletion still has to report what went,
+                    // which its event does.
+                    if !this.modal_busy(cx) {
+                        this.close_modal(window, cx)
+                    }
+                });
+                d.child(modal_layer(
+                    modal,
+                    key,
+                    center_modal,
+                    palette_open,
+                    Layer::Open(Box::new(on_backdrop)),
+                ))
+            })
+            .when_some(leaving_update, |d, (dialog, t)| {
+                d.child(update_layer(dialog, Some(t)))
             })
             .when_some(update_dialog, |d, dialog| {
-                d.child(
-                    div()
-                        .id("update-backdrop")
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .pt(relative(0.10))
-                        .px(crate::ui::sp(12.))
-                        .occlude()
-                        .child(ui::motion::enter(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .w_full()
-                                .child(dialog),
-                            "update-dialog-in",
-                            ui::motion::From::Below,
-                            10.,
-                            ui::motion::BASE,
-                        ))
-                        .with_animation(
-                            "update-backdrop-in",
-                            gpui::Animation::new(ui::motion::BASE),
-                            |d, t| d.bg(gpui::black().opacity(0.4 * ui::motion::ease_out(t))),
-                        ),
-                )
+                d.child(update_layer(dialog, None))
             })
             .when(self.env_menu_open, |d| {
                 d.child(
@@ -4879,8 +4984,14 @@ impl Render for Shell {
                             cx.notify();
                         })),
                 )
-                .child(self.render_env_menu(viewport_h, cx))
+                .child(self.render_env_menu(
+                    self.env_menu_at,
+                    viewport_h,
+                    None,
+                    cx,
+                ))
             })
+            .when_some(leaving_env_menu, |d, menu| d.child(menu))
             .when_some(self.render_survey_card(cx), |d, card| d.child(card))
             .when_some(crate::agent::markdown::preview(), |d, image| {
                 d.child(crate::agent::markdown::render_preview(image, window, cx))

@@ -620,7 +620,12 @@ again after a week) in its [data folder](storage-and-env.md).
   is on, shown as Linear shows a tool call: Editing `src/main.rs`, Reading `README.md`,
   Running a command or Searching the code. It holds only the kind of step and, for a file, its path in the
   project, never a command, a search or a web address. A step shows until the next
-  activity replaces it, and at most one goes every 30 seconds. If you close Arakun
+  activity replaces it, and at most one goes every 30 seconds. When the agent keeps
+  a plan (its to-do list), the session in Linear shows it as a checklist at its
+  top: each item's text, with secrets taken out and cut to 300 characters, and
+  whether it is pending, in progress or done. The whole plan goes again when it
+  changes, at most every 15 seconds, and at once when the turn ends or waits on
+  you. Linear keeps the last plan when a later turn has none. If you close Arakun
   while a session runs, the issue hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
   *Talking to the session.* A reply in Linear from the person who delegated goes to

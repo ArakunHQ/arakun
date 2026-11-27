@@ -7,7 +7,7 @@
 use super::runs::{Report, ReportKind};
 use crate::cloud::{self, LinearActivity, LinearLinkOut};
 
-/// The activity a report is posted as, or None for a link or a step.
+/// The activity a report is posted as, or None for a link, a step or a plan.
 fn activity(r: &Report) -> Option<LinearActivity> {
     Some(match r.kind {
         ReportKind::Thought if r.started => LinearActivity::Started,
@@ -15,7 +15,7 @@ fn activity(r: &Report) -> Option<LinearActivity> {
         ReportKind::Elicitation => LinearActivity::Elicitation,
         ReportKind::Response => LinearActivity::Response,
         ReportKind::Error => LinearActivity::Error,
-        ReportKind::Progress | ReportKind::Link => return None,
+        ReportKind::Progress | ReportKind::Link | ReportKind::Plan => return None,
     })
 }
 
@@ -88,6 +88,9 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
                 // a newer step soon takes its place.
                 None => Ok(()),
             },
+            None if r.kind == ReportKind::Plan => {
+                cloud::linear_session_plan(base, session, &r.agent_session, &r.plan)
+            }
             // A link report without its link says nothing: it is let go.
             None if links.is_empty() => Ok(()),
             None => cloud::linear_session_links(base, session, &r.agent_session, &links),
@@ -123,6 +126,7 @@ mod tests {
             options: Vec::new(),
             started: false,
             parameter: None,
+            plan: Vec::new(),
             made_at: 1,
         }
     }
@@ -209,6 +213,27 @@ mod tests {
             got[0]
         );
         assert!(got[1].contains(r#""body":"after""#), "{}", got[1]);
+    }
+
+    #[test]
+    fn a_plan_replaces_the_sessions_plan() {
+        use crate::linear::runs::{PlanItem, PlanItemStatus};
+        let (base, rx) = serve(vec![(204, "")]);
+        let mut plan = report("");
+        plan.kind = ReportKind::Plan;
+        plan.plan = vec![PlanItem {
+            content: "Fix it".into(),
+            status: PlanItemStatus::InProgress,
+        }];
+        let out = flush(&base, "s", vec![plan]);
+        assert_eq!(out.sent.len(), 1);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert!(
+            got[0].starts_with("PUT /linear/sessions/as-1/plan ")
+                && got[0].ends_with(r#"{"plan":[{"content":"Fix it","status":"inProgress"}]}"#),
+            "{}",
+            got[0]
+        );
     }
 
     #[test]

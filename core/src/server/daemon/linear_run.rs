@@ -22,7 +22,7 @@ use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
     Action, Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of,
-    pr_link, progress_step, removed_line, to_report, turn_reply,
+    plan_items, pr_link, progress_step, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line, kept_line,
@@ -32,7 +32,7 @@ use crate::linear::follow::{
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
-use crate::linear::runs::{Added, Held, Report, ReportKind, Run, RunState, Runs};
+use crate::linear::runs::{Added, Held, PlanItem, Report, ReportKind, Run, RunState, Runs};
 use crate::linear::start::{
     HIT_AN_ERROR, busy_line, guard_again, keep, may_read, next_branch, no_env_line,
     no_sign_in_line, own_branch, refusal_line, started_line, unreadable_line, waiting_line,
@@ -300,6 +300,7 @@ impl Daemon {
             stopped: false,
             held: None,
             progress: None,
+            plan: None,
             linked: None,
             kept: Vec::new(),
             comment: start.comment.clone(),
@@ -816,11 +817,17 @@ impl Daemon {
         cx: &mut Context<Self>,
     ) {
         let event = match ev {
-            ThreadEvent::EntriesChanged { .. } => return self.linear_progress(id, thread, cx),
+            ThreadEvent::EntriesChanged { .. } => {
+                self.linear_plan(id, thread, false, cx);
+                return self.linear_progress(id, thread, cx);
+            }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => Event::Status,
             ThreadEvent::Finished { stop_reason } => Event::Finished(stop_reason),
             _ => return,
         };
+        // Before the run moves on: the plan a turn ends with goes ahead of
+        // its reply, whatever the rate.
+        self.linear_plan(id, thread, true, cx);
         if self.linear_run.runs.by_session(id).is_none() {
             return;
         }
@@ -890,6 +897,28 @@ impl Daemon {
         if effect.frees {
             self.linear_start_waiting(cx);
         }
+    }
+
+    /// The agent's plan, for its issue to show as the session's checklist.
+    /// Linear hears a change at most every `PLAN_SECS` while the turn goes
+    /// on, and at once when `ends`: the turn ended or its status changed.
+    fn linear_plan(
+        &mut self,
+        id: &str,
+        thread: &Entity<Thread>,
+        ends: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.linear_run.runs.by_session(id).is_none() {
+            return;
+        }
+        let Some(plan) = plan_items(thread.read(cx).entries()) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_run.runs.plan(id, &plan, unix_now(), ends) else {
+            return;
+        };
+        self.linear_report_plan(&agent_session, plan, cx);
     }
 
     /// The step a working delegated session is on, for its issue to show
@@ -993,6 +1022,7 @@ impl Daemon {
             options,
             started: false,
             parameter: None,
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -1009,6 +1039,7 @@ impl Daemon {
             options: Vec::new(),
             started: true,
             parameter: None,
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -1025,17 +1056,39 @@ impl Daemon {
             options: Vec::new(),
             started: false,
             parameter: Some(step.parameter),
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
     }
 
+    /// The whole plan of a working session, for Linear's checklist.
+    fn linear_report_plan(
+        &mut self,
+        agent_session: &str,
+        plan: Vec<PlanItem>,
+        cx: &mut Context<Self>,
+    ) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Plan,
+            body: String::new(),
+            link: None,
+            options: Vec::new(),
+            started: false,
+            parameter: None,
+            plan,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
     fn linear_queue(&mut self, r: Report) {
         let (kind, now) = (r.kind, r.made_at);
         let agent_session = r.agent_session.clone();
         self.linear_run.runs.queue(r);
-        // A link is no activity: Linear still needs to hear the run works.
-        if kind != ReportKind::Link
+        // A link or a plan is no activity: Linear still needs to hear the
+        // run works.
+        if !matches!(kind, ReportKind::Link | ReportKind::Plan)
             && let Some(run) = self.linear_run.runs.by_agent_session(&agent_session)
         {
             run.reported_at = now;

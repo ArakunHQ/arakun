@@ -252,7 +252,7 @@ export const linearFake = {
   startedStates: new Map<string, { id: string; position: number }[]>(),
   /// Every GraphQL call: the query, its variables and the access token.
   calls: [] as { query: string; variables: unknown; token: string }[],
-  /// The calls Linear accepted, apart from `calls`: what `activities()` and `links()` read.
+  /// The calls Linear accepted, apart from `calls`: what `activities()`, `links()` and `plans()` read.
   accepted: [] as { query: string; variables: unknown; token: string }[],
   /// The Authorization header of every GraphQL call, as sent.
   auth: [] as string[],
@@ -320,9 +320,17 @@ export const linearFake = {
     return this.accepted
       .filter((c) => c.query.includes("agentSessionUpdate"))
       .flatMap((c) => {
-        const v = c.variables as { id: string; input: { addedExternalUrls: { label: string; url: string }[] } };
-        return v.input.addedExternalUrls.map((l) => ({ agentSessionId: v.id, label: l.label, url: l.url }));
+        const v = c.variables as { id: string; input: { addedExternalUrls?: { label: string; url: string }[] } };
+        return (v.input.addedExternalUrls ?? []).map((l) => ({ agentSessionId: v.id, label: l.label, url: l.url }));
       });
+  },
+  /// The plans set on agent sessions, in order.
+  plans(): { agentSessionId: string; plan: { content: string; status: string }[] }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("agentSessionUpdate"))
+      .map((c) => c.variables as { id: string; input: { plan?: { content: string; status: string }[] } })
+      .filter((v) => v.input.plan !== undefined)
+      .map((v) => ({ agentSessionId: v.id, plan: v.input.plan! }));
   },
 };
 

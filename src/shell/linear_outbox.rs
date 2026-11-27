@@ -11,7 +11,7 @@ use super::linear_sync::Gate;
 use crate::cloud;
 use crate::linear::events::Action;
 use crate::linear::outbox::{Flushed, flush};
-use crate::linear::runs::{Report, ReportKind};
+use crate::linear::runs::{PlanItem, Report, ReportKind};
 use crate::model::unix_now;
 
 /// The outbox's sender: one pass at a time.
@@ -55,6 +55,7 @@ impl Shell {
             options,
             started: false,
             parameter: None,
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -76,6 +77,7 @@ impl Shell {
             options: Vec::new(),
             started: true,
             parameter: None,
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -97,17 +99,39 @@ impl Shell {
             options: Vec::new(),
             started: false,
             parameter: Some(step.parameter),
+            plan: Vec::new(),
             made_at: unix_now(),
         });
         self.linear_flush(cx);
     }
 
+    /// The whole plan of a working session, for Linear's checklist.
+    pub(super) fn linear_report_plan(
+        &mut self,
+        agent_session: &str,
+        plan: Vec<PlanItem>,
+        cx: &mut Context<Self>,
+    ) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Plan,
+            body: String::new(),
+            link: None,
+            options: Vec::new(),
+            started: false,
+            parameter: None,
+            plan,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
     fn linear_queue(&mut self, r: Report) {
         let (kind, now) = (r.kind, r.made_at);
         let agent_session = r.agent_session.clone();
         self.linear_runs.queue(r);
-        // A link is no activity: Linear still needs to hear the run works.
-        if kind != ReportKind::Link
+        // A link or a plan is no activity: Linear still needs to hear the
+        // run works.
+        if !matches!(kind, ReportKind::Link | ReportKind::Plan)
             && let Some(run) = self.linear_runs.by_agent_session(&agent_session)
         {
             run.reported_at = now;

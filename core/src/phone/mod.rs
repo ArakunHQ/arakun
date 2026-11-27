@@ -153,6 +153,10 @@ pub enum ClientMsg {
         /// relative mention of a file there but not in `env` points there.
         #[serde(default)]
         mentions_from: Option<String>,
+        /// Photos for the first prompt, as `Send`'s `uploads`. A computer
+        /// from before them starts the session without them.
+        #[serde(default)]
+        uploads: Vec<String>,
     },
     /// The model and reasoning a new session of `agent` in `env` would start with,
     /// and their choices.
@@ -2672,6 +2676,7 @@ mod tests {
                 text: "hi".into(),
                 settings: vec![],
                 mentions_from: None,
+                uploads: vec![],
             }
         );
         let without: ClientMsg = serde_json::from_str(
@@ -2686,6 +2691,7 @@ mod tests {
                 text: "hi".into(),
                 settings: vec![("modelId".into(), "m".into())],
                 mentions_from: None,
+                uploads: vec![],
             }
         );
         let moved: ClientMsg = serde_json::from_str(
@@ -2695,6 +2701,14 @@ mod tests {
         assert!(matches!(
             moved,
             ClientMsg::Start { mentions_from: Some(f), .. } if f == "/w/app"
+        ));
+        let photos: ClientMsg = serde_json::from_str(
+            r#"{"type":"start","env":"/w/app","text":"look","uploads":["u1"]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            photos,
+            ClientMsg::Start { uploads, .. } if uploads == ["u1"]
         ));
     }
 

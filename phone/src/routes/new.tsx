@@ -2,11 +2,14 @@
 // first message. The + reaches it through "More options".
 
 import { useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
+import { Shots } from "../components/session/Shots";
 import { StatusBar } from "../components/StatusBar";
 import { Icon } from "../lib/icons";
 import { useLink } from "../lib/link";
 import { AGENTS, formAt, lastPlace, placeLabel, type SettingSet, type StartForm, useStartForm } from "../lib/places";
+import { readShot } from "../lib/shots";
+import { toast } from "../lib/toast";
 import "./new.css";
 
 function Rows({ set, picked, onPick }: { set: SettingSet; picked?: string; onPick: (key: string, id: string) => void }) {
@@ -29,7 +32,8 @@ function Rows({ set, picked, onPick }: { set: SettingSet; picked?: string; onPic
 
 function Form({ init }: { init: StartForm }) {
   const places = useLink((s) => s.places);
-  const { form, options, sent, canSend, setPlace, setAgent, setText, pick, start } = useStartForm(init);
+  const { form, options, sent, canSend, shots, setShots, setPlace, setAgent, setText, pick, start } = useStartForm(init);
+  const files = useRef<HTMLInputElement>(null);
   return (
     <div className="newform">
       <label className="nlabel" htmlFor="nplace">
@@ -55,6 +59,28 @@ function Form({ init }: { init: StartForm }) {
         First message
       </label>
       <textarea id="ntext" className="nfield" rows={6} placeholder="What should the agent do?" value={form.text} autoFocus onChange={(e) => setText(e.target.value)} />
+      <Shots shots={shots} onRemove={(i) => setShots((all) => all.filter((_, k) => k !== i))} />
+      <button type="button" className="nattach" onClick={() => files.current?.click()}>
+        <Icon name="image" />
+        Attach photos
+      </button>
+      <input
+        ref={files}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        aria-label="Photos"
+        onChange={(ev) => {
+          const picked = [...(ev.target.files ?? [])];
+          ev.target.value = "";
+          for (const f of picked) {
+            readShot(f)
+              .then((shot) => shot && setShots((all) => [...all, shot]))
+              .catch(() => toast("Could not read that photo"));
+          }
+        }}
+      />
       <button type="button" className="btn" disabled={!canSend} onClick={start}>
         {sent ? "Starting…" : "Start session"}
       </button>

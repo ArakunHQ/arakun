@@ -1482,8 +1482,14 @@ impl Shell {
                 agent,
                 text,
                 settings,
+                uploads,
                 ..
             } => {
+                // The first prompt's photos attach as a later prompt's do.
+                let text = match &mut self.phone {
+                    Some(link) => link.uploads.attach(text, &uploads),
+                    None => text,
+                };
                 let path = PathBuf::from(env);
                 let Some(found) = self.find_env(&path) else {
                     self.phone_send(client, wire::error("that project is gone"));

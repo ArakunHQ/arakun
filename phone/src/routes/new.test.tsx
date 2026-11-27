@@ -1,9 +1,15 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TopBar } from "../components/shell/TopBar";
 import type { OptionsMessage, Place } from "../lib/model";
 import { fakeLink, renderScreen } from "../test/screen";
 import { NewSession } from "./new";
+
+// jsdom draws no pictures: a picked file reads as a small shot.
+vi.mock("../lib/shots", async (real) => ({
+  ...(await real<typeof import("../lib/shots")>()),
+  readShot: async (f: File) => ({ name: f.name, b64: "AAEC", thumb: "data:," }),
+}));
 
 const places: Place[] = [
   { path: "/w/web", project: "web", env: "web", agent: "claude" },
@@ -54,6 +60,19 @@ describe("new session", () => {
     expect(last(link)).toEqual({ type: "start", env: "/w/api", agent: "droid", text: "Fix the login", settings: [["modelId", "m2"]] });
     expect(localStorage.getItem("arakun.place")).toBe("/w/api");
     expect((screen.getByRole("button", { name: "Starting…" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("sends the photos picked before the start that names them", async () => {
+    const link = fakeLink({ places });
+    await renderScreen(<NewSession />, "/new", link);
+    const file = new File(["x"], "IMG_1.jpg", { type: "image/jpeg" });
+    fireEvent.change(screen.getByLabelText("Photos"), { target: { files: [file] } });
+    await screen.findByRole("button", { name: "Remove photo" });
+    fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+    const [piece, start] = link.sent.slice(-2) as Record<string, unknown>[];
+    expect(piece).toMatchObject({ type: "upload", name: "IMG_1.jpg", part: 0, of: 1, data: "AAEC" });
+    expect(start).toMatchObject({ type: "start", env: "/w/web", text: "(photo)", uploads: [piece.upload] });
+    expect(screen.queryByRole("button", { name: "Remove photo" })).toBeNull();
   });
 
   it("starts on the place used last, with its agent", async () => {

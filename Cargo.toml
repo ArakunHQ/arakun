@@ -176,6 +176,16 @@ debug = 1
 lto = "thin"
 codegen-units = 1
 
+# The app's own two crates are most of the code. With one codegen unit each compiles
+# on a single core: about 22 of the 30 minutes of a macOS release build. Sixteen units
+# let LLVM use every core, and ThinLTO still inlines across units and crates.
+# Dependencies keep one unit.
+[profile.release.package.arakun]
+codegen-units = 16
+
+[profile.release.package.arakun-core]
+codegen-units = 16
+
 # What tools/install.sh builds by default: the release profile without its slowest
 # parts. One codegen unit and LTO keep one core busy for minutes on every change to
 # the app crate; this profile splits the work and keeps incremental state, so

@@ -13,8 +13,8 @@
 #
 # By default it builds the release-local profile (Cargo.toml): optimized like a
 # release, but rebuilt in seconds after a change. --full builds the release profile
-# that releases use (one codegen unit and LTO: a smaller, somewhat faster binary,
-# several minutes per build). --debug installs the dev-profile build: ready in
+# that releases use (ThinLTO, one codegen unit per dependency: a smaller, somewhat
+# faster binary, several minutes per build). --debug installs the dev-profile build: ready in
 # seconds, for trying changes; it runs slower and without the release polish.
 #
 # Browser tabs also need the CEF runtime in ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.

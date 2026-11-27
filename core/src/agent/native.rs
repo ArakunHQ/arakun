@@ -665,6 +665,7 @@ fn new_tool(id: &str) -> ToolCall {
         exit_code: None,
         parent: None,
         tool_name: None,
+        secret: None,
     }
 }
 
@@ -2381,6 +2382,8 @@ impl Thread {
                     options,
                     plan,
                     session: None,
+                    secret: None,
+                    fs_read: None,
                 });
                 if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                     self.entries_changed(ix, cx);

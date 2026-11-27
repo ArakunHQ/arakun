@@ -329,6 +329,32 @@ sees the project's skills.
   be sandboxed yet. A sandboxed
   agent can still change what you later run outside it: the project's files, and its
   own settings such as `~/.claude.json`.
+- **Asking before an agent reads a secret file.** With or without the sandbox, and
+  with auto-allow on (`arakun agent new`), an agent asks before it reads a secret
+  file. This covers a read tool, `fs/read_text_file`, or a command that plainly
+  prints the file, such as `cat .env`, `grep KEY ~/.aws/credentials` or
+  `node app.js < .env`. The card names the file and says why it matters: what the
+  agent reads goes to its model, and shows in the chat and on your phone. **Allow
+  secret files this session** stops the read tools from asking again in that
+  session; a command still asks. Output from a secret file stays hidden in the chat
+  until you press **Show**, and the phone never gets it.
+
+  A secret file is:
+  - an env file: `.env`, `.env.*`, `.envrc`, `*.env`, `.dev.vars`;
+  - a key or key store: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`,
+    `*.ppk`, `*.kdbx`, `*.gpg`, `*.asc`, `id_rsa` and the other `id_*` keys;
+  - a credentials file: `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
+    `.pgpass`, `.htpasswd`, `kubeconfig`, `auth.json`, `credentials*`, a service
+    account's JSON key, `.docker/config.json`;
+  - Terraform state and variables;
+  - a data file named for a secret, such as `password.json` or `gh-token.txt`;
+  - anything under `.ssh/`, `.gnupg/`, `.aws/`, `.kube/`, `.azure/` or
+    `.config/gcloud/`.
+
+  Templates (`.env.example`, `.sample`, `.template`, `.dist`) are not secret files.
+  Claude Code reads files itself, so Arakun gives it `permissions.ask` rules for
+  these names on top of your own settings. A rule can't say everything above, so
+  some reads, such as `password.json`, ask only when Claude Code would ask anyway.
 - **Agents don't get your tokens.** Every agent, sandboxed or not, starts without the
   variables of Arakun's environment that look like secrets: names with `TOKEN`,
   `SECRET`, `PASSWORD`, `CREDENTIAL`, `API_KEY` or `PRIVATE` in them or ending in

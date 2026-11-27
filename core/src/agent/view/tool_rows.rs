@@ -364,7 +364,12 @@ impl ThreadView {
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
                 } else if open {
-                    let details = tool_details(tool, cwd, &Self::reveal_handle(cx));
+                    let details = match &tool.secret {
+                        Some(file) if !self.revealed.contains(&tool.id) => {
+                            self.secret_output(ix, tool.id.clone(), file, cx)
+                        }
+                        _ => tool_details(tool, cwd, &Self::reveal_handle(cx)),
+                    };
                     col = col.child(self.unfold(Fold::Row, ix, details, cx));
                 }
                 col.into_any_element()
@@ -397,6 +402,51 @@ impl ThreadView {
             Entry::User { .. } => div().into_any_element(),
         };
         self.arrive(ix, row, cx)
+    }
+
+    /// Stands for the output of a call that read a secret file, until the
+    /// user shows it.
+    fn secret_output(&self, ix: usize, id: String, file: &str, cx: &Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .pt(crate::ui::sp(2.))
+            .pb(crate::ui::sp(6.))
+            .min_w_0()
+            .child(icon("view-off", 14.).text_color(theme::text_subtle()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(crate::ui::TEXT_SM))
+                    .text_color(theme::text_muted())
+                    .child(format!(
+                        "Hidden: the output of {file}, which holds secrets."
+                    )),
+            )
+            .child(
+                div()
+                    .id(("secret-show", ix))
+                    .flex_none()
+                    .h(px(24.))
+                    .px(crate::ui::sp(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(crate::ui::rad(8.))
+                    .text_size(px(crate::ui::TEXT_SM))
+                    .bg(theme::fill_selected())
+                    .text_color(theme::text_muted())
+                    .hover(|s| s.bg(theme::mix(0.18)))
+                    .cursor_pointer()
+                    .child("Show")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.revealed.insert(id.clone());
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
     }
 
     pub(super) fn tool_row(

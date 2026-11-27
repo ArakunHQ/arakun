@@ -137,6 +137,7 @@ mod tests {
             exit_code,
             parent: None,
             tool_name: None,
+            secret: None,
         })
     }
 

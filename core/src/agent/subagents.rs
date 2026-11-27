@@ -187,6 +187,7 @@ fn marker_call(id: &str, name: &str, task: &str) -> ToolCall {
         exit_code: None,
         parent: None,
         tool_name: Some("Agent".into()),
+        secret: None,
     }
 }
 

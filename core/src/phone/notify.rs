@@ -433,6 +433,7 @@ mod tests {
             exit_code: None,
             parent: None,
             tool_name: None,
+            secret: None,
         }
     }
 

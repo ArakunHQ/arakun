@@ -734,6 +734,326 @@ pub fn secret_path(rel: &Path) -> bool {
     secret_file(name) || SECRET_FILES.iter().any(in_dir)
 }
 
+// ---- reads ---------------------------------------------------------------------
+
+/// Endings of a template, written to be shared: `.env.example`.
+const TEMPLATE_ENDINGS: &[&str] = &[".example", ".sample", ".template", ".dist"];
+
+/// Whether an agent should ask before it reads `path`: a [`secret_path`] that
+/// is not a template. Takes a path as an agent writes it, relative, absolute
+/// or from `~`.
+pub fn asks_to_read(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    secret_path(path) && !TEMPLATE_ENDINGS.iter().any(|e| name.ends_with(e))
+}
+
+/// Programs that print what they read, or a part of it.
+const READERS: &[&str] = &[
+    "cat",
+    "bat",
+    "batcat",
+    "less",
+    "more",
+    "most",
+    "head",
+    "tail",
+    "tac",
+    "nl",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "ack",
+    "sed",
+    "awk",
+    "gawk",
+    "cut",
+    "sort",
+    "uniq",
+    "strings",
+    "xxd",
+    "hexdump",
+    "od",
+    "base64",
+    "jq",
+    "yq",
+    "diff",
+    "cmp",
+    "column",
+    "fold",
+    "fmt",
+    "pr",
+    "paste",
+    "type",
+    "get-content",
+    "gc",
+];
+/// Readers whose first operand is a pattern or a script, not a file.
+const PATTERN_FIRST: &[&str] = &[
+    "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "gawk", "jq", "yq",
+];
+/// Programs that run the one after them.
+const WRAPPERS: &[&str] = &["sudo", "env", "command", "time", "nice", "nohup", "doas"];
+/// Shells whose `-c` runs a command line.
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "fish"];
+
+/// The secret file a shell command plainly reads into what it prints:
+/// `cat .env`, `grep KEY ~/.aws/credentials`, `node app.js < .env`. The word
+/// as the command has it. A command that only names one (`ls .env`, `echo x
+/// > .env`) does not count, and neither does what a script does inside.
+pub fn command_reads(command: &str) -> Option<String> {
+    command_reads_at(command, 0)
+}
+
+fn command_reads_at(command: &str, depth: usize) -> Option<String> {
+    for (words, input) in segments(command) {
+        if let Some(file) = input.iter().find(|w| word_asks(w)) {
+            return Some(file.clone());
+        }
+        let mut words = words.iter().map(String::as_str).peekable();
+        // `FOO=1 sudo env cat …`: past assignments and wrappers.
+        while let Some(w) = words.peek() {
+            let name = program(w);
+            if w.contains('=') && !w.starts_with('-') || WRAPPERS.contains(&name.as_str()) {
+                words.next();
+            } else if w.starts_with('-') {
+                // A wrapper's own flags: `sudo -u me cat`, `env -u NAME cat`.
+                let takes_value = matches!(*w, "-u" | "-g" | "-C" | "-n" | "-p");
+                words.next();
+                if takes_value {
+                    words.next();
+                }
+            } else {
+                break;
+            }
+        }
+        let Some(first) = words.next() else {
+            continue;
+        };
+        let name = program(first);
+        let args: Vec<&str> = words.collect();
+        if SHELLS.contains(&name.as_str()) && depth < 3 {
+            if let Some(at) = args
+                .iter()
+                .position(|a| a.starts_with('-') && a.contains('c'))
+                && let Some(inner) = args.get(at + 1)
+                && let Some(file) = command_reads_at(inner, depth + 1)
+            {
+                return Some(file);
+            }
+            continue;
+        }
+        if !READERS.contains(&name.as_str()) {
+            continue;
+        }
+        let mut operands = args.iter().filter(|a| !a.starts_with('-'));
+        // The pattern or script comes first: `grep token src`.
+        if PATTERN_FIRST.contains(&name.as_str()) {
+            operands.next();
+        }
+        if let Some(file) = operands.find(|a| word_asks(a)) {
+            return Some((*file).to_string());
+        }
+    }
+    None
+}
+
+/// A program's name without its folder or `.exe`, in lower case.
+fn program(word: &str) -> String {
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(word)
+        .to_lowercase();
+    name.strip_suffix(".exe")
+        .map(str::to_string)
+        .unwrap_or(name)
+}
+
+/// Whether a word of a command names a file to ask about. A glob counts when
+/// what it matches would: `.env*`, `*.pem`.
+fn word_asks(word: &str) -> bool {
+    let word = word.trim_end_matches([')', ';']);
+    if word.is_empty() || word.contains("://") {
+        return false;
+    }
+    let asks = |w: &str| !w.is_empty() && asks_to_read(Path::new(w));
+    if !word.contains(['*', '?']) {
+        return asks(word);
+    }
+    asks(&word.replace(['*', '?'], "")) || asks(&word.replace(['*', '?'], "x"))
+}
+
+/// A command line split into its simple commands, each as its words with
+/// quotes taken off, and the files it reads with `<`. Rough, as a quick look
+/// should be: no expansions, and `$(…)` counts as a command of its own.
+fn segments(command: &str) -> Vec<(Vec<String>, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut input: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut redirect = None::<char>;
+    let mut chars = command.chars().peekable();
+    let end_word = |word: &mut String,
+                    quoted: &mut bool,
+                    words: &mut Vec<String>,
+                    input: &mut Vec<String>,
+                    redirect: &mut Option<char>| {
+        if word.is_empty() && !*quoted {
+            return;
+        }
+        let w = std::mem::take(word);
+        match redirect.take() {
+            Some('<') => input.push(w),
+            // Where `>` writes is not read.
+            Some(_) => {}
+            None => words.push(w),
+        }
+        *quoted = false;
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                quoted = true;
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                    word.push(c);
+                }
+            }
+            '"' => {
+                quoted = true;
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => word.extend(chars.next()),
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => word.extend(chars.next()),
+            '<' | '>' => {
+                end_word(
+                    &mut word,
+                    &mut quoted,
+                    &mut words,
+                    &mut input,
+                    &mut redirect,
+                );
+                // `<<` and `<<<` bring text, not a file; `2>&1` names none.
+                if c == '<' && chars.peek() == Some(&'<') {
+                    while chars.peek() == Some(&'<') {
+                        chars.next();
+                    }
+                    redirect = Some('>');
+                } else {
+                    while chars.peek().is_some_and(|&n| n == '>' || n == '&') {
+                        chars.next();
+                    }
+                    redirect = Some(c);
+                }
+                // A file descriptor before it (`2>`) is not a word.
+                if words
+                    .last()
+                    .is_some_and(|w| w.chars().all(|d| d.is_ascii_digit()))
+                {
+                    words.pop();
+                }
+            }
+            '|' | ';' | '&' | '\n' | '(' | ')' | '`' => {
+                end_word(
+                    &mut word,
+                    &mut quoted,
+                    &mut words,
+                    &mut input,
+                    &mut redirect,
+                );
+                if !words.is_empty() || !input.is_empty() {
+                    out.push((std::mem::take(&mut words), std::mem::take(&mut input)));
+                }
+            }
+            '$' if chars.peek() == Some(&'(') => {
+                end_word(
+                    &mut word,
+                    &mut quoted,
+                    &mut words,
+                    &mut input,
+                    &mut redirect,
+                );
+                if !words.is_empty() || !input.is_empty() {
+                    out.push((std::mem::take(&mut words), std::mem::take(&mut input)));
+                }
+            }
+            c if c.is_whitespace() => end_word(
+                &mut word,
+                &mut quoted,
+                &mut words,
+                &mut input,
+                &mut redirect,
+            ),
+            c => word.push(c),
+        }
+    }
+    end_word(
+        &mut word,
+        &mut quoted,
+        &mut words,
+        &mut input,
+        &mut redirect,
+    );
+    if !words.is_empty() || !input.is_empty() {
+        out.push((words, input));
+    }
+    out
+}
+
+/// Claude Code permission rules, for `permissions.ask`, that make it ask
+/// before its Read tool, and the commands it checks the same way, read a
+/// secret file. Glob patterns can't say all of [`secret_file`]: what they miss
+/// is still caught when Claude asks for another reason.
+pub fn claude_ask_rules() -> Vec<String> {
+    let mut names: Vec<String> = [
+        ".env",
+        ".env.*",
+        ".env-*",
+        ".env_*",
+        ".envrc*",
+        "*.env",
+        ".envs",
+        ".dev.vars",
+        ".dev.vars.*",
+        "*.tfstate.backup",
+        "*.tfvars.json",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    names.extend(SECRET_NAMES.iter().map(|s| s.to_string()));
+    names.extend(SSH_KEYS.iter().map(|k| format!("{k}*")));
+    names.extend(SECRET_EXTENSIONS.iter().map(|e| format!("*.{e}")));
+    names.extend(SECRET_JSON.iter().map(|p| format!("{p}*.json")));
+    let mut dirs: Vec<String> = SECRET_DIRS.iter().map(|d| d.to_string()).collect();
+    dirs.extend(SECRET_SUBDIRS.iter().map(|[a, b]| format!("{a}/{b}")));
+    let mut rules = Vec::new();
+    // Under the session's folder (`**/`), and anywhere else (`//**/`).
+    for root in ["**/", "//**/"] {
+        rules.extend(names.iter().map(|n| format!("Read({root}{n})")));
+        rules.extend(dirs.iter().map(|d| format!("Read({root}{d}/**)")));
+        rules.extend(
+            SECRET_FILES
+                .iter()
+                .map(|[d, f]| format!("Read({root}{d}/{f})")),
+        );
+    }
+    rules
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1191,5 +1511,76 @@ mod tests {
         assert!(secret_file("PROD.ENV"));
         assert!(env_file(".env.example"));
         assert!(!env_file(".envoy.yaml"));
+    }
+
+    #[test]
+    fn reading_a_secret_file_asks_but_a_template_does_not() {
+        for p in [
+            ".env",
+            "app/.env.local",
+            "~/.aws/credentials",
+            "/home/me/.ssh/id_ed25519",
+            "deploy/key.pem",
+        ] {
+            assert!(asks_to_read(Path::new(p)), "{p}");
+        }
+        for p in [
+            ".env.example",
+            "config/.env.sample",
+            "src/main.rs",
+            "README.md",
+        ] {
+            assert!(!asks_to_read(Path::new(p)), "{p}");
+        }
+    }
+
+    #[test]
+    fn commands_that_print_a_secret_file_are_found() {
+        let cases = [
+            ("cat .env", Some(".env")),
+            ("cat ./.env.production | head -5", Some("./.env.production")),
+            ("grep -n KEY ~/.aws/credentials", Some("~/.aws/credentials")),
+            (
+                "FOO=1 sudo -u me cat /home/me/.ssh/id_rsa",
+                Some("/home/me/.ssh/id_rsa"),
+            ),
+            ("node app.js < .env", Some(".env")),
+            ("cat .env*", Some(".env*")),
+            ("bash -lc 'cat secrets/.env'", Some("secrets/.env")),
+            ("echo $(cat \".env\")", Some(".env")),
+            ("cd app && tail .env.local; ls", Some(".env.local")),
+        ];
+        for (cmd, want) in cases {
+            assert_eq!(command_reads(cmd).as_deref(), want, "{cmd}");
+        }
+        for cmd in [
+            "ls -la .env",
+            "echo KEY=1 > .env",
+            "echo KEY=1 >> .env",
+            "cat .env.example",
+            "cat README.md",
+            "grep -r token src",
+            "cargo test 2>&1 | tail",
+            "cat <<EOF > .env\nKEY=1\nEOF",
+            "rm .env",
+        ] {
+            assert_eq!(command_reads(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn claude_rules_cover_env_files_and_key_folders() {
+        let rules = claude_ask_rules();
+        for want in [
+            "Read(**/.env)",
+            "Read(//**/.env.*)",
+            "Read(**/id_rsa*)",
+            "Read(//**/.aws/**)",
+            "Read(**/*.pem)",
+            "Read(**/.docker/config.json)",
+            "Read(//**/.config/gcloud/**)",
+        ] {
+            assert!(rules.iter().any(|r| r == want), "{want}");
+        }
     }
 }

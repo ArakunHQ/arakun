@@ -3653,6 +3653,7 @@ impl Shell {
                 let (status, transcript) = (thread_status(f.status), transcript_of(f));
                 let (permission, question) = (msg["permission"].clone(), msg["question"].clone());
                 let secret = msg["secret"].clone();
+                let sign_in = msg["sign_in"].as_str().map(str::to_string);
                 let private = !link
                     .saved
                     .iter()
@@ -3664,6 +3665,7 @@ impl Shell {
                     t.set_remote_asks(&permission, &question, cx);
                     t.set_remote_secret(&secret, private, cx);
                     t.set_remote_queue(queue.prompts, queue.paused, queue.sending_now, cx);
+                    t.set_remote_sign_in(sign_in, cx);
                 });
             }
             // Entries changed, cut down for a phone: the whole ones are asked for.

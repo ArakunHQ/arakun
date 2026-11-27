@@ -153,6 +153,17 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     Some(command_line(&cli_bin(kind)?, args))
 }
 
+/// [`login_command`] as one line for a shell on this computer: what a
+/// server tells the app to run in a terminal here.
+pub fn login_shell_line(kind: AgentKind) -> Option<String> {
+    Some(shell_line(&login_command(kind)?))
+}
+
+fn shell_line(words: &[String]) -> String {
+    let words: Vec<String> = words.iter().map(|w| shell_quote(w)).collect();
+    words.join(" ")
+}
+
 /// The interactive sign-out for `kind`, to run in a terminal, if its CLI has one.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     let args = kind.spec().logout?;
@@ -1221,6 +1232,18 @@ mod tests {
             Some((CLAUDE_TODO_TOOLS.to_string(), OsString::from("1")))
         );
         assert_eq!(claude_todo_tools_env(Some("0".into())), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_sign_in_line_keeps_a_folder_with_spaces_one_word() {
+        let words = [
+            "/home/a b/.local/bin/claude".to_string(),
+            "/login".to_string(),
+        ];
+        assert_eq!(shell_line(&words), "'/home/a b/.local/bin/claude' /login");
+        let plain = ["/usr/local/bin/codex".to_string(), "login".to_string()];
+        assert_eq!(shell_line(&plain), "/usr/local/bin/codex login");
     }
 
     #[test]

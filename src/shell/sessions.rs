@@ -593,8 +593,15 @@ impl Shell {
                 cx.notify();
             }
             ThreadEvent::LoginRequested => {
-                let kind = thread.read(cx).kind();
-                self.sign_in(kind, window, cx);
+                let t = thread.read(cx);
+                let (kind, on_server) = (t.kind(), t.remote_sign_in().map(str::to_string));
+                match on_server {
+                    // The agent runs on the server, so the sign-in does too.
+                    Some(line) => {
+                        self.spawn_server_terminal(env_path, Some(line), true, window, cx);
+                    }
+                    None => self.sign_in(kind, window, cx),
+                }
             }
             ThreadEvent::Rewound { meta, prompt } => {
                 let meta = meta.clone();

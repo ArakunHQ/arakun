@@ -754,6 +754,9 @@ pub struct Thread {
     /// The session runs on a server: this thread shows it, and what the user
     /// does goes out as [`ThreadEvent::Remote`].
     remote: bool,
+    /// The line that signs the agent in on the server this session runs on,
+    /// while the server says its agent is not signed in.
+    remote_sign_in: Option<String>,
     /// Copies of the images a server's session names, by link as written:
     /// the files are on the server, not here.
     fetched_images: HashMap<String, PathBuf>,
@@ -1285,6 +1288,7 @@ impl Thread {
             kind,
             backend,
             remote: false,
+            remote_sign_in: None,
             fetched_images: HashMap::new(),
             native: native::State::default(),
             secrets: secret_card::Secrets::default(),
@@ -2390,6 +2394,21 @@ impl Thread {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn is_confined(&self) -> bool {
         self.sandbox.is_some() || std::env::var_os("ARAKUN_SANDBOX").is_some()
+    }
+
+    /// What signs the agent in on the session's server, as its `state` says
+    /// it (`phone::wire::sign_in`), or `None` once it is signed in.
+    pub fn set_remote_sign_in(&mut self, line: Option<String>, cx: &mut Context<Self>) {
+        if self.remote_sign_in != line {
+            self.remote_sign_in = line;
+            cx.notify();
+        }
+    }
+
+    /// The line to run in a terminal on the session's server to sign its
+    /// agent in, while it is not.
+    pub fn remote_sign_in(&self) -> Option<&str> {
+        self.remote_sign_in.as_deref().filter(|_| self.remote)
     }
 
     /// The server's queue for its session, as its `state` says it: shown as
@@ -4980,6 +4999,31 @@ mod tests {
         t.push_terminal_output(&format!("{}\n", "x".repeat(3 * super::TERMINAL_KEEP)));
         assert!(t.terminal_output.len() >= super::TERMINAL_KEEP);
         assert!(t.terminal_output.ends_with("x\n"));
+    }
+
+    #[test]
+    fn a_server_sign_in_shows_only_on_a_session_that_runs_there() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.remote_sign_in = Some("claude /login".into());
+        assert_eq!(
+            t.remote_sign_in(),
+            None,
+            "this computer signs in its own way"
+        );
+        t.set_remote();
+        assert_eq!(t.remote_sign_in(), Some("claude /login"));
+        t.remote_sign_in = None;
+        assert_eq!(t.remote_sign_in(), None);
+    }
+
+    #[test]
+    fn a_state_names_no_sign_in_for_an_agent_that_is_signed_in() {
+        use crate::model::Status;
+        let t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        let state = crate::phone::wire::state_message("s1", &t, Status::Idle, true);
+        let state: Value = serde_json::from_str(&state).unwrap();
+        assert!(state.as_object().unwrap().contains_key("sign_in"));
+        assert_eq!(state["sign_in"], Value::Null);
     }
 
     #[test]

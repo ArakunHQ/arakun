@@ -777,8 +777,19 @@ pub fn state_message(id: &str, t: &Thread, status: Status, private: bool) -> Str
         "queue": t.queued(),
         "queue_paused": t.queue_paused(),
         "sending_now": t.sending_now(),
+        "sign_in": sign_in(t),
     })
     .to_string()
+}
+
+/// `sign_in`: the line that signs the session's agent in, in a terminal on
+/// this computer, while the agent says it is not signed in. The app offers to
+/// run it in a terminal here; phones ignore it. Null otherwise, and when this
+/// computer has no CLI of the agent to sign in with.
+fn sign_in(t: &Thread) -> Option<String> {
+    t.needs_login()
+        .then(|| crate::agent::login_shell_line(t.kind()))
+        .flatten()
 }
 
 /// The longest description a slash command carries: the popup shows one line.
@@ -856,6 +867,7 @@ pub fn session_live(
     msg["queue"] = json!(t.queued());
     msg["queue_paused"] = json!(t.queue_paused());
     msg["sending_now"] = json!(t.sending_now());
+    msg["sign_in"] = json!(sign_in(t));
     if !t.title().is_empty() {
         msg["title"] = json!(t.title());
     }

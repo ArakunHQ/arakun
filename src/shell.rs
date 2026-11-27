@@ -144,7 +144,6 @@ gpui::actions!(
         TogglePanel,
         ToggleSubagents,
         OpenSettings,
-        ToggleDance,
         ToggleRedacted,
         GoBackTab,
         GoForwardTab,
@@ -4492,10 +4491,6 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &SendFeedback, window, cx| this.send_feedback(window, cx)),
             )
-            .on_action(cx.listener(|_, _: &ToggleDance, _, cx| {
-                crate::mascot::toggle_dancing();
-                cx.notify();
-            }))
             .on_action(cx.listener(|this, _: &ToggleRedacted, _, cx| this.toggle_redacted(cx)))
             .on_action(cx.listener(|this, _: &NewEnvironment, window, cx| {
                 if this.has_projects() {

@@ -95,7 +95,7 @@ files! {
     own file NOTICES = "notices.json", "Notice history";
     own file PALETTES = "palettes.json", "Saved palettes";
     own file RULES = "rules.json", "`Ctrl+K` rules";
-    own file PINS = "pins.json", "What you pinned from the palette (`Ctrl+P`)";
+    own file PINS = "pins.json", "What you pinned from the palette (`Alt+P`)";
     own file TODOS = "todos.json", "Your to-dos, added from the palette";
     own file FRECENCY = "palette-frecency.json", "What the palette ranks first";
     own file VOICE = "voice.json", "Voice settings";

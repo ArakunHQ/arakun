@@ -1,5 +1,5 @@
-//! What the person pinned from the palette (Ctrl+P): shown at the top of the
-//! palette and of the sidebar, opened with Ctrl+1..9. Kept in `pins.json`
+//! What the person pinned from the palette (Alt+P): shown at the top of the
+//! palette and of the sidebar, opened with Ctrl+Alt+1..9. Kept in `pins.json`
 //! next to the state.
 
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ pub struct Pins {
     pub items: Vec<Pin>,
 }
 
-/// Ctrl+1..9 reach this many.
+/// Ctrl+Alt+1..9 reach this many.
 pub const MAX: usize = 9;
 
 impl Pins {

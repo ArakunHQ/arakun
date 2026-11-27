@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::phone::linear::GuidanceRule;
+
 /// Delegated sessions running at once. A computer back after days must not
 /// start dozens of agents; the rest wait their turn.
 pub const MAX_RUNNING: usize = 3;
@@ -105,6 +107,11 @@ pub struct Run {
     /// read from Linear when the session starts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<String>,
+    /// The guidance Linear sent with the delegation, for the first prompt.
+    /// Never saved, as no text from Linear is: a run that waits across a
+    /// restart starts without it.
+    #[serde(skip)]
+    pub guidance: Vec<GuidanceRule>,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -147,6 +154,7 @@ impl std::fmt::Debug for Run {
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
             .field("kept", &self.kept.len())
+            .field("guidance", &self.guidance.len())
             .finish()
     }
 }
@@ -598,6 +606,7 @@ mod tests {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            guidance: Vec::new(),
         }
     }
 
@@ -760,6 +769,30 @@ mod tests {
         let mut back = Runs::load_from(&file);
         assert!(back.was_seen("d1"));
         assert_eq!(state(&mut back, "a"), RunState::Running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn guidance_stays_in_memory_and_is_never_saved() {
+        let dir = crate::stored::tests::scratch("runs-guidance");
+        let file = dir.join("runs.json");
+        let mut r = Runs::default();
+        r.add(Run {
+            guidance: vec![GuidanceRule {
+                team: Some("Secret team".into()),
+                body: "Secret rule".into(),
+            }],
+            ..run("a")
+        });
+        assert_eq!(r.by_agent_session("a").unwrap().guidance.len(), 1);
+        r.save_to(&file).unwrap();
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            !saved.contains("Secret") && !saved.contains("guidance"),
+            "{saved}"
+        );
+        let mut back = Runs::load_from(&file);
+        assert!(back.by_agent_session("a").unwrap().guidance.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

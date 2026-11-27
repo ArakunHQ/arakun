@@ -4,11 +4,13 @@
 // activity in the session within 10.
 //
 // The body holds the issue's text (promptContext, the title, comments). None
-// of it is kept, stored, logged or put in an error: only ids go on.
+// of it is kept, stored, logged or put in an error: only ids are kept. Two
+// texts go on to a connected computer in the live frame and nowhere else: a
+// follow-up's, and the guidance a workspace or team set for agents.
 
 import { routeFor, FLAG, UUID } from "./linear";
 import { issuePlace, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
-import { deliver, QueueFull, type Delivery } from "./machines";
+import { deliver, QueueFull, type Delivery, type GuidanceRule } from "./machines";
 import { bodyText, error, hex, isObject, now, sha256, type Env } from "./util";
 
 const MAX_BODY = 1024 * 1024;
@@ -79,7 +81,7 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
     issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
   };
   try {
-    return action === "created" ? await delegated(env, hook) : await followUp(env, hook, parsed);
+    return action === "created" ? await delegated(env, hook, guidanceOf(parsed)) : await followUp(env, hook, parsed);
   } catch (e) {
     // The status or the error's name only: a message could quote Linear.
     const why = e instanceof TokenUnopened ? e.name : e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
@@ -122,6 +124,35 @@ function promptText(activity: Record<string, unknown>): string | null {
   const content = activity["content"];
   const text = isObject(content) && typeof content["body"] === "string" ? content["body"] : activity["body"];
   return typeof text === "string" && text.length <= MAX_PROMPT ? text : null;
+}
+
+/// The most characters of guidance passed on, all rules together. More is
+/// not cut, as a cut rule could say the opposite: none is passed.
+export const MAX_GUIDANCE = 16_000;
+
+/// The guidance a workspace or team set for agents, from a `created`
+/// webhook: each rule's text and the team that set it (null for the
+/// workspace). Null when there is none, or too much to pass on.
+export function guidanceOf(body: Record<string, unknown>): GuidanceRule[] | null {
+  const list = body["guidance"];
+  if (!Array.isArray(list)) return null;
+  const rules: GuidanceRule[] = [];
+  let size = 0;
+  for (const r of list) {
+    if (!isObject(r) || typeof r["body"] !== "string" || r["body"].trim() === "") continue;
+    const origin = r["origin"];
+    const team = isObject(origin) && origin["type"] === "Team" && isObject(origin["team"]) ? teamName(origin["team"]) : null;
+    size += r["body"].length + (team?.length ?? 0);
+    if (size > MAX_GUIDANCE) return null;
+    rules.push({ team, body: r["body"] });
+  }
+  return rules.length > 0 ? rules : null;
+}
+
+/// A team's name with its parents' names, as Linear shows it.
+function teamName(team: Record<string, unknown>): string | null {
+  const name = [team["displayName"], team["name"]].find((n) => typeof n === "string" && n.trim() !== "");
+  return typeof name === "string" ? name : null;
 }
 
 /// A follow-up in a session: a message or a stop. It goes to the computer
@@ -238,7 +269,7 @@ interface Row {
 
 /// An issue delegated to Arakun, or Arakun mentioned on one: find the
 /// delegator's computer, hand it the ids, and say so in the session.
-async function delegated(env: Env, hook: Hook): Promise<Response> {
+async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null): Promise<Response> {
   const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
   if (!hook.creatorId) return (await say("error", NO_CREATOR), ok());
   if (!hook.issueId) return (await say("error", NO_ISSUE), ok());
@@ -299,7 +330,9 @@ async function delegated(env: Env, hook: Hook): Promise<Response> {
   };
   let online: boolean;
   try {
-    ({ online } = await deliver(env, row.label, delivery, null));
+    // The guidance goes in the live frame and nowhere else: an offline
+    // computer starts without it.
+    ({ online } = await deliver(env, row.label, delivery, null, guidance));
   } catch (e) {
     if (!(e instanceof QueueFull)) throw e;
     // Nothing waits anywhere for it: the person tries again later.

@@ -21,15 +21,30 @@ export interface Plan {
   daily: number;
   /// Bytes in one frame's payload.
   frame: number;
+  /// Minutes the account's cloud machines may be awake in a UTC month
+  /// (cloud_meter.ts). Minutes, not hours, so KV can give a part of an hour.
+  cloudMinutes: number;
+  /// Minutes one task may run: one stretch awake, from a wake to the sleep.
+  cloudTaskMinutes: number;
 }
 
 /// A frame costs the relay 1/20 of a request, so a full day here is about
-/// 5,000 requests: less than a phone left open used to cost in alarms.
-export const FREE: Plan = { machines: 10, phones: 5, burst: 100, daily: 100_000, frame: 256 * 1024 };
+/// 5,000 requests: less than a phone left open used to cost in alarms. The
+/// cloud hours are the #561 rehearsal's (20 a month, 2 a task) until the
+/// allowance is decided.
+export const FREE: Plan = { machines: 10, phones: 5, burst: 100, daily: 100_000, frame: 256 * 1024, cloudMinutes: 20 * 60, cloudTaskMinutes: 2 * 60 };
 
 /// For the team's own accounts, put on it from the admin panel. High enough
 /// not to get in the way, but still a ceiling on a runaway client.
-export const INTERNAL: Plan = { machines: 50, phones: 10, burst: 500, daily: 1_000_000, frame: 1024 * 1024 };
+export const INTERNAL: Plan = {
+  machines: 50,
+  phones: 10,
+  burst: 500,
+  daily: 1_000_000,
+  frame: 1024 * 1024,
+  cloudMinutes: 200 * 60,
+  cloudTaskMinutes: 8 * 60,
+};
 
 /// The plans that exist without KV, by name.
 export const BUILT_IN: Readonly<Record<string, Plan>> = { free: FREE, internal: INTERNAL };
@@ -49,6 +64,8 @@ export async function planFor(kv: KVNamespace, name = "free"): Promise<Plan> {
     burst: positive(given.burst, base.burst),
     daily: positive(given.daily, base.daily),
     frame: positive(given.frame, base.frame),
+    cloudMinutes: positive(given.cloudMinutes, base.cloudMinutes),
+    cloudTaskMinutes: positive(given.cloudTaskMinutes, base.cloudTaskMinutes),
   };
 }
 

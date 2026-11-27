@@ -43,6 +43,10 @@ function json(body: unknown): Response {
 }
 
 const ALL: LogEntry[] = [
+  entry(16, { action: "cloud.stop_all", account_id: null, login: null, detail: { reason: "outage", machines: 3 } }),
+  entry(15, { action: "cloud.hold", detail: { reason: null, machines: 1 } }),
+  entry(14, { action: "cloud.release" }),
+  entry(13, { action: "cloud.machine.sleep", detail: { label: "abcdefghijklmnop" } }),
   entry(12, { action: "beta.admit", detail: { platform: "ios" } }),
   entry(11, { action: "beta.decline", detail: { platform: "android" } }),
   entry(10, { action: "flag.grant", detail: { flag: "cloud" } }),
@@ -102,11 +106,16 @@ describe("ActivityList", () => {
       "granted cloud access",
       "admitted to the iOS beta",
       "declined for the Android beta",
+      "stopped every cloud environment: outage",
+      "stopped the account's cloud environments",
+      "let the account's cloud environments run again",
+      "put a cloud environment to sleep",
     ]) {
       expect(await screen.findByText(text)).toBeTruthy();
     }
     expect(screen.getByText("the secret")).toBeTruthy();
-    expect(screen.getByText("everyone")).toBeTruthy();
+    // The notice and the stop for every cloud environment name no account.
+    expect(screen.getAllByText("everyone")).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "octocat" })[0]!.getAttribute("href")).toBe("/users/1002");
 
     await userEvent.click(screen.getByRole("button", { name: "Load more" }));

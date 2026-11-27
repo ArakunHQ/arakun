@@ -3027,6 +3027,17 @@ impl Shell {
                         this.save(cx);
                     }
                 }
+                SettingsEvent::ProjectSecretEnv { project, id, env } => {
+                    if let Some(s) = this
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.path == *project)
+                        .and_then(|p| p.secrets.iter_mut().find(|s| s.id == *id))
+                    {
+                        s.env = env.clone();
+                        this.save(cx);
+                    }
+                }
                 SettingsEvent::ProjectSecretRemove { project, id } => {
                     if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
                         p.secrets.retain(|s| s.id != *id);

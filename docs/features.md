@@ -239,7 +239,10 @@ sees the project's skills.
   fresh `secret-ref:` handle, which works once like any other, or with
   `deliver: "file"` for a private file. A card with several fields saves each as
   "name (field)". Settings › Project › Saved secrets lists them, masked, to rename,
-  replace or remove; no screen shows a stored value.
+  replace or remove; no screen shows a stored value. **Variable** there sets one as
+  an environment variable (such as `STRIPE_KEY`) that the project's agents start
+  with, sandboxed or not, so tools that read it work without the value passing
+  through the chat. The agent's commands can read it, as they can a file.
 
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that

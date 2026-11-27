@@ -6,6 +6,8 @@
 //! value is in the keyring (`crate::secret_store`) under the id, so a rename
 //! never touches it. Agents see the names only: `use_saved_secret` gives
 //! them a fresh one-use handle (`super::secret::keep`) or a private file.
+//! One with a variable set is in the environment of the project's agents
+//! from their start ([`env_for`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +116,44 @@ pub fn value(saved: &Saved) -> Result<Secret, String> {
     }
 }
 
+/// `name` as an environment variable name, upper-cased: letters, digits and
+/// `_`, not starting with a digit. Empty means none.
+pub fn check_env(name: &str) -> Result<Option<String>, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let ok = name.len() <= 64
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !ok {
+        return Err("A variable name is letters, digits and _, and starts with a letter.".into());
+    }
+    Ok(Some(name.to_ascii_uppercase()))
+}
+
+/// The variables the agents of the project at `cwd` start with: each saved
+/// secret that has one, with its value from the keyring. One whose value
+/// can't be read is left out, and the log says which, never the value.
+pub fn env_for(cwd: &std::path::Path) -> Vec<(String, std::ffi::OsString)> {
+    env_from(&super::sandbox::saved(cwd))
+}
+
+fn env_from(list: &[Saved]) -> Vec<(String, std::ffi::OsString)> {
+    list.iter()
+        .filter_map(|s| {
+            let var = s.env.clone()?;
+            match value(s) {
+                Ok(v) => Some((var, v.expose().into())),
+                Err(e) => {
+                    eprintln!("arakun: no ${var} for the agent: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Where values are kept: the keyring, or memory in the tests.
 trait Vault: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
@@ -216,6 +256,27 @@ mod tests {
         assert!(replace(&s, "").is_err());
         remove(&s);
         assert!(value(&s).unwrap_err().contains("gone"));
+    }
+
+    #[test]
+    fn a_saved_secret_with_a_variable_goes_into_the_agents_environment() {
+        let mut with = store("Stripe", "sk_env").unwrap();
+        with.env = Some("STRIPE_KEY".into());
+        let without = store("Other", "sk_none").unwrap();
+        let mut gone = saved("missing", "Gone");
+        gone.env = Some("GONE".into());
+        let env = env_from(&[with.clone(), without.clone(), gone]);
+        assert_eq!(env, [("STRIPE_KEY".to_string(), "sk_env".into())]);
+        remove(&with);
+        remove(&without);
+
+        assert_eq!(
+            check_env(" stripe_key ").unwrap().as_deref(),
+            Some("STRIPE_KEY")
+        );
+        assert_eq!(check_env("").unwrap(), None);
+        assert!(check_env("1KEY").is_err());
+        assert!(check_env("MY-KEY").is_err());
     }
 
     #[test]

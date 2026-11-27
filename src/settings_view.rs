@@ -75,6 +75,13 @@ pub enum SettingsEvent {
         id: String,
         name: String,
     },
+    /// A project's agents start with saved secret `id` in variable `env`, or
+    /// without it for `None`.
+    ProjectSecretEnv {
+        project: std::path::PathBuf,
+        id: String,
+        env: Option<String>,
+    },
     /// A project's saved secret `id` is removed; its value is gone already.
     ProjectSecretRemove {
         project: std::path::PathBuf,
@@ -123,6 +130,15 @@ pub struct ProjectSettings {
 enum SecretEdit {
     Rename(String),
     Replace(String),
+    Env(String),
+}
+
+impl SecretEdit {
+    fn id(&self) -> &str {
+        match self {
+            SecretEdit::Rename(id) | SecretEdit::Replace(id) | SecretEdit::Env(id) => id,
+        }
+    }
 }
 
 /// A text field of the Project section.
@@ -483,11 +499,12 @@ pub struct SettingsDialog {
     secret_edit: Option<SecretEdit>,
     secret_name_input: Entity<TextInput>,
     secret_value_input: Entity<TextInput>,
+    secret_env_input: Entity<TextInput>,
     /// What the last change to a saved secret did, and whether it failed.
     secret_note: Option<(SharedString, bool)>,
     /// The sidebar's width, which the Tabs and sessions part sets too.
     pub rail_w: f32,
-    _subs: [Subscription; 11],
+    _subs: [Subscription; 12],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -595,14 +612,16 @@ impl SettingsDialog {
         });
         let secret_name_input = cx.new(|cx| TextInput::new("Name", cx));
         let secret_value_input = cx.new(|cx| TextInput::new("Paste the new value", cx).secret());
-        let secret_subs = [&secret_name_input, &secret_value_input].map(|input| {
-            cx.subscribe_in(input, window, |this: &mut Self, _, ev, _, cx| match ev {
-                InputEvent::Submit => this.finish_secret_edit(cx),
-                InputEvent::Cancel => this.cancel_secret_edit(cx),
-                _ => {}
-            })
-        });
-        let [secret_name_sub, secret_value_sub] = secret_subs;
+        let secret_env_input = cx.new(|cx| TextInput::new("STRIPE_KEY", cx).mono());
+        let secret_subs =
+            [&secret_name_input, &secret_value_input, &secret_env_input].map(|input| {
+                cx.subscribe_in(input, window, |this: &mut Self, _, ev, _, cx| match ev {
+                    InputEvent::Submit => this.finish_secret_edit(cx),
+                    InputEvent::Cancel => this.cancel_secret_edit(cx),
+                    _ => {}
+                })
+            });
+        let [secret_name_sub, secret_value_sub, secret_env_sub] = secret_subs;
         let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
             this.on_project_input(ProjectField::Setup, ev, cx)
         });
@@ -681,6 +700,7 @@ impl SettingsDialog {
             secret_edit: None,
             secret_name_input,
             secret_value_input,
+            secret_env_input,
             secret_note: None,
             look,
             rail_w: crate::state::RAIL_W,
@@ -698,6 +718,7 @@ impl SettingsDialog {
                 pass_sub,
                 secret_name_sub,
                 secret_value_sub,
+                secret_env_sub,
             ],
         }
     }
@@ -789,6 +810,17 @@ impl SettingsDialog {
                 self.secret_value_input.update(cx, |i, cx| i.clear(cx));
                 self.secret_value_input.clone()
             }
+            SecretEdit::Env(id) => {
+                let var = project
+                    .secrets
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .and_then(|s| s.env.clone())
+                    .unwrap_or_default();
+                self.secret_env_input
+                    .update(cx, |i, cx| i.set_text(var, cx));
+                self.secret_env_input.clone()
+            }
         };
         window.focus(&input.focus_handle(cx), cx);
         self.secret_edit = Some(edit);
@@ -819,6 +851,34 @@ impl SettingsDialog {
                             project: project.path.clone(),
                             id,
                             name,
+                        });
+                        self.secret_edit = None;
+                        self.secret_note = None;
+                    }
+                    Err(e) => self.secret_note = Some((e.into(), true)),
+                }
+            }
+            SecretEdit::Env(id) => {
+                let typed = self.secret_env_input.read(cx).text().to_string();
+                let env = crate::agent::saved_secret::check_env(&typed).and_then(|env| {
+                    let taken = project
+                        .secrets
+                        .iter()
+                        .any(|s| s.id != id && env.is_some() && s.env == env);
+                    if taken {
+                        return Err("Another saved secret is set as this variable.".into());
+                    }
+                    Ok(env)
+                });
+                match env {
+                    Ok(env) => {
+                        if let Some(s) = project.secrets.iter_mut().find(|s| s.id == id) {
+                            s.env = env.clone();
+                        }
+                        cx.emit(SettingsEvent::ProjectSecretEnv {
+                            project: project.path.clone(),
+                            id,
+                            env,
                         });
                         self.secret_edit = None;
                         self.secret_note = None;
@@ -871,9 +931,11 @@ impl SettingsDialog {
             project: project.path.clone(),
             id: saved.id.clone(),
         });
-        if self.secret_edit.as_ref().is_some_and(
-            |e| matches!(e, SecretEdit::Rename(i) | SecretEdit::Replace(i) if *i == saved.id),
-        ) {
+        if self
+            .secret_edit
+            .as_ref()
+            .is_some_and(|e| e.id() == saved.id)
+        {
             self.cancel_secret_edit(cx);
         }
         self.secret_note = Some((format!("Removed {}.", saved.name).into(), false));
@@ -896,21 +958,20 @@ impl SettingsDialog {
             rows.push(
                 row(
                     "None yet",
-                    "When an agent asks for a secret, turn on Save for this project on its card. Agents of this project can then ask for it again by name, and get a one-use handle, never the value.",
+                    "When an agent asks for a secret, turn on Save for this project on its card. Agents of this project can then ask for it again by name, and get a one-use handle, never the value. Variable sets one as an environment variable for them.",
                     div().into_any_element(),
                 )
                 .into_any_element(),
             );
         }
         for (i, s) in project.secrets.iter().enumerate() {
-            let editing = self.secret_edit.as_ref().filter(
-                |e| matches!(e, SecretEdit::Rename(id) | SecretEdit::Replace(id) if *id == s.id),
-            );
+            let editing = self.secret_edit.as_ref().filter(|e| e.id() == s.id);
             let control = match editing {
                 Some(edit) => {
                     let input = match edit {
                         SecretEdit::Rename(_) => self.secret_name_input.clone(),
                         SecretEdit::Replace(_) => self.secret_value_input.clone(),
+                        SecretEdit::Env(_) => self.secret_env_input.clone(),
                     };
                     div()
                         .flex()
@@ -932,7 +993,8 @@ impl SettingsDialog {
                         )
                 }
                 None => {
-                    let (rename, replace, remove) = (s.id.clone(), s.id.clone(), s.id.clone());
+                    let (rename, replace, remove, env) =
+                        (s.id.clone(), s.id.clone(), s.id.clone(), s.id.clone());
                     div()
                         .flex()
                         .flex_none()
@@ -942,6 +1004,12 @@ impl SettingsDialog {
                             ui::button(("set-secret-rename", i), "Rename", ButtonKind::Ghost, true)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.edit_secret(SecretEdit::Rename(rename.clone()), window, cx)
+                                })),
+                        )
+                        .child(
+                            ui::button(("set-secret-env", i), "Variable", ButtonKind::Ghost, true)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_secret(SecretEdit::Env(env.clone()), window, cx)
                                 })),
                         )
                         .child(
@@ -974,7 +1042,12 @@ impl SettingsDialog {
                         )
                 }
             };
-            rows.push(row(s.name.clone(), MASKED, control.into_any_element()).into_any_element());
+            let hint = match (&s.env, editing) {
+                (_, Some(SecretEdit::Env(_))) => "The variable this project's agents start with it in, such as STRIPE_KEY. Empty sets none. Applies to sessions started afterwards.".to_string(),
+                (Some(var), _) => format!("{MASKED}  ·  ${var} for this project's agents"),
+                (None, _) => MASKED.to_string(),
+            };
+            rows.push(row(s.name.clone(), hint, control.into_any_element()).into_any_element());
         }
         let mut parts = vec![titled("Saved secrets", rows)];
         if let Some((text, failed)) = &self.secret_note {

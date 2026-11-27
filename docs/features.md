@@ -1033,13 +1033,19 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
-- **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
-  Everything, View strip); it lays out the pieces and keeps the style you chose. The Switcher, the
-  default, names three views (Runs, Branches and GitHub), then More views for the rest,
-  and puts plan usage on one line (5h, a bar, the percentage) above Settings. Which
+- **Sidebar.** Start from a preset (Needs you first, Switcher, Focused, Developer,
+  Notion, Icons, Everything, View strip); it lays out the pieces and keeps the style you
+  chose. Needs you first, the default, puts Search and the Inbox on top, then Needs you
+  (sessions that wait on you or failed, from every project), then every project with
+  its sessions, their finished ones folded into one "done" line. Below them it names
+  three views (Runs, Branches and GitHub), then More views for the rest, and puts plan
+  usage on one line (5h, a bar, the percentage) above Settings. The Switcher is the same
+  with only the open project and its environments. Which
   views get a row is yours: add a view from the chips, or remove its row and it moves
   to More views. Select Usage to switch between the card and the line. A sidebar saved
-  on the old Switcher, with its row of view icons, moves to this one once. Every preset holds
+  on the Switcher, the default before, moves to Needs you first once, with its style
+  kept; a layout you arranged yourself stays as it is, and the preset is a click away.
+  A sidebar saved on the old Switcher with its row of view icons moves too. Every preset holds
   the User row, where you sign in; a layout saved without it gets it once,
   next to Help. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole

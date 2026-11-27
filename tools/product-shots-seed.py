@@ -419,6 +419,9 @@ def state(project, sid, t):
         "active_project": 0, "dock_open": False, "dock_height": 200,
         "rail_open": True, "panel_open": True, "arcade": False,
         "last_agent": "claude",
+        # As a new install starts: sessions in the sidebar tree (every option
+        # left out is Focused's), at the width the tree is drawn for.
+        "tabs": {}, "rail_w": 248,
     }
 
 

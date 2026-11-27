@@ -28,7 +28,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/hero-light.png">
-  <img src="docs/screenshots/hero-dark.png" alt="Arakun with a finished Claude Code session in the main area and the files it changed in the Workspace panel" width="860">
+  <img src="docs/screenshots/hero-dark.png" alt="Arakun with a finished Claude Code session in the main area, the sidebar listing it under its project above Runs, Branches, GitHub and More views, and the session in the Workspace panel" width="860">
 </picture>
 
 </div>
@@ -156,7 +156,7 @@ and `cf` (Cloudflare tab).
 
 See [Features](docs/features.md) for all of it.
 
-- **Sessions in the sidebar**, each in its own git worktree, with its state as a mark.
+- **Sessions in the sidebar**, each in its own git worktree, with its state as a mark. The ones that need you go to the top, and finished ones fold away.
 - **Eight agents**: Claude Code, Droid, OpenCode, Codex, Devin, Cursor, Antigravity and Workers AI.
 - **Project check**: your tests run after each turn that edits files, and failures go back to the agent.
 - **Memory**: agents keep what they learn about a project across sessions.

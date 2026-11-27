@@ -1354,6 +1354,7 @@ fn set_reports(yes: bool) {
 /// A layout in a few words, for its tile.
 fn preset_blurb(p: Preset) -> &'static str {
     match p {
+        Preset::NeedsYou => "What needs you on top",
         Preset::Switcher => "One project at a time",
         Preset::Focused => "Inbox and projects",
         Preset::Developer => "Git in its own group",

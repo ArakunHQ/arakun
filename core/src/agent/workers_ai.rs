@@ -1094,22 +1094,180 @@ fn floor_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// `text` within `max` bytes: its head and its longer tail, the middle cut.
-fn clip_middle(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
-    }
+/// Where `clip_middle` cuts a `text` longer than `max`: the head ends at the
+/// first, the tail starts at the second.
+fn cut_points(text: &str, max: usize) -> (usize, usize) {
     let head = floor_boundary(text, max * 2 / 5);
     let mut tail = text.len() - max * 3 / 5;
     while !text.is_char_boundary(tail) {
         tail += 1;
     }
+    (head, tail)
+}
+
+/// `text` within `max` bytes: its head and its longer tail, the middle cut.
+fn clip_middle(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let (head, tail) = cut_points(text, max);
     format!(
         "{}\n… [{} bytes cut] …\n{}",
         &text[..head],
         tail - head,
         &text[tail..]
     )
+}
+
+/// `clip_middle` for a result kept whole in `path`: the marker says which of
+/// its lines were cut, so the model can read just those. `bytes` and `newlines`
+/// are the whole result's; `text` may hold only its ends already, as a long
+/// command's output does, but then its last `max` bytes are the whole's.
+fn clip_saved(text: &str, max: usize, path: &str, bytes: usize, newlines: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let (head, tail) = cut_points(text, max);
+    let bytes = bytes.max(text.len());
+    let first = 1 + text[..head].bytes().filter(|b| *b == b'\n').count();
+    // The line of the last byte cut: a newline belongs to the line it ends.
+    let after = text.as_bytes()[tail - 1..]
+        .iter()
+        .filter(|b| **b == b'\n')
+        .count();
+    let last = (1 + newlines).saturating_sub(after).max(first);
+    format!(
+        "{}\n… [{} bytes cut, lines {first}-{last} of {path}] …\n{}",
+        &text[..head],
+        bytes - head - (text.len() - tail),
+        &text[tail..]
+    )
+}
+
+/// How long a cut result stays on disk, and how much of them a session keeps.
+const CUT_DAYS: u64 = 7;
+const CUT_BYTES: u64 = 64 << 20;
+
+/// The file a call's whole result goes in: on this machine, and as the
+/// model's tools see it. `None` when it can't be had.
+///
+/// In a sandbox that is its `/tmp`, the only place both see. The model can
+/// write there, so the file goes straight in it, with no folder it could swap
+/// for a link, and is opened only as a new file ([`create_new_private`]).
+/// Nothing there is swept: it goes with the session's sandbox. Outside, it
+/// goes in a folder beside the session's file, kept within bounds.
+fn cut_file(sid: &str, call_id: &str) -> Option<(PathBuf, String)> {
+    let name: String = call_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(60)
+        .collect();
+    let name = format!("arakun-cut-{name}.txt");
+    match sandbox() {
+        Some(j) => {
+            let s = j.sandbox.as_ref().unwrap();
+            let shown = s.shown_tmp().join(&name).display().to_string();
+            Some((s.tmp.join(name), shown))
+        }
+        None => {
+            let dir = Session::path(sid)?.with_extension("cut");
+            crate::durable::create_private_dir(&dir).ok()?;
+            sweep_cut(&dir);
+            let path = dir.join(name);
+            let shown = path.display().to_string();
+            Some((path, shown))
+        }
+    }
+}
+
+/// Opens `path` as a new file only its owner may read. It fails when anything
+/// is there already, a link included, so a link the model left in a folder it
+/// can write never sends the write elsewhere.
+fn create_new_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Drops the files in `dir` older than [`CUT_DAYS`], then the oldest until the
+/// rest fit in [`CUT_BYTES`]. Once a run it also drops other sessions' folders
+/// left that long: nothing else deletes a Workers AI session.
+fn sweep_cut(dir: &Path) {
+    static SWEPT: AtomicBool = AtomicBool::new(false);
+    let max_age = Duration::from_secs(CUT_DAYS * 86_400);
+    let old = |m: &std::fs::Metadata| {
+        m.modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > max_age)
+    };
+    if !SWEPT.swap(true, Ordering::SeqCst)
+        && let Ok(list) = std::fs::read_dir(sessions_dir())
+    {
+        for e in list.filter_map(Result::ok) {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "cut")
+                && p != dir
+                && e.metadata().is_ok_and(|m| m.is_dir() && old(&m))
+            {
+                let _ = std::fs::remove_dir_all(&p);
+            }
+        }
+    }
+    let Ok(list) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    for e in list.filter_map(Result::ok) {
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() {
+            continue;
+        }
+        if old(&m) {
+            let _ = std::fs::remove_file(e.path());
+        } else {
+            let at = m.modified().unwrap_or(std::time::UNIX_EPOCH);
+            files.push((at, m.len(), e.path()));
+        }
+    }
+    files.sort();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    for (_, len, p) in files {
+        if total <= CUT_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+/// A tool's result as the model gets it: whole, or cut in the middle. With
+/// `keep_cut` a cut result is kept whole in a file the marker names.
+fn clip_result(sid: &str, call_id: &str, text: &str) -> String {
+    let max = tool_chars();
+    if text.len() <= max || !knobs::get().keep_cut {
+        return clip_middle(text, max);
+    }
+    let Some((host, shown)) = cut_file(sid, call_id) else {
+        return clip_middle(text, max);
+    };
+    let written = create_new_private(&host).and_then(|mut f| {
+        use std::io::Write as _;
+        f.write_all(text.as_bytes())
+    });
+    match written {
+        Ok(()) => {
+            let newlines = text.bytes().filter(|b| *b == b'\n').count();
+            clip_saved(text, max, &shown, text.len(), newlines)
+        }
+        Err(_) => clip_middle(text, max),
+    }
 }
 
 fn resolve(cwd: &Path, raw: &str) -> PathBuf {
@@ -1311,7 +1469,7 @@ fn grep(cwd: &Path, args: &Value, cancel: &AtomicBool) -> Result<String, String>
     }
     // rg and grep exit 2 on an error, so output with 0 has only matches in it.
     match ran.exit {
-        Some(0) => Ok(clip_middle(&ran.output, tool_chars())),
+        Some(0) => Ok(ran.output),
         Some(1) => Ok("No matches.".into()),
         _ => Err(clip_middle(ran.output.trim(), tool_chars())),
     }
@@ -1354,8 +1512,9 @@ fn list(cwd: &Path, args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
-/// A command's whole output for the `bash_tail` knob: in memory until it
-/// outgrows what the model is sent, then in a temp file the model can read.
+/// A command's whole output for the `bash_tail` and `keep_cut` knobs: in
+/// memory until it outgrows what the model is sent, then in a file the model
+/// can read.
 struct Spool {
     mem: String,
     file: Option<std::fs::File>,
@@ -1363,10 +1522,30 @@ struct Spool {
     host: PathBuf,
     shown: String,
     total: usize,
+    newlines: usize,
     failed: bool,
 }
 
 impl Spool {
+    /// A spool into the session's folder for cut results.
+    fn keep(sid: &str, call_id: &str) -> Option<Self> {
+        let (host, shown) = cut_file(sid, call_id)?;
+        Some(Spool::at(host, shown))
+    }
+
+    fn at(host: PathBuf, shown: String) -> Self {
+        Spool {
+            mem: String::new(),
+            file: None,
+            host,
+            shown,
+            total: 0,
+            newlines: 0,
+            failed: false,
+        }
+    }
+
+    /// A spool into the temp folder, for `bash_tail` alone.
     fn new(call_id: &str) -> Self {
         let name: String = call_id
             .chars()
@@ -1391,19 +1570,13 @@ impl Spool {
                 (p, shown)
             }
         };
-        Spool {
-            mem: String::new(),
-            file: None,
-            host,
-            shown,
-            total: 0,
-            failed: false,
-        }
+        Spool::at(host, shown)
     }
 
     fn push(&mut self, text: &str) {
         use std::io::Write as _;
         self.total += text.len();
+        self.newlines += text.bytes().filter(|b| *b == b'\n').count();
         if self.failed {
             return;
         }
@@ -1412,7 +1585,7 @@ impl Spool {
             if self.mem.len() <= tool_chars() {
                 return;
             }
-            match std::fs::File::create(&self.host) {
+            match create_new_private(&self.host) {
                 Ok(f) => self.file = Some(f),
                 Err(_) => {
                     self.failed = true;
@@ -1435,6 +1608,14 @@ impl Spool {
     /// The file's path for the model and the output's size, when it went to a file.
     fn saved(&self) -> Option<(String, usize)> {
         (self.file.is_some() && !self.failed).then(|| (self.shown.clone(), self.total))
+    }
+
+    /// Ends the file, and drops it when it holds only part of the output:
+    /// a path to that would mislead the model.
+    fn finish(&mut self) {
+        if self.failed && self.file.take().is_some() {
+            let _ = std::fs::remove_file(&self.host);
+        }
     }
 }
 
@@ -2664,8 +2845,8 @@ impl Agent {
             "grep" => grep(cwd, &args, &self.cancel),
             "list" => list(cwd, &args),
             "skill" => load_skill(cwd, &args),
-            "web_fetch" => super::web::fetch(&args).map(|t| clip_middle(&t, tool_chars())),
-            "web_search" => super::web::search(&args).map(|t| clip_middle(&t, tool_chars())),
+            "web_fetch" => super::web::fetch(&args),
+            "web_search" => super::web::search(&args),
             "read_email"
                 if jail()
                     .is_some_and(|j| j.caps.contains(&crate::headless::sandbox::Cap::MailRead)) =>
@@ -2675,6 +2856,9 @@ impl Agent {
             other => Err(format!("there is no tool {other}")),
         };
         let (status, text) = match result {
+            Ok(text) if matches!(call.name.as_str(), "grep" | "web_fetch" | "web_search") => {
+                ("completed", clip_result(sid, id, &text))
+            }
             Ok(text) => ("completed", text),
             Err(e) => ("failed", format!("Error: {e}")),
         };
@@ -2711,7 +2895,12 @@ impl Agent {
         };
         let secs = args["timeout_secs"].as_u64().unwrap_or(600).clamp(1, 3600);
         let (mut buffer, mut sent, mut at) = (String::new(), 0usize, Instant::now());
-        let mut spool = knobs::get().bash_tail.then(|| Spool::new(id));
+        let k = knobs::get();
+        let mut spool = k
+            .keep_cut
+            .then(|| Spool::keep(sid, id))
+            .flatten()
+            .or_else(|| k.bash_tail.then(|| Spool::new(id)));
         let flush = |buffer: &mut String, sent: &mut usize| {
             if buffer.is_empty() || *sent >= LIVE_CHARS {
                 buffer.clear();
@@ -2754,8 +2943,16 @@ impl Agent {
             u["_meta"] = json!({"terminal_exit": {"exit_code": code}});
         }
         self.update(sid, u);
-        let mut text = match spool.as_ref().and_then(Spool::saved) {
-            Some((path, total)) => knobs::clip_tail(&ran.output, tool_chars(), &path, total),
+        if let Some(s) = spool.as_mut() {
+            s.finish();
+        }
+        let mut text = match spool.as_ref().and_then(|s| Some((s.saved()?, s.newlines))) {
+            Some(((path, total), _)) if k.bash_tail => {
+                knobs::clip_tail(&ran.output, tool_chars(), &path, total)
+            }
+            Some(((path, total), newlines)) => {
+                clip_saved(&ran.output, tool_chars(), &path, total, newlines)
+            }
             None => clip_middle(&ran.output, tool_chars()),
         };
         if text.trim().is_empty() {
@@ -3789,6 +3986,96 @@ mod tests {
         assert!(c.len() < tool_chars() + 100);
         assert!(c.starts_with("aaa") && c.ends_with("zzz") && c.contains("bytes cut"));
         assert_eq!(clip_middle("ñañaña", 6).chars().next(), Some('ñ'));
+    }
+
+    /// The lines `clip_saved` names, read back from the whole text, hold
+    /// every byte that was cut.
+    fn named_lines(marker: &str) -> (usize, usize) {
+        let (_, rest) = marker.split_once("lines ").unwrap();
+        let (range, _) = rest.split_once(" of ").unwrap();
+        let (a, b) = range.split_once('-').unwrap();
+        (a.parse().unwrap(), b.parse().unwrap())
+    }
+
+    #[test]
+    fn a_kept_cut_names_the_lines_it_cut() {
+        // The 1-based line of `whole` that byte `i` is on.
+        fn line_of(whole: &str, i: usize) -> usize {
+            let mut at = 0;
+            for (n, line) in whole.split_inclusive('\n').enumerate() {
+                at += line.len();
+                if i < at {
+                    return n + 1;
+                }
+            }
+            unreachable!()
+        }
+        let once: String = (1..=5000).map(|i| format!("line {i}\n")).collect();
+        let newlines = |t: &str| t.matches('\n').count();
+        let out = clip_saved(&once, 2000, "/s/x.txt", once.len(), newlines(&once));
+        assert!(out.len() < 2100, "{}", out.len());
+        let (head, tail) = cut_points(&once, 2000);
+        assert_eq!(
+            named_lines(&out),
+            (line_of(&once, head), line_of(&once, tail - 1)),
+            "{out}"
+        );
+        assert!(out.contains(&format!("{} bytes cut, lines", tail - head)));
+        assert!(out.contains(" of /s/x.txt] …"));
+        assert_eq!(clip_saved("short", 2000, "/p", 5, 0), "short");
+
+        // A long command's output holds only its ends; the counts are the whole's.
+        let whole = once.repeat(100);
+        let ends = format!(
+            "{}\n… [output cut] …\n{}",
+            &whole[..9000],
+            &whole[whole.len() - 9000..]
+        );
+        let out = clip_saved(&ends, 2000, "/p", whole.len(), newlines(&whole));
+        let (head, tail) = cut_points(&ends, 2000);
+        let tail = whole.len() - (ends.len() - tail);
+        assert_eq!(
+            named_lines(&out),
+            (line_of(&whole, head), line_of(&whole, tail - 1)),
+            "{out}"
+        );
+        assert!(out.contains(&format!("{} bytes cut", tail - head)), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cut_file_is_never_written_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("arakun-cut-link-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::write(&target, "keep me").unwrap();
+        let link = dir.join("arakun-cut-x.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(create_new_private(&link).is_err());
+        let mut spool = Spool::at(link, "/p".into());
+        spool.push(&"a".repeat(tool_chars() + 1));
+        spool.finish();
+        assert_eq!(spool.saved(), None);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cut_folder_stays_within_its_bounds() {
+        let dir = std::env::temp_dir().join(format!("arakun-cut-test-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = vec![b'x'; (CUT_BYTES / 2 + 1) as usize];
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(name), &big).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        sweep_cut(&dir);
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec!["c.txt".to_string()], "the newest stays");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

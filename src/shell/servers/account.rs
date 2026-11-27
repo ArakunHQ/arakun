@@ -210,6 +210,8 @@ pub(super) fn joining(
             key: String::new(),
             token: Default::default(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         })
         .collect()
 }
@@ -530,6 +532,8 @@ mod tests {
             key: String::new(),
             token: Default::default(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         }
     }
 

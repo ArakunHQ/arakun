@@ -1850,15 +1850,23 @@ reach each other this way. There are two ways to use it:
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
   Every paired server also mirrors this computer: when it connects, and after each
-  install here, it adds the plugins (and their marketplaces), the user MCP servers,
-  the skills from skills.sh and the MCP sign-ins it lacks. What you installed in a repo
+  install here, it adds the plugins (and their marketplaces), the user MCP servers
+  and the skills from skills.sh it lacks. What you installed in a repo
   just for you is added to the server's folders that have the same `origin`; what you
-  shared with the repo goes with git. It never removes anything,
-  and keeps a sign-in of its own that lasts longer. Over plain http only plugins
-  and skills go. A server on macOS does not take sign-ins, which Claude keeps in the
-  Keychain there. The skills installed from skills.sh are listed in
-  `skills-installed.json` in arakun's folder, and what was installed in a repo in
-  `repo-installs.json`.
+  shared with the repo goes with git. It never removes anything you installed.
+  Over plain http only plugins and skills go.
+  Your MCP sign-ins (Claude Code's tokens for the MCP servers you signed in to) go
+  only to a server you let have them: pairing by link asks, and the answer is no
+  unless you change it. **Copy MCP sign-ins** in the server's Settings in the
+  Computers tab changes it later, and the server's card says when it holds a copy.
+  Turning it off takes the copy off the server when it next connects, and so does
+  removing the server, or unpairing this app on it. A server paired before pairing
+  asked keeps getting them until you turn it off. The server keeps a sign-in of its
+  own that lasts longer, and lists which device copied each sign-in in
+  `sign-ins-copied.json` in arakun's folder. A server on macOS does not take
+  sign-ins, which Claude keeps in the Keychain there. The skills installed from
+  skills.sh are listed in `skills-installed.json` in arakun's folder, and what was
+  installed in a repo in `repo-installs.json`.
   To add a folder on a server, press **Add a folder** on it in the Computers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's

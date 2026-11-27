@@ -602,6 +602,8 @@ impl Link {
                     key: greeted.label.clone(),
                     token: text("token").into(),
                     removed: false,
+                    sign_ins: false,
+                    holds_sign_ins: false,
                 });
             }
             (Some("welcome"), Who::Saved(saved)) => {
@@ -1360,6 +1362,8 @@ mod tests {
             key: String::new(),
             token: "t".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start(
@@ -1523,6 +1527,8 @@ mod tests {
             key: identity.label(),
             token: "t".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         }
     }
 
@@ -1843,6 +1849,8 @@ mod tests {
             key: String::new(),
             token: Default::default(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         };
         let account = Account {
             base: saved.origin.clone(),
@@ -2120,6 +2128,8 @@ mod tests {
             key: String::new(),
             token: "tok".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let _client = Client::connect(saved, tx);
@@ -2223,6 +2233,8 @@ mod tests {
             key: String::new(),
             token: token.into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         }
     }
 

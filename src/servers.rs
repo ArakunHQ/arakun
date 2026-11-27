@@ -59,6 +59,19 @@ pub struct Saved {
     /// would take the app back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removed: bool,
+    /// Whether this app copies Claude Code's MCP sign-ins there
+    /// (`agent::mirror`). Pairing asks, and says no unless told. One paired
+    /// before it asked got them already, and keeps getting them.
+    #[serde(default = "copied_before")]
+    pub sign_ins: bool,
+    /// The server last said it holds sign-ins this app copied there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holds_sign_ins: bool,
+}
+
+/// [`Saved::sign_ins`] in a file from before pairing asked.
+fn copied_before() -> bool {
+    true
 }
 
 impl Saved {
@@ -511,6 +524,8 @@ mod tests {
                 key: String::new(),
                 token: Secret::default(),
                 removed: false,
+                sign_ins: false,
+                holds_sign_ins: false,
             },
             Saved {
                 id: "b2".into(),
@@ -521,18 +536,20 @@ mod tests {
                 key: String::new(),
                 token: "k2".into(),
                 removed: false,
+                sign_ins: false,
+                holds_sign_ins: false,
             },
         ];
         let json = serde_json::to_string(&servers).unwrap();
         assert!(json.contains(r#""via":"account","label":"abcdefghij234567""#));
         assert!(json.contains(r#""via":"direct""#));
         assert_eq!(serde_json::from_str::<Vec<Saved>>(&json).unwrap(), servers);
-        // One through the account was written with no device or token.
+        // One through the account was written with no device or token, and
+        // before pairing asked about the sign-ins: it got them, and still does.
         let bare = r#"[{"id":"a1","name":"build-box","origin":"https://app.arakun.dev","via":"account","label":"abcdefghij234567"}]"#;
-        assert_eq!(
-            serde_json::from_str::<Vec<Saved>>(bare).unwrap(),
-            servers[..1]
-        );
+        let mut before = servers[0].clone();
+        before.sign_ins = true;
+        assert_eq!(serde_json::from_str::<Vec<Saved>>(bare).unwrap(), [before]);
         assert_ne!(new_id(), new_id());
     }
 
@@ -599,6 +616,8 @@ mod tests {
             key: String::new(),
             token: "k2".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         }
     }
 

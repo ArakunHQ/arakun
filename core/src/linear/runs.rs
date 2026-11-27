@@ -174,6 +174,9 @@ pub struct Report {
     pub body: String,
     #[serde(default)]
     pub link: Option<String>,
+    /// A question's choices, for Linear to show as ones to pick from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
     pub made_at: u64,
 }
 
@@ -184,6 +187,7 @@ impl std::fmt::Debug for Report {
             .field("kind", &self.kind)
             .field("body", &format_args!("…"))
             .field("link", &self.link.is_some())
+            .field("options", &self.options.len())
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -603,6 +607,7 @@ mod tests {
             kind: ReportKind::Thought,
             body: body.into(),
             link: None,
+            options: Vec::new(),
             made_at,
         }
     }

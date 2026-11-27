@@ -102,11 +102,15 @@ impl Shell {
             Step::Cancelled => Some(Seen::Cancelled),
             Step::Working | Step::Background | Step::Nothing => None,
         };
-        let report = seen.filter(|_| effect.report).and_then(to_report);
+        let seen = seen.filter(|_| effect.report);
+        let options = seen.as_ref().map(options_of).unwrap_or_default();
+        let report = seen.and_then(to_report);
         let agent_session = run.agent_session.clone();
         // The new state goes in the same save as the report.
         match report {
-            Some((kind, body)) => self.linear_report(&agent_session, kind, body, None, cx),
+            Some((kind, body)) => {
+                self.linear_report_with(&agent_session, kind, body, None, options, cx)
+            }
             None => self.linear_save(),
         }
         if to == RunState::Running {

@@ -203,9 +203,13 @@ export async function postActivity(
   type: "thought" | "elicitation" | "response" | "error",
   body: string,
   ephemeral = false,
+  options: string[] = [],
 ): Promise<void> {
   // An ephemeral thought is replaced by the next activity in Linear.
-  const input = { agentSessionId, content: { type, body }, ...(ephemeral ? { ephemeral: true } : {}) };
+  // Linear shows the choices of a `select` to pick from; a pick comes back
+  // as an ordinary reply with the choice as its text.
+  const select = options.length > 0 ? { signal: "select", signalMetadata: { options: options.map((o) => ({ label: o, value: o })) } } : {};
+  const input = { agentSessionId, content: { type, body }, ...(ephemeral ? { ephemeral: true } : {}), ...select };
   await asApp(
     env,
     organizationId,

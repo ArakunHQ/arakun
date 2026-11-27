@@ -272,13 +272,24 @@ export const linearFake = {
   malformed: null as "viewer" | "issue-null" | "no-team" | null,
   /// The agent activities created, in order.
   /// `ephemeral` is there only when it was sent.
-  activities(): { agentSessionId: string; type: string; body: string; ephemeral?: boolean }[] {
+  activities(): { agentSessionId: string; type: string; body: string; ephemeral?: boolean; signal?: string; options?: string[] }[] {
     return this.accepted
       .filter((c) => c.query.includes("agentActivityCreate"))
       .map((c) => {
-        const input = (c.variables as { input: { agentSessionId: string; content: { type: string; body: string }; ephemeral?: boolean } }).input;
+        const input = (
+          c.variables as {
+            input: {
+              agentSessionId: string;
+              content: { type: string; body: string };
+              ephemeral?: boolean;
+              signal?: string;
+              signalMetadata?: { options: { label: string; value: string }[] };
+            };
+          }
+        ).input;
         const sent = { agentSessionId: input.agentSessionId, type: input.content.type, body: input.content.body };
-        return input.ephemeral === undefined ? sent : { ...sent, ephemeral: input.ephemeral };
+        const select = input.signal === undefined ? {} : { signal: input.signal, options: input.signalMetadata?.options.map((o) => o.value) };
+        return { ...sent, ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }), ...select };
       });
   },
   /// The links added to agent sessions, in order.

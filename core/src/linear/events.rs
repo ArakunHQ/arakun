@@ -26,8 +26,12 @@ pub const DONE: &str = "Done.";
 /// What a delegated session did, as Linear hears it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seen {
-    /// The question's text, with its choices.
-    Question(String),
+    /// The question's text. `options` are its choices when Linear can show
+    /// them to pick from; otherwise they are in the text, or there are none.
+    Question {
+        text: String,
+        options: Vec<String>,
+    },
     /// What the permission is for, or empty when only a description with its
     /// arguments is known.
     Permission(String),
@@ -51,7 +55,7 @@ pub const WAITING_KEY: &str = "waiting";
 /// person's own.
 pub fn to_report(ev: Seen) -> Option<(ReportKind, String)> {
     Some(match ev {
-        Seen::Question(text) => {
+        Seen::Question { text, .. } => {
             let text = crate::secrets::scrub(text.trim());
             let text = match text.char_indices().nth(QUESTION_LIMIT) {
                 Some((end, _)) => format!("{}…", &text[..end]),
@@ -193,6 +197,41 @@ pub fn permission_what(kind: Option<&str>, plan: bool) -> String {
     .into()
 }
 
+/// The most choices Linear is given to pick from, and the most characters
+/// of one. The server refuses more.
+pub const OPTIONS_LIMIT: usize = 10;
+pub const OPTION_LIMIT: usize = 80;
+
+/// The choices of a pending question, when Linear can show them to pick
+/// from: one question, one answer, at least two short choices. Empty for
+/// anything else, which goes as text. A pick comes back as a reply with the
+/// choice as its text, as if the person had typed it.
+pub fn choices(q: &AskUserRequest) -> Vec<String> {
+    let [one] = q.questions.as_slice() else {
+        return Vec::new();
+    };
+    if one.multi || one.secret {
+        return Vec::new();
+    }
+    let options: Vec<String> = one
+        .options
+        .iter()
+        .map(|o| crate::secrets::scrub(o.trim()).into_owned())
+        .filter(|o| !o.is_empty())
+        .collect();
+    let fits = (2..=OPTIONS_LIMIT).contains(&options.len())
+        && options.iter().all(|o| o.chars().count() <= OPTION_LIMIT);
+    if fits { options } else { Vec::new() }
+}
+
+/// The choices a report carries for Linear to show.
+pub fn options_of(seen: &Seen) -> Vec<String> {
+    match seen {
+        Seen::Question { options, .. } => options.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// A question as a notification shows it, then its choices one per line,
 /// so the person can answer in Linear by typing one.
 pub fn question_text(head: &str, options: &[String]) -> String {
@@ -209,18 +248,21 @@ pub fn question_text(head: &str, options: &[String]) -> String {
     }
 }
 
+/// A question's own words, or its topic when it has none.
+fn question_head(x: &Question) -> String {
+    let text = notify::plain(&x.question).trim().to_string();
+    if text.is_empty() {
+        notify::plain(&x.topic).trim().to_string()
+    } else {
+        text
+    }
+}
+
 /// Every question of a questionnaire with its choices, so the person can
 /// answer all of them in one reply in Linear. One question reads as
 /// [`question_text`]; several are numbered, each with its own choices.
 pub fn questionnaire_text(q: &AskUserRequest) -> String {
-    let head = |x: &Question| {
-        let text = notify::plain(&x.question).trim().to_string();
-        if text.is_empty() {
-            notify::plain(&x.topic).trim().to_string()
-        } else {
-            text
-        }
-    };
+    let head = question_head;
     match q.questions.as_slice() {
         [one] => question_text(&head(one), &one.options),
         many => many
@@ -452,7 +494,13 @@ pub fn ask_of(t: &Thread, computer: &str) -> Option<(String, Seen)> {
     }
     let text = questionnaire_text(q);
     let key = ask_key(&["question", &q.tool_call_id, &text]);
-    Some((key, Seen::Question(text)))
+    let options = choices(q);
+    // Choices Linear shows itself are not listed in the text as well.
+    let text = match q.questions.as_slice() {
+        [one] if !options.is_empty() => question_text(&question_head(one), &[]),
+        _ => text,
+    };
+    Some((key, Seen::Question { text, options }))
 }
 
 #[cfg(test)]
@@ -492,7 +540,10 @@ mod tests {
         assert_eq!(text, "Which database?\n\n- Postgres\n- SQLite");
         assert_eq!(question_text("Go on?", &[]), "Go on?");
         assert_eq!(
-            report(Seen::Question(text.clone())),
+            report(Seen::Question {
+                text: text.clone(),
+                options: Vec::new()
+            }),
             Some((ReportKind::Elicitation, text))
         );
     }
@@ -532,6 +583,44 @@ mod tests {
     }
 
     #[test]
+    fn one_question_with_short_choices_gives_them_to_pick_from() {
+        let q =
+            AskUserRequest::for_test(vec![ask("Which database?", &["Postgres", " ", "SQLite"])]);
+        assert_eq!(choices(&q), ["Postgres", "SQLite"]);
+        // Anything else goes as text: several questions, several answers, a
+        // secret, one choice, too many, or one too long.
+        let many = AskUserRequest::for_test(vec![ask("A?", &["x", "y"]), ask("B?", &["x", "y"])]);
+        let mut multi = ask("Which?", &["x", "y"]);
+        multi.multi = true;
+        let mut secret = ask("Token?", &["x", "y"]);
+        secret.secret = true;
+        let long = "x".repeat(OPTION_LIMIT + 1);
+        let lots: Vec<String> = (0..=OPTIONS_LIMIT).map(|i| i.to_string()).collect();
+        let lots: Vec<&str> = lots.iter().map(String::as_str).collect();
+        for q in [
+            many,
+            AskUserRequest::for_test(vec![multi]),
+            AskUserRequest::for_test(vec![secret]),
+            AskUserRequest::for_test(vec![ask("Go on?", &["Yes"])]),
+            AskUserRequest::for_test(vec![ask("Go on?", &[])]),
+            AskUserRequest::for_test(vec![ask("Which?", &["a", &long])]),
+            AskUserRequest::for_test(vec![ask("Which?", &lots)]),
+        ] {
+            assert!(choices(&q).is_empty());
+        }
+        // A secret in a choice never leaves.
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let q = AskUserRequest::for_test(vec![ask("Which key?", &[key, "none"])]);
+        assert!(!choices(&q).iter().any(|o| o.contains(key)));
+        let seen = Seen::Question {
+            text: "Which database?".into(),
+            options: vec!["Postgres".into(), "SQLite".into()],
+        };
+        assert_eq!(options_of(&seen), ["Postgres", "SQLite"]);
+        assert!(options_of(&Seen::Cancelled).is_empty());
+    }
+
+    #[test]
     fn a_question_without_text_uses_its_topic() {
         let mut one = ask("", &["A", "B"]);
         one.topic = "Approach".into();
@@ -541,7 +630,11 @@ mod tests {
 
     #[test]
     fn a_long_question_is_cut() {
-        let (_, body) = report(Seen::Question("é".repeat(QUESTION_LIMIT + 10))).unwrap();
+        let (_, body) = report(Seen::Question {
+            text: "é".repeat(QUESTION_LIMIT + 10),
+            options: Vec::new(),
+        })
+        .unwrap();
         assert_eq!(body.matches('é').count(), QUESTION_LIMIT);
         assert!(body.ends_with('…'));
     }
@@ -754,7 +847,10 @@ mod tests {
             Seen::Finished {
                 reply: format!("Used {key}"),
             },
-            Seen::Question(format!("Is {key} right?")),
+            Seen::Question {
+                text: format!("Is {key} right?"),
+                options: Vec::new(),
+            },
             Seen::Failed(format!("bad key {key}")),
         ] {
             let (_, body) = report(seen).unwrap();

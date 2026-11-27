@@ -177,6 +177,8 @@ impl Daemon {
         }
         self.transport.send(client, answer(saved));
         self.linear_sync(cx);
+        // More slots may have been sent: runs that wait start now.
+        self.linear_start_waiting(cx);
     }
 
     /// Brings Arakun's server in line with the kept settings and the places
@@ -300,6 +302,7 @@ mod tests {
                     workspace: "w1".into(),
                     key: "lin_1".into(),
                 }],
+                ..Default::default()
             },
             announced: vec!["w1".into()],
         };

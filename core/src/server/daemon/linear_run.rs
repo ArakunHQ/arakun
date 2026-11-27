@@ -285,32 +285,36 @@ impl Daemon {
             self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
             return self.linear_accept(&id, cx);
         }
-        let added = self.linear_run.runs.add(Run {
-            agent_session: start.agent_session.clone(),
-            organization: start.organization.clone(),
-            issue: start.issue.clone(),
-            identifier: detail.issue.identifier.clone(),
-            project: project.clone(),
-            environment: None,
-            branch: String::new(),
-            session: None,
-            state: RunState::Waiting,
-            reported_at: 0,
-            asked: None,
-            stopped: false,
-            held: None,
-            progress: None,
-            plan: None,
-            linked: None,
-            kept: Vec::new(),
-            comment: start.comment.clone(),
-            guidance: start.guidance.clone(),
-        });
+        let slots = self.linear.kept.settings.delegation().slots_on(None);
+        let added = self.linear_run.runs.add(
+            Run {
+                agent_session: start.agent_session.clone(),
+                organization: start.organization.clone(),
+                issue: start.issue.clone(),
+                identifier: detail.issue.identifier.clone(),
+                project: project.clone(),
+                environment: None,
+                branch: String::new(),
+                session: None,
+                state: RunState::Waiting,
+                reported_at: 0,
+                asked: None,
+                stopped: false,
+                held: None,
+                progress: None,
+                plan: None,
+                linked: None,
+                kept: Vec::new(),
+                comment: start.comment.clone(),
+                guidance: start.guidance.clone(),
+            },
+            slots,
+        );
         self.linear_save_runs();
         match added {
             Added::Already => self.linear_accept(&id, cx),
-            Added::Wait { ahead } => {
-                let line = waiting_line(&computer(), ahead);
+            Added::Wait { running, ahead } => {
+                let line = waiting_line(&computer(), running, ahead);
                 self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
                 self.linear_accept(&id, cx);
             }
@@ -532,7 +536,8 @@ impl Daemon {
         if self.linear_gate().is_none() {
             return;
         }
-        while let Some(run) = self.linear_run.runs.next_waiting() {
+        let slots = self.linear.kept.settings.delegation().slots_on(None);
+        while let Some(run) = self.linear_run.runs.next_waiting(slots) {
             let start = Start {
                 agent_session: run.agent_session.clone(),
                 organization: run.organization.clone(),

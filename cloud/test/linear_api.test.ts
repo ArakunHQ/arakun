@@ -81,10 +81,11 @@ describe("Linear's API", () => {
     expect(got.expiresAt).toBeGreaterThan(nowSeconds() + 86000);
   });
   it("stores a workspace's tokens sealed", async () => {
-    await save({ access: "A1", refresh: "R1" });
+    // Long tokens: a short one like "A1" turns up in random ciphertext by chance.
+    await save({ access: "plain-access-token", refresh: "plain-refresh-token" });
     const row = await env.DB.prepare("SELECT access_token, refresh_token FROM linear_workspaces").first<{ access_token: string; refresh_token: string }>();
     expect(row!.access_token.startsWith("v1.")).toBe(true);
-    expect(JSON.stringify(row)).not.toMatch(/A1|R1/);
+    expect(JSON.stringify(row)).not.toMatch(/plain-(access|refresh)-token/);
   });
   it("saving a workspace again replaces its tokens", async () => {
     await save({});

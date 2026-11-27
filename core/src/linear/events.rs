@@ -505,8 +505,9 @@ pub struct Now {
     pub asking: bool,
     /// Queued messages start the next turn at once.
     pub continues: bool,
-    /// The turn left work running that the agent comes back to by itself:
-    /// subagents, or a command in the background.
+    /// The turn left subagents running, which the agent comes back to by
+    /// itself. A command left in the background is not counted: the reply
+    /// goes, and a turn the agent takes later reopens the run.
     pub background: bool,
 }
 
@@ -1462,9 +1463,9 @@ mod tests {
         let seen = feed(
             &mut r,
             &[
-                // The turn ends while a command runs in the background.
+                // The turn ends while its subagents run on.
                 (Event::Finished("end_turn"), background, None),
-                // The agent's own turn once the command is done.
+                // The agent's own turn once they are done.
                 (Event::Status, working(), None),
             ],
         );
@@ -1478,6 +1479,33 @@ mod tests {
         );
         assert_eq!(seen, [(Step::Finished, true, true)]);
         assert_eq!((r.state, r.held.is_none()), (RunState::Done, true));
+    }
+
+    #[test]
+    fn a_turn_the_agent_takes_after_its_reply_is_told_too() {
+        // A command left in the background holds nothing: the reply goes
+        // when the turn ends, so the session is not left in progress.
+        let mut r = ran(RunState::Running);
+        let seen = feed(
+            &mut r,
+            &[(Event::Finished("end_turn"), Now::default(), None)],
+        );
+        assert_eq!(seen, [(Step::Finished, true, true)]);
+        assert_eq!(r.state, RunState::Done);
+        // Claude may come back by itself once the command ends: that turn
+        // and its reply reach Linear as well.
+        let seen = feed(
+            &mut r,
+            &[
+                (Event::Status, working(), None),
+                (Event::Finished("end_turn"), Now::default(), None),
+            ],
+        );
+        assert_eq!(
+            seen,
+            [(Step::Working, false, false), (Step::Finished, true, true)]
+        );
+        assert_eq!(r.state, RunState::Done);
     }
 
     #[test]

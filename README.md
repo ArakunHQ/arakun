@@ -577,7 +577,7 @@ after a week).
   inside the channel. The relay defaults
   to the hosted one at `app.arakun.dev`, and lets a device in only when it is signed in
   to the same account as the computer. With Relay chosen, the Phone tab says "Sign in
-  to reach this computer from anywhere" until you press **Sign in with GitHub** (the
+  to reach this computer from anywhere" until you press **Sign in** (the
   same sign-in as the User row; no Teams needed). Signed in, it shows your login, the
   address to open on the phone with its QR code, and **Signed-in devices**: every
   device signed in to the account, with its kind and when it was last used, and
@@ -595,7 +595,8 @@ after a week).
   out, or under another account, they are dropped. **Paired phones** lists only the
   phones paired here with a code.
   On the phone, open `https://app.arakun.dev`,
-  sign in with GitHub and pick the computer (with one, the page opens it straight away).
+  sign in with GitHub or with a code emailed to you, and pick the computer (with one,
+  the page opens it straight away).
   Each computer in the list has **Remove**, and the page's Settings tab lists the
   account's signed-in devices with **Sign out**. A device unpaired in the Phone tab
   goes back to the list and does not connect again by itself. With several computers,
@@ -938,20 +939,25 @@ after a week).
 - **Automations.** Scheduled shell commands or agent prompts per project.
 - **Teams.** A pilot, only for the accounts it is turned on for; the agents and the
   rest of Arakun never need it. Click the User row of the sidebar (or Settings ›
-  Account) for the Profile dialog. **Sign in with GitHub** there opens a dialog with a
-  code and opens GitHub's device page:
+  Account) for the Profile dialog. **Sign in** there opens a dialog that asks how:
+  **Continue with GitHub**, or an email address. With an address, Arakun asks the
+  server to mail a six-digit code, which you type in the dialog; it works once, for 10
+  minutes, and **Send a new code** mails another. An address with no account yet makes
+  one, or joins the account whose verified GitHub address it is. With GitHub, the
+  dialog shows a code and opens GitHub's device page:
   enter the code there and approve. The dialog counts down the code's 15 minutes and
   says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
   asks GitHub only to read your email addresses (`user:email`) and hands the token once
   to the server. The server does not keep that token: it stores your GitHub user name
   and ID, your primary verified email address (so the operator can reach you about your
-  account; nothing sends mail), and a hash of each session with the name and kind of
+  account; the only mail it sends is a sign-in code you ask for), and a hash of each session with the name and kind of
   the device it is on. A server other than the default (`ARAKUN_TEAMS_URL`) names its
   own GitHub app, which Arakun asks it for. Arakun drops the GitHub token and keeps the
   session the server answers with in the system keyring: the Keychain on macOS, the
   Credential Manager on Windows, and the Secret Service (gnome-keyring, KWallet or
   KeePassXC) on Linux (without one, the session lasts until Arakun quits). Signed in, the User row shows
-  your GitHub picture and "Signed in with GitHub". An account the server has turned
+  your GitHub picture and "Signed in with GitHub", or your address and "Signed in by
+  email". An account the server has turned
   Teams on for gets a **Team** row under Search in the sidebar; any other account is
   signed in all the same, but cannot use Teams. A Team tab left open from
   before says Teams is not on for the account. Sign out (in the Profile dialog) removes
@@ -1143,7 +1149,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   the defaults.
 - **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
   Everything); it lays out the pieces and keeps the style you chose. Every preset holds
-  the User row, where you sign in with GitHub; a layout saved without it gets it once,
+  the User row, where you sign in; a layout saved without it gets it once,
   next to Help. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
   sidebar. While this tab is open the sidebar is being arranged: it shows in full,

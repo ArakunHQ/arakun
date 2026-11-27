@@ -205,7 +205,7 @@ enum Modal {
     Session(gpui::AnyView),
     /// The first-launch question about crash reports and usage counts.
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
-    /// Sign in with GitHub, for Teams.
+    /// Sign in, for Teams.
     TeamsSignIn(Entity<crate::arakun_teams::sign_in::SignInDialog>),
     /// A session or a project, from the + on the rail's Projects heading.
     New(Entity<new_dialog::NewDialog>),

@@ -60,7 +60,7 @@ pub enum ServersEvent {
         server: Option<String>,
         preference: Preference,
     },
-    /// Sign in with GitHub, so the servers on the account show up.
+    /// Sign in, so the servers on the account show up.
     SignIn,
 }
 
@@ -1062,8 +1062,8 @@ impl ServersView {
                     .child(
                         ui::button_with(
                             "computers-sign-in",
-                            Some("github"),
-                            "Sign in with GitHub",
+                            Some("user"),
+                            "Sign in",
                             ButtonKind::Outline,
                             true,
                         )
@@ -2279,8 +2279,8 @@ impl ServersView {
                     div().flex().child(
                         ui::button_with(
                             "computers-sheet-sign-in",
-                            Some("github"),
-                            "Sign in with GitHub",
+                            Some("user"),
+                            "Sign in",
                             ButtonKind::Outline,
                             true,
                         )

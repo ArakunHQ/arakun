@@ -983,6 +983,41 @@ thread_local! {
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
+thread_local! {
+    /// Copy buttons that asked whether to copy the secret they hold, and when.
+    static ASKED: RefCell<HashMap<u64, Instant>> = RefCell::new(HashMap::new());
+}
+
+/// How long a copy button waits for the click that says yes.
+const ASK_FOR: Duration = Duration::from_secs(4);
+
+/// Whether the copy button for `text` is asking to copy a secret right now.
+fn is_asking(text: &str) -> bool {
+    ASKED.with(|a| {
+        let mut a = a.borrow_mut();
+        a.retain(|_, at| at.elapsed() < ASK_FOR);
+        !a.is_empty() && a.contains_key(&hash_of(text))
+    })
+}
+
+/// A copy button's click: copies `text`, but when it holds a secret the chat
+/// hides, the first click only asks and a second one copies.
+fn copy_or_ask(text: &str, window: &mut Window, cx: &mut App) {
+    if !is_asking(text) && crate::redact::hides_in_chat(text) {
+        ASKED.with(|a| a.borrow_mut().insert(hash_of(text), Instant::now()));
+        window.refresh();
+        window
+            .spawn(cx, async move |cx| {
+                cx.background_executor().timer(ASK_FOR).await;
+                let _ = cx.update(|window, _| window.refresh());
+            })
+            .detach();
+        return;
+    }
+    ASKED.with(|a| a.borrow_mut().remove(&hash_of(text)));
+    copy_with_feedback(text, window, cx);
+}
+
 /// Whether `text` went to the clipboard through [`copy_with_feedback`] just now.
 pub fn was_copied(text: &str) -> bool {
     COPIED.with(|c| {
@@ -1020,6 +1055,25 @@ pub fn copy_button_sized(
 ) -> AnyElement {
     let text = text.into();
     let copied = was_copied(&text);
+    if is_asking(&text) {
+        return crate::ui::labelled(div().id(id), gpui::Role::Button, "Copy the secret too?")
+            .h(px(box_size))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(4.))
+            .px(crate::ui::sp(6.))
+            .rounded(crate::ui::rad(if box_size < 24. { 4. } else { 6. }))
+            .cursor_pointer()
+            .bg(theme::fill_selected())
+            .hover(|s| s.bg(theme::mix(0.18)))
+            .text_size(px(crate::ui::TEXT_XS))
+            .text_color(theme::content())
+            .child(icon("shield-alert", icon_size - 2.).text_color(theme::needs_you()))
+            .child("Copy the secret too?")
+            .on_click(move |_, window, cx| copy_or_ask(&text, window, cx))
+            .into_any_element();
+    }
     div()
         .id(id)
         .group("md-copy")
@@ -1045,7 +1099,7 @@ pub fn copy_button_sized(
             )
             .into_any_element()
         })
-        .on_click(move |_, window, cx| copy_with_feedback(&text, window, cx))
+        .on_click(move |_, window, cx| copy_or_ask(&text, window, cx))
         .into_any_element()
 }
 
@@ -1064,6 +1118,32 @@ fn last_inline(blocks: &[Block]) -> Option<&Inline> {
         Block::Quote(v) => last_inline(v),
         _ => None,
     }
+}
+
+/// `runs` split where the hidden secrets in `ranges` start and end, the
+/// parts inside one on a fill.
+pub(crate) fn secret_runs(runs: Vec<TextRun>, ranges: &[Range<usize>]) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + ranges.len() * 2);
+    let mut at = 0;
+    for run in runs {
+        let (a, b) = (at, at + run.len);
+        at = b;
+        let mut cuts = vec![a, b];
+        for r in ranges {
+            cuts.extend([r.start, r.end].into_iter().filter(|&c| c > a && c < b));
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let mut piece = run.clone();
+            piece.len = w[1] - w[0];
+            if ranges.iter().any(|r| r.start <= w[0] && w[1] <= r.end) {
+                piece.background_color = Some(theme::fill_selected());
+            }
+            out.push(piece);
+        }
+    }
+    out
 }
 
 /// `runs` over `text` split where the fade spans start and end, the young
@@ -1132,6 +1212,8 @@ struct Ctx<'a> {
     /// Other people wrote the text: no files, images only over https, and
     /// only web and mail links.
     untrusted: bool,
+    /// A chat: secrets in it are hidden until clicked, outside redacted mode too.
+    chat: bool,
     selection: Option<Range<usize>>,
     /// Annotated ranges, highlighted until their note is sent or removed.
     marks: &'a [Range<usize>],
@@ -1152,9 +1234,31 @@ impl Ctx<'_> {
     ) -> AnyElement {
         // Every offset below (runs, links, selection, search) still fits:
         // the masked text keeps its length in bytes.
-        let text = crate::redact::same_bytes(&text).map_or(text, SharedString::from);
+        let masked = if self.chat {
+            crate::redact::in_chat(&text)
+        } else {
+            crate::redact::same_bytes(&text).map(|text| crate::redact::Masked {
+                text,
+                hidden: Vec::new(),
+            })
+        };
+        let (text, plain, hidden) = match masked {
+            Some(m) => (SharedString::from(m.text), Some(text), m.hidden),
+            None => (text, None, Vec::new()),
+        };
         let start = self.next.get();
         self.next.set(start + text.len() + 1);
+        for h in &hidden {
+            self.map
+                .secret(start + h.range.start..start + h.range.end, h.value.clone());
+        }
+        // A fill says a click shows it; redacted mode shows nothing.
+        let runs = if hidden.is_empty() || crate::redact::on() {
+            runs
+        } else {
+            let ranges: Vec<Range<usize>> = hidden.iter().map(|h| h.range.clone()).collect();
+            secret_runs(runs, &ranges)
+        };
         let links = if self.untrusted {
             links
                 .into_iter()
@@ -1198,6 +1302,7 @@ impl Ctx<'_> {
         self.map.push(Seg {
             start,
             text: text.clone(),
+            plain,
             pads,
             layout: layout.clone(),
             bounds: bounds.clone(),
@@ -1761,6 +1866,7 @@ pub fn render(
     fetched: Option<&HashMap<String, PathBuf>>,
     fade: Option<&Fade>,
     find: Option<Find>,
+    chat: bool,
 ) -> AnyElement {
     map.clear();
     lay_out(
@@ -1778,6 +1884,7 @@ pub fn render(
             base,
             fetched,
             untrusted: false,
+            chat,
             selection,
             next: Cell::new(0),
         },
@@ -1802,6 +1909,7 @@ pub fn render_untrusted(id: impl Into<ElementId>, blocks: &[Block], st: MdStyle)
             base: None,
             fetched: None,
             untrusted: true,
+            chat: false,
             selection: None,
             next: Cell::new(0),
         },

@@ -364,7 +364,7 @@ impl ThreadView {
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
                 } else if open {
-                    let details = tool_details(tool, cwd);
+                    let details = tool_details(tool, cwd, &Self::reveal_handle(cx));
                     col = col.child(self.unfold(Fold::Row, ix, details, cx));
                 }
                 col.into_any_element()
@@ -541,11 +541,10 @@ impl ThreadView {
                     .when(label.file, |d| {
                         d.child(icon("file01", 12.).text_color(theme::text_subtle()))
                     })
-                    .child(
-                        div().min_w_0().truncate().child(
-                            crate::redact::text(&label.target.replace('\n', " ")).into_owned(),
-                        ),
-                    ),
+                    .child(Self::reveal_handle(cx).text(
+                        div().id("tool-target").min_w_0().truncate(),
+                        &label.target.replace('\n', " "),
+                    )),
             )
             .when(tool.added > 0 || tool.removed > 0, |d| {
                 d.child(
@@ -610,7 +609,7 @@ impl ThreadView {
     }
 }
 
-pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
+pub(super) fn tool_details(tool: &ToolCall, cwd: &Path, reveal: &Reveal) -> AnyElement {
     let mut col = div()
         .flex()
         .flex_col()
@@ -619,19 +618,19 @@ pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
         .pb(crate::ui::sp(6.))
         .min_w_0();
     if tool.kind == "execute" {
-        return col.child(terminal_card(tool)).into_any_element();
+        return col.child(terminal_card(tool, reveal)).into_any_element();
     }
     let mut any_text = false;
-    for c in &tool.content {
+    for (k, c) in tool.content.iter().enumerate() {
         match c {
             ToolContent::Diff {
                 path,
                 old_text,
                 new_text,
-            } => col = col.child(diff_card(path, old_text.as_deref(), new_text, cwd)),
+            } => col = col.child(diff_card(path, old_text.as_deref(), new_text, cwd, reveal)),
             ToolContent::Text { text } if !text.trim().is_empty() => {
                 any_text = true;
-                col = col.child(mono_block(text, theme::mix(0.55)));
+                col = col.child(mono_block(k, text, theme::mix(0.55), reveal));
             }
             _ => {}
         }
@@ -643,14 +642,19 @@ pub(super) fn tool_details(tool: &ToolCall, cwd: &Path) -> AnyElement {
             .iter()
             .any(|c| matches!(c, ToolContent::Diff { .. }))
     {
-        col = col.child(mono_block(out, theme::mix(0.55)));
+        col = col.child(mono_block(
+            tool.content.len(),
+            out,
+            theme::mix(0.55),
+            reveal,
+        ));
     }
     col.into_any_element()
 }
 
 /// A command and what it printed, like a terminal: from the `_meta.terminal_output`
 /// extension when the agent sends it, else the text it put in the tool's content.
-pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
+pub(super) fn terminal_card(tool: &ToolCall, reveal: &Reveal) -> AnyElement {
     let cmd = tool
         .raw_input
         .as_ref()
@@ -703,11 +707,14 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
                     .py(crate::ui::sp(6.))
                     .child(div().flex_none().text_color(theme::text_faint()).child("$"))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_color(theme::text_muted())
-                            .child(crate::redact::text(&cmd).into_owned()),
+                        reveal.text(
+                            div()
+                                .id("terminal-cmd")
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(theme::text_muted()),
+                            &cmd,
+                        ),
                     ),
             )
         })
@@ -722,11 +729,14 @@ pub(super) fn terminal_card(tool: &ToolCall) -> AnyElement {
         })
         .when(!shown.is_empty(), |d| {
             d.child(
-                div()
-                    .px(crate::ui::sp(10.))
-                    .py(crate::ui::sp(6.))
-                    .text_color(theme::text_subtle())
-                    .child(crate::redact::text(&shown).into_owned()),
+                reveal.text(
+                    div()
+                        .id("terminal-output")
+                        .px(crate::ui::sp(10.))
+                        .py(crate::ui::sp(6.))
+                        .text_color(theme::text_subtle()),
+                    &shown,
+                ),
             )
         })
         .when(failed, |d| {
@@ -817,21 +827,25 @@ pub(super) fn strip_ansi(text: &str) -> String {
     out
 }
 
-pub(super) fn mono_block(text: &str, color: Hsla) -> AnyElement {
+pub(super) fn mono_block(ix: usize, text: &str, color: Hsla, reveal: &Reveal) -> AnyElement {
     let lines: Vec<&str> = text.trim_end().lines().collect();
     let more = lines.len().saturating_sub(OUTPUT_LINES);
     let mut shown = lines[..lines.len().min(OUTPUT_LINES)].join("\n");
     if more > 0 {
         shown.push_str(&format!("\n… {more} more lines"));
     }
-    div()
-        .min_w_0()
-        .px(crate::ui::sp(10.))
-        .font_family(theme::FONT_MONO)
-        .text_size(px(crate::ui::TEXT_SM))
-        .line_height(px(20.))
-        .text_color(color)
-        .child(crate::redact::text(&shown).into_owned())
+    reveal
+        .text(
+            div()
+                .id(("mono-block", ix))
+                .min_w_0()
+                .px(crate::ui::sp(10.))
+                .font_family(theme::FONT_MONO)
+                .text_size(px(crate::ui::TEXT_SM))
+                .line_height(px(20.))
+                .text_color(color),
+            &shown,
+        )
         .into_any_element()
 }
 

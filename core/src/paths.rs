@@ -112,6 +112,7 @@ files! {
     own file OPEN_LINKS = "open-links", "Where links open (Settings › General)";
     own file DRIVE_ANY_PAGE = "drive-any-page", "Agents may drive external pages, while it is on";
     own file REDACTED = "redacted", "Redacted mode, while it is on (Settings › Privacy)";
+    own file SHOW_SECRETS = "show-secrets", "Secrets in sessions shown, while hiding them is off (Settings › Privacy)";
     own file TELEMETRY = "telemetry.json", "Your answer about crash reports and usage counts (Settings › Privacy)";
     own file CRASH_LOG = "crash.log", "Every panic, kept on this machine";
     own file RUNNING = "running", "That Arakun is running: one left behind means the last run crashed";

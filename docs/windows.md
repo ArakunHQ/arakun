@@ -166,6 +166,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Agents may drive external pages, while it is on | `%LOCALAPPDATA%\arakun\drive-any-page` |
 | Redacted mode, while it is on (Settings › Privacy) | `%LOCALAPPDATA%\arakun\redacted` |
+| Secrets in sessions shown, while hiding them is off (Settings › Privacy) | `%LOCALAPPDATA%\arakun\show-secrets` |
 | Your answer about crash reports and usage counts (Settings › Privacy) | `%LOCALAPPDATA%\arakun\telemetry.json` |
 | Every panic, kept on this machine | `%LOCALAPPDATA%\arakun\crash.log` |
 | That Arakun is running: one left behind means the last run crashed | `%LOCALAPPDATA%\arakun\running` |

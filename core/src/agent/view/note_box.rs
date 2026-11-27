@@ -8,7 +8,8 @@ impl ThreadView {
         let (Some(sel), Some(at)) = (self.selection.as_ref(), self.menu_at) else {
             return;
         };
-        let Some(quote) = self.selected_text() else {
+        // Quoted as shown: the note box shows the quote on screen.
+        let Some(quote) = self.selected_text(false) else {
             return;
         };
         let (surface, range) = (sel.surface, sel.range());
@@ -95,20 +96,54 @@ impl ThreadView {
                             .bg(theme::dialog())
                             .shadow_lg()
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(button("sel-copy", "copy01", "Copy").on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    if let Some(text) = this.selected_text() {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                    }
-                                    this.clear_selection();
-                                    cx.notify();
-                                },
-                            )))
-                            .child(
-                                button("sel-note", "comment-add01", "Add to message").on_click(
-                                    cx.listener(|this, _, window, cx| this.start_note(window, cx)),
-                                ),
-                            )
+                            .map(|d| {
+                                if !self.copy_asks {
+                                    return d
+                                        .child(button("sel-copy", "copy01", "Copy").on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.copy_selection(cx);
+                                                if !this.copy_asks {
+                                                    this.clear_selection();
+                                                }
+                                                cx.notify();
+                                            }),
+                                        ))
+                                        .child(
+                                            button("sel-note", "comment-add01", "Add to message")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.start_note(window, cx)
+                                                })),
+                                        );
+                                }
+                                let copy = |plain: bool| {
+                                    cx.listener(move |this: &mut Self, _: &ClickEvent, _, cx| {
+                                        if let Some(text) = this.selected_text(plain) {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        }
+                                        this.clear_selection();
+                                        cx.notify();
+                                    })
+                                };
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(crate::ui::sp(6.))
+                                        .px(crate::ui::sp(8.))
+                                        .text_size(px(crate::ui::TEXT_SM))
+                                        .text_color(theme::text_muted())
+                                        .child(icon("shield-alert", 13.).text_color(amber()))
+                                        .child("Copy the secret too?"),
+                                )
+                                .child(
+                                    button("sel-copy-shown", "copy01", "Copy as shown")
+                                        .on_click(copy(false)),
+                                )
+                                .child(
+                                    button("sel-copy-secret", "view", "Copy with secret")
+                                        .on_click(copy(true)),
+                                )
+                            })
                             .map(|d| {
                                 crate::ui::motion::enter(
                                     d,

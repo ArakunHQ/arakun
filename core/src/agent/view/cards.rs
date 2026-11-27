@@ -188,7 +188,13 @@ impl ThreadView {
                         path,
                         old_text,
                         new_text,
-                    } => Some(diff_card(path, old_text.as_deref(), new_text, cwd)),
+                    } => Some(diff_card(
+                        path,
+                        old_text.as_deref(),
+                        new_text,
+                        cwd,
+                        &Self::reveal_handle(cx),
+                    )),
                     _ => None,
                 })
             })
@@ -196,18 +202,22 @@ impl ThreadView {
                 let t = tool?;
                 let cmd = t.raw_input.as_ref()?.get("command")?.as_str()?.to_string();
                 Some(
-                    div()
-                        .max_h(px(128.))
-                        .overflow_hidden()
-                        .px(crate::ui::sp(10.))
-                        .py(crate::ui::sp(8.))
-                        .rounded(crate::ui::rad(12.))
-                        .bg(theme::fill_hover())
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(crate::ui::TEXT_SM))
-                        .line_height(px(20.))
-                        .text_color(theme::text_muted())
-                        .child(cmd)
+                    Self::reveal_handle(cx)
+                        .text(
+                            div()
+                                .id("permission-command")
+                                .max_h(px(128.))
+                                .overflow_hidden()
+                                .px(crate::ui::sp(10.))
+                                .py(crate::ui::sp(8.))
+                                .rounded(crate::ui::rad(12.))
+                                .bg(theme::fill_hover())
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(crate::ui::TEXT_SM))
+                                .line_height(px(20.))
+                                .text_color(theme::text_muted()),
+                            &cmd,
+                        )
                         .into_any_element(),
                 )
             });
@@ -238,12 +248,15 @@ impl ThreadView {
                     .gap(crate::ui::sp(8.))
                     .child(icon("shield-alert", 14.).text_color(amber()))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(crate::ui::TEXT_MD))
-                            .text_color(theme::text_muted())
-                            .child(question),
+                        Self::reveal_handle(cx).text(
+                            div()
+                                .id("permission-question")
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(crate::ui::TEXT_MD))
+                                .text_color(theme::text_muted()),
+                            &question,
+                        ),
                     ),
             )
             .when_some(preview, |d, p| d.child(p))
@@ -496,16 +509,19 @@ impl ThreadView {
                                         .bg(theme::fill_hover())
                                         .text_size(px(crate::ui::TEXT_XS))
                                         .text_color(theme::text_subtle())
-                                        .child(q.topic.clone()),
+                                        .child(crate::redact::chat_text(&q.topic).0.into_owned()),
                                 )
                             })
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(crate::ui::TEXT_MD))
-                                    .text_color(theme::text_muted())
-                                    .child(q.question.clone()),
+                                Self::reveal_handle(cx).text(
+                                    div()
+                                        .id(("ask-question", qi))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(crate::ui::TEXT_MD))
+                                        .text_color(theme::text_muted()),
+                                    &q.question,
+                                ),
                             )
                             .when(q.multi, |d| {
                                 d.child(
@@ -553,7 +569,9 @@ impl ThreadView {
                                                 icon("tick02", 12.).text_color(theme::background()),
                                             )
                                         })
-                                        .child(label.clone())
+                                        // A click picks the option, so a secret in
+                                        // it stays hidden.
+                                        .child(crate::redact::chat_text(label).0.into_owned())
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.toggle_pick(qi, oi, multi, cx)
                                         }))

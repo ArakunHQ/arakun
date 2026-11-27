@@ -801,6 +801,8 @@ impl Shell {
                                 None,
                                 None,
                                 None,
+                                // A file the user opened, not a chat.
+                                false,
                             )),
                     )
                     .into_any_element()

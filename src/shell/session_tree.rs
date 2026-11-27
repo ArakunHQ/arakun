@@ -1466,15 +1466,16 @@ impl Shell {
                             .text_color(state.word_color())
                             .child(text)
                     }))
-                    // Small and faint, and there under the pointer too: it
-                    // says why the row is first.
+                    // In the full text color so pinned rows stand out, not
+                    // amber, which only means the session needs you. It stays
+                    // under the pointer too: it says why the row is first.
                     .when(pinned, |d| {
                         d.child(
                             div()
                                 .id(SharedString::from(format!("tree-pinned-{id}")))
                                 .flex()
                                 .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
-                                .child(icon("pin", 11.).text_color(theme::text_faint())),
+                                .child(icon("pin", 11.).text_color(theme::text())),
                         )
                     }),
             )

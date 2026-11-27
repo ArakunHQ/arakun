@@ -80,7 +80,7 @@ fetches the CEF SDK a macOS build with the browser needs and links it at `.cef-s
 `--ci-tools` (`-CiTools`) adds cargo-deny and zizmor (the version CI pins) with
 `cargo install`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
-follow [Build from source](README.md#build-from-source) in the README.
+follow [Build from source](docs/building.md).
 
 **Coding agents** run `tools/setup-dev.sh --yes --relay` (on Windows,
 `tools\setup-dev.ps1 -Yes -Relay`). In Claude Code on the web, `.claude/settings.json`
@@ -284,11 +284,16 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   `--target x86_64-pc-windows-gnu`). In the pull request, say which platforms you tested
   on.
 - **Docs.** If you change a command, a flag, a shortcut or a storage path, update the
-  README (and [docs/windows.md](docs/windows.md) if it is different on Windows).
+  docs: the README keeps the pitch, install, first steps and the main commands, and
+  the rest is in [docs/](docs) (and [docs/windows.md](docs/windows.md) if it is
+  different on Windows).
   Every file in the data folder is named in the list in `core/src/paths.rs`, and
   `paths::store` and `paths::shared` take only names from it. The storage tables in
-  docs/windows.md are written from that list: after you change it, run
-  `ARAKUN_BLESS=1 cargo test -p arakun-core paths`.
+  docs/windows.md and docs/storage-and-env.md are written from that list: after you
+  change it, run `ARAKUN_BLESS=1 cargo test -p arakun-core paths`. The shortcuts in
+  docs/shortcuts.md and the commands in docs/cli.md come from `src/keymap.rs` and the
+  help in `src/control.rs` the same way (`ARAKUN_BLESS=1 cargo test
+  --no-default-features keymap control`).
 
 ### The iOS app
 

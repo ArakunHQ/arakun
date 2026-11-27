@@ -18,8 +18,8 @@
 #
 # Always: the system libraries GPUI needs (apt, dnf or pacman; on macOS the Xcode Command
 # Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
-# It builds without the browser, as CI does; for CEF see --browser and "With the browser"
-# in the README. Running it again is safe.
+# It builds without the browser, as CI does; for CEF see --browser and docs/browser.md.
+# Running it again is safe.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -89,7 +89,7 @@ if [ "$os" = Linux ]; then
   fi
 fi
 
-# The packages from "Build from source" in the README; CI installs the same on Ubuntu.
+# The packages from docs/building.md; CI installs the same on Ubuntu.
 case $pm in
   apt) pkgs="build-essential pkg-config git curl ca-certificates
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
@@ -141,7 +141,7 @@ if [ "$os" = Darwin ]; then
   fi
 elif [ -z "$pm" ]; then
   # No list for other distributions yet: they need the same libraries under their names.
-  say "no apt-get, dnf or pacman here; install the equivalents of the Ubuntu packages in the README" >&2
+  say "no apt-get, dnf or pacman here; install the equivalents of the Ubuntu packages in docs/building.md" >&2
   [ $check = 1 ] && missing=1
 else
   todo=$(not_installed | tr '\n' ' ' | sed 's/ *$//')
@@ -316,7 +316,7 @@ fi
 if [ $browser = 1 ]; then
   say "browser (CEF 156.0.15)"
   if [ "$os" != Darwin ]; then
-    say "on Linux, see \"With the browser\" in the README; skipped"
+    say "on Linux, see docs/browser.md; skipped"
   else
     for t in cmake ninja; do
       if command -v $t >/dev/null; then ok $t; else lack "$t (brew install cmake ninja)"; fi

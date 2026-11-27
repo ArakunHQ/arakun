@@ -143,9 +143,11 @@ A session has a kind: `app`, `server`, `phone`, `ios` or `android`, as the sign-
 says, or `cloud`. No sign-in makes a `cloud` session: the Worker makes one for a
 machine it runs in a container, bound to that machine's label. An agent in the
 container could leak the token, so it is good only at `/machines/<label>/pc` of its
-own label. Everywhere else, the other labels and every device door included, it counts
-as no session (`401`, or `signed_out` on a socket). A machine has one cloud session at
-a time, and a new one ends the one before. Cloud sessions do not count toward the 100,
+own label and at `GET /sessions`, which answers it without the devices' names: the
+server asks there which devices are still signed in, and takes a `401` as the end of
+its own sign-in. Everywhere else, the other labels and every device door included, it
+counts as no session (`401`, or `signed_out` on a socket). A machine has one cloud
+session at a time, and a new one ends the one before. Cloud sessions do not count toward the 100,
 and a sign-in never ends one to make room. They expire and renew like any session,
 `GET /sessions` lists them with kind `cloud`, and `DELETE /sessions/<id>`, a block
 and signing out everywhere end them.
@@ -827,7 +829,8 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   made, so the label is known before the container first runs. The key goes in
   only on a start from the image; a snapshot has it on disk.
 - **Sign-in.** Each start makes a new `cloud` session for the label, which ends
-  the one before and is good only at that label's computer door. It goes in as an
+  the one before and is good only at that label's computer door and for the list of
+  the account's sessions the server asks for ("How sign-in works"). It goes in as an
   environment variable. Sleep removes the server's sign-in file and ends the
   session before the snapshot, so no snapshot holds a live token.
 - **Lifecycle.** A device at the machine's door wakes it, from its snapshot when
@@ -838,10 +841,13 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   stops the container. Taking the `cloud` flag or blocking the account stops the
   machine at the next check and refuses the next wake.
 - **Users.** `arakun` runs the server; `agent` runs the agents, without
-  capabilities, through `machine/claude-acp`. On Cloudflare's `durable_object`
-  policy every process has root's capabilities whatever its user, so this
-  separation holds in Docker but has not been shown to hold there; the session's
-  one door is what limits a token an agent reads.
+  capabilities, through `machine/claude-acp`. Tried on a Cloudflare container:
+  the server runs without capabilities, and a process started the way
+  `machine/as-agent` starts the adapter has none, cannot get them back and cannot
+  read the server's sign-in or key. Only what the object starts with `exec` has
+  root's capabilities whatever its user, as Cloudflare says of the
+  `durable_object` policy; the object runs `arakun-server status` and `rm` that
+  way, never an agent. The session's one door still limits a token that leaks.
 - **Size.** 1 vCPU, 6 GiB and 20 GB of disk (`INSTANCE`), the most disk an
   account gets and a snapshot holds.
 

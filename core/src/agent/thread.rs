@@ -200,6 +200,7 @@ pub struct ToolCall {
     /// ([`super::secret_reads::tool_reads`]). Its output stays hidden until
     /// the user shows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Not a secret: the name of the file that holds one.
     pub secret: Option<String>,
 }
 
@@ -408,6 +409,7 @@ pub struct PermissionRequest {
     /// The subagent session asking, when it is not this one.
     pub session: Option<String>,
     /// The secret file the call would read, when that is why it asks.
+    // Not a secret: the name of the file that holds one.
     pub secret: Option<String>,
     /// Set when Arakun asks itself, before it answers the agent's
     /// `fs/read_text_file` with these params: `rpc_id` is that request's.

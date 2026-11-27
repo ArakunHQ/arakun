@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
-# The server's user may start the agent's adapter, as as-agent does it, and
-# nothing else. SETENV: the adapter needs the variables the server gives it.
+# The server's user may start the agent's adapter and Claude Code, as as-agent
+# does it, and nothing else. SETENV: the adapter needs the variables the server gives it.
 Defaults:arakun !lecture
 arakun ALL=(root) NOPASSWD:SETENV: /opt/arakun/bin/as-agent

@@ -839,9 +839,16 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
 - **Model credentials.** The agents run on the owner's own account with the model
   provider, in one of two ways. Arakun never collects, stores or routes a plan's
   sign-in.
-  - *A sign-in*, made inside the machine with the agent's own flow (`/login` in a
-    Claude Code session). The Worker never sees it; Claude Code keeps it in the
-    home folder of `agent`, like on any computer.
+  - *A sign-in* to a Claude plan (Pro, Max, Team), made inside the machine with
+    Claude Code's own flow: open a terminal on the machine, run `claude`, then
+    `/login`, open the link it prints and paste the code back. `claude` there is
+    `machine/claude`, which runs Claude Code as `agent`, so the sign-in lands in
+    that user's home folder, where the sessions find it. The token goes from
+    Anthropic to the machine's disk: the Worker never sees it, and no route takes
+    one. It stays on the disk, and so in the machine's snapshot, like the rest of
+    the home folder; else every wake would ask for a new sign-in. `/logout` there,
+    or removing the machine, ends it. While the machine also has an API key, Claude
+    Code uses the key: remove the key to run on the plan.
   - *An API key*, given to `PUT /cloud/machines/<label>/model/<provider>`
     (`src/cloud_model.ts`): an Anthropic API key, Amazon Bedrock or Google Vertex AI
     for Claude Code, one of the three at a time, and an OpenAI API key next to it
@@ -868,8 +875,8 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   `machine/as-agent` starts the adapter has none, cannot get them back and cannot
   read the server's sign-in or key. Only what the object starts with `exec` has
   root's capabilities whatever its user, as Cloudflare says of the
-  `durable_object` policy; the object runs `arakun-server status` and `rm` that
-  way, never an agent. The session's one door still limits a token that leaks.
+  `durable_object` policy; the object runs `arakun-server status`, `rm` and
+  `machine/model-env` that way, never an agent. The session's one door still limits a token that leaks.
 - **Size.** 1 vCPU, 6 GiB and 20 GB of disk (`INSTANCE`), the most disk an
   account gets and a snapshot holds.
 

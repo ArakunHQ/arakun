@@ -7,7 +7,7 @@
 # Two users. `arakun` runs the server and holds its sign-in and relay key.
 # `agent` runs the agents: the server starts the adapter through
 # /opt/arakun/bin/claude-acp, which may only become `agent`, with no
-# capabilities, and only to run the adapter. Both are in the group `work`,
+# capabilities, and only to run the adapter or Claude Code. Both are in the group `work`,
 # which owns /work, where sessions start.
 #
 # The release binary, not a build from source: deploys happen on a release
@@ -45,18 +45,25 @@ RUN HOME=/tmp/install sh /tmp/install-release.sh --server --no-tools ${ARAKUN_VE
 
 # The adapter at the version the server pins (CLAUDE_ACP_PACKAGE), with the
 # Claude Code binary its SDK brings. Root owns it, so an agent cannot change
-# what the next session runs.
+# what the next session runs. /opt/arakun/agent/claude is that binary, the one
+# of the two (glibc, musl) that runs here: `claude` on the PATH starts it as
+# `agent`, for the owner's sign-in.
 COPY core/src/agent/launch.rs /tmp/launch.rs
 RUN package=$(sed -n 's/^pub const CLAUDE_ACP_PACKAGE: &str = "\(.*\)";$/\1/p' /tmp/launch.rs) \
     && test -n "$package" \
     && npm install --prefix /opt/arakun/agent --include=optional --no-audit --no-fund --loglevel=error "$package" \
     && test -x /opt/arakun/agent/node_modules/.bin/claude-agent-acp \
+    && for bin in /opt/arakun/agent/node_modules/@anthropic-ai/claude-agent-sdk-linux-*/claude; do \
+         if "$bin" --version >/dev/null 2>&1; then ln -s "$bin" /opt/arakun/agent/claude; break; fi; \
+       done \
+    && /opt/arakun/agent/claude --version \
     && rm /tmp/launch.rs
 
 COPY cloud/machine/entrypoint.sh cloud/machine/claude-acp cloud/machine/as-agent cloud/machine/model-env /opt/arakun/bin/
+COPY cloud/machine/claude /usr/local/bin/claude
 COPY cloud/machine/sudoers /etc/sudoers.d/arakun
-RUN chown root:root /opt/arakun/bin/* /etc/sudoers.d/arakun \
-    && chmod 755 /opt/arakun/bin/* \
+RUN chown root:root /opt/arakun/bin/* /usr/local/bin/claude /etc/sudoers.d/arakun \
+    && chmod 755 /opt/arakun/bin/* /usr/local/bin/claude \
     && chmod 440 /etc/sudoers.d/arakun \
     && visudo -cf /etc/sudoers.d/arakun
 

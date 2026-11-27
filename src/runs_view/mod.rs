@@ -474,7 +474,15 @@ impl RunsView {
                 "Runs show for repositories with a GitHub remote.",
             ),
             List::Loading(error) => match error {
-                Some(e) => empty("alert-circle", "Couldn't read the runs", e.as_ref()),
+                Some(e) => ui::empty_state(
+                    "alert-circle",
+                    "Couldn't read the runs",
+                    e.as_ref(),
+                    crate::github_view::gh_fix("runs-gh-fix", e.as_ref()),
+                )
+                .flex_1()
+                .justify_center()
+                .into_any_element(),
                 None => div()
                     .flex()
                     .flex_1()
@@ -506,8 +514,12 @@ impl RunsView {
                             .mx(px(8.))
                             .mb(px(8.))
                             .text_size(px(ui::TEXT_SM))
+                            .flex()
+                            .items_center()
+                            .gap(crate::ui::sp(8.))
                             .text_color(hex(RED))
-                            .child(e.clone()),
+                            .child(div().flex_1().min_w_0().child(e.clone()))
+                            .children(crate::github_view::gh_fix("runs-gh-fix", e.as_ref())),
                     );
                 }
                 if runs.is_empty() {

@@ -195,6 +195,27 @@ impl Shell {
         })
     }
 
+    /// Runs `gh auth login` in a terminal: the fix the views that read
+    /// through `gh` offer when it has no session.
+    pub(super) fn sign_in_to_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A remote environment's terminals run there, and `gh` reads here.
+        if self.has_projects() && self.env().remote.is_some() {
+            self.notify(
+                crate::island::AlertKind::Info,
+                "Sign in to GitHub",
+                "Run `gh auth login` in a terminal on this computer, then refresh.",
+                None,
+                cx,
+            );
+            return;
+        }
+        let cmd = crate::onboarding::GH_LOGIN
+            .split(' ')
+            .map(String::from)
+            .collect();
+        self.spawn_terminal_command(Some(cmd), true, window, cx);
+    }
+
     pub(super) fn on_github_view_event(
         &mut self,
         ev: &GitHubViewEvent,

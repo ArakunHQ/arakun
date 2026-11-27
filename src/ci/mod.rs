@@ -657,20 +657,23 @@ impl From<crate::guard::Panicked> for ListError {
 
 pub fn list_runs(dir: &Path) -> std::result::Result<Vec<Run>, ListError> {
     let limit = LIST_LIMIT.to_string();
-    gh_json(dir, &["run", "list", "-L", &limit, "--json", RUN_FIELDS]).map_err(|e| {
-        let msg = e.to_string();
+    let args = ["run", "list", "-L", &limit, "--json", RUN_FIELDS];
+    crate::github::gh_json(dir, &args, GIT_REMOTE).map_err(list_error)
+}
+
+/// Matches on the problem, not its text: the text for a missing `gh` names
+/// `gh auth login` too, and read as signed out.
+fn list_error(problem: crate::github::Problem) -> ListError {
+    if let crate::github::Problem::Other(msg) = &problem {
         let lower = msg.to_lowercase();
         if lower.contains("no git remotes")
             || lower.contains("known github host")
             || lower.contains("not a git repository")
         {
-            ListError::NotGitHub
-        } else if lower.contains("gh auth login") {
-            ListError::Other(crate::github::SIGNED_OUT.into())
-        } else {
-            ListError::Other(msg)
+            return ListError::NotGitHub;
         }
-    })
+    }
+    ListError::Other(problem.text())
 }
 
 #[derive(Deserialize)]
@@ -1580,6 +1583,24 @@ impl Ci {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_gh_does_not_read_as_signed_out() {
+        use crate::github::{NO_GH, Problem, SIGNED_OUT};
+        assert_eq!(list_error(Problem::NoGh), ListError::Other(NO_GH.into()));
+        assert_eq!(
+            list_error(Problem::SignedOut),
+            ListError::Other(SIGNED_OUT.into())
+        );
+        assert_eq!(
+            list_error(Problem::Other("no git remotes found".into())),
+            ListError::NotGitHub
+        );
+        assert_eq!(
+            list_error(Problem::Other("HTTP 502".into())),
+            ListError::Other("HTTP 502".into())
+        );
+    }
 
     fn run(id: u64, workflow: &str, branch: &str, status: &str, conclusion: &str, at: &str) -> Run {
         Run {

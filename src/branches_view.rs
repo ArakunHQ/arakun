@@ -429,9 +429,13 @@ impl BranchesView {
         cx.notify();
     }
 
-    /// Where pull requests can't be read: why, and a field to name the repository.
+    /// Where pull requests can't be read: why, and a field to name the
+    /// repository. When `gh` is missing or signed out, the button that fixes
+    /// that instead: no repository name helps then.
     fn render_repo(&self, error: &str, cx: &mut Context<Self>) -> Div {
-        div()
+        let fix = crate::github_view::gh_fix("branches-gh-fix", error);
+        let gh_problem = fix.is_some();
+        let card = div()
             .flex()
             .flex_col()
             .gap(crate::ui::sp(8.))
@@ -451,46 +455,50 @@ impl BranchesView {
                             .flex_1()
                             .min_w_0()
                             .child(format!("Pull requests unavailable: {error}")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_SM))
-                            .text_color(theme::text_muted())
-                            .child("Read them from GitHub repository"),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .w(px(240.))
-                            .h(px(ui::BUTTON_H))
-                            .px(crate::ui::sp(8.))
-                            .rounded(crate::ui::rad(ui::RADIUS))
-                            .border_1()
-                            .border_color(theme::border_strong())
-                            .font_family(theme::FONT_MONO)
-                            .text_size(px(ui::TEXT_SM))
-                            .child(self.repo.clone()),
-                    )
-                    .child(
-                        ui::button("branches-repo", "Use", ButtonKind::Outline, true)
-                            .on_click(cx.listener(|this, _, _, cx| this.use_repo(cx))),
-                    ),
-            )
-            .when_some(self.repo_error.clone(), |d, e| {
-                d.child(
+                    .children(fix),
+            );
+        if gh_problem {
+            return card;
+        }
+        card.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .child(
                     div()
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(theme::danger())
-                        .child(e),
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child("Read them from GitHub repository"),
                 )
-            })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .w(px(240.))
+                        .h(px(ui::BUTTON_H))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(ui::TEXT_SM))
+                        .child(self.repo.clone()),
+                )
+                .child(
+                    ui::button("branches-repo", "Use", ButtonKind::Outline, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.use_repo(cx))),
+                ),
+        )
+        .when_some(self.repo_error.clone(), |d, e| {
+            d.child(
+                div()
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::danger())
+                    .child(e),
+            )
+        })
     }
 
     fn env_of(&self, branch: &str) -> Option<&EnvInfo> {

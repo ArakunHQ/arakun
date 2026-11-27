@@ -39,6 +39,7 @@ use crate::linear::start::{
     no_sign_in_line, own_branch, refusal_line, started_line, unreadable_line, waiting_line,
     work_branch,
 };
+use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, env, prompt};
 use crate::model::unix_now;
 use crate::phone::linear::{Delivery, DeliveryKind, GuidanceRule};
@@ -334,15 +335,30 @@ impl Daemon {
         let identifier = detail.issue.identifier.clone();
         let wanted = prompt::branch(&detail);
         let root = project.clone();
+        let key = self.linear_key(&start.organization);
+        let mut with_files = detail.clone();
         cx.spawn(async move |this, cx| {
-            let made = cx
+            let (made, detail, files) = cx
                 .background_spawn(crate::guard::task_or(
-                    async move { make_worktree(&root, &wanted, &identifier) },
-                    |_| Err(HIT_AN_ERROR.to_string()),
+                    async move {
+                        let made = make_worktree(&root, &wanted, &identifier);
+                        let files = match (&made, key) {
+                            (Ok((path, _, _)), Some(key)) => uploads::fetch(
+                                |link, limit| uploads::download(&key, link, limit),
+                                path,
+                                &mut with_files,
+                            ),
+                            (Ok(_), None) => uploads::unfetched(&with_files),
+                            (Err(_), _) => Fetched::default(),
+                        };
+                        (made, with_files, files)
+                    },
+                    // The issue as read, with Linear's links.
+                    move |_| (Err(HIT_AN_ERROR.to_string()), detail, Fetched::default()),
                 ))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.linear_env_made(start, detail, project, made, cx)
+                this.linear_env_made(start, detail, files, project, made, cx)
             });
         })
         .detach();
@@ -352,6 +368,7 @@ impl Daemon {
         &mut self,
         start: Start,
         detail: Detail,
+        files: Fetched,
         project: PathBuf,
         made: Made,
         cx: &mut Context<Self>,
@@ -396,7 +413,7 @@ impl Daemon {
         self.meta.insert(path.clone(), meta);
         let agent = self.store.place(&path).map_or(home.agent, |p| p.agent);
         let title = prompt::title(&detail);
-        let text = prompt::delegated(&detail, &start.guidance);
+        let text = prompt::delegated(&detail, &start.guidance, &files);
         let session = self.start_session(&path, agent, Some(title), text, cx);
         if let Some(run) = self.linear_run.runs.by_agent_session(&start.agent_session) {
             run.session = Some(session);

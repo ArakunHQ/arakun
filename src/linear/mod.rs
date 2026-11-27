@@ -13,7 +13,7 @@ pub mod places;
 // The rules a delegated issue goes by live in core, so `arakun server` keeps
 // them too.
 pub use arakun_core::linear::{
-    ApiError, answer, delegation, env, events, follow, outbox, prompt, remote, runs, start,
+    ApiError, answer, delegation, env, events, follow, outbox, prompt, remote, runs, start, uploads,
 };
 
 use std::path::{Path, PathBuf};

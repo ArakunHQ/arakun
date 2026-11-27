@@ -15,6 +15,7 @@ use crate::agent::notes::ChatNote;
 mod completion;
 mod input;
 mod paste;
+mod secret;
 mod view;
 
 pub(super) use paste::save_image;
@@ -38,6 +39,8 @@ pub(super) struct EnvDraft {
     pub attached: Vec<drag::AttachedContext>,
     /// Annotations and review comments, sent with the next prompt.
     pub notes: Vec<ChatNote>,
+    /// The draft holds a secret, and the notice about it is on show.
+    pub secret_notice: Option<secret::SecretNotice>,
 }
 
 impl EnvDraft {
@@ -92,6 +95,10 @@ pub(super) struct Frame {
     pub agent: AgentKind,
     /// The composer writes to a session, not a new one.
     pub in_session: bool,
+    /// The id of that session.
+    pub session: Option<SharedString>,
+    /// The environment is on a server, where this computer's secrets are not.
+    pub remote: bool,
     pub busy: bool,
     pub model_label: Option<String>,
     pub effort_label: Option<String>,
@@ -117,6 +124,8 @@ impl Default for Frame {
             home: false,
             agent: AgentKind::Claude,
             in_session: false,
+            session: None,
+            remote: false,
             busy: false,
             model_label: None,
             effort_label: None,
@@ -203,6 +212,8 @@ pub(super) struct Composer {
     skill_index_loading: bool,
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     flash: Option<SharedString>,
+    /// The secrets each session was told to send anyway.
+    allowed: secret::Allowed,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -248,6 +259,7 @@ impl Composer {
             skill_index: None,
             skill_index_loading: false,
             flash: None,
+            allowed: secret::Allowed::default(),
         }
     }
 
@@ -258,6 +270,7 @@ impl Composer {
         if frame.env != self.frame.env {
             self.drafts.entry(frame.env.clone()).or_default();
         }
+        self.allowed.adopt(&frame);
         self.frame = frame;
     }
 
@@ -332,6 +345,7 @@ impl Composer {
         d.pastes.clear();
         d.notes.clear();
         d.text.clear();
+        d.secret_notice = None;
         self.completion = None;
         self.changed(cx);
         self.history_at = None;
@@ -521,6 +535,7 @@ impl Composer {
         if matches!(key, "up" | "down") && !word {
             self.vertical(key == "up", extend);
         } else {
+            let notice = self.secret_notice_open();
             let draft = &mut self.here_mut().text;
             match key {
                 "left" => draft.left(word, extend),
@@ -537,6 +552,8 @@ impl Composer {
                     let head = draft.head();
                     draft.move_to(head, false);
                 }
+                // Escape is the notice's Cancel.
+                "escape" if notice => self.here_mut().secret_notice = None,
                 "escape" => cx.emit(ComposerEvent::Escape),
                 _ => return,
             }
@@ -778,6 +795,8 @@ impl Shell {
             home,
             agent,
             in_session: session_id.is_some(),
+            session: session_id,
+            remote: env.remote.is_some() || self.project().is_remote(),
             busy: thread.as_ref().is_some_and(|t| t.read(cx).is_busy()),
             model_label: self.setting_value_label(Setting::Model, cx),
             // "Default" effort is whatever the model defaults to; it says nothing on the chip.
@@ -965,6 +984,13 @@ impl Shell {
                     )
                 });
             }
+            return;
+        }
+        // A secret in the draft waits for the user's answer to the notice.
+        if self
+            .composer
+            .update(cx, |c, cx| c.hold_for_secrets(now, cx))
+        {
             return;
         }
         let Some(out) = self

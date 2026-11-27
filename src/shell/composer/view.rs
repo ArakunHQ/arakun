@@ -23,6 +23,7 @@ impl Render for Composer {
         let notes = self.render_note_row(cx);
         let context = self.render_context_row(cx);
         let limits = self.render_limits(cx);
+        let secret = self.render_secret_notice(cx);
         let flash = self.flash.clone().map(|f| {
             div()
                 .px(crate::ui::sp(12.))
@@ -93,6 +94,7 @@ impl Render for Composer {
             .children(notes)
             .children(context)
             .children(limits)
+            .children(secret)
             .children(flash)
             .child(text)
             .child(bar)
@@ -518,7 +520,8 @@ impl Composer {
                     )
                 }),
             };
-            let styled = StyledText::new(draft.to_string()).with_highlights(highlight);
+            let shown = Self::shown_text(&draft, &self.masked_ranges());
+            let styled = StyledText::new(shown).with_highlights(highlight);
             painted = Some((styled.layout().clone(), draft.head()));
             show_caret = focused && sel.is_empty();
             styled.into_any_element()

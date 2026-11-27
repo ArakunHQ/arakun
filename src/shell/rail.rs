@@ -49,6 +49,8 @@ pub(super) struct Rail {
     /// The search of the Sessions menu.
     pub tree_filter: Entity<TextInput>,
     _tree_filter: Subscription,
+    /// The rail as a view of its own (`RailView`), made the first time it shows.
+    pub view: Option<Entity<RailView>>,
 }
 
 impl Rail {
@@ -79,7 +81,81 @@ impl Rail {
             keys: None,
             tree_filter,
             _tree_filter: sub,
+            view: None,
         }
+    }
+}
+
+/// The rail drawn as a view of its own, so the shell can draw it cached.
+///
+/// A loop in the transcript or the mascot above the composer redraws the
+/// shell many times a second while an agent works. gpui then renders the
+/// whole shell again, but a cached view reuses its last drawing. gpui redraws
+/// a cached view only when it, or a view drawn inside it, notifies. So this
+/// one follows the shell and each entity the rail reads; the shell does not
+/// notify for all of them.
+pub(super) struct RailView {
+    shell: gpui::WeakEntity<Shell>,
+    _subs: Vec<Subscription>,
+}
+
+impl Render for RailView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.shell
+            .update(cx, |shell, cx| {
+                shell.render_rail(window, cx).into_any_element()
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
+impl Shell {
+    /// The rail, cached at its width: a frame that redraws only something
+    /// else leaves the rail's rows as they were.
+    pub(super) fn cached_rail(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let view = match &self.rail.view {
+            Some(view) => view.clone(),
+            None => {
+                let view = self.new_rail_view(cx);
+                self.rail.view = Some(view.clone());
+                view
+            }
+        };
+        gpui::AnyView::from(view)
+            .cached(
+                gpui::StyleRefinement::default()
+                    .w(px(self.rail_width()))
+                    .h_full()
+                    .flex_none(),
+            )
+            .into_any_element()
+    }
+
+    fn new_rail_view(&self, cx: &mut Context<Self>) -> Entity<RailView> {
+        let shell = cx.entity();
+        let account = self.account.clone();
+        let teams = self.teams.clone();
+        let ci = self.ci.clone();
+        let github = self.github.clone();
+        let pilot = self.pilot.clone();
+        let extensions = self.views.extensions.clone();
+        let branches = self.views.branches.clone();
+        let tree_filter = self.rail.tree_filter.clone();
+        cx.new(|cx| RailView {
+            shell: shell.downgrade(),
+            _subs: vec![
+                cx.observe(&shell, |_, _, cx| cx.notify()),
+                // Read for the badges, the user row and the usage meter.
+                cx.observe(&account, |_, _, cx| cx.notify()),
+                cx.observe(&teams, |_, _, cx| cx.notify()),
+                cx.observe(&ci, |_, _, cx| cx.notify()),
+                cx.observe(&github, |_, _, cx| cx.notify()),
+                cx.observe(&pilot, |_, _, cx| cx.notify()),
+                cx.observe(&extensions, |_, _, cx| cx.notify()),
+                cx.observe(&branches, |_, _, cx| cx.notify()),
+                cx.observe(&tree_filter, |_, _, cx| cx.notify()),
+            ],
+        })
     }
 }
 

@@ -2916,6 +2916,7 @@ impl Shell {
                 base: p.base.clone(),
                 sandbox: p.sandbox,
                 pass_env: p.pass_env.join(" "),
+                secrets: p.secrets.clone(),
                 remote: p.is_remote(),
             }
         });
@@ -3012,6 +3013,23 @@ impl Shell {
                 SettingsEvent::ProjectPassEnv { project, names } => {
                     if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
                         p.pass_env = names.clone();
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSecretRename { project, id, name } => {
+                    if let Some(s) = this
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.path == *project)
+                        .and_then(|p| p.secrets.iter_mut().find(|s| s.id == *id))
+                    {
+                        s.name = name.clone();
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSecretRemove { project, id } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.secrets.retain(|s| s.id != *id);
                         this.save(cx);
                     }
                 }

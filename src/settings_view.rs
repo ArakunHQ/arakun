@@ -69,6 +69,17 @@ pub enum SettingsEvent {
         project: std::path::PathBuf,
         names: Vec<String>,
     },
+    /// A project's saved secret `id` has a new name.
+    ProjectSecretRename {
+        project: std::path::PathBuf,
+        id: String,
+        name: String,
+    },
+    /// A project's saved secret `id` is removed; its value is gone already.
+    ProjectSecretRemove {
+        project: std::path::PathBuf,
+        id: String,
+    },
     /// The branch a project's new environments start from; `None` for origin's default.
     ProjectBase {
         project: std::path::PathBuf,
@@ -101,8 +112,17 @@ pub struct ProjectSettings {
     pub sandbox: bool,
     /// The names in Pass to agents, separated by spaces.
     pub pass_env: String,
+    /// The secrets saved for its agents: names only, never a value.
+    pub secrets: Vec<crate::agent::saved_secret::Saved>,
     /// The project lives on a server: its commands are not saved here.
     pub remote: bool,
+}
+
+/// What a row of Saved secrets is being changed to, by the saved secret's id.
+#[derive(Clone, PartialEq, Eq)]
+enum SecretEdit {
+    Rename(String),
+    Replace(String),
 }
 
 /// A text field of the Project section.
@@ -112,6 +132,9 @@ enum ProjectField {
     Check,
     Base,
 }
+
+/// How a saved secret's value shows: never at all.
+const MASKED: &str = "••••••••";
 
 /// The variable names typed in Pass to agents: separated by spaces or commas,
 /// each once.
@@ -260,7 +283,7 @@ impl Section {
                 "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => {
-                "The open project's commands, base branch, sandbox and what its agents get, on this computer."
+                "The open project's commands, base branch, sandbox, saved secrets and what its agents get, on this computer."
             }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
@@ -304,7 +327,8 @@ impl Section {
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
                  base branch start from origin main default sandbox seatbelt bubblewrap isolate \
-                 security secrets pass to agents variables env token gh_token keys"
+                 security secrets pass to agents variables env token gh_token keys \
+                 saved secrets api key password keyring rename replace remove"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -455,9 +479,15 @@ pub struct SettingsDialog {
     check_input: Entity<TextInput>,
     base_input: Entity<TextInput>,
     pass_input: Entity<TextInput>,
+    /// The saved secret being renamed or replaced, and the field for it.
+    secret_edit: Option<SecretEdit>,
+    secret_name_input: Entity<TextInput>,
+    secret_value_input: Entity<TextInput>,
+    /// What the last change to a saved secret did, and whether it failed.
+    secret_note: Option<(SharedString, bool)>,
     /// The sidebar's width, which the Tabs and sessions part sets too.
     pub rail_w: f32,
-    _subs: [Subscription; 9],
+    _subs: [Subscription; 11],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -563,6 +593,16 @@ impl SettingsDialog {
         let pass_sub = cx.subscribe_in(&pass_input, window, |this: &mut Self, _, ev, _, cx| {
             this.on_pass_input(ev, cx)
         });
+        let secret_name_input = cx.new(|cx| TextInput::new("Name", cx));
+        let secret_value_input = cx.new(|cx| TextInput::new("Paste the new value", cx).secret());
+        let secret_subs = [&secret_name_input, &secret_value_input].map(|input| {
+            cx.subscribe_in(input, window, |this: &mut Self, _, ev, _, cx| match ev {
+                InputEvent::Submit => this.finish_secret_edit(cx),
+                InputEvent::Cancel => this.cancel_secret_edit(cx),
+                _ => {}
+            })
+        });
+        let [secret_name_sub, secret_value_sub] = secret_subs;
         let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
             this.on_project_input(ProjectField::Setup, ev, cx)
         });
@@ -638,13 +678,26 @@ impl SettingsDialog {
             check_input,
             base_input,
             pass_input,
+            secret_edit: None,
+            secret_name_input,
+            secret_value_input,
+            secret_note: None,
             look,
             rail_w: crate::state::RAIL_W,
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
-                sub, key_sub, voice_sub, namer_sub, teams_sub, setup_sub, check_sub, base_sub,
+                sub,
+                key_sub,
+                voice_sub,
+                namer_sub,
+                teams_sub,
+                setup_sub,
+                check_sub,
+                base_sub,
                 pass_sub,
+                secret_name_sub,
+                secret_value_sub,
             ],
         }
     }
@@ -714,6 +767,236 @@ impl SettingsDialog {
             voice::stop();
         }
         cx.notify();
+    }
+
+    /// Opens the field to rename or replace a saved secret. The value field
+    /// starts empty: no screen shows a stored value.
+    fn edit_secret(&mut self, edit: SecretEdit, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let input = match &edit {
+            SecretEdit::Rename(id) => {
+                let Some(s) = project.secrets.iter().find(|s| &s.id == id) else {
+                    return;
+                };
+                let name = s.name.clone();
+                self.secret_name_input
+                    .update(cx, |i, cx| i.set_text(name, cx));
+                self.secret_name_input.clone()
+            }
+            SecretEdit::Replace(_) => {
+                self.secret_value_input.update(cx, |i, cx| i.clear(cx));
+                self.secret_value_input.clone()
+            }
+        };
+        window.focus(&input.focus_handle(cx), cx);
+        self.secret_edit = Some(edit);
+        self.secret_note = None;
+        cx.notify();
+    }
+
+    fn cancel_secret_edit(&mut self, cx: &mut Context<Self>) {
+        self.secret_value_input.update(cx, |i, cx| i.clear(cx));
+        self.secret_edit = None;
+        cx.notify();
+    }
+
+    /// Saves the new name, or the new value to the keyring.
+    fn finish_secret_edit(&mut self, cx: &mut Context<Self>) {
+        let (Some(edit), Some(project)) = (self.secret_edit.clone(), self.project.as_mut()) else {
+            return;
+        };
+        match edit {
+            SecretEdit::Rename(id) => {
+                let typed = self.secret_name_input.read(cx).text().to_string();
+                match crate::agent::saved_secret::check_name(&typed, &project.secrets, Some(&id)) {
+                    Ok(name) => {
+                        if let Some(s) = project.secrets.iter_mut().find(|s| s.id == id) {
+                            s.name = name.clone();
+                        }
+                        cx.emit(SettingsEvent::ProjectSecretRename {
+                            project: project.path.clone(),
+                            id,
+                            name,
+                        });
+                        self.secret_edit = None;
+                        self.secret_note = None;
+                    }
+                    Err(e) => self.secret_note = Some((e.into(), true)),
+                }
+            }
+            SecretEdit::Replace(id) => {
+                let Some(saved) = project.secrets.iter().find(|s| s.id == id).cloned() else {
+                    return;
+                };
+                let value = self.secret_value_input.read(cx).text().to_string();
+                if value.is_empty() {
+                    return;
+                }
+                self.secret_value_input.update(cx, |i, cx| i.clear(cx));
+                self.secret_edit = None;
+                cx.spawn(async move |this, cx| {
+                    let name = saved.name.clone();
+                    let done = cx
+                        .background_spawn(crate::guard::task(async move {
+                            crate::agent::saved_secret::replace(&saved, &value)
+                        }))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.secret_note = Some(match done {
+                            Ok(()) => (format!("Replaced the value of {name}.").into(), false),
+                            Err(e) => (format!("Could not replace it: {e}").into(), true),
+                        });
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Removes a saved secret: its value from the keyring, its name from the
+    /// project.
+    fn remove_secret(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        let Some(at) = project.secrets.iter().position(|s| s.id == id) else {
+            return;
+        };
+        let saved = project.secrets.remove(at);
+        cx.emit(SettingsEvent::ProjectSecretRemove {
+            project: project.path.clone(),
+            id: saved.id.clone(),
+        });
+        if self.secret_edit.as_ref().is_some_and(
+            |e| matches!(e, SecretEdit::Rename(i) | SecretEdit::Replace(i) if *i == saved.id),
+        ) {
+            self.cancel_secret_edit(cx);
+        }
+        self.secret_note = Some((format!("Removed {}.", saved.name).into(), false));
+        cx.background_spawn(crate::guard::task(async move {
+            crate::agent::saved_secret::remove(&saved);
+        }))
+        .detach();
+        cx.notify();
+    }
+
+    /// Settings › Project › Saved secrets: each one by name, its value
+    /// masked, with Rename, Replace and Remove.
+    fn render_saved_secrets(
+        &self,
+        project: &ProjectSettings,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if project.secrets.is_empty() {
+            rows.push(
+                row(
+                    "None yet",
+                    "When an agent asks for a secret, turn on Save for this project on its card. Agents of this project can then ask for it again by name, and get a one-use handle, never the value.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            );
+        }
+        for (i, s) in project.secrets.iter().enumerate() {
+            let editing = self.secret_edit.as_ref().filter(
+                |e| matches!(e, SecretEdit::Rename(id) | SecretEdit::Replace(id) if *id == s.id),
+            );
+            let control = match editing {
+                Some(edit) => {
+                    let input = match edit {
+                        SecretEdit::Rename(_) => self.secret_name_input.clone(),
+                        SecretEdit::Replace(_) => self.secret_value_input.clone(),
+                    };
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .child(field(input, 220.))
+                        .child(
+                            ui::button(("set-secret-done", i), "Save", ButtonKind::Outline, true)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.finish_secret_edit(cx)),
+                                ),
+                        )
+                        .child(
+                            ui::button(("set-secret-cancel", i), "Cancel", ButtonKind::Ghost, true)
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.cancel_secret_edit(cx)),
+                                ),
+                        )
+                }
+                None => {
+                    let (rename, replace, remove) = (s.id.clone(), s.id.clone(), s.id.clone());
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .child(
+                            ui::button(("set-secret-rename", i), "Rename", ButtonKind::Ghost, true)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.edit_secret(SecretEdit::Rename(rename.clone()), window, cx)
+                                })),
+                        )
+                        .child(
+                            ui::button(
+                                ("set-secret-replace", i),
+                                "Replace",
+                                ButtonKind::Outline,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.edit_secret(
+                                        SecretEdit::Replace(replace.clone()),
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
+                        .child(
+                            ui::button(
+                                ("set-secret-remove", i),
+                                "Remove",
+                                ButtonKind::Danger,
+                                true,
+                            )
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.remove_secret(&remove, cx)),
+                            ),
+                        )
+                }
+            };
+            rows.push(row(s.name.clone(), MASKED, control.into_any_element()).into_any_element());
+        }
+        let mut parts = vec![titled("Saved secrets", rows)];
+        if let Some((text, failed)) = &self.secret_note {
+            parts.push(
+                div()
+                    .px(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(if *failed {
+                        theme::danger().into()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .child(text.clone())
+                    .into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .children(parts)
+            .into_any_element()
     }
 
     fn save_key(&mut self, cx: &mut Context<Self>) {
@@ -2234,7 +2517,7 @@ impl SettingsDialog {
                 .into_any_element()
                 },
             ],
-        )])
+        ), self.render_saved_secrets(project, cx)])
     }
 
     fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2949,6 +3232,8 @@ mod tests {
         assert!(found("zoom").contains(&Section::Appearance));
         assert!(found("check command").contains(&Section::Project));
         assert!(found("setup script").contains(&Section::Project));
+        assert!(found("saved secrets").contains(&Section::Project));
+        assert!(found("replace").contains(&Section::Project));
         assert!(found("github").contains(&Section::General));
         assert_eq!(found("").len(), Section::ALL.len());
         assert!(found("zzz-nothing").is_empty());

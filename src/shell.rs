@@ -722,6 +722,7 @@ impl Shell {
                     path: path.clone(),
                     sandbox: p.sandbox,
                     pass: p.pass_env.clone(),
+                    secrets: p.secrets.clone(),
                 })
         }));
         theme::set_diff_palette(layout.diff_palette);
@@ -1269,6 +1270,7 @@ impl Shell {
                     path: path.clone(),
                     sandbox: p.sandbox,
                     pass: p.pass_env.clone(),
+                    secrets: p.secrets.clone(),
                 })
         }));
         let envs: std::collections::HashSet<&std::path::Path> = self

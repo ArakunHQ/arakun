@@ -32,6 +32,7 @@ pub mod publishers;
 mod rpc;
 pub mod sandbox;
 pub mod saved;
+pub mod saved_secret;
 mod search;
 pub mod seats;
 pub mod secret;

@@ -11,6 +11,7 @@ use futures::StreamExt as _;
 use futures::channel::oneshot;
 use gpui::{Context, Task};
 
+use super::super::saved_secret;
 use super::super::secret::{self, Deliver, McpCommand, Outcome, Route, SecretRequest, Typed, Why};
 use super::{AgentKind, RemoteAction, Thread, ThreadEvent, ThreadStatus};
 
@@ -80,6 +81,57 @@ impl Secrets {
         };
         self.end(id, outcome);
         Ok(())
+    }
+
+    /// [`Secrets::save`], and the values saved for the project too, under
+    /// `name` ([`saved_secret::names_for`]); `taken` are the secrets the
+    /// project has already. Returns what to list in the project's state. On
+    /// an error nothing is kept and the request stays open.
+    fn save_kept(
+        &mut self,
+        id: u64,
+        values: Vec<String>,
+        name: &str,
+        taken: &[saved_secret::Saved],
+        cwd: &Path,
+    ) -> Result<Vec<saved_secret::Saved>, String> {
+        let request = &self
+            .pending
+            .iter()
+            .find(|p| p.request.id == id)
+            .ok_or("The agent stopped waiting for this.")?
+            .request;
+        if values.len() != request.fields.len() || values.iter().any(|v| v.is_empty()) {
+            return Err("Fill in every field.".into());
+        }
+        let labels: Vec<String> = request.fields.iter().map(|f| f.label.clone()).collect();
+        let mut taken = taken.to_vec();
+        let mut names = Vec::with_capacity(labels.len());
+        for n in saved_secret::names_for(name, &labels) {
+            let n = saved_secret::check_name(&n, &taken, None)?;
+            taken.push(saved_secret::Saved {
+                id: String::new(),
+                name: n.clone(),
+                env: None,
+            });
+            names.push(n);
+        }
+        let undo = |stored: &[saved_secret::Saved]| stored.iter().for_each(saved_secret::remove);
+        let mut stored: Vec<saved_secret::Saved> = Vec::with_capacity(names.len());
+        for (n, v) in names.iter().zip(&values) {
+            match saved_secret::store(n, v) {
+                Ok(s) => stored.push(s),
+                Err(e) => {
+                    undo(&stored);
+                    return Err(format!("Could not save it for the project: {e}"));
+                }
+            }
+        }
+        if let Err(e) = self.save(id, values, cwd) {
+            undo(&stored);
+            return Err(e);
+        }
+        Ok(stored)
     }
 
     /// A device's answer: declines with `None`, or saves the values. Values
@@ -184,6 +236,12 @@ impl Thread {
         self.secrets.remote.as_ref().is_none_or(|r| r.private)
     }
 
+    /// Whether the card may save what is typed for the project too: only in
+    /// a session here, where the project's state is.
+    pub fn can_keep_secrets(&self) -> bool {
+        !self.remote
+    }
+
     /// What a server's session waits on, as the server sent it
     /// (`phone::wire::secret`). `connection_private` says whether this app
     /// reaches the server encrypted.
@@ -261,14 +319,27 @@ impl Thread {
     }
 
     /// Saves what the user typed, one value per field, and hands the agent
-    /// a handle for each. On an error the card stays, so nothing is lost.
+    /// a handle for each. With `keep_as`, the values are saved for the
+    /// project too, under that name ([`saved_secret::names_for`]), and
+    /// [`ThreadEvent::SecretsSaved`] asks the shell to list them. On an
+    /// error the card stays, so nothing is lost.
     pub fn save_secret(
         &mut self,
         id: u64,
         values: Vec<String>,
+        keep_as: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        self.answer_secret(id, Some(Typed(values)), true, cx)
+        let Some(name) = keep_as.filter(|_| !self.remote) else {
+            return self.answer_secret(id, Some(Typed(values)), true, cx);
+        };
+        let taken = super::super::sandbox::saved(&self.cwd);
+        let saved = self
+            .secrets
+            .save_kept(id, values, name, &taken, &self.cwd)?;
+        self.secret_ended(cx);
+        cx.emit(ThreadEvent::SecretsSaved(saved));
+        Ok(())
     }
 
     pub fn decline_secret(&mut self, id: u64, cx: &mut Context<Self>) {
@@ -428,6 +499,47 @@ mod tests {
             PASSWORD
         );
         assert!(secret::take(password, Path::new("/p")).is_err());
+    }
+
+    #[test]
+    fn a_card_saved_for_the_project_keeps_each_field_under_a_name() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        let args = json!({
+            "label": "Staging DB",
+            "reason": "To run the migration.",
+            "fields": [{"name": "user", "label": "User"}, {"name": "pw", "label": "Password"}],
+        });
+        let (_route, mut answer, asked) = ask(&args);
+        let id = asked.request.id;
+        t.secrets.push(asked, None);
+        let taken = [saved_secret::Saved {
+            id: "old".into(),
+            name: "staging db (user)".into(),
+            env: None,
+        }];
+        let values = || vec!["admin".to_string(), "pw-kept".to_string()];
+        // A name the project has already: nothing is kept, the card stays.
+        assert!(
+            t.secrets
+                .save_kept(id, values(), "Staging DB", &taken, &t.cwd)
+                .is_err()
+        );
+        assert!(t.pending_secret().is_some());
+        assert!(
+            matches!(answer.try_recv(), Ok(None)),
+            "the agent still waits"
+        );
+
+        let saved = t
+            .secrets
+            .save_kept(id, values(), " Staging DB ", &[], &t.cwd)
+            .unwrap();
+        let names: Vec<&str> = saved.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Staging DB (User)", "Staging DB (Password)"]);
+        assert_eq!(saved_secret::value(&saved[1]).unwrap().expose(), "pw-kept");
+        // The agent got its one-use handles as before.
+        assert!(matches!(answer.try_recv(), Ok(Some(Outcome::Saved(h))) if h.len() == 2));
+        saved.iter().for_each(saved_secret::remove);
     }
 
     #[test]

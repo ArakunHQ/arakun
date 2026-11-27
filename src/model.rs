@@ -1092,6 +1092,8 @@ pub struct Project {
     pub sandbox: bool,
     /// Variables its agents get even though they look like secrets.
     pub pass_env: Vec<String>,
+    /// Secrets saved for its agents: names and keyring ids, no values.
+    pub secrets: Vec<crate::agent::saved_secret::Saved>,
     /// The branch new environments start from; None for origin's default branch.
     pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.

@@ -17,6 +17,7 @@ use anyhow::{Result, anyhow};
 
 use super::AgentKind;
 use super::launch::LaunchSpec;
+use super::saved_secret::Saved;
 use crate::headless::sandbox::{
     self as hs, Hidden, READ, Runner, bwrap_freeze, sbpl_freeze, sbpl_list, sbpl_pin,
     sbpl_regex_escape, sbpl_secret_names, sbpl_str, sbpl_subpath,
@@ -31,6 +32,7 @@ struct Folder {
     path: PathBuf,
     sandbox: bool,
     pass: Vec<String>,
+    secrets: Vec<Saved>,
     git: Option<PathBuf>,
 }
 
@@ -42,6 +44,8 @@ pub struct ProjectFolder {
     /// Variables its agents get even though they look like secrets
     /// (Settings › Project › Pass to agents).
     pub pass: Vec<String>,
+    /// The secrets saved for its agents, names only.
+    pub secrets: Vec<Saved>,
 }
 
 /// Each folder with its project's choices.
@@ -53,6 +57,7 @@ pub fn set_projects(folders: impl IntoIterator<Item = ProjectFolder>) {
                  path: p,
                  sandbox,
                  pass,
+                 secrets,
              }| {
                 let path = crate::platform::canonicalize(&p).unwrap_or(p);
                 // Only a sandboxed project's repository is looked up: an untrusted
@@ -64,6 +69,7 @@ pub fn set_projects(folders: impl IntoIterator<Item = ProjectFolder>) {
                     path,
                     sandbox,
                     pass,
+                    secrets,
                     git,
                 }
             },
@@ -85,6 +91,22 @@ pub fn passed(cwd: &Path) -> Vec<String> {
         .filter(|f| cwd.starts_with(&f.path))
         .max_by_key(|f| f.path.components().count())
         .map(|f| f.pass.clone())
+        .unwrap_or_default()
+}
+
+/// The secrets saved for the project of `cwd`. The deepest folder answers,
+/// like [`wanted`].
+pub fn saved(cwd: &Path) -> Vec<Saved> {
+    let folders = PROJECTS.read().unwrap();
+    if folders.iter().all(|f| f.secrets.is_empty()) {
+        return Vec::new();
+    }
+    let cwd = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    folders
+        .iter()
+        .filter(|f| cwd.starts_with(&f.path))
+        .max_by_key(|f| f.path.components().count())
+        .map(|f| f.secrets.clone())
         .unwrap_or_default()
 }
 
@@ -968,22 +990,25 @@ fn paths(ps: &[PathBuf]) -> Vec<&Path> {
     ps.iter().map(PathBuf::as_path).collect()
 }
 
+/// The tests that set the project list, one at a time: it is the process's.
+#[cfg(test)]
+pub(crate) fn projects_lock() -> std::sync::MutexGuard<'static, ()> {
+    static PROJECTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The tests that set the project list, one at a time: it is the process's.
-    static PROJECTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn projects_lock() -> std::sync::MutexGuard<'static, ()> {
-        PROJECTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use super::projects_lock;
 
     fn folder(path: &Path, sandbox: bool) -> ProjectFolder {
         ProjectFolder {
             path: path.to_path_buf(),
             sandbox,
             pass: Vec::new(),
+            secrets: Vec::new(),
         }
     }
 
@@ -1390,6 +1415,7 @@ mod tests {
                 path: proj.clone(),
                 sandbox: false,
                 pass: vec!["arakun147_test_token".into()],
+                secrets: Vec::new(),
             },
             folder(&env_a, false),
         ]);

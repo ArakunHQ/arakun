@@ -18,6 +18,10 @@
 //! can read. `secret_to_file` moves a secret the user pasted in the chat to
 //! such a file, so the agent stops repeating it. Files go after 24 hours.
 //!
+//! A secret the user saved for the project (`super::saved_secret`) lasts:
+//! `list_saved_secrets` names them, and `use_saved_secret` makes a fresh
+//! handle, or a file, from one.
+//!
 //! Under `arakun server` the call goes to the server's local socket instead
 //! ([`serve_from`]), and the card goes to the devices that watch the session
 //! (`phone::wire::secret`). They send what was typed back only over a private
@@ -53,6 +57,10 @@ pub const HANDLE_PREFIX: &str = "secret-ref:";
 pub const RUN_TOOL: &str = "run_with_secrets";
 /// Puts a secret the user pasted in the chat into a private file.
 pub const FILE_TOOL: &str = "secret_to_file";
+/// Lists the names of the secrets saved for the project.
+pub const LIST_TOOL: &str = "list_saved_secrets";
+/// A fresh handle, or a private file, for a secret saved for the project.
+pub const USE_TOOL: &str = "use_saved_secret";
 /// How long `run_with_secrets` lets a command run when the agent does not say.
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -463,12 +471,14 @@ pub enum Answer {
 
 /// One call from Arakun's MCP server for the chat `token` names, as the
 /// control socket carries it: `request_secret`'s arguments as they are, or
-/// `{"tool": "redeem" | "file", "arguments": …}`. The error is for the agent.
+/// `{"tool": "redeem" | "file" | "saved" | "use_saved", "arguments": …}`. The error is for the agent.
 pub fn call(token: &str, args: &Value) -> Result<Answer, String> {
     match args.get("tool").and_then(Value::as_str) {
         None => ask(token, args).map(Answer::Later),
         Some("redeem") => redeem(token, &args["arguments"]).map(Answer::Now),
         Some("file") => pasted_to_file(token, &args["arguments"]).map(Answer::Now),
+        Some("saved") => saved_list(token).map(Answer::Now),
+        Some("use_saved") => use_saved(token, &args["arguments"]).map(Answer::Now),
         Some(other) => Err(format!("Arakun does not know the call `{other}`")),
     }
 }
@@ -509,6 +519,53 @@ fn pasted_to_file(token: &str, args: &Value) -> Result<Value, String> {
     let name = args["name"].as_str().unwrap_or("secret");
     let path = write_file(name, value)?;
     Ok(json!({"path": path}))
+}
+
+/// `list_saved_secrets`: the names of the project's saved secrets, and the
+/// variable each is set in for its agents. Never a value.
+fn saved_list(token: &str) -> Result<Value, String> {
+    let cwd = project_of(token)?;
+    let list: Vec<Value> = super::sandbox::saved(&cwd)
+        .iter()
+        .map(|s| json!({"name": s.name, "env": s.env}))
+        .collect();
+    Ok(json!({"secrets": list}))
+}
+
+/// `use_saved_secret`: a fresh one-use handle for a saved secret, or with
+/// `deliver: "file"` the path of a private file that holds it.
+fn use_saved(token: &str, args: &Value) -> Result<Value, String> {
+    let cwd = project_of(token)?;
+    let name = args["name"]
+        .as_str()
+        .filter(|n| !n.trim().is_empty())
+        .ok_or("`name` is required: the saved secret's name")?;
+    let list = super::sandbox::saved(&cwd);
+    let saved = super::saved_secret::find(&list, name).ok_or_else(|| {
+        format!("this project has no saved secret named \"{name}\"; call `{LIST_TOOL}` for the names, or ask with `{TOOL}`")
+    })?;
+    let value = super::saved_secret::value(saved)?;
+    match &args["deliver"] {
+        Value::Null => {}
+        v if v == "handle" => {}
+        v if v == "file" => {
+            let path = write_file(&saved.name.replace(' ', "-"), value.expose())?;
+            return Ok(json!({"name": saved.name, "path": path}));
+        }
+        _ => return Err("`deliver` is \"handle\" or \"file\"".into()),
+    }
+    let handles = keep(
+        &cwd,
+        token,
+        0,
+        vec![("value".into(), value.expose().to_string())],
+    )?;
+    let handle = handles
+        .into_iter()
+        .next()
+        .map(|(_, h)| h)
+        .ok_or("Arakun made no handle")?;
+    Ok(json!({"name": saved.name, "handle": handle}))
 }
 
 /// Why Arakun does not type `text` into a page or a terminal: it holds a
@@ -627,7 +684,7 @@ pub fn offered_to(kind: AgentKind) -> bool {
 }
 
 /// Told to the agents that have the tool.
-pub const HINT: &str = "- Secrets: when only the user can give a login, token, PIN or password, call the `request_secret` tool (Arakun's MCP server); it shows the user a private card and gives you a handle, never the value. Use a handle only through `run_with_secrets`, never in a page or a terminal. When a command must read the value itself, ask with `deliver: \"file\"` for a private file. When the user pasted a secret in a message, move it to a file with `secret_to_file` and stop repeating it. Never ask for a secret in a message, and never put one in a task or prompt for another agent.\n";
+pub const HINT: &str = "- Secrets: when only the user can give a login, token, PIN or password, call the `request_secret` tool (Arakun's MCP server); it shows the user a private card and gives you a handle, never the value. Use a handle only through `run_with_secrets`, never in a page or a terminal. When a command must read the value itself, ask with `deliver: \"file\"` for a private file. Before asking for one, call `list_saved_secrets`: the user may have saved it for the project, and `use_saved_secret` gives you a fresh handle for it. When the user pasted a secret in a message, move it to a file with `secret_to_file` and stop repeating it. Never ask for a secret in a message, and never put one in a task or prompt for another agent.\n";
 
 // ---- the values ------------------------------------------------------------
 
@@ -1035,6 +1092,25 @@ fn tools() -> Value {
             }
         },
         {
+            "name": LIST_TOOL,
+            "title": "List the project's saved secrets",
+            "description": format!("List the secrets the user saved for this project, by name, and the environment variable each is set in for this project's agents, if any. Never the values. Get one with `{USE_TOOL}` instead of asking the user again."),
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": USE_TOOL,
+            "title": "Use a saved secret",
+            "description": format!("Get a fresh `secret-ref:` handle for a secret the user saved for this project, by the name `{LIST_TOOL}` gives. Redeem it with `{RUN_TOOL}`; it works once, within 24 hours. With `deliver` \"file\" you get the path of a private file instead, for a command that must read the value itself."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The saved secret's name."},
+                    "deliver": {"type": "string", "enum": ["handle", "file"], "description": "\"handle\" (the default) or \"file\"."}
+                },
+                "required": ["name"]
+            }
+        },
+        {
             "name": FILE_TOOL,
             "title": "Move a pasted secret to a file",
             "description": "When the user pasted a secret in a message, put it in a private file and use the path from then on, so you stop repeating the value. Read it in commands with \"$(cat <path>)\" or `< <path>`. Arakun deletes the file after 24 hours.",
@@ -1130,6 +1206,48 @@ pub fn run_tool(
                 ),
                 got,
             ))
+        }
+        LIST_TOOL => {
+            let got = forward(&json!({"tool": "saved"}))?;
+            let list = got["secrets"].as_array().ok_or("Arakun gave no list")?;
+            let text = if list.is_empty() {
+                format!(
+                    "No secrets are saved for this project. Ask for one with `{TOOL}`; the user can save it for the project from the card."
+                )
+            } else {
+                let lines: Vec<String> = list
+                    .iter()
+                    .filter_map(|s| {
+                        let name = s["name"].as_str()?;
+                        Some(match s["env"].as_str() {
+                            Some(var) => {
+                                format!("- {name} (set as ${var} for this project's agents)")
+                            }
+                            None => format!("- {name}"),
+                        })
+                    })
+                    .collect();
+                format!(
+                    "Saved for this project (names only). Get a handle with `{USE_TOOL}`:\n{}",
+                    lines.join("\n")
+                )
+            };
+            Ok((text, got))
+        }
+        USE_TOOL => {
+            let got = forward(&json!({"tool": "use_saved", "arguments": args}))?;
+            let name = got["name"].as_str().unwrap_or_default();
+            let text = if let Some(path) = got["path"].as_str() {
+                format!(
+                    "{name} is in {path}, a file only the user can read. Use \"$(cat {path})\" or `< {path}` and never print it. Arakun deletes the file after 24 hours."
+                )
+            } else {
+                let handle = got["handle"].as_str().ok_or("Arakun gave no handle")?;
+                format!(
+                    "A handle for {name}, not the value: {handle}\nRedeem it with `{RUN_TOOL}`; it works once, in this project, within 24 hours. Never type it into a page or a terminal."
+                )
+            };
+            Ok((text, got))
         }
         RUN_TOOL => {
             let run = Run::parse(args)?;
@@ -1263,7 +1381,7 @@ pub fn mcp_reply(
         })),
         "ping" => ok(json!({})),
         "tools/list" => ok(json!({"tools": tools()})),
-        "tools/call" if [TOOL, RUN_TOOL, FILE_TOOL].contains(&name) => {
+        "tools/call" if [TOOL, RUN_TOOL, FILE_TOOL, LIST_TOOL, USE_TOOL].contains(&name) => {
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call(name, &args) {
                 Ok((text, structured)) => ok(json!({
@@ -1429,7 +1547,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].clone())
             .collect();
-        assert_eq!(names, [TOOL, RUN_TOOL, FILE_TOOL]);
+        assert_eq!(names, [TOOL, RUN_TOOL, LIST_TOOL, USE_TOOL, FILE_TOOL]);
 
         let call = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"request_secret","arguments":{"label":"T","reason":"r"}}}"#;
         let declined = mcp_reply(call, |tool, args| {
@@ -1645,6 +1763,80 @@ mod tests {
             .unwrap();
         sweep();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_saved_secret_is_listed_by_name_and_used_through_a_fresh_handle() {
+        use super::super::sandbox::{self, ProjectFolder};
+        let _held = sandbox::projects_lock();
+        let proj = std::env::temp_dir().join(format!("arakun-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&proj).unwrap();
+        let proj = crate::platform::canonicalize(&proj).unwrap();
+        let mut key = super::super::saved_secret::store("Stripe key", "sk_test_123").unwrap();
+        key.env = Some("STRIPE_KEY".into());
+        sandbox::set_projects([ProjectFolder {
+            path: proj.clone(),
+            sandbox: false,
+            pass: Vec::new(),
+            secrets: vec![key.clone()],
+        }]);
+        let (route, _rx) = Route::open(&proj).unwrap();
+        let token = route.token();
+
+        let Ok(Answer::Now(list)) = call(token, &json!({"tool": "saved"})) else {
+            panic!("no list");
+        };
+        assert_eq!(
+            list,
+            json!({"secrets": [{"name": "Stripe key", "env": "STRIPE_KEY"}]})
+        );
+        assert!(!list.to_string().contains("sk_test"));
+        let (text, _) = run_tool(|_| Ok(list.clone()), LIST_TOOL, &json!({})).unwrap();
+        assert!(text.contains("- Stripe key (set as $STRIPE_KEY"), "{text}");
+
+        let use_args = |extra: Value| {
+            let mut a = json!({"name": "stripe KEY"});
+            a.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            json!({"tool": "use_saved", "arguments": a})
+        };
+        let handle = |v: Value| v["handle"].as_str().unwrap().to_string();
+        let Ok(Answer::Now(first)) = call(token, &use_args(json!({}))) else {
+            panic!("no handle");
+        };
+        assert_eq!(first["name"], "Stripe key");
+        let Ok(Answer::Now(second)) = call(token, &use_args(json!({}))) else {
+            panic!("no handle");
+        };
+        let (first, second) = (handle(first), handle(second));
+        assert_ne!(first, second, "each use is a fresh handle");
+        // Each handle still works once, in its project.
+        assert_eq!(take(&first, &proj).unwrap().expose(), "sk_test_123");
+        assert!(take(&first, &proj).is_err());
+        assert!(take(&second, Path::new("/elsewhere")).is_err());
+
+        let Ok(Answer::Now(filed)) = call(token, &use_args(json!({"deliver": "file"}))) else {
+            panic!("no file");
+        };
+        let path = PathBuf::from(filed["path"].as_str().unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "sk_test_123");
+        let _ = std::fs::remove_file(path);
+
+        assert!(
+            call(
+                token,
+                &json!({"tool": "use_saved", "arguments": {"name": "nope"}})
+            )
+            .is_err()
+        );
+        assert!(call(token, &use_args(json!({"deliver": "env"}))).is_err());
+        super::super::saved_secret::remove(&key);
+        let gone = call(token, &use_args(json!({}))).err().unwrap();
+        assert!(gone.contains("gone"), "{gone}");
+        sandbox::set_projects([]);
+        drop(route);
+        let _ = std::fs::remove_dir_all(proj);
     }
 
     #[test]

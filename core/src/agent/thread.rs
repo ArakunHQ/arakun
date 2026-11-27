@@ -2,7 +2,7 @@
 //! ACP; Droid speaks its native `stream-jsonrpc` (see `native.rs`) unless
 //! `ARAKUN_DROID_ACP=1` keeps it on ACP too.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -196,6 +196,11 @@ pub struct ToolCall {
     /// Claude Code's own name for the tool: Agent, Bash, Read…
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// The secret file the call reads, as the agent named it
+    /// ([`super::secret_reads::tool_reads`]). Its output stays hidden until
+    /// the user shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -386,6 +391,8 @@ impl PermissionRequest {
             options: Vec::new(),
             plan,
             session: None,
+            secret: None,
+            fs_read: None,
         }
     }
 }
@@ -400,6 +407,11 @@ pub struct PermissionRequest {
     pub plan: Option<SpecPlan>,
     /// The subagent session asking, when it is not this one.
     pub session: Option<String>,
+    /// The secret file the call would read, when that is why it asks.
+    pub secret: Option<String>,
+    /// Set when Arakun asks itself, before it answers the agent's
+    /// `fs/read_text_file` with these params: `rpc_id` is that request's.
+    fs_read: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -843,6 +855,12 @@ pub struct Thread {
     /// Permission requests are answered with an allow option at once: the
     /// session runs on its own (`arakun agent new`).
     auto_allow: bool,
+    /// The user let the agent read secret files for the rest of the session
+    /// ([`super::secret_reads::SESSION`]).
+    secrets_allowed: bool,
+    /// Secret files the user let a tool call read once, which its
+    /// `fs/read_text_file` may then read without asking again.
+    secret_reads_allowed: HashSet<PathBuf>,
     /// See [`Transcript::handoff`]; dropped once a turn that carried it ends well.
     handoff: Option<String>,
     handoff_sent: bool,
@@ -1331,6 +1349,8 @@ impl Thread {
             failure_unreported: false,
             error_event: None,
             auto_allow: false,
+            secrets_allowed: false,
+            secret_reads_allowed: HashSet::new(),
             handoff: None,
             handoff_sent: false,
             notes: Vec::new(),
@@ -2013,7 +2033,12 @@ impl Thread {
         // their environment (`launch::resolve`); Claude's adapter takes it here.
         let servers = self.acp_mcp_servers();
         let meta = match self.kind {
-            AgentKind::Claude => json!({"systemPrompt": {"append": claude_system_hint(&self.cwd)}}),
+            AgentKind::Claude => json!({
+                "systemPrompt": {"append": claude_system_hint(&self.cwd)},
+                // Claude's Read tool reads from disk, never through
+                // `fs/read_text_file`: only its own rules make it ask first.
+                "claudeCode": {"options": {"settings": super::secret_reads::claude_settings()}},
+            }),
             _ => json!({}),
         };
         self._setup = Some(cx.spawn(async move |this, cx| {
@@ -2427,6 +2452,8 @@ impl Thread {
                     .collect(),
                 plan: None,
                 session: None,
+                secret: permission["secret"].as_str().map(str::to_string),
+                fs_read: None,
             });
         let question = native::remote_question(question);
         let asked = permission.is_some() && self.permissions.is_empty();
@@ -2786,9 +2813,7 @@ impl Thread {
         let (keep, gone): (Vec<_>, Vec<_>) = asks.into_iter().partition(running);
         self.permissions = keep.into();
         for req in gone {
-            if let Some(conn) = &self.conn {
-                conn.respond(req.rpc_id.clone(), reply.clone());
-            }
+            self.reply_to(&req, &reply, cx);
             self.forget_in_child(&req, cx);
         }
         self.drop_questions(true, cx);
@@ -3121,7 +3146,7 @@ impl Thread {
         }
         let reply = self.permission_cancelled();
         for req in std::mem::take(&mut self.permissions) {
-            conn.respond(req.rpc_id.clone(), reply.clone());
+            self.reply_to(&req, &reply, cx);
             self.forget_in_child(&req, cx);
         }
         // ACP asks the client to answer what it still waits on once it cancels;
@@ -3323,11 +3348,62 @@ impl Thread {
             cx.notify();
             return;
         }
+        let option_id = self.secret_answer(&req, option_id, cx);
         let reply = match self.backend {
             Backend::Acp => json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
             Backend::Native => json!({"selectedOption": option_id}),
         };
         self.answer(req, reply, cx);
+    }
+
+    /// What the user's answer to a secret file's card means: "for this
+    /// session" lets the agent read secret files from now on and answers the
+    /// agent's own allow option, and an allowed tool call may read its file
+    /// through `fs/read_text_file` without a second card. The option to send.
+    fn secret_answer(
+        &mut self,
+        req: &PermissionRequest,
+        option_id: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let Some(secret) = req.secret.clone() else {
+            return option_id.to_string();
+        };
+        let session = option_id == super::secret_reads::SESSION;
+        let option_id = if session {
+            let theirs: Vec<PermissionOption> = req
+                .options
+                .iter()
+                .filter(|o| o.id != super::secret_reads::SESSION)
+                .cloned()
+                .collect();
+            allow_option(&theirs)
+                .map(|o| o.id.clone())
+                .unwrap_or_default()
+        } else {
+            option_id.to_string()
+        };
+        let allowed = session
+            || req
+                .options
+                .iter()
+                .any(|o| o.id == option_id && o.is_allow());
+        if !allowed || req.fs_read.is_some() && !session {
+            return option_id;
+        }
+        let path = confine(&self.cwd, &secret).ok();
+        let mark = move |t: &mut Thread| {
+            t.secrets_allowed |= session;
+            t.secret_reads_allowed.extend(path);
+        };
+        // Requests come to the root thread, which keeps the answer.
+        match self.parent.clone() {
+            Some(parent) => cx.defer(move |cx| {
+                let _ = parent.update(cx, |p, _| mark(p));
+            }),
+            None => mark(self),
+        }
+        option_id
     }
 
     /// Sends the answer to a permission request. A subagent's thread holds a
@@ -3342,9 +3418,7 @@ impl Thread {
                 });
             }
             None => {
-                if let Some(conn) = &self.conn {
-                    conn.respond(req.rpc_id.clone(), reply);
-                }
+                self.reply_to(&req, &reply, cx);
                 self.forget_in_child(&req, cx);
             }
         }
@@ -3359,9 +3433,7 @@ impl Thread {
         let Some(req) = self.permissions.remove(at) else {
             return;
         };
-        if let Some(conn) = &self.conn {
-            conn.respond(req.rpc_id.clone(), reply);
-        }
+        self.reply_to(&req, &reply, cx);
         self.after_input(&req.tool_call_id, cx);
     }
 
@@ -3686,8 +3758,23 @@ impl Thread {
                         title: String::new(),
                         plan,
                     });
+                let secret = match &child {
+                    Some((_, thread)) => thread.read(cx).tool_secret(&tool_call_id),
+                    None => self.tool_secret(&tool_call_id),
+                }
+                .or_else(|| super::secret_reads::request_reads(tool));
+                let mut options = options;
+                let ask = super::secret_reads::Ask {
+                    secret: secret.is_some(),
+                    command: tool["rawInput"]["command"].is_string(),
+                    auto_allow: self.auto_allow,
+                    secrets_allowed: self.secrets_allowed,
+                };
+                if ask.offers_session() {
+                    options.push(super::secret_reads::session_option());
+                }
                 // Nobody is there to answer: the tool call stays in the log as allowed.
-                if self.auto_allow
+                if ask.answers_itself()
                     && let Some(o) = allow_option(&options)
                 {
                     conn.respond(
@@ -3706,6 +3793,8 @@ impl Thread {
                     options,
                     plan,
                     session: child.as_ref().map(|(id, _)| id.clone()),
+                    secret,
+                    fs_read: None,
                 };
                 if let Some((_, thread)) = &child {
                     let copy = req.clone();
@@ -3755,25 +3844,11 @@ impl Thread {
             }
             // Off the main thread: a big file, or one on a slow disk, would freeze the window.
             "fs/read_text_file" => {
-                let cwd = self.cwd.clone();
-                let sandbox = self.sandbox.clone();
-                let conn = Rc::downgrade(&conn);
-                cx.spawn(async move |_, cx| {
-                    let read = cx
-                        .background_spawn(crate::guard::task(async move {
-                            read_file(&cwd, sandbox.as_deref(), &params)
-                        }))
-                        .await;
-                    // The agent may have gone in the meantime.
-                    let Some(conn) = conn.upgrade() else {
-                        return;
-                    };
-                    match read {
-                        Ok(content) => conn.respond(id, json!({"content": content})),
-                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-                    }
-                })
-                .detach();
+                if let Some(secret) = self.secret_fs_read(&params) {
+                    self.ask_fs_read(id, params, secret, cx);
+                    return;
+                }
+                self.serve_fs_read(id, params, cx);
             }
             // Checked here, written off the main thread: a sandboxed write starts a
             // process, and a big file on a slow disk would freeze the window too.
@@ -3803,6 +3878,118 @@ impl Thread {
                 .detach();
             }
             _ => conn.respond_error(id, -32601, &format!("method not found: {method}")),
+        }
+    }
+
+    /// Answers the agent's `fs/read_text_file`. Off the main thread: a big
+    /// file, or one on a slow disk, would freeze the window.
+    fn serve_fs_read(&mut self, id: Value, params: Value, cx: &mut Context<Self>) {
+        let Some(conn) = self.conn.clone() else {
+            return;
+        };
+        let cwd = self.cwd.clone();
+        let sandbox = self.sandbox.clone();
+        let conn = Rc::downgrade(&conn);
+        cx.spawn(async move |_, cx| {
+            let read = cx
+                .background_spawn(crate::guard::task(async move {
+                    read_file(&cwd, sandbox.as_deref(), &params)
+                }))
+                .await;
+            // The agent may have gone in the meantime.
+            let Some(conn) = conn.upgrade() else {
+                return;
+            };
+            match read {
+                Ok(content) => conn.respond(id, json!({"content": content})),
+                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+            }
+        })
+        .detach();
+    }
+
+    /// The secret file an `fs/read_text_file` asks for, as the card names it,
+    /// unless the user already let the agent read it.
+    fn secret_fs_read(&mut self, params: &Value) -> Option<String> {
+        let path = confine(&self.cwd, params["path"].as_str().unwrap_or("")).ok()?;
+        let shown = path.strip_prefix(&self.cwd).unwrap_or(&path);
+        if !crate::secrets::asks_to_read(shown) {
+            return None;
+        }
+        // Allowed once for this file, by the card of the tool call that reads it.
+        if self.secrets_allowed || self.secret_reads_allowed.remove(&path) {
+            return None;
+        }
+        Some(shown.display().to_string())
+    }
+
+    /// Asks the user before Arakun answers an `fs/read_text_file` of a secret
+    /// file. Auto-allow doesn't answer it: nobody would see what was read.
+    fn ask_fs_read(&mut self, id: Value, params: Value, secret: String, cx: &mut Context<Self>) {
+        // The tool call reading it, when the agent said which; its row gets the card.
+        let tool_call_id = self
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Tool(t)
+                    if t.secret.as_deref() == Some(secret.as_str())
+                        && matches!(t.status, ToolStatus::Pending | ToolStatus::InProgress) =>
+                {
+                    Some(t.id.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        self.permissions.push_back(PermissionRequest {
+            rpc_id: id,
+            tool_call_id: tool_call_id.clone(),
+            title: format!("Read {secret}"),
+            options: super::secret_reads::fs_read_options(),
+            plan: None,
+            session: None,
+            secret: Some(secret),
+            fs_read: Some(params),
+        });
+        if let Some(&ix) = self.tool_index.get(&tool_call_id) {
+            self.entries_changed(ix, cx);
+        }
+        self.set_status(ThreadStatus::NeedsInput, cx);
+        cx.emit(ThreadEvent::NeedsPermission);
+        cx.notify();
+    }
+
+    /// Sends `reply` to the request `req` answers. Arakun's own ask before an
+    /// `fs/read_text_file` reads the file once allowed, and refuses it otherwise.
+    fn reply_to(&mut self, req: &PermissionRequest, reply: &Value, cx: &mut Context<Self>) {
+        let Some(params) = req.fs_read.clone() else {
+            if let Some(conn) = &self.conn {
+                conn.respond(req.rpc_id.clone(), reply.clone());
+            }
+            return;
+        };
+        let chosen = reply["outcome"]["optionId"].as_str();
+        let allowed = req
+            .options
+            .iter()
+            .any(|o| Some(o.id.as_str()) == chosen && o.is_allow());
+        if allowed {
+            self.serve_fs_read(req.rpc_id.clone(), params, cx);
+        } else if let Some(conn) = &self.conn {
+            let file = req.secret.as_deref().unwrap_or("the file");
+            conn.respond_error(
+                req.rpc_id.clone(),
+                -32002,
+                &format!("the user did not let the agent read {file}, which holds secrets"),
+            );
+        }
+    }
+
+    /// The secret file the tool call `id` reads, if it is one.
+    fn tool_secret(&self, id: &str) -> Option<String> {
+        match self.entries.get(*self.tool_index.get(id)?)? {
+            Entry::Tool(t) => t.secret.clone(),
+            _ => None,
         }
     }
 
@@ -4103,6 +4290,7 @@ impl Thread {
                     exit_code: None,
                     parent: None,
                     tool_name: None,
+                    secret: None,
                 }),
                 cx,
             ),
@@ -4158,6 +4346,9 @@ impl Thread {
         }
         if let Some(code) = meta["terminal_exit"]["exit_code"].as_i64() {
             t.exit_code = Some(code);
+        }
+        if t.secret.is_none() {
+            t.secret = super::secret_reads::tool_reads(t);
         }
         if self.native.secret_answered.contains(&id) {
             self.mask_answered(ix);
@@ -4731,6 +4922,7 @@ mod tests {
                 exit_code: None,
                 parent: None,
                 tool_name: name.map(str::to_string),
+                secret: None,
             };
         let task_id = Some(json!({"task_id": "b1"}));
         assert!(call(Some("Agent"), "Run tests", None).is_subagent());
@@ -4766,6 +4958,7 @@ mod tests {
             exit_code: None,
             parent: None,
             tool_name: None,
+            secret: None,
         };
         let mut total = 0u64;
         for i in 0..100_000 {
@@ -5215,6 +5408,7 @@ mod tests {
             exit_code: None,
             parent: None,
             tool_name: None,
+            secret: None,
         };
         recount(&mut t);
         Entry::Tool(t)

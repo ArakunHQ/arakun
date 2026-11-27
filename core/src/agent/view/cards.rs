@@ -247,6 +247,23 @@ impl ThreadView {
                     ),
             )
             .when_some(preview, |d, p| d.child(p))
+            .when_some(p.secret.as_deref(), |d, file| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(crate::ui::sp(8.))
+                        .text_size(px(crate::ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(icon("square-lock02", 14.).flex_none().text_color(amber()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(crate::agent::secret_reads::why(file)),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()

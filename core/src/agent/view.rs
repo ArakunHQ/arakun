@@ -417,6 +417,8 @@ pub struct ThreadView {
     /// The scroll of the live phase's window, by its first entry.
     live_scroll: Option<(usize, ScrollHandle)>,
     open: HashSet<usize>,
+    /// Tool calls that read a secret file whose output the user chose to see.
+    revealed: HashSet<String>,
     folds: HashSet<usize>,
     /// Turns whose changes are shown under their "Worked for" line, by first entry.
     changes_open: HashSet<usize>,
@@ -506,6 +508,7 @@ impl ThreadView {
             phase_open: HashMap::new(),
             live_scroll: None,
             open: HashSet::new(),
+            revealed: HashSet::new(),
             folds,
             changes_open: HashSet::new(),
             focus: cx.focus_handle(),

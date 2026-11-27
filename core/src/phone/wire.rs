@@ -186,6 +186,9 @@ pub fn permission(p: &PermissionRequest) -> Value {
         "tool_call_id": p.tool_call_id,
         "title": p.title,
         "options": p.options.iter().map(|o| json!({ "id": o.id, "name": o.name, "kind": o.kind })).collect::<Vec<_>>(),
+        // The secret file it would read, and why that matters.
+        "secret": p.secret,
+        "why": p.secret.as_deref().map(crate::agent::secret_reads::why),
     })
 }
 
@@ -268,7 +271,10 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
                     ToolContent::Terminal { .. } => {}
                 }
             }
-            let output = if !t.terminal_output.is_empty() {
+            // A secret file's content stays on the computer, shown only there.
+            let output = if t.secret.is_some() {
+                None
+            } else if !t.terminal_output.is_empty() {
                 Some(tail(&t.terminal_output, CLIP))
             } else if !texts.is_empty() {
                 Some(tail(&texts.join("\n"), CLIP))
@@ -288,6 +294,7 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
                 "removed": t.removed,
                 "diffs": diffs,
                 "locations": t.locations.iter().map(|p| file_name(p)).collect::<Vec<_>>(),
+                "secret": t.secret,
             })
         }
         Entry::Plan { entries } => json!({
@@ -1362,6 +1369,7 @@ mod tests {
             exit_code: Some(0),
             parent: None,
             tool_name: None,
+            secret: None,
         };
         let v = entry(&Entry::Tool(tool), &scope(std::path::Path::new(".")));
         assert_eq!(v["type"], "tool");
@@ -1369,6 +1377,34 @@ mod tests {
         assert_eq!(v["output"], "ok\n");
         assert_eq!(v["locations"][0], "lib.rs");
         assert_eq!(v["status"], "completed");
+    }
+
+    #[test]
+    fn a_secret_files_output_stays_off_the_phone() {
+        let tool = ToolCall {
+            id: "t1".into(),
+            title: "cat .env".into(),
+            kind: "execute".into(),
+            status: ToolStatus::Completed,
+            content: vec![ToolContent::Text {
+                text: "KEY=hunter2".into(),
+            }],
+            locations: vec![],
+            raw_input: Some(json!({ "command": "cat .env" })),
+            raw_output: Some("KEY=hunter2".into()),
+            added: 0,
+            removed: 0,
+            terminal_output: "KEY=hunter2\n".into(),
+            terminal_dropped_lines: 0,
+            exit_code: Some(0),
+            parent: None,
+            tool_name: None,
+            secret: Some(".env".into()),
+        };
+        let v = entry(&Entry::Tool(tool), &scope(std::path::Path::new(".")));
+        assert_eq!(v["output"], Value::Null);
+        assert_eq!(v["secret"], ".env");
+        assert!(!v.to_string().contains("hunter2"));
     }
 
     fn edit(id: &str, path: &str, old: Option<&str>, new: &str, status: ToolStatus) -> Entry {
@@ -1394,6 +1430,7 @@ mod tests {
             exit_code: None,
             parent: None,
             tool_name: None,
+            secret: None,
         })
     }
 

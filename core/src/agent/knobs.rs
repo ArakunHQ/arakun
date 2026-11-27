@@ -30,6 +30,8 @@ pub struct Knobs {
     pub rules: Vec<String>,
     pub read_budget: bool,
     pub bash_tail: bool,
+    /// A cut tool result is kept whole in a file the marker names.
+    pub keep_cut: bool,
     pub prune: Option<Prune>,
     /// High effort where the next step is a decision, low where it is routine.
     pub adaptive_effort: bool,
@@ -50,6 +52,7 @@ impl Default for Knobs {
             rules: Vec::new(),
             read_budget: false,
             bash_tail: false,
+            keep_cut: false,
             prune: None,
             adaptive_effort: false,
             self_test: false,
@@ -104,7 +107,7 @@ pub const RULES: [(&str, &str); 7] = [
     ("argon", ARGON),
 ];
 
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "adaptive_effort",
     "self_test",
     "stop_on_green",
@@ -116,6 +119,7 @@ const KEYS: [&str; 12] = [
     "rules",
     "read_budget",
     "bash_tail",
+    "keep_cut",
     "prune_tool_results",
 ];
 
@@ -191,6 +195,7 @@ pub fn parse(raw: &str) -> (Knobs, Vec<String>) {
     k.parallel_tools = flag("parallel_tools");
     k.read_budget = flag("read_budget");
     k.bash_tail = flag("bash_tail");
+    k.keep_cut = flag("keep_cut");
     k.adaptive_effort = flag("adaptive_effort");
     k.self_test = flag("self_test");
     k.stop_on_green = flag("stop_on_green");
@@ -242,6 +247,7 @@ impl Knobs {
             "rules": self.rules,
             "read_budget": self.read_budget,
             "bash_tail": self.bash_tail,
+            "keep_cut": self.keep_cut,
             "adaptive_effort": self.adaptive_effort,
             "self_test": self.self_test,
             "stop_on_green": self.stop_on_green,
@@ -785,14 +791,14 @@ mod tests {
         let (k, w) = parse(
             r#"{"tool_chars": 8000, "read_lines": 500, "reasoning_effort": "low", "max_tokens": 32768,
                 "parallel_tools": true, "rules": ["small_task", "nope", "small_task", "argon"],
-                "read_budget": true, "bash_tail": true, "prune_tool_results": {"protect_tokens": 40000, "min_free": 20000},
+                "read_budget": true, "bash_tail": true, "keep_cut": true, "prune_tool_results": {"protect_tokens": 40000, "min_free": 20000},
                 "colour": 1}"#,
         );
         assert_eq!(k.tool_chars, 8000);
         assert_eq!(k.read_lines, 500);
         assert_eq!(k.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(k.max_tokens, 32768);
-        assert!(k.parallel_tools && k.read_budget && k.bash_tail);
+        assert!(k.parallel_tools && k.read_budget && k.bash_tail && k.keep_cut);
         assert_eq!(k.rules, vec!["small_task", "argon"]);
         assert_eq!(
             k.prune,

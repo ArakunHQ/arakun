@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The title bar's height.
+pub(super) const TITLEBAR_H: f32 = 40.;
+
 impl Shell {
     pub(super) fn render_titlebar(
         &self,
@@ -544,7 +547,7 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .h(px(40.))
+            .h(px(TITLEBAR_H))
             // Windows moves the window through the native hit test (HTCAPTION):
             // `start_window_move` does nothing there. Whatever in the bar takes a
             // click stops the mousedown, or the press would start a move instead.

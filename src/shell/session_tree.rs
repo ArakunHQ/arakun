@@ -3,6 +3,7 @@
 //! state. It takes the place of the projects and environments list.
 
 pub(super) mod folded;
+pub(super) mod keys;
 
 use super::*;
 use crate::tab_layout::{LongTitles, Quiet, Sort, StateMark, TabLayout};
@@ -205,6 +206,23 @@ pub(super) fn row_title(title: &str, linear: Option<&str>) -> (Option<String>, S
         .map(str::trim_start)
         .filter(|r| !r.is_empty());
     (Some(issue.to_string()), rest.unwrap_or(title).to_string())
+}
+
+/// What a row says to screen readers: its issue and title, then its state.
+pub(super) fn row_label(title: &str, linear: Option<&str>, state: RowState) -> String {
+    let title = if title.is_empty() {
+        "Untitled session"
+    } else {
+        title
+    };
+    let named = match row_title(title, linear) {
+        (Some(issue), title) => format!("{issue} {title}"),
+        (None, title) => title,
+    };
+    match state.word() {
+        Some(word) => format!("{named}, {word}"),
+        None => named,
+    }
 }
 
 /// One session in the tree.
@@ -1192,6 +1210,7 @@ impl Shell {
         let project = &self.projects[pi];
         let logo: Hsla = gpui::rgb(project.logo).into();
         let path = project.path.clone();
+        let keyed = self.keys_on(pi, &keys::KeyRow::Project);
         let label = format!(
             "{}, {count} session{}",
             project.name,
@@ -1202,6 +1221,8 @@ impl Shell {
             .group("tree-project")
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
             .aria_expanded(open)
+            .aria_selected(keyed)
+            .when(keyed, |d| d.child(keys::key_ring()))
             .relative()
             .flex()
             .items_center()
@@ -1336,6 +1357,7 @@ impl Shell {
         } else {
             title
         };
+        let mut label = row_label(&title, linear.as_deref(), state);
         let (issue, title) = row_title(&title, linear.as_deref());
         // The age shows only under the pointer, so the title has the row's
         // whole width the rest of the time.
@@ -1360,15 +1382,7 @@ impl Shell {
         // comes back under the pointer, to be read before it is opened.
         let dimmed = !tab && !selected && !under_pointer && !state.stays_lit();
         let two_lines = layout.titles == LongTitles::TwoLines;
-        let named = match &issue {
-            Some(issue) => format!("{issue} {title}"),
-            None => title.clone(),
-        };
         let project = &self.projects[pi];
-        let mut label = match state.word() {
-            Some(word) => format!("{named}, {word}"),
-            None => named,
-        };
         if project_icon {
             label = format!("{label}, {}", project.name);
         }
@@ -1378,6 +1392,8 @@ impl Shell {
         let archives = id.clone();
         let onto = id.clone();
         let lifted = self.lifted_session(cx) == Some(&id);
+        // Needs you lists the row again: the ring goes on the project's own.
+        let keyed = !needs && self.keys_on(pi, &keys::KeyRow::Session(id.clone()));
         div()
             .id(SharedString::from(if needs {
                 format!("needs-session-{id}")
@@ -1386,7 +1402,7 @@ impl Shell {
             }))
             .relative()
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
-            .aria_selected(selected || picked)
+            .aria_selected(selected || picked || keyed)
             .flex()
             .items_center()
             .gap(crate::ui::sp(8.))
@@ -1536,6 +1552,7 @@ impl Shell {
                     )
             })
             .when(lifted, |d| d.opacity(0.5))
+            .when(keyed, |d| d.child(keys::key_ring()))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {

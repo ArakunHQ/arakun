@@ -159,6 +159,15 @@ gpui::actions!(
         SelectTab7,
         SelectTab8,
         SelectLastTab,
+        ProjectSessions1,
+        ProjectSessions2,
+        ProjectSessions3,
+        ProjectSessions4,
+        ProjectSessions5,
+        ProjectSessions6,
+        ProjectSessions7,
+        ProjectSessions8,
+        ProjectSessions9,
         SplitRight,
         SplitDown,
         FocusOtherPane,
@@ -4596,6 +4605,7 @@ impl Render for Shell {
                 }),
             )
             .map(|d| self.pane_handlers(d, cx))
+            .map(|d| self.project_key_handlers(d, cx))
             .on_key_down(cx.listener(Self::tab_key))
             .capture_key_down(|ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && crate::agent::markdown::close_preview(window) {
@@ -4613,6 +4623,16 @@ impl Render for Shell {
                     && !k.modifiers.alt
                     && !k.modifiers.platform
                     && this.menu_key(&k.key, window, cx)
+                {
+                    cx.stop_propagation();
+                    return;
+                }
+                // Alt+1 to Alt+9 put the keys on a project's rows.
+                if this.rail.keys.is_some()
+                    && !k.modifiers.control
+                    && !k.modifiers.alt
+                    && !k.modifiers.platform
+                    && this.rail_key(&k.key, window, cx)
                 {
                     cx.stop_propagation();
                     return;

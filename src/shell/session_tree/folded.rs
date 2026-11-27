@@ -67,6 +67,16 @@ impl Flyout {
         false
     }
 
+    /// Opens project `pi`'s flyout from the keys (Alt+1 to Alt+9). It
+    /// stays until Esc, a click or the pointer moves it on.
+    pub(in crate::shell) fn open_by_keys(&mut self, pi: usize) {
+        self.open = Some(pi);
+    }
+
+    pub(in crate::shell) fn is_open(&self, pi: usize) -> bool {
+        self.open == Some(pi)
+    }
+
     /// Closes the flyout now: a session was opened, or Esc. The flyout goes
     /// away under the pointer without saying it left, so it is let go here.
     pub(in crate::shell) fn close(&mut self) -> bool {
@@ -215,6 +225,17 @@ impl Shell {
         .into_any_element()
     }
 
+    /// The sessions project `pi`'s flyout lists, in the tree's order.
+    pub(super) fn flyout_rows(&self, pi: usize, cx: &App) -> Vec<Row> {
+        let Some(project) = self.projects.get(pi) else {
+            return Vec::new();
+        };
+        let mut rows = self.tree_rows(pi, cx);
+        let sort = project.sort.unwrap_or(crate::tab_layout::current().sort);
+        sort_rows(&mut rows, sort, None);
+        rows
+    }
+
     /// The flyout beside the tile under the pointer: the project, its
     /// sessions as the tree lists them, and New session.
     pub(in crate::shell) fn render_project_flyout(
@@ -228,8 +249,7 @@ impl Shell {
         let project = self.projects.get(pi)?;
         let tile = *self.rail.flyout.tiles.borrow().get(&pi)?;
         let layout = crate::tab_layout::current();
-        let mut rows = self.tree_rows(pi, cx);
-        sort_rows(&mut rows, project.sort.unwrap_or(layout.sort), None);
+        let rows = self.flyout_rows(pi, cx);
         let count = rows.len();
         let open_id = self.active_session_id();
         let branch = project
@@ -315,6 +335,7 @@ impl Shell {
                 .text_color(theme::text_faint())
                 .child(crate::platform::shortcut_label("Ctrl+T"))
         });
+        let new_keyed = self.keys_on(pi, &super::keys::KeyRow::New);
         let new = ui::menu_item(
             ("project-flyout-new", pi),
             "add01",
@@ -323,7 +344,10 @@ impl Shell {
             true,
         )
         .aria_label(format!("New session in {name}"))
+        .aria_selected(new_keyed)
+        .relative()
         .children(shortcut)
+        .when(new_keyed, |d| d.child(super::keys::key_ring()))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.rail.flyout.close();
             this.new_session_in(pi, window, cx)

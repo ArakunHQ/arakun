@@ -189,6 +189,25 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     bound(
         PROJECTS,
+        "Go to the sessions of project 1–9, then ↑ ↓ and Enter",
+        NOT_TERMINAL,
+        &[
+            "alt-1", "alt-2", "alt-3", "alt-4", "alt-5", "alt-6", "alt-7", "alt-8", "alt-9",
+        ],
+        &[
+            act!(shell::ProjectSessions1),
+            act!(shell::ProjectSessions2),
+            act!(shell::ProjectSessions3),
+            act!(shell::ProjectSessions4),
+            act!(shell::ProjectSessions5),
+            act!(shell::ProjectSessions6),
+            act!(shell::ProjectSessions7),
+            act!(shell::ProjectSessions8),
+            act!(shell::ProjectSessions9),
+        ],
+    ),
+    bound(
+        PROJECTS,
         "Add project",
         NOT_TERMINAL,
         &["ctrl-o"],

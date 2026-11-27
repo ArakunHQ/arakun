@@ -64,7 +64,7 @@ pub fn dir() -> PathBuf {
     std::env::var_os("ARAKUN_SERVER_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| crate::paths::shared("server"))
+        .unwrap_or_else(|| crate::paths::shared(crate::paths::SERVER))
 }
 
 /// The socket the commands reach the server through: always in its folder.

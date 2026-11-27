@@ -179,7 +179,7 @@ pub fn root() -> PathBuf {
     if let Some(dir) = TEST_ROOT.with(|r| r.borrow().clone()) {
         return dir;
     }
-    crate::state::data_dir().join("headless")
+    crate::paths::store(crate::paths::HEADLESS)
 }
 
 // Tests that make session folders put them here, never in the real data folder:

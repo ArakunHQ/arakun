@@ -61,7 +61,7 @@ fn config_file_from(state: Option<PathBuf>, xdg: Option<PathBuf>, home: PathBuf)
 
 /// What was seen and handled, next to the app's other state.
 fn book_file() -> PathBuf {
-    crate::paths::store("pilot.json")
+    crate::paths::store(crate::paths::PILOT)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

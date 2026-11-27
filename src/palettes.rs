@@ -128,7 +128,7 @@ impl Saved {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("palettes.json")
+    crate::paths::store(crate::paths::PALETTES)
 }
 
 pub fn load() -> Saved {

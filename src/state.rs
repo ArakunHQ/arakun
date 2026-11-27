@@ -576,13 +576,13 @@ fn split_state(strip: &TabStrip, e: &Environment) -> Option<SplitState> {
 }
 
 pub fn transcript_path(id: &str) -> PathBuf {
-    data_dir().join("sessions").join(format!("{id}.json"))
+    crate::paths::store(crate::paths::SESSIONS).join(format!("{id}.json"))
 }
 
 /// Where a session is written out as markdown for another agent to read: when
 /// it is linked into a draft, or when another agent continues it.
 pub fn linked_path(id: &str) -> PathBuf {
-    data_dir().join("linked").join(format!("{id}.md"))
+    crate::paths::store(crate::paths::LINKED).join(format!("{id}.md"))
 }
 
 /// The files a session leaves in the data dir.
@@ -592,7 +592,7 @@ pub fn session_files(id: &str) -> [PathBuf; 2] {
 
 /// Where images pasted into the composer, or sent from the phone, are kept.
 pub fn pastes_dir() -> PathBuf {
-    data_dir().join("pastes")
+    crate::paths::store(crate::paths::PASTES)
 }
 
 /// Saves a pasted image in `dir` as `paste-<millis>.<ext>`, the name
@@ -790,8 +790,8 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
         Err(_) => return,
     };
     let dirs = [
-        (data_dir().join("sessions"), "json"),
-        (data_dir().join("linked"), "md"),
+        (crate::paths::store(crate::paths::SESSIONS), "json"),
+        (crate::paths::store(crate::paths::LINKED), "md"),
     ];
     let seen = sweep(
         &dirs,

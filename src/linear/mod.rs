@@ -168,7 +168,7 @@ impl Store {
 }
 
 fn store_file() -> PathBuf {
-    crate::paths::shared("linear").join("sessions.json")
+    crate::paths::shared(crate::paths::LINEAR_SESSIONS)
 }
 
 /// One writer at a time: sign-ins save from background threads.

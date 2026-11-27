@@ -126,54 +126,114 @@ With `--service` a server that is not signed in yet stays up and waits for
 
 ## Where things are stored
 
-With `ARAKUN_STATE` set (as `arakun dev` sets it), that Arakun's own files are in the
-folder of that state file instead of `%LOCALAPPDATA%\arakun\`: its settings, transcripts,
-memory, pasted images, history and notices. What every Arakun on the computer shares
-stays in `%LOCALAPPDATA%\arakun\`: caches, installed agents, the update being downloaded,
-`arakun server`'s folder, and the sign-ins whose keys are in the Credential Manager under
-one name (Linear, Doop, PostHog, Claude seats, agent secrets, CLIProxyAPI).
+Arakun keeps its files in `%LOCALAPPDATA%\arakun\`. The tables below are
+written from `core/src/paths.rs`, and a test fails when they differ from it.
+
+<!-- paths: generated from core/src/paths.rs -->
+
+### This Arakun's own
+
+With `ARAKUN_STATE` set, these are in the folder of that file instead.
 
 | What | Where |
 |---|---|
-| State, sessions, transcripts | `%LOCALAPPDATA%\arakun\` |
-| That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
-| Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
-| Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
-| Agent logs and the usage log, each with one older copy once full | `%LOCALAPPDATA%\arakun\agents\<agent>.log` and `<agent>.old.log`; `%LOCALAPPDATA%\arakun\usage.jsonl` and `usage.old.jsonl` (or the file `ARAKUN_USAGE_LOG` names and its `.old` copy) |
-| Sessions the startup clean-up has seen listed | `%LOCALAPPDATA%\arakun\state.json.seen`; with `ARAKUN_STATE` set, `<state file>.seen` next to it |
+| Sessions and their transcripts | `%LOCALAPPDATA%\arakun\sessions\` |
+| Sessions written out as Markdown for another agent to read | `%LOCALAPPDATA%\arakun\linked\` |
+| Images pasted into the composer or sent from the phone | `%LOCALAPPDATA%\arakun\pastes\` |
+| Sessions that run without a window | `%LOCALAPPDATA%\arakun\headless\` |
+| Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `%LOCALAPPDATA%\arakun\memory\` |
+| The sidebar's layout | `%LOCALAPPDATA%\arakun\sidebar.json` |
+| The extension views turned on in the Marketplace | `%LOCALAPPDATA%\arakun\extensions.json` |
+| Prompts sent from the composer, for ↑ and ↓ | `%LOCALAPPDATA%\arakun\history.json` |
+| Saved prompts | `%LOCALAPPDATA%\arakun\prompts.json` |
+| Notice history | `%LOCALAPPDATA%\arakun\notices.json` |
+| Saved palettes | `%LOCALAPPDATA%\arakun\palettes.json` |
+| `Ctrl+K` rules | `%LOCALAPPDATA%\arakun\rules.json` |
+| What you pinned from the palette (`Ctrl+P`) | `%LOCALAPPDATA%\arakun\pins.json` |
+| Your to-dos, added from the palette | `%LOCALAPPDATA%\arakun\todos.json` |
+| What the palette ranks first | `%LOCALAPPDATA%\arakun\palette-frecency.json` |
+| Voice settings | `%LOCALAPPDATA%\arakun\voice.json` |
+| The Phone tab's settings and pairings (the private keys are in the keyring) | `%LOCALAPPDATA%\arakun\phone.json` |
+| Servers the app is paired with or reaches through your account (Computers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
+| GitHub tab settings | `%LOCALAPPDATA%\arakun\github.json` |
+| Review drafts (GitHub tab) | `%LOCALAPPDATA%\arakun\github\drafts\` |
+| The PR agent's cards you saw and dealt with (arakun-pilot) | `%LOCALAPPDATA%\arakun\pilot.json` |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
-| Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
-| Archive after merge (Settings › Branches), and the merges archived | `settle-after-merge`, `settled.json` in `%LOCALAPPDATA%\arakun\` |
+| Archive after merge, while it is on (Settings › Branches) | `%LOCALAPPDATA%\arakun\settle-after-merge` |
+| The merges archived | `%LOCALAPPDATA%\arakun\settled.json` |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
-| Linear sign-ins (who signed in; the personal API keys are in the Credential Manager) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
+| Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
+| Agents may drive external pages, while it is on | `%LOCALAPPDATA%\arakun\drive-any-page` |
+| Redacted mode, while it is on (Settings › Privacy) | `%LOCALAPPDATA%\arakun\redacted` |
+| Your answer about crash reports and usage counts (Settings › Privacy) | `%LOCALAPPDATA%\arakun\telemetry.json` |
+| Every panic, kept on this machine | `%LOCALAPPDATA%\arakun\crash.log` |
+| That Arakun is running: one left behind means the last run crashed | `%LOCALAPPDATA%\arakun\running` |
+| The update channel (Settings › General) | `%LOCALAPPDATA%\arakun\update-channel` |
+| Held while the channel switches | `%LOCALAPPDATA%\arakun\update-channel.lock` |
+| Automatic updates are off (Settings › General) | `%LOCALAPPDATA%\arakun\no-auto-update` |
+
+### Shared by every Arakun on this computer
+
+These stay in `%LOCALAPPDATA%\arakun\` whatever `ARAKUN_STATE` says.
+
+| What | Where |
+|---|---|
+| The random install id for crash reports and usage counts | `%LOCALAPPDATA%\arakun\telemetry-id` |
+| Surveys from the last fetch | `%LOCALAPPDATA%\arakun\surveys.json` |
+| The surveys you saw | `%LOCALAPPDATA%\arakun\surveys-seen.json` |
+| Agent adapters (npm), and each agent's log `<agent>.log` with one older copy `<agent>.old.log` | `%LOCALAPPDATA%\arakun\agents\` |
+| The usage log and its older copy `usage.old.jsonl` (or the file `ARAKUN_USAGE_LOG` names) | `%LOCALAPPDATA%\arakun\usage.jsonl` |
+| Claude seats (`arakun seat add`), one empty file per seat; their tokens are in the keyring | `%LOCALAPPDATA%\arakun\seats\` |
+| The Claude seats' last limits | `%LOCALAPPDATA%\arakun\claude-seats.json` |
+| The settings that hand Claude Code its API key helper | `%LOCALAPPDATA%\arakun\claude-key-helper.json` |
+| OpenCode's plan and limits | `%LOCALAPPDATA%\arakun\opencode-plan.json` |
+| Devin's plan and limits | `%LOCALAPPDATA%\arakun\devin-plan.json` |
+| The proxy the CLIProxyAPI management key is for (Usage tab); the key is in the keyring | `%LOCALAPPDATA%\arakun\cliproxy-management-key` |
+| A typed CLIProxyAPI address (Usage tab) | `%LOCALAPPDATA%\arakun\cliproxy-address` |
+| The proxy's accounts' last limits (Usage tab) | `%LOCALAPPDATA%\arakun\cliproxy-plan.json` |
+| The skills.sh skills installed | `%LOCALAPPDATA%\arakun\skills-installed.json` |
+| Skills and servers installed from repositories | `%LOCALAPPDATA%\arakun\repo-installs.json` |
+| An index of the secrets in the keyring (hashes of their handles only) | `%LOCALAPPDATA%\arakun\secret-refs.json` |
+| Secrets handed to agents as files, removed once unused | `%LOCALAPPDATA%\arakun\secret-files\` |
+| Arakun's own secrets, when there is no keyring | `%LOCALAPPDATA%\arakun\secrets.json` |
+| Each sandboxed agent's folder while it runs | `%LOCALAPPDATA%\arakun\sandboxes\` |
+| The socket sandboxed agents reach Arakun through | `%LOCALAPPDATA%\arakun\sandbox\control.sock` |
+| Linear sign-ins (who signed in; the API keys are in the keyring) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
 | Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
 | Linear: the servers that hold Linear settings | `%LOCALAPPDATA%\arakun\linear\servers.json` |
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `%LOCALAPPDATA%\arakun\linear\runs.json` |
-| Doop sign-ins (their keys and tokens are in the Credential Manager), canvases added by link, and cached renders | `%LOCALAPPDATA%\arakun\doop\sessions.json`, `%LOCALAPPDATA%\arakun\doop\pins.json` and `%LOCALAPPDATA%\arakun\cache\doop\` |
-| Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
-| Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
-| `arakun server`: its settings, sign-in (`account.json`), Linear settings and runs (`linear.json`, `linear-runs.json`), sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
-| Servers the app is paired with or reaches through your account (Computers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
-| The token each server paired by link gave (Computers tab) | Credential Manager, as `arakun:server-token:<id>`; with `ARAKUN_STATE` set, `@<that file>` is added to the name |
-| What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
+| Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`) | `%LOCALAPPDATA%\arakun\doop\` |
+| PostHog sign-ins (`sessions.json`; the keys are in the keyring) and links (`links.json`) | `%LOCALAPPDATA%\arakun\posthog\` |
+| Caches: Doop renders, PostHog answers, favicons, marketplaces, extensions | `%LOCALAPPDATA%\arakun\cache\` |
+| `arakun server`: its settings, sign-in, Linear settings and runs, sessions and socket (or the folder `ARAKUN_SERVER_DIR` names) | `%LOCALAPPDATA%\arakun\server\` |
+| Updates: the version waiting | `%LOCALAPPDATA%\arakun\update.json` |
+| Held while an update downloads | `%LOCALAPPDATA%\arakun\update.lock` |
+| The update being downloaded | `%LOCALAPPDATA%\arakun\update-download\` |
+| Log, when started without a terminal | `%LOCALAPPDATA%\arakun\arakun.log` |
+
+<!-- paths: end -->
+
+Outside those folders, or named after the state file:
+
+| What | Where |
+|---|---|
+| State | `%LOCALAPPDATA%\arakun\state.json`, or the file `ARAKUN_STATE` names |
+| That the first-launch setup was done | `state.onboarding.json`, next to the state file |
+| Sessions the startup clean-up has seen listed | `state.json.seen`, next to the state file |
+| Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `state.json.lock`, next to the state file |
+| Control socket | `%LOCALAPPDATA%\arakun\control.sock`, next to the state file |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |
+| A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
+| arakun-pilot's Worker address | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
+| Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
+| The token each server paired by link gave (Computers tab) | Credential Manager, as `arakun:server-token:<id>`; with `ARAKUN_STATE` set, `@<that file>` is added to the name |
+| arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | Account session (the Profile dialog, the Phone tab's relay, the Computers tab) | Credential Manager, as `arakun:teams-session` |
 | Teams device keys (Teams tab) | Credential Manager, as `arakun:teams-device-<account>-<scope>`; scope identifies the server and profile |
-| Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
-| GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
-| The PR agent's cards you saw and dealt with (arakun-pilot) | `%LOCALAPPDATA%\arakun\pilot.json` |
-| arakun-pilot's Worker address | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
-| arakun-pilot's tokens | Credential Manager, as `arakun:arakun-pilot-token` and `arakun:arakun-pilot-admin-token`; with `ARAKUN_STATE` set, `@<the folder of that state file>` is added to each name |
-| Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key (Usage tab) | Credential Manager, as `arakun:cliproxy-management-key` |
-| The proxy that key is for, a typed address and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-address`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Claude seats' tokens (`arakun seat add`) | Credential Manager, as `arakun:seat:<name>` |
-| Claude seats, one empty file per seat that lists it | `%LOCALAPPDATA%\arakun\seats\<name>` |
-| Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
-| Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
-| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
-| A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (the Secret Service); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).

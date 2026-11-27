@@ -11,7 +11,7 @@ pub struct History {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("history.json")
+    crate::paths::store(crate::paths::HISTORY)
 }
 
 impl History {

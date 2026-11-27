@@ -25,7 +25,7 @@ const MAX_FRAMES: usize = 40;
 static MAIN: OnceLock<ThreadId> = OnceLock::new();
 
 pub fn log_path() -> PathBuf {
-    crate::paths::store("crash.log")
+    crate::paths::store(crate::paths::CRASH_LOG)
 }
 
 /// Installs the hook. Call it on the main thread: a panic there is the one
@@ -57,7 +57,7 @@ pub fn install() {
 /// The file that exists while Arakun runs. A clean exit deletes it, so one
 /// left behind means the last run ended badly.
 fn marker_path(dir: &Path) -> PathBuf {
-    dir.join("running")
+    dir.join(crate::paths::RUNNING.name())
 }
 
 /// Tests and `arakun dev` never write it: they are killed all the time. A

@@ -320,7 +320,7 @@ const LINKS_ARAKUN: u8 = 1;
 const LINKS_SYSTEM: u8 = 2;
 
 fn links_path() -> std::path::PathBuf {
-    crate::paths::store("open-links")
+    crate::paths::store(crate::paths::OPEN_LINKS)
 }
 
 fn parse_links_choice(text: &str) -> Option<bool> {

@@ -101,7 +101,7 @@ pub fn account_for(name: &str, state: Option<&str>) -> String {
 /// a store whose own file is shared names its secrets the same in every
 /// profile, and [`account`] tells the others apart.
 fn fallback_path() -> PathBuf {
-    crate::paths::shared("secrets.json")
+    crate::paths::shared(crate::paths::SECRETS)
 }
 
 fn os() -> Store<'static, Os> {

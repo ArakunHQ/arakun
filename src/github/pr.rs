@@ -2776,8 +2776,7 @@ impl Draft {
 
 fn drafts_dir() -> PathBuf {
     // Next to the state file, so a test Arakun keeps its drafts apart.
-    let base = crate::paths::store("github");
-    base.join("drafts")
+    crate::paths::store(crate::paths::GITHUB_DRAFTS)
 }
 
 /// One file per pull request. GitHub's names ignore case, so the file's does too.

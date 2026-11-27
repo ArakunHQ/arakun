@@ -114,7 +114,7 @@ pub fn set_channel(channel: Channel) -> std::io::Result<()> {
 /// a switch in Settings must not wait for it. Blocking, but only for a hash
 /// and a rename.
 fn channel_lock() -> std::io::Result<std::fs::File> {
-    let path = crate::paths::store("update-channel.lock");
+    let path = crate::paths::store(crate::paths::UPDATE_CHANNEL_LOCK);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -128,7 +128,7 @@ fn channel_lock() -> std::io::Result<std::fs::File> {
 }
 
 fn channel_file() -> PathBuf {
-    crate::paths::store("update-channel")
+    crate::paths::store(crate::paths::UPDATE_CHANNEL)
 }
 
 /// Whether the release workflow built this binary.
@@ -222,7 +222,7 @@ pub fn set_automatic(on: bool) -> std::io::Result<()> {
 }
 
 fn off_marker() -> PathBuf {
-    crate::paths::store("no-auto-update")
+    crate::paths::store(crate::paths::NO_AUTO_UPDATE)
 }
 
 /// `vX.Y.Z` as numbers, or a nightly `X.Y.Z-nightly.N`, which comes before
@@ -281,7 +281,7 @@ struct Saved {
 }
 
 fn saved_path() -> PathBuf {
-    crate::paths::shared("update.json")
+    crate::paths::shared(crate::paths::UPDATE)
 }
 
 fn load() -> Saved {
@@ -411,7 +411,7 @@ struct Lock {
 
 /// `None` while another updater holds it.
 fn lock() -> Result<Option<Lock>, String> {
-    let path = crate::paths::shared("update.lock");
+    let path = crate::paths::shared(crate::paths::UPDATE_LOCK);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -678,7 +678,7 @@ fn stage(tag: &str, version: Version, install: &Install) -> Result<(), String> {
     signed(&keys_for(version), sums.as_bytes(), &sig).map_err(|e| format!("{tag}: {e}"))?;
     let want = listed(&sums, &file).ok_or_else(|| format!("{tag} has no {platform} build"))?;
 
-    let work = crate::paths::shared("update-download");
+    let work = crate::paths::shared(crate::paths::UPDATE_DOWNLOAD);
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     let result = (|| {

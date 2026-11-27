@@ -285,6 +285,10 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   on.
 - **Docs.** If you change a command, a flag, a shortcut or a storage path, update the
   README (and [docs/windows.md](docs/windows.md) if it is different on Windows).
+  Every file in the data folder is named in the list in `core/src/paths.rs`, and
+  `paths::store` and `paths::shared` take only names from it. The storage tables in
+  docs/windows.md are written from that list: after you change it, run
+  `ARAKUN_BLESS=1 cargo test -p arakun-core paths`.
 
 ### The iOS app
 

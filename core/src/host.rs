@@ -29,8 +29,8 @@ impl Default for Host {
     fn default() -> Self {
         Host {
             memory_prompt: |_| String::new(),
-            memory_root: || crate::paths::shared("memory"),
-            sandbox_socket: || crate::paths::shared("sandbox/control.sock"),
+            memory_root: || crate::paths::store(crate::paths::MEMORY),
+            sandbox_socket: || crate::paths::shared(crate::paths::SANDBOX_SOCKET),
             shim_dir: || None,
             github_read_only: "GitHub is read-only here (ARAKUN_GITHUB=readonly): nothing was sent.",
             idle_for: || None,

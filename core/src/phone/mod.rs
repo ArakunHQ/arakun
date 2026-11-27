@@ -113,11 +113,22 @@ pub enum ClientMsg {
         #[serde(default)]
         session: Option<String>,
     },
-    /// Older entries of the watched session, `from..to`.
+    /// Older entries of the watched session, `from..to`. With `subagent`,
+    /// that subagent's instead, answered with `subagent_entries`.
     Entries {
         session: String,
         from: usize,
         to: usize,
+        #[serde(default)]
+        subagent: Option<String>,
+    },
+    /// Watch the transcript of one of `session`'s subagents: its last entries
+    /// now (`subagent_entries`), then every change. It takes the place of the
+    /// one watched before; none stops watching.
+    Subagent {
+        session: String,
+        #[serde(default)]
+        subagent: Option<String>,
     },
     Send {
         session: String,
@@ -2267,6 +2278,45 @@ mod tests {
         let (mut quick, _) = listener.accept().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         assert_eq!(read_body(&mut quick, 2, deadline), Some(b"{}".to_vec()));
+    }
+
+    #[test]
+    fn a_phone_pages_and_opens_a_subagents_transcript() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        // As older phones send it: the session's own entries.
+        assert_eq!(
+            read(r#"{"type":"entries","session":"s1","from":0,"to":50}"#),
+            ClientMsg::Entries {
+                session: "s1".into(),
+                from: 0,
+                to: 50,
+                subagent: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"entries","session":"s1","from":0,"to":50,"subagent":"a"}"#),
+            ClientMsg::Entries {
+                session: "s1".into(),
+                from: 0,
+                to: 50,
+                subagent: Some("a".into()),
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"subagent","session":"s1","subagent":"a"}"#),
+            ClientMsg::Subagent {
+                session: "s1".into(),
+                subagent: Some("a".into()),
+            }
+        );
+        // None closes it.
+        assert_eq!(
+            read(r#"{"type":"subagent","session":"s1"}"#),
+            ClientMsg::Subagent {
+                session: "s1".into(),
+                subagent: None,
+            }
+        );
     }
 
     #[test]

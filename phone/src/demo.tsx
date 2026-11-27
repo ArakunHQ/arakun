@@ -1,7 +1,8 @@
 // The screens with made-up sessions and no computer, for screenshots of the
 // look: `npm run dev`, then open /demo.html#/inbox, #/s/a or #/signin, at any
 // width. /demo.html?account#/inbox plays the account host, signed in with two
-// computers. Only demo.html loads this; the build has index.html alone, so it
+// computers. Add &cloud for an account with a cloud environment, &cloud=ask for
+// one that may ask for access. Only demo.html loads this; the build has index.html alone, so it
 // never ships.
 import "./styles/tokens.css";
 import "./styles/base.css";
@@ -110,13 +111,29 @@ const router = createRouter({
 
 // The account host, made up: relay.js's answers, without the network.
 if (new URLSearchParams(location.search).has("account")) {
+  const cloud = new URLSearchParams(location.search).get("cloud");
   const machines = [
     { label: "m1", name: "MacBook Pro", pub: "A", online: true },
     { label: "m2", name: "Build box", pub: "B", kind: "server", last_seen_at: now - 7200 },
+    ...(cloud === "" ? [{ label: "abcdefghijklmnop", name: "Cloud", pub: "C", kind: "server", last_seen_at: now - 1800 }] : []),
   ];
+  const flags = cloud === "" ? ["cloud"] : [];
+  // The cloud routes, which the page asks the account host for itself.
+  const hour = 3_600_000;
+  const answers: Record<string, unknown> = {
+    "/cloud/access": { status: "none", requested_at: null, decided_at: null, retry_at: null },
+    "/cloud/machines": [{ label: "abcdefghijklmnop", name: "Cloud", running: false, snapshot: true, last_active: Date.now() - 1_800_000, task_ms: 2 * hour, stopped: "task_cap" }],
+    "/cloud/usage": { month: "2026-11", used_ms: 6.5 * hour, allowance_ms: 20 * hour, left_ms: 13.5 * hour, task_cap_ms: 2 * hour, stopped: null, message: null },
+  };
+  const real = fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+    if (cloud !== null && path in answers) return Response.json(answers[path]);
+    return real(input, init);
+  };
   Object.assign((globalThis as unknown as { RELAY: object }).RELAY, {
     detect: async () => "account",
-    boot: async () => ({ screen: "ok", me: { login: "rikvisser", notices: [] }, machines }),
+    boot: async () => ({ screen: "ok", me: { login: "rikvisser", notices: [], flags }, machines }),
     machines: async () => ({ list: machines }),
     sessions: async () => ({ list: [] }),
   });

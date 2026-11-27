@@ -2,7 +2,8 @@
 // container we run. Only an account with the `cloud` flag may have one, and one
 // each for now. The app and the phone reach a running machine through the
 // usual /machines/<label> doors; these routes only make, wake, put to sleep and
-// remove it. There is no app or phone screen for them yet.
+// remove it. The phone's Computers screen calls them
+// (phone/src/components/CloudGroup.tsx); the desktop app does not yet.
 //
 //   GET    /cloud/machines                → [MachineState]
 //   POST   /cloud/machines                → 201 MachineState, { name? }; makes and starts one

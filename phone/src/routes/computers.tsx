@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { CloudGroup } from "../components/CloudGroup";
 import { NoticeBanners } from "../components/NoticeBanners";
 import { TopBar } from "../components/shell/TopBar";
 import { meQuery, pick, pickedMachine, useMachines, useRemoveMachine, useSaid, useSignOut } from "../lib/account";
+import { CLOUD_FLAG, useCloudMachines } from "../lib/cloud";
 import { ago } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon } from "../lib/icons";
@@ -27,6 +29,10 @@ export function Computers() {
   const remove = useRemoveMachine();
   const signOut = useSignOut();
   const said = useSaid();
+  const flags = boot?.me?.flags;
+  const flagged = Array.isArray(flags) && flags.includes(CLOUD_FLAG);
+  // The cloud environment is in the list like a server; its row says what it is.
+  const cloud = new Set((useCloudMachines(flagged).data ?? []).map((m) => m.label));
 
   const got = machines.data;
   const blockedBy = got && "blocked" in got ? got : boot?.screen === "blocked" ? { reason: boot.reason ?? null } : null;
@@ -62,7 +68,7 @@ export function Computers() {
       </div>
     );
   } else if (boot && !blockedBy) {
-    body = list.length ? (
+    const computers = list.length ? (
       <section className="group">
         <div className="glabel">Computers</div>
         <div className="gbox">
@@ -71,11 +77,11 @@ export function Computers() {
             <div className="prow mrow" key={m.label}>
               <button className="mpick" onClick={() => choose(m)}>
                 <span className="ricon">
-                  <Icon name="monitor" size={20} />
+                  <Icon name={cloud.has(m.label) ? "cloud" : "monitor"} size={20} />
                 </span>
                 <span className="rbody">
                   <span className="rt">{m.name}</span>
-                  <span className="rs">{m.kind === "server" ? "Server" : "Arakun app"}</span>
+                  <span className="rs">{cloud.has(m.label) ? "Cloud environment" : m.kind === "server" ? "Server" : "Arakun app"}</span>
                 </span>
                 <span className={`badge${m.online ? " idle" : ""}`}>
                   <span className="dot" />
@@ -94,6 +100,12 @@ export function Computers() {
         <img className="mascot" src="mascot.svg" alt="" />
         <div>No computers yet. Sign in on a computer running Arakun.</div>
       </div>
+    );
+    body = (
+      <>
+        {computers}
+        <CloudGroup flagged={flagged} />
+      </>
     );
   }
 

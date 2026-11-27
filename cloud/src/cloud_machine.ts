@@ -28,10 +28,16 @@
 // is renewed, since work inside the container is no activity to Cloudflare.
 // After IDLE_MS of neither, the object snapshots the disk and stops the
 // container; the next wake restores the snapshot.
+//
+// Metering (cloud_meter.ts). The clock starts when the container does and
+// stops after the snapshot. Each check adds what ran to the account's month
+// and sleeps the machine at a limit; the alarm comes early enough to stop it
+// on time. A container that stopped by itself is counted to its last check.
 
 import { DurableObject } from "cloudflare:workers";
 import { newCloudSession } from "./auth";
 import { CLOUD_FLAG } from "./cloud_access";
+import { addAwake, budgetOf, limitOf, msLeft, noticeStop, type Budget, type Limit } from "./cloud_meter";
 import { modelVars, replacedBy, seal, PROVIDERS, type Model, type Provider, type Stored } from "./cloud_model";
 import { labelOf } from "./relay/label";
 import { b64url, fromB64url, now, type Env } from "./util";
@@ -59,6 +65,8 @@ export const SERVER_USER = "arakun";
 export const MODEL_ENV = "/opt/arakun/bin/model-env";
 /// How long one `arakun-server status` may take.
 const STATUS_TIMEOUT_MS = 10_000;
+/// The soonest the alarm comes back, so a machine at its limit does not spin.
+const MIN_CHECK_MS = 1000;
 
 /// What the object keeps about its machine.
 export interface MachineRecord {
@@ -101,6 +109,11 @@ export interface MachineState {
   snapshot: boolean;
   /// Unix milliseconds of the last activity seen, or null before the first.
   last_active: number | null;
+  /// Milliseconds the current task has run, as of the last check; the last
+  /// task's while it sleeps.
+  task_ms: number;
+  /// Why it sleeps and will not wake by itself, or null.
+  stopped: Limit | null;
 }
 
 /// A provider the machine has credentials for, never the credentials.
@@ -117,7 +130,17 @@ export type Box = Pick<Container, "running" | "images" | "start" | "monitor" | "
 export type Store = Pick<DurableObjectStorage, "get" | "put" | "delete" | "deleteAll" | "setAlarm" | "deleteAlarm">;
 
 /// Why a start was refused.
-export type Refused = "no_machine" | "not_allowed" | "no_container";
+export type Refused = "no_machine" | "not_allowed" | "no_container" | Limit;
+
+/// Who wakes the machine: a device at its door, or its owner asking for it.
+/// Only the owner starts a new task after the task cap.
+export type Origin = "door" | "owner";
+
+/// The account behind a machine, when it may run one.
+export interface Owner {
+  login: string;
+  plan: string;
+}
 
 /// A new relay key for a machine: the PKCS#8 that ring, which `arakun-server`
 /// uses, reads and writes, and the label it gives. ring takes its own layout
@@ -151,6 +174,12 @@ export function parseStatus(text: string): ServerStatus | null {
   return { working: Number(sessions[1]), agentsBusy: Number(sessions[2]), connected: Number(devices[1]) };
 }
 
+/// When the alarm comes next: at the usual check, or sooner when a limit
+/// comes first, so the machine stops on time rather than up to a check late.
+export function nextCheck(now: number, leftMs: number): number {
+  return now + Math.max(MIN_CHECK_MS, Math.min(CHECK_MS, leftMs));
+}
+
 /// Whether the server is doing anything a person waits for: an agent turn, or
 /// a device following along.
 export function isActive(status: ServerStatus | null): boolean {
@@ -164,16 +193,17 @@ export function nextStep(now: number, lastActive: number, status: ServerStatus |
   return { sleep: now - last >= IDLE_MS, lastActive: last };
 }
 
-/// Whether the account may run a cloud machine now: it has the `cloud` flag
-/// and is not blocked. Its login, for the server's sign-in file, or null.
-export async function allowedOwner(env: Env, accountId: number): Promise<string | null> {
+/// Whether the account may run a cloud machine at all: it has the `cloud`
+/// flag and is not blocked. Its login, for the server's sign-in file, and its
+/// plan, for the hours; or null. The hours are cloud_meter.ts's.
+export async function allowedOwner(env: Env, accountId: number): Promise<Owner | null> {
   const row = await env.DB.prepare(
-    `SELECT u.login FROM accounts u JOIN user_flags f ON f.account_id = u.id AND f.flag = ?2
+    `SELECT u.login, u.plan FROM accounts u JOIN user_flags f ON f.account_id = u.id AND f.flag = ?2
      WHERE u.id = ?1 AND u.blocked_at IS NULL`,
   )
     .bind(accountId, CLOUD_FLAG)
-    .first<{ login: string }>();
-  return row?.login ?? null;
+    .first<{ login: string; plan: string | null }>();
+  return row ? { login: row.login, plan: row.plan ?? "free" } : null;
 }
 
 /// Ends the machine's cloud session, so a token copied out of the container
@@ -188,8 +218,8 @@ export async function endCloudSession(env: Env, label: string): Promise<void> {
 /// any. Makes a new cloud session, which ends the one before. Null when the
 /// owner may not run a machine.
 export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean, stored: Stored = {}): Promise<Record<string, string> | null> {
-  const login = await allowedOwner(env, m.githubId);
-  if (login === null) return null;
+  const owner = await allowedOwner(env, m.githubId);
+  if (owner === null) return null;
   const made = await newCloudSession(env, m.githubId, m.label, m.name);
   if (!made) return null;
   const vars: Record<string, string> = {
@@ -200,7 +230,7 @@ export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean
     // The account ID, under the name the image reads: it writes it as the
     // login's `github_id`, the name clients still use for the account ID.
     ARAKUN_CLOUD_GITHUB_ID: String(m.githubId),
-    ARAKUN_CLOUD_LOGIN: login,
+    ARAKUN_CLOUD_LOGIN: owner.login,
     ...(await modelVars(env, m.label, stored)),
   };
   if (withIdentity) {
@@ -234,34 +264,67 @@ export class MachineLife {
   async state(): Promise<MachineState | null> {
     const m = await this.record();
     if (!m) return null;
-    const [snap, last] = await Promise.all([this.storage.get<Snap>("snap"), this.storage.get<number>("last_active")]);
-    return { label: m.label, name: m.name, running: this.box?.running ?? false, snapshot: snap !== undefined, last_active: last ?? null };
+    const [snap, last, task] = await Promise.all([
+      this.storage.get<Snap>("snap"),
+      this.storage.get<number>("last_active"),
+      this.storage.get<number>("task_ms"),
+    ]);
+    const running = this.box?.running ?? false;
+    return {
+      label: m.label,
+      name: m.name,
+      running,
+      snapshot: snap !== undefined,
+      last_active: last ?? null,
+      task_ms: task ?? 0,
+      stopped: running ? null : await this.stoppedBy(m),
+    };
+  }
+
+  /// Why a sleeping machine will not wake by itself: a limit of the account,
+  /// read now so a lifted one shows at once, or the task cap it stopped at.
+  private async stoppedBy(m: MachineRecord): Promise<Limit | null> {
+    const owner = await allowedOwner(this.env, m.githubId);
+    if (!owner) return null;
+    const limit = limitOf(await budgetOf(this.env, m.githubId, owner.plan, Date.now()), 0);
+    if (limit) return limit;
+    return (await this.storage.get<number>("task_capped")) !== undefined ? "task_cap" : null;
   }
 
   /// Starts the machine if it sleeps, and counts as activity either way.
-  async wake(): Promise<"running" | Refused> {
+  async wake(origin: Origin = "door"): Promise<"running" | Refused> {
     await this.storage.put("last_active", Date.now());
     if (this.box?.running) return "running";
-    this.starting ??= this.boot().finally(() => (this.starting = null));
+    this.starting ??= this.boot(origin).finally(() => (this.starting = null));
     return this.starting;
   }
 
-  private async boot(): Promise<"running" | Refused> {
+  private async boot(origin: Origin): Promise<"running" | Refused> {
     const m = await this.record();
     if (!m) return "no_machine";
+    // The account's limits before the container, so a refusal says why.
+    const owner = await allowedOwner(this.env, m.githubId);
+    if (!owner) return "not_allowed";
+    if (origin === "door" && (await this.storage.get<number>("task_capped")) !== undefined) return "task_cap";
+    // A new task: its clock starts at zero.
+    const budget = await budgetOf(this.env, m.githubId, owner.plan, Date.now());
+    const limit = limitOf(budget, 0);
+    if (limit) return limit;
     const box = this.box;
     if (!box) return "no_container";
     if (box.running) return "running";
     const image = box.images[IMAGE];
     if (!image) return "no_container";
+    await this.storage.delete("task_capped");
     const snap = await this.storage.get<Snap>("snap");
     const stored = await this.stored();
     if (snap && snap.image === image) {
       const vars = await startEnv(this.env, m, false, stored);
       if (!vars) return "not_allowed";
       try {
+        const t0 = Date.now();
         box.start({ containerSnapshot: { id: snap.id }, instance: INSTANCE, enableInternet: true, env: vars });
-        await this.started(box, image);
+        await this.started(box, image, t0, msLeft(budget, 0));
         return "running";
       } catch (e) {
         // Expired (30 days without a restore) or broken: start clean, with
@@ -273,9 +336,10 @@ export class MachineLife {
     }
     const vars = await startEnv(this.env, m, true, stored);
     if (!vars) return "not_allowed";
+    const t0 = Date.now();
     box.start({ image, instance: INSTANCE, enableInternet: true, env: vars });
     try {
-      await this.started(box, image);
+      await this.started(box, image, t0, msLeft(budget, 0));
     } catch (e) {
       // Half started is worse than stopped: the next wake tries again.
       await endCloudSession(this.env, m.label);
@@ -287,12 +351,27 @@ export class MachineLife {
 
   /// After `start()`: `exec` waits for the container to be up, and throws if
   /// it never comes. The server dials the relay by itself; nothing waits for it.
-  private async started(box: Box, image: string): Promise<void> {
+  /// The clock runs from `t0`, when it was started; a start that failed is
+  /// not counted.
+  private async started(box: Box, image: string, t0: number, leftMs: number): Promise<void> {
     box.monitor().catch((e) => console.error("cloud machine container exited:", e));
     await (await box.exec(["true"], { stdout: "ignore", stderr: "ignore" })).exitCode;
     await box.setInactivityTimeout(BACKSTOP_MS);
-    await this.storage.put("image", image);
-    await this.storage.setAlarm(Date.now() + CHECK_MS);
+    await this.storage.put({ image, metered_at: t0, task_ms: 0 });
+    await this.storage.setAlarm(nextCheck(Date.now(), leftMs));
+  }
+
+  /// Adds the time since the last count to the account's month and to the
+  /// task. Returns the task's time so far. The mark moves before the D1
+  /// write, so a check and a sleep at once cannot both count the same time;
+  /// a failed write loses that time rather than counting it twice.
+  private async meter(m: MachineRecord, now: number): Promise<number> {
+    const [at, task] = await Promise.all([this.storage.get<number>("metered_at"), this.storage.get<number>("task_ms")]);
+    if (at === undefined || now <= at) return task ?? 0;
+    const total = (task ?? 0) + (now - at);
+    await this.storage.put({ metered_at: now, task_ms: total });
+    await addAwake(this.env, m.githubId, at, now);
+    return total;
   }
 
   /// The alarm: keep it up while it works or someone watches, else sleep.
@@ -300,17 +379,27 @@ export class MachineLife {
     const box = this.box;
     const m = await this.record();
     if (!m) return;
-    // Stopped without a sleep (a crash, or the backstop): its session goes too.
+    // Stopped without a sleep (a crash, or the backstop): its session goes
+    // too, and its clock stops at the last check, as when it stopped is unknown.
     if (!box?.running) {
       await endCloudSession(this.env, m.label);
+      await this.storage.delete("metered_at");
       return;
     }
     // A flag taken away or a block stops the machine at the next check.
-    if ((await allowedOwner(this.env, m.githubId)) === null) {
+    const owner = await allowedOwner(this.env, m.githubId);
+    if (owner === null) {
       await this.sleep("access ended");
       return;
     }
     const now = Date.now();
+    const task = await this.meter(m, now);
+    const budget = await budgetOf(this.env, m.githubId, owner.plan, now);
+    const limit = limitOf(budget, task);
+    if (limit) {
+      await this.stop(limit, budget);
+      return;
+    }
     const last = (await this.storage.get<number>("last_active")) ?? 0;
     const step = nextStep(now, last, await this.status(box));
     if (step.sleep) {
@@ -319,7 +408,26 @@ export class MachineLife {
     }
     await this.storage.put("last_active", step.lastActive);
     await box.setInactivityTimeout(BACKSTOP_MS);
-    await this.storage.setAlarm(now + CHECK_MS);
+    await this.storage.setAlarm(nextCheck(now, msLeft(budget, task)));
+  }
+
+  /// Sleeps the machine at a limit and says why. After the task cap only the
+  /// owner wakes it again (see `Origin`). The budget is the one that met the
+  /// limit, for the notice; without one it is read here.
+  async stop(limit: Limit, budget?: Budget): Promise<void> {
+    const m = await this.record();
+    if (!m) return;
+    if (limit === "task_cap") await this.storage.put("task_capped", Date.now());
+    const wasRunning = this.box?.running ?? false;
+    await this.sleep(limit);
+    if (!wasRunning) return;
+    try {
+      const owner = await allowedOwner(this.env, m.githubId);
+      const b = budget ?? (owner ? await budgetOf(this.env, m.githubId, owner.plan, Date.now()) : null);
+      if (b) await noticeStop(this.env, m.githubId, limit, b);
+    } catch (e) {
+      console.error(`cloud machine ${m.label}: could not tell the owner it stopped (${limit}):`, e);
+    }
   }
 
   /// What the server says it is doing; null when it does not answer.
@@ -397,7 +505,10 @@ export class MachineLife {
     const m = await this.record();
     if (!m) return;
     await endCloudSession(this.env, m.label);
-    if (!box?.running) return;
+    if (!box?.running) {
+      await this.storage.delete("metered_at");
+      return;
+    }
     try {
       // The session is over, but its file has no business in a snapshot.
       await (await box.exec(["rm", "-f", `${SERVER_DIR}/account.json`], { stdout: "ignore", stderr: "ignore" })).exitCode;
@@ -417,6 +528,13 @@ export class MachineLife {
     }
     await box.destroy(reason);
     await this.storage.deleteAlarm();
+    // The snapshot ran on the clock too: it stops once the container has.
+    try {
+      await this.meter(m, Date.now());
+    } catch (e) {
+      console.error(`cloud machine ${m.label}: could not count the last of its time:`, e);
+    }
+    await this.storage.delete("metered_at");
   }
 
   /// Stops the container and forgets everything: the key, the snapshot, the
@@ -452,12 +570,16 @@ export class CloudMachine extends DurableObject<Env> {
     return this.life.state();
   }
 
-  wake(): Promise<"running" | Refused> {
-    return this.life.wake();
+  wake(origin: Origin = "door"): Promise<"running" | Refused> {
+    return this.life.wake(origin);
   }
 
   sleep(reason: string): Promise<void> {
     return this.life.sleep(reason);
+  }
+
+  stop(limit: Limit): Promise<void> {
+    return this.life.stop(limit);
   }
 
   remove(): Promise<void> {

@@ -37,7 +37,7 @@ import {
   utf8,
 } from "./frames";
 import { expired } from "../linear_expire";
-import type { Delivery } from "../machines";
+import type { Delivery, GuidanceRule } from "../machines";
 import type { Env } from "../util";
 import { labelOf } from "./label";
 import { planFor, type Plan } from "./limits";
@@ -280,7 +280,7 @@ export class Relay extends DurableObject<Env> {
     ws.send(pcControl({ type: "claimed" }));
     // What waited for the computer, or what it was sent before and has not
     // finished: it tells deliveries apart by id.
-    for (const d of queued) ws.send(pcControl(linearMessage(d, null)));
+    for (const d of queued) ws.send(pcControl(linearMessage(d, null, null)));
     // The computer knows nothing of the devices already waiting: introduce
     // them. One of another account (the label changed hands) goes instead.
     for (const phone of this.phones()) {
@@ -701,14 +701,16 @@ export class Relay extends DurableObject<Env> {
 
   // ---- Linear deliveries ---------------------------------------------------
 
-  /// `POST /_linear {delivery, body}`: keeps the delivery and sends it to the
-  /// computer if it is here. Linear may send the same event twice, so a
-  /// delivery already kept is neither kept again nor sent again.
+  /// `POST /_linear {delivery, body, guidance}`: keeps the delivery and sends
+  /// it to the computer if it is here. Linear may send the same event twice,
+  /// so a delivery already kept is neither kept again nor sent again. `body`
+  /// and `guidance` go in that one frame and are never stored.
   private async linearDeliver(request: Request): Promise<Response> {
     const msg = await request.json().catch(() => null);
     const d = isObj(msg) ? parseDelivery(msg["delivery"]) : null;
     const body = isObj(msg) ? msg["body"] : undefined;
-    if (!d || (body !== null && typeof body !== "string")) return new Response("bad delivery", { status: 400 });
+    const guidance = isObj(msg) ? parseGuidance(msg["guidance"]) : undefined;
+    if (!d || (body !== null && typeof body !== "string") || guidance === undefined) return new Response("bad delivery", { status: 400 });
     const key = LINEAR_KEY + d.id;
     if ((await this.ctx.storage.get(key)) === undefined) {
       const queued = await this.ctx.storage.list({ prefix: LINEAR_KEY, limit: LINEAR_QUEUE_MAX });
@@ -718,7 +720,7 @@ export class Relay extends DurableObject<Env> {
       const pc = this.computer();
       if (pc) {
         try {
-          pc.send(pcControl(linearMessage(d, body)));
+          pc.send(pcControl(linearMessage(d, body, guidance)));
         } catch {
           // closing: it is sent again on the next claim
         }
@@ -980,13 +982,29 @@ function parseDelivery(v: unknown): Delivery | null {
   };
 }
 
+/// The guidance the Worker passed: null when absent, undefined when it is not
+/// what the Worker sends. Only the two known fields are copied on.
+function parseGuidance(v: unknown): GuidanceRule[] | null | undefined {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) return undefined;
+  const rules: GuidanceRule[] = [];
+  for (const r of v) {
+    if (!isObj(r) || typeof r["body"] !== "string") return undefined;
+    const team = r["team"];
+    if (team !== null && typeof team !== "string") return undefined;
+    rules.push({ team, body: r["body"] });
+  }
+  return rules;
+}
+
 /// When a delivery is given up.
 function expiresAt(d: Delivery): number {
   return d.created * 1000 + LINEAR_KEEP_MS;
 }
 
-/// The control frame for a delivery. `body` is only ever the live one's.
-function linearMessage(d: Delivery, body: string | null): object {
+/// The control frame for a delivery. `body` and `guidance` are only ever the
+/// live one's.
+function linearMessage(d: Delivery, body: string | null, guidance: GuidanceRule[] | null): object {
   return {
     type: "linear",
     id: d.id,
@@ -996,6 +1014,7 @@ function linearMessage(d: Delivery, body: string | null): object {
     organization: d.organization,
     activity: d.activity,
     body,
+    guidance,
   };
 }
 

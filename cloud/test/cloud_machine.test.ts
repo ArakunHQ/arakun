@@ -21,6 +21,7 @@ import {
   type MachineRecord,
 } from "../src/cloud_machine";
 import { MODEL_VAR, VERTEX_FILE, VERTEX_VAR, open, parseModel, seal } from "../src/cloud_model";
+import { STOP_ALL_KEY } from "../src/cloud_meter";
 import { labelOf } from "../src/relay/label";
 import { fromB64url } from "../src/util";
 import { ADMIN, as, call, signIn, type SignedIn } from "./helpers";
@@ -510,6 +511,212 @@ describe("a machine's lifecycle", () => {
       expect(await storage.getAlarm()).toBeNull();
       expect(await cloudSessions(m.label)).toBe(0);
     });
+  });
+});
+
+/// The account's awake milliseconds in the month of now.
+async function usedMs(accountId: number): Promise<number> {
+  const month = new Date().toISOString().slice(0, 7);
+  return (await env.DB.prepare("SELECT awake_ms FROM cloud_usage WHERE account_id = ? AND month = ?").bind(accountId, month).first<number>("awake_ms")) ?? 0;
+}
+
+async function noticesOf(accountId: number): Promise<string[]> {
+  const rows = await env.DB.prepare("SELECT text FROM notices WHERE account_id = ?").bind(accountId).all<{ text: string }>();
+  return rows.results.map((r) => r.text);
+}
+
+describe("a machine's clock", () => {
+  it("runs while it is awake, into the month and the task, and stops after the snapshot", async () => {
+    const me = await owner();
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life, storage) => {
+      await life.wake();
+      expect(await storage.get<number>("metered_at")).toBeGreaterThan(Date.now() - 5_000);
+      // As though it started a minute ago.
+      await storage.put("metered_at", Date.now() - 60_000);
+      box.status = statusText(1, 1, 0);
+      await life.check();
+      expect(await usedMs(me.account_id)).toBeGreaterThanOrEqual(60_000);
+      expect(await storage.get<number>("task_ms")).toBeGreaterThanOrEqual(60_000);
+
+      await storage.put("metered_at", Date.now() - 30_000);
+      await life.sleep("idle");
+      expect(await usedMs(me.account_id)).toBeGreaterThanOrEqual(90_000);
+      expect(await usedMs(me.account_id)).toBeLessThan(100_000);
+      expect(await storage.get("metered_at")).toBeUndefined();
+      expect(await life.state()).toMatchObject({ running: false, stopped: null });
+      expect((await life.state())!.task_ms).toBeGreaterThanOrEqual(90_000);
+
+      // Asleep, nothing is counted.
+      const before = await usedMs(me.account_id);
+      await life.check();
+      expect(await usedMs(me.account_id)).toBe(before);
+    });
+  });
+
+  it("counts a container that stopped by itself only to its last check", async () => {
+    const me = await owner();
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life, storage) => {
+      await life.wake();
+      await storage.put("metered_at", Date.now() - 60_000);
+      box.running = false;
+      await life.check();
+      expect(await usedMs(me.account_id)).toBe(0);
+      expect(await storage.get("metered_at")).toBeUndefined();
+    });
+  });
+
+  it("sets the alarm for a limit that comes before the next check", async () => {
+    const me = await owner();
+    await env.CONFIG.put("plans", JSON.stringify({ free: { cloudTaskMinutes: 1 } }));
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life, storage) => {
+      await life.wake();
+      expect(await storage.getAlarm()).toBeLessThanOrEqual(Date.now() + 60_000);
+    });
+  });
+
+  it("stops at the task cap, says why, and wakes again only for its owner", async () => {
+    const me = await owner();
+    await env.CONFIG.put("plans", JSON.stringify({ free: { cloudTaskMinutes: 1 } }));
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life, storage) => {
+      await life.wake();
+      await storage.put("metered_at", Date.now() - 61_000);
+      // Busy, and a phone follows along: the cap stops it all the same.
+      box.status = statusText(1, 1, 1);
+      await life.check();
+      expect(box.running).toBe(false);
+      expect(box.snapshots).toBe(1);
+      expect(box.destroyed).toEqual(["task_cap"]);
+      expect(await life.state()).toMatchObject({ running: false, stopped: "task_cap" });
+      expect(await noticesOf(me.account_id)).toEqual(["The cloud environment stopped after 1 minute, the most one task may run. Wake it to go on."]);
+
+      // The phone knocks again: no new task.
+      expect(await life.wake()).toBe("task_cap");
+      expect(box.starts).toHaveLength(1);
+      // The owner asks: a new task, its clock at zero.
+      expect(await life.wake("owner")).toBe("running");
+      expect(box.starts).toHaveLength(2);
+      expect(await storage.get<number>("task_ms")).toBe(0);
+      expect(await life.state()).toMatchObject({ running: true, stopped: null });
+    });
+  });
+
+  it("stops at the end of the allowance and stays down for the month", async () => {
+    const me = await owner();
+    await env.CONFIG.put("plans", JSON.stringify({ free: { cloudMinutes: 1 } }));
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life, storage) => {
+      await life.wake();
+      await storage.put("metered_at", Date.now() - 61_000);
+      box.status = statusText(1, 1, 1);
+      await life.check();
+      expect(box.running).toBe(false);
+      expect(await life.state()).toMatchObject({ stopped: "allowance_used" });
+      expect((await noticesOf(me.account_id))[0]).toMatch(/^This account used its 1 minute of cloud time for this month\. Cloud environments can run again on \d{4}-\d\d-01\.$/);
+      expect(await life.wake("owner")).toBe("allowance_used");
+      expect(await life.wake()).toBe("allowance_used");
+      expect(box.starts).toHaveLength(1);
+
+      // More hours on the plan, and it runs again.
+      await env.CONFIG.put("plans", JSON.stringify({ free: { cloudMinutes: 60 } }));
+      expect(await life.wake()).toBe("running");
+    });
+  });
+
+  it("stops at the next check when the operator stops everyone, without a notice", async () => {
+    const me = await owner();
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, async (life) => {
+      await life.wake();
+      box.status = statusText(1, 1, 1);
+      await env.CONFIG.put(STOP_ALL_KEY, "true");
+      await life.check();
+      expect(box.running).toBe(false);
+      expect(box.destroyed).toEqual(["stopped_all"]);
+      expect(await noticesOf(me.account_id)).toEqual([]);
+      expect(await life.wake("owner")).toBe("stopped_all");
+      await env.CONFIG.delete(STOP_ALL_KEY);
+      expect(await life.state()).toMatchObject({ stopped: null });
+      expect(await life.wake()).toBe("running");
+    });
+  });
+});
+
+describe("the cloud usage route", () => {
+  it("answers this month's time and limits", async () => {
+    const me = await owner();
+    await env.DB.prepare("INSERT INTO cloud_usage (account_id, month, awake_ms) VALUES (?, ?, ?)")
+      .bind(me.account_id, new Date().toISOString().slice(0, 7), 3_600_000)
+      .run();
+    const res = await call("GET", "/cloud/usage", as(me.session));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      month: new Date().toISOString().slice(0, 7),
+      used_ms: 3_600_000,
+      allowance_ms: 20 * 3_600_000,
+      left_ms: 19 * 3_600_000,
+      task_cap_ms: 2 * 3_600_000,
+      stopped: null,
+      message: null,
+    });
+  });
+
+  it("needs the cloud flag", async () => {
+    const me = await owner(false);
+    expect((await call("GET", "/cloud/usage", as(me.session))).status).toBe(403);
+  });
+});
+
+describe("the operator's switches", () => {
+  it("stop one account's cloud machines, say why on a wake, and lift", async () => {
+    const me = await owner();
+    const made = (await (await post("/cloud/machines", me.session)).json()) as { label: string };
+    const hold = await call("PUT", `/admin/users/${me.account_id}/cloud/stop`, { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ reason: "abuse report 12" }));
+    expect(hold.status).toBe(200);
+    expect(await hold.json()).toEqual({ machines: 1 });
+
+    const woke = await post(`/cloud/machines/${made.label}/wake`, me.session);
+    expect(woke.status).toBe(403);
+    expect(await woke.json()).toEqual({ error: "The operator stopped this account's cloud environments: abuse report 12", limit: "held" });
+    expect(await (await call("GET", "/cloud/usage", as(me.session))).json()).toMatchObject({ stopped: "held" });
+    expect(await (await call("GET", "/cloud/machines", as(me.session))).json()).toMatchObject([{ stopped: "held" }]);
+
+    expect((await call("DELETE", `/admin/users/${me.account_id}/cloud/stop`, ADMIN)).status).toBe(204);
+    expect((await call("DELETE", `/admin/users/${me.account_id}/cloud/stop`, ADMIN)).status).toBe(404);
+    // No container in the tests: past the hold, the wake gets as far as that.
+    expect((await post(`/cloud/machines/${made.label}/wake`, me.session)).status).toBe(503);
+    const log = await env.DB.prepare("SELECT action FROM admin_log WHERE account_id = ? ORDER BY id").bind(me.account_id).all<{ action: string }>();
+    expect(log.results.map((r) => r.action)).toEqual(expect.arrayContaining(["cloud.hold", "cloud.release"]));
+  });
+
+  it("stop every cloud machine at once, and lift", async () => {
+    const a = await owner();
+    const b = await owner();
+    const made = (await (await post("/cloud/machines", a.session)).json()) as { label: string };
+    await post("/cloud/machines", b.session);
+    const stop = await call("PUT", "/admin/cloud/stop", { ...ADMIN, "Content-Type": "application/json" }, JSON.stringify({ reason: "a provider outage" }));
+    expect(stop.status).toBe(200);
+    expect(await stop.json()).toEqual({ machines: 2 });
+    expect(await env.CONFIG.get(STOP_ALL_KEY)).toBe("a provider outage");
+
+    const woke = await post(`/cloud/machines/${made.label}/wake`, a.session);
+    expect(woke.status).toBe(403);
+    expect(await woke.json()).toEqual({ error: "Cloud environments are stopped for now: a provider outage", limit: "stopped_all" });
+    expect(await (await call("GET", "/admin/cloud/machines", ADMIN)).json()).toMatchObject([{ stopped: "stopped_all" }, { stopped: "stopped_all" }]);
+
+    expect((await call("DELETE", "/admin/cloud/stop", ADMIN)).status).toBe(204);
+    expect(await env.CONFIG.get(STOP_ALL_KEY)).toBeNull();
+    const log = await env.DB.prepare("SELECT action FROM admin_log WHERE action LIKE 'cloud.%' ORDER BY id").all<{ action: string }>();
+    expect(log.results.map((r) => r.action)).toEqual(["cloud.stop_all", "cloud.resume_all"]);
+  });
+
+  it("need the admin secret, and an account that exists", async () => {
+    expect((await call("PUT", "/admin/cloud/stop")).status).toBe(401);
+    expect((await call("PUT", "/admin/users/999999/cloud/stop", ADMIN)).status).toBe(404);
+    expect((await call("PUT", "/admin/users/abc/cloud/stop", ADMIN)).status).toBe(400);
   });
 });
 

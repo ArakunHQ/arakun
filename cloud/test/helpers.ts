@@ -433,10 +433,12 @@ export function created({
   webhookId = HOOK_WEBHOOK,
   organizationId = HOOK_ORG,
   agentSessionId = crypto.randomUUID(),
+  guidance = [],
 }: {
   creatorId: string | null;
   issueId: string | null;
   promptContext?: string;
+  guidance?: unknown[];
   webhookId?: string;
   organizationId?: string;
   agentSessionId?: string;
@@ -456,7 +458,7 @@ export function created({
     },
     promptContext,
     previousComments: [],
-    guidance: [],
+    guidance,
   };
 }
 

@@ -36,6 +36,16 @@ function words({ action, detail }: LogEntry): string {
       return "granted cloud access";
     case "cloud.decline":
       return "declined cloud access";
+    case "cloud.machine.sleep":
+      return "put a cloud environment to sleep";
+    case "cloud.stop_all":
+      return detail?.reason ? `stopped every cloud environment: ${detail.reason}` : "stopped every cloud environment";
+    case "cloud.resume_all":
+      return "let cloud environments run again";
+    case "cloud.hold":
+      return detail?.reason ? `stopped the account's cloud environments: ${detail.reason}` : "stopped the account's cloud environments";
+    case "cloud.release":
+      return "let the account's cloud environments run again";
     case "beta.admit":
       if (has("platform")) return `admitted to the ${platformName(detail!.platform)} beta`;
       break;

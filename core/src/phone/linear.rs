@@ -10,6 +10,9 @@ use serde_json::Value;
 const MAX_ID: usize = 64;
 /// The longest follow-up text kept, in characters.
 pub const MAX_BODY: usize = 16_000;
+/// The most characters of guidance kept, all rules together. The Worker
+/// passes no more; more is dropped whole, as a cut rule could say the opposite.
+pub const MAX_GUIDANCE: usize = 16_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryKind {
@@ -19,6 +22,24 @@ pub enum DeliveryKind {
     Prompt,
     /// The person asked the agent to stop.
     Stop,
+}
+
+/// One rule a Linear workspace or team set for agents, as the relay passed it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GuidanceRule {
+    /// The team that set it, with its parents' names; `None` for the workspace.
+    pub team: Option<String>,
+    pub body: String,
+}
+
+// Like a delivery's body, the rule's text never reaches a log.
+impl fmt::Debug for GuidanceRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GuidanceRule")
+            .field("team", &self.team.is_some())
+            .field("body", &"…")
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -32,6 +53,9 @@ pub struct Delivery {
     pub activity: Option<String>,
     /// The follow-up's text, when the relay had it at hand.
     pub body: Option<String>,
+    /// A new delegation's guidance for agents, when the relay had it at
+    /// hand: only in the live frame, never in one sent again.
+    pub guidance: Vec<GuidanceRule>,
 }
 
 // Text from Linear is data: it never reaches a log, so `Debug` hides it.
@@ -45,6 +69,7 @@ impl fmt::Debug for Delivery {
             .field("organization", &self.organization)
             .field("activity", &self.activity)
             .field("body", &self.body.as_ref().map(|_| "…"))
+            .field("guidance", &self.guidance.len())
             .finish()
     }
 }
@@ -94,7 +119,37 @@ pub fn parse(msg: &Value) -> Option<Delivery> {
         organization: short("organization")?,
         activity,
         body,
+        guidance: guidance(msg.get("guidance")),
     })
+}
+
+/// The rules in a frame's `guidance`. Guidance is a bonus: anything not
+/// what the relay sends, or too long, leaves none, and the delivery counts.
+fn guidance(v: Option<&Value>) -> Vec<GuidanceRule> {
+    let Some(Value::Array(list)) = v else {
+        return Vec::new();
+    };
+    let mut rules = Vec::with_capacity(list.len());
+    let mut size = 0;
+    for r in list {
+        let Some(body) = r.get("body").and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        let team = match r.get("team") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(t)) => Some(t.clone()),
+            Some(_) => return Vec::new(),
+        };
+        size += body.chars().count() + team.as_deref().map_or(0, |t| t.chars().count());
+        if size > MAX_GUIDANCE {
+            return Vec::new();
+        }
+        rules.push(GuidanceRule {
+            team,
+            body: body.to_string(),
+        });
+    }
+    rules
 }
 
 #[cfg(test)]
@@ -142,6 +197,7 @@ mod tests {
                 organization: "5b0c1f9e-0000-4000-8000-000000000003".into(),
                 activity: Some("5b0c1f9e-0000-4000-8000-000000000004".into()),
                 body: Some("Please also fix the tests.".into()),
+                guidance: Vec::new(),
             }
         );
         assert_eq!(
@@ -227,5 +283,60 @@ mod tests {
         assert!(shown.contains(ID), "{shown}");
         let none = parse(&without("body")).unwrap();
         assert!(format!("{none:?}").contains("body: None"));
+    }
+
+    #[test]
+    fn guidance_keeps_each_rule_and_its_team() {
+        let msg = with(
+            "guidance",
+            json!([
+                {"team": null, "body": "Add a changelog entry."},
+                {"team": "Eng / Web", "body": "Branch from develop."},
+            ]),
+        );
+        assert_eq!(
+            parse(&msg).unwrap().guidance,
+            vec![
+                GuidanceRule {
+                    team: None,
+                    body: "Add a changelog entry.".into()
+                },
+                GuidanceRule {
+                    team: Some("Eng / Web".into()),
+                    body: "Branch from develop.".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn broken_or_long_guidance_is_dropped_but_the_delivery_kept() {
+        let longest = "é".repeat(MAX_GUIDANCE);
+        let fits = with("guidance", json!([{"team": null, "body": longest}]));
+        assert_eq!(parse(&fits).unwrap().guidance.len(), 1);
+        for g in [
+            Value::Null,
+            json!("Branch from develop."),
+            json!({"body": "x"}),
+            json!([{"team": null}]),
+            json!([{"team": 5, "body": "x"}]),
+            json!([{"team": null, "body": "ok"}, "x"]),
+            json!([{"team": "T", "body": "x".repeat(MAX_GUIDANCE)}]),
+        ] {
+            let d = parse(&with("guidance", g.clone())).unwrap_or_else(|| panic!("{g}"));
+            assert!(d.guidance.is_empty(), "{g}");
+        }
+        assert!(parse(&without("guidance")).unwrap().guidance.is_empty());
+    }
+
+    #[test]
+    fn debug_shows_no_guidance_text() {
+        let msg = with(
+            "guidance",
+            json!([{"team": "Secret team", "body": "Secret rule"}]),
+        );
+        let shown = format!("{:?}", parse(&msg).unwrap());
+        assert!(!shown.contains("Secret"), "{shown}");
+        assert!(shown.contains("guidance: 1"), "{shown}");
     }
 }

@@ -41,7 +41,7 @@ use crate::linear::start::{
 };
 use crate::linear::{ApiError, env, prompt};
 use crate::model::unix_now;
-use crate::phone::linear::{Delivery, DeliveryKind};
+use crate::phone::linear::{Delivery, DeliveryKind, GuidanceRule};
 
 /// The file in the server's folder.
 pub const FILE: &str = "linear-runs.json";
@@ -93,6 +93,9 @@ struct Start {
     /// The delivery to accept once handled. None for a run from the queue:
     /// its delivery was accepted when it began to wait.
     delivery: Option<String>,
+    /// The guidance Linear sent with the delegation: from the live frame,
+    /// or kept in memory with the run while it waited.
+    guidance: Vec<GuidanceRule>,
 }
 
 /// The branches a delegated session must not commit on: the branch the
@@ -175,6 +178,7 @@ impl Daemon {
                     organization: d.organization,
                     issue: d.issue,
                     delivery: Some(d.id),
+                    guidance: d.guidance,
                 };
                 self.linear_read(start, key, cx);
             }
@@ -291,6 +295,7 @@ impl Daemon {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            guidance: start.guidance.clone(),
         });
         self.linear_save_runs();
         match added {
@@ -391,13 +396,15 @@ impl Daemon {
         self.meta.insert(path.clone(), meta);
         let agent = self.store.place(&path).map_or(home.agent, |p| p.agent);
         let title = prompt::title(&detail);
-        let text = prompt::delegated(&detail);
+        let text = prompt::delegated(&detail, &start.guidance);
         let session = self.start_session(&path, agent, Some(title), text, cx);
         if let Some(run) = self.linear_run.runs.by_agent_session(&start.agent_session) {
             run.session = Some(session);
             run.environment = Some(path);
             run.branch = branch.clone();
             run.state = RunState::Running;
+            // In the first prompt now: no need to hold Linear's text longer.
+            run.guidance = Vec::new();
         }
         self.linear_save_runs();
         self.linear_watch(cx);
@@ -506,6 +513,7 @@ impl Daemon {
                 organization: run.organization.clone(),
                 issue: run.issue.clone(),
                 delivery: None,
+                guidance: run.guidance.clone(),
             };
             self.linear_save_runs();
             match self.linear_key(&start.organization) {

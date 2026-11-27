@@ -677,6 +677,7 @@ mod tests {
             organization: "w1".into(),
             activity: None,
             body: None,
+            guidance: Vec::new(),
         }
     }
 
@@ -723,6 +724,7 @@ mod tests {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            guidance: Vec::new(),
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);

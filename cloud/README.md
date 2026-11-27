@@ -47,6 +47,8 @@ cloud/
                         PUT /admin/cloud/requests/<account_id>/grant|decline,
                         GET /admin/cloud/machines,
                         POST /admin/cloud/machines/<label>/sleep,
+                        PUT|DELETE /admin/cloud/stop,
+                        PUT|DELETE /admin/users/<account_id>/cloud/stop,
                         GET /admin/beta/signups,
                         PUT /admin/beta/signups/<account_id>/<platform>/admit|decline,
                         GET /admin/log
@@ -59,10 +61,12 @@ cloud/
                         operator's side of them
   src/cloud_machine.ts  the CloudMachine Durable Object: one container running
                         arakun-server per cloud machine, its key, start, sleep and wake
-  src/cloud_machines.ts the account's cloud machines: /cloud/machines, and the
-                        operator's side of them
+  src/cloud_machines.ts the account's cloud machines: /cloud/machines, /cloud/usage,
+                        and the operator's side of them
   src/cloud_model.ts    the owner's model credentials for a cloud machine, sealed
                         with AES-GCM under CLOUD_MODEL_KEY
+  src/cloud_meter.ts    awake time of cloud machines: the monthly allowance, the
+                        task cap and the operator's switches
   machine/              the cloud machine's image: Dockerfile, entrypoint and the
                         wrapper that runs agents as their own user. Noncommercial
                         license (machine/LICENSE), not AGPL-3.0
@@ -483,8 +487,9 @@ Everything is tuned in KV without redeploying:
 
 | Key | Value | Effect |
 |---|---|---|
-| `plans` | `{"free":{"machines","phones","burst","daily","frame"}, "<plan>":{…}}` | Machines an account may register, then per machine: devices at once, frames per second, frames per UTC day, bytes per frame. Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` (10 machines, 5 devices, 100 frames per second, 100,000 per day, 256 KiB frames) and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
+| `plans` | `{"free":{"machines","phones","burst","daily","frame","cloudMinutes","cloudTaskMinutes"}, "<plan>":{…}}` | Machines an account may register, then per machine: devices at once, frames per second, frames per UTC day, bytes per frame; then the minutes its cloud machines may be awake in a UTC month and in one task (see Cloud machines). Each object rereads it every minute. An account is on `free` until the operator sets another plan. `free` (10 machines, 5 devices, 100 frames per second, 100,000 per day, 256 KiB frames, 20 cloud hours a month and 2 a task) and `internal` (for the team: 50 machines, 10 devices, 500 frames per second, 1,000,000 per day, 1 MiB frames, 200 cloud hours and 8 a task) are built in, and KV overrides their fields; any other name KV does not have is the free plan |
 | `disabled` | `true` or a message | Both sockets close with `bye` `disabled` and the message (`message`); a plain request to them answers 503 with it |
+| `cloud_stopped` | `true` or a message | Every cloud machine sleeps at its next check and no wake starts one; the message is what owners read. `PUT /admin/cloud/stop` sets it and stops them at once |
 
 ```sh
 # arakun.dev's own Worker ([env.production])
@@ -883,6 +888,25 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   `machine/model-env` that way, never an agent. The session's one door still limits a token that leaks.
 - **Size.** 1 vCPU, 6 GiB and 20 GB of disk (`INSTANCE`), the most disk an
   account gets and a snapshot holds.
+- **Metering** (`src/cloud_meter.ts`). The clock runs from a container's start
+  to the stop after its snapshot, and not while it sleeps. Each check adds the
+  time to the account's row in `cloud_usage` for the UTC month; a container that
+  stopped by itself counts to its last check. The machine sleeps at the first
+  of these, and a wake past one answers `403 {error, limit}`:
+  - `allowance_used`: the account's machines were awake for the plan's
+    `cloudMinutes` this month (20 hours on `free`). It wakes again next month,
+    or once the plan has more.
+  - `task_cap`: one task, a stretch awake from a wake to the sleep, ran the
+    plan's `cloudTaskMinutes` (2 hours on `free`). A device at the door does not
+    wake it after that, or a phone left open would start the next task at once;
+    the owner's `POST /cloud/machines/<label>/wake` does.
+  - `held` and `stopped_all`: the operator's switches, for one account and for
+    everyone (below).
+
+  The alarm comes early when a limit is nearer than the next check, so a machine
+  stops on time. The owner gets a notice for the first two.
+  The allowance and the paid rate past it are not decided yet; the defaults are
+  the #561 rehearsal's.
 
 Only the test Worker (the top level of `wrangler.toml`) has the container and the
 `CLOUD_MACHINE` binding; production answers 503 on these routes until both are
@@ -911,10 +935,24 @@ curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<l
 curl -fsS -X PUT -H "Authorization: Bearer <session>" -H "Content-Type: application/json" \
   -d '{"api_key":"<key>"}' "https://<host>/cloud/machines/<label>/model/anthropic"
 curl -fsS -X DELETE -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/model/anthropic"
+# this month's awake time and limits
+curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/usage"
 # the operator: every machine, and stopping one now
 auth | curl -fsS -H @- "https://<host>/admin/cloud/machines"
 auth | curl -fsS -X POST -H @- "https://<host>/admin/cloud/machines/<label>/sleep"
+# stop one account's cloud machines until lifted (its flag stays); answers {"machines": n}
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"reason":"abuse report 12"}' \
+  "https://<host>/admin/users/<account_id>/cloud/stop"
+auth | curl -fsS -X DELETE -H @- "https://<host>/admin/users/<account_id>/cloud/stop"
+# stop every cloud machine at once, until lifted; the reason is what owners read
+auth | curl -fsS -X PUT -H @- -H "Content-Type: application/json" -d '{"reason":"maintenance until 05:00 UTC"}' \
+  "https://<host>/admin/cloud/stop"
+auth | curl -fsS -X DELETE -H @- "https://<host>/admin/cloud/stop"
 ```
+
+The switch for everyone is the KV key `cloud_stopped`, so it also works from
+wrangler when the Worker does not answer; a machine that missed the stop sleeps
+at its next check, within 5 minutes.
 
 ## Phone app betas
 
@@ -1230,16 +1268,19 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `DELETE /admin/users/<account_id>/sessions` with `ADMIN_SECRET` | Ends all the user's sessions: `200 {account_id, closed}`, with how many ended. |
 | `GET /cloud/access` with the session | `200 {status, requested_at, decided_at, retry_at}`. `status` is `none`, `pending`, `granted` or `declined`; a time is `null` where it does not apply, and `retry_at` is set only for `declined`: when the account may ask again. `401` without a session. |
 | `POST /cloud/access` with the session, `{"reason"?: "..."}` | Asks for cloud access: `201` with the same shape, `pending`. `400` for a reason over 500 characters, `401` without a session, `403 {error: "blocked"}` for a blocked account, `409 {error, status, requested_at, decided_at, retry_at}` when the account has asked already (`already pending`), has access (`already granted`) or was declined less than 30 days ago (`declined recently`), `429` after 5 a minute. |
-| `GET /cloud/machines` with a session of an account with the `cloud` flag | `200 [{label, name, running, snapshot, last_active}]`. `401` without a session, `403` for a blocked account or one without the flag, `503` where cloud machines are not set up. |
-| `POST /cloud/machines`, `{"name"?: "..."}` | Makes a machine and starts it: `201 {label, name, running, snapshot, last_active}`. `400` for a name not of 1 to 100 characters, `409` when the account has a cloud machine already or as many machines as its plan allows. |
-| `POST /cloud/machines/<label>/wake` | Starts it if it sleeps: `200` with its state. `403` when the account may not run one now, `404` for another account's, `503` without containers. |
+| `GET /cloud/machines` with a session of an account with the `cloud` flag | `200 [{label, name, running, snapshot, last_active, task_ms, stopped}]`, `stopped` the limit that keeps it asleep or null. `401` without a session, `403` for a blocked account or one without the flag, `503` where cloud machines are not set up. |
+| `POST /cloud/machines`, `{"name"?: "..."}` | Makes a machine and starts it: `201` with its state, as in the list. `400` for a name not of 1 to 100 characters, `409` when the account has a cloud machine already or as many machines as its plan allows. |
+| `POST /cloud/machines/<label>/wake` | Starts it if it sleeps, as a new task after the task cap: `200` with its state. `403` when the account may not run one now, and `403 {error, limit}` past a limit; `404` for another account's, `503` without containers. |
+| `GET /cloud/usage` | `200 {month, used_ms, allowance_ms, left_ms, task_cap_ms, stopped, message}`: this UTC month's awake time, and `stopped` (`allowance_used`, `held` or `stopped_all`) with the sentence to show, or null. |
 | `POST /cloud/machines/<label>/sleep` | Snapshots it and stops it: `204`. |
 | `DELETE /cloud/machines/<label>` | Stops it and forgets it, with its key, snapshot, registration and session: `204`. |
 | `GET /cloud/machines/<label>/model` | The providers the machine has credentials for, never the credentials: `200 [{provider, set_at}]`. |
 | `PUT /cloud/machines/<label>/model/<provider>` | Keeps the owner's credentials for `anthropic`, `bedrock`, `vertex` or `openai`: `200 {model: [{provider, set_at}], applied}`. `anthropic` and `openai` take `{"api_key"}`; `bedrock` takes `{"region", "api_key"}` or `{"region", "access_key_id", "secret_access_key", "session_token"?}`; `vertex` takes `{"region", "project_id", "credentials"}`, the JSON of a Google credentials file as an object or a string. One of `anthropic`, `bedrock` and `vertex` replaces the other two. `applied` is `false` when the machine runs and did not take them; its next start has them. `400` for a value that is missing or has spaces or line breaks, `404` for an unknown provider, `503` without `CLOUD_MODEL_KEY`. |
 | `DELETE /cloud/machines/<label>/model/<provider>` | Forgets them, on a running machine too: `200 {model, applied}`. |
-| `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, account_id, login, name, created_at, running, snapshot}]`, newest first. |
+| `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, account_id, login, name, created_at, month_ms, running, snapshot, stopped}]`, newest first; `month_ms` is the owner's awake time this month. |
 | `POST /admin/cloud/machines/<label>/sleep` with `ADMIN_SECRET` | Snapshots it and stops it now: `204`, and a `cloud.machine.sleep` entry in the log. `404` for no such machine. |
+| `PUT /admin/cloud/stop`, `{"reason"?: "..."}`, with `ADMIN_SECRET` | Stops every cloud machine now and keeps them down: `200 {machines}`, how many stopped at once, and `cloud.stop_all` in the log. `DELETE` lifts it: `204`, `cloud.resume_all`. |
+| `PUT /admin/users/<account_id>/cloud/stop`, `{"reason"?: "..."}`, with `ADMIN_SECRET` | The same for one account: `200 {machines}`, `cloud.hold`. `DELETE` lifts it: `204`, `cloud.release`; `404` when it was not stopped. |
 | `GET /admin/cloud/requests[?status=]` with `ADMIN_SECRET` | `200 [{account_id, github_id, login, status, reason, requested_at, decided_at, decided_by, retry_at, has_flag, blocked, github: {login, created_at, age_days, public_repos, followers, following}}]`, pending first. `github` is what GitHub said when the account asked; its fields are `null` when GitHub did not answer. |
 | `PUT /admin/cloud/requests/<account_id>/grant` with `ADMIN_SECRET`, `{"by"?: "..."}` | Grants the request and the `cloud` flag: `200` with the request. `404` without a request. |
 | `PUT /admin/cloud/requests/<account_id>/decline` with `ADMIN_SECRET`, `{"by"?: "..."}` | Declines a pending request: `200` with the request. `404` without a request, `409` if it is not pending. |

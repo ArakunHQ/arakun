@@ -84,6 +84,7 @@ mod secret_mcp;
 mod secrets_lint;
 mod servers;
 mod servers_view;
+mod settings_registry;
 mod settings_view;
 mod settle;
 mod sheet;

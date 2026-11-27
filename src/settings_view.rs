@@ -17,6 +17,7 @@ use crate::agent::claude_auth;
 use crate::agent::plan::{self, PlanUsage};
 use crate::env_name;
 use crate::input::{InputEvent, TextInput};
+use crate::settings_registry::{self as reg, Group, Id, Section};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 use crate::voice::{self, Tone};
@@ -39,8 +40,8 @@ pub enum SettingsEvent {
     /// Close Settings and open the Customize panel.
     OpenCustomize,
     RailUsage(AgentKind, bool),
-    Arcade(bool),
-    Island(bool),
+    /// A switch of the registry changed; the shell does what follows from it.
+    Switched(Id),
     /// The whole UI's zoom, in percent.
     Zoom(u32),
     /// How sessions and tabs show, and the preset it came from, if any.
@@ -92,9 +93,6 @@ pub enum SettingsEvent {
         project: std::path::PathBuf,
         base: Option<String>,
     },
-    /// Only Linux has the switch.
-    #[cfg(target_os = "linux")]
-    Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
@@ -164,244 +162,14 @@ fn pass_env_names(text: &str) -> Vec<String> {
     names
 }
 
-/// Where a section sits in the list: Arakun's own settings, then the agents'.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Group {
-    Arakun,
-    Agents,
-}
-
-impl Group {
-    const ALL: [Group; 2] = [Group::Arakun, Group::Agents];
-
-    fn title(self) -> &'static str {
-        match self {
-            Group::Arakun => "Arakun",
-            Group::Agents => "Agents",
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Section {
-    General,
-    Appearance,
-    Project,
-    Branches,
-    Voice,
-    Privacy,
-    Account,
-    #[cfg(feature = "coderlabs")]
-    CoderSpace,
-    Shortcuts,
-    Claude,
-    Codex,
-    Droid,
-    OpenCode,
-    Devin,
-    Cursor,
-    Antigravity,
-}
-
-impl Section {
-    /// In the order the list shows them, so ↑ and ↓ move down the list.
-    const ALL: &[Section] = &[
-        Section::General,
-        Section::Appearance,
-        Section::Project,
-        Section::Branches,
-        Section::Voice,
-        Section::Privacy,
-        Section::Account,
-        #[cfg(feature = "coderlabs")]
-        Section::CoderSpace,
-        Section::Shortcuts,
-        Section::Claude,
-        Section::Codex,
-        Section::Droid,
-        Section::OpenCode,
-        Section::Devin,
-        Section::Cursor,
-        Section::Antigravity,
-    ];
-
-    fn group(self) -> Group {
-        if self.agent().is_some() {
-            Group::Agents
-        } else {
-            Group::Arakun
-        }
-    }
-
-    /// The agent a section is about; the list shows its logo.
-    fn agent(self) -> Option<AgentKind> {
-        match self {
-            Section::Claude => Some(AgentKind::Claude),
-            Section::Codex => Some(AgentKind::Codex),
-            Section::Droid => Some(AgentKind::Droid),
-            Section::OpenCode => Some(AgentKind::OpenCode),
-            Section::Devin => Some(AgentKind::Devin),
-            Section::Cursor => Some(AgentKind::Cursor),
-            Section::Antigravity => Some(AgentKind::Antigravity),
-            _ => None,
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Section::General => "General",
-            Section::Appearance => "Appearance",
-            Section::Project => "Project",
-            Section::Branches => "Branches",
-            Section::Voice => "Voice",
-            Section::Privacy => "Privacy",
-            Section::Account => "Account",
-            #[cfg(feature = "coderlabs")]
-            Section::CoderSpace => "CoderSpace",
-            Section::Shortcuts => "Keyboard shortcuts",
-            Section::Claude => "Claude Code",
-            Section::Codex => "Codex",
-            Section::Droid => "Droid",
-            Section::OpenCode => "OpenCode",
-            Section::Devin => "Devin",
-            Section::Cursor => "Cursor",
-            Section::Antigravity => "Antigravity",
-        }
-    }
-
-    /// The list's icon for a section that is not an agent's.
-    fn icon(self) -> &'static str {
-        match self {
-            Section::General => "settings01",
-            Section::Appearance => "paint-board",
-            Section::Project => "folder01",
-            Section::Branches => "git-branch",
-            Section::Voice => "volume-high",
-            Section::Privacy => "shield-alert",
-            Section::Account => "user",
-            #[cfg(feature = "coderlabs")]
-            Section::CoderSpace => "check-list",
-            Section::Shortcuts => "keyboard",
-            Section::Claude
-            | Section::Codex
-            | Section::Droid
-            | Section::OpenCode
-            | Section::Devin
-            | Section::Cursor
-            | Section::Antigravity => "bot",
-        }
-    }
-
-    fn description(self) -> &'static str {
-        match self {
-            Section::General => "How Arakun behaves when nothing is going on.",
-            Section::Appearance => {
-                "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
-            }
-            Section::Project => {
-                "The open project's commands, base branch, sandbox, saved secrets and what its agents get, on this computer."
-            }
-            Section::Branches => {
-                "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
-            }
-            Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
-            Section::Privacy => {
-                "What shows on screen, and what Arakun sends to its PostHog under a random id."
-            }
-            Section::Account => {
-                "An optional sign-in with GitHub, for what Arakun is still trying out with some people, such as Teams. Agents never need it."
-            }
-            #[cfg(feature = "coderlabs")]
-            Section::CoderSpace => "Your pending tasks, inside Arakun.",
-            Section::Shortcuts => "Everything you can do without the mouse.",
-            Section::Claude => "Claude Code's sign-in and what your plan has left.",
-            Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
-            Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
-            Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
-            Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
-            Section::Cursor => "Cursor's sign-in: your Cursor account or a Cursor API key.",
-            Section::Antigravity => {
-                "Antigravity's sign-in: your Google account or a Gemini API key."
-            }
-        }
-    }
-
-    /// Words the search matches besides the title.
-    fn keywords(self) -> &'static str {
-        match self {
-            #[cfg(feature = "coderlabs")]
-            Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray oye arakun wake word voice microphone"
-            }
-            #[cfg(not(feature = "coderlabs"))]
-            Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
-            }
-            Section::Appearance => {
-                "tabs sessions pinned pin title bar tree sidebar width group project classic focused everything fold folded hidden long titles two lines sort sorting order latest newest recent alphabetical a-z state icon dot word theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
-            }
-            Section::Project => {
-                "setup script install new environment worktree check command test lint build verify \
-                 base branch start from origin main default sandbox seatbelt bubblewrap isolate \
-                 security secrets pass to agents variables env token gh_token keys \
-                 saved secrets api key password keyring rename replace remove"
-            }
-            Section::Branches => {
-                "branch name naming environment worktree rename model haiku agent merge merged \
-                 archive settle resolve threads review notifications pull request cleanup clean up \
-                 remove delete old stale environments"
-            }
-            Section::Voice => {
-                "elevenlabs speech speak tts read aloud audio sound api key questions tone"
-            }
-            Section::Privacy => {
-                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide secrets secret keys tokens mask reveal streamer stream demo screen share sharing incognito feedback bug report idea"
-            }
-            Section::Account => "github sign in sign out login logout teams pilot device code",
-            #[cfg(feature = "coderlabs")]
-            Section::CoderSpace => "tasks sign in sign out email",
-            Section::Shortcuts => "keys keyboard bindings hotkeys",
-            Section::Claude => {
-                "claude code anthropic plan usage limits weekly monthly window sign in logout"
-            }
-            Section::Codex => "codex openai chatgpt gpt api key sign in logout",
-            Section::Droid => {
-                "factory account plan usage api key credits skills mcp servers extensions plugins"
-            }
-            Section::OpenCode => "opencode go zen provider api key models sign in logout",
-            Section::Devin => "devin cognition windsurf api key sign in logout",
-            Section::Cursor => "cursor cursor-agent api key sign in logout",
-            Section::Antigravity => "antigravity agy google gemini api key sign in",
-        }
-    }
-
-    /// Whether the search `query` (lower case, trimmed) leaves this section.
-    fn matches(self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        // The Updates card and the link setting are in General in every build, so
-        // their words are added here rather than to each build's keyword list.
-        let general = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade nightly channel beta testers \
-             links open system default external \
-             sidebar views extensions rail github notes memory usage cloudflare posthog linear doop isometric phone servers automations"
-        } else {
-            ""
-        };
-        let text = format!(
-            "{} {} {} {general}",
-            self.title(),
-            self.description(),
-            self.keywords()
-        )
-        .to_lowercase();
-        query.split_whitespace().all(|w| text.contains(w))
-            || (self == Section::Shortcuts
-                && crate::keymap::sheet()
-                    .iter()
-                    .any(|line| SettingsDialog::shortcut_matches(query, line)))
-    }
+/// Whether the search `query` leaves `s` in the list: a row of it, the
+/// section itself, or for Shortcuts a shortcut.
+fn listed(s: Section, query: &str) -> bool {
+    s.matches(query)
+        || (s == Section::Shortcuts
+            && crate::keymap::sheet()
+                .iter()
+                .any(|line| SettingsDialog::shortcut_matches(query, line)))
 }
 
 /// The section the last dialog was left on.
@@ -422,6 +190,16 @@ fn start_on(section: Section) {
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
 }
 
+/// The row the next dialog opens on, searched for so it stands alone.
+static START_ROW: std::sync::Mutex<Option<Id>> = std::sync::Mutex::new(None);
+
+/// Makes the next dialog open on the row of `id`, as the palette does for
+/// a setting it can't change in place.
+pub fn start_on_setting(id: Id) {
+    start_on(reg::entry(id).section);
+    *START_ROW.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+}
+
 /// The queue key of the "Test voice" sample.
 const TEST_KEY: &str = "settings-test";
 const DIALOG_W: f32 = 880.;
@@ -435,7 +213,6 @@ const BODY_H: f32 = 560.;
 const NAV_ROW_H: f32 = 32.;
 
 pub struct SettingsDialog {
-    arcade: bool,
     /// Whether a Factory API key is connected, for Droid's dot in the list.
     droid: bool,
     /// The Teams sign-in, for the Account section.
@@ -512,7 +289,6 @@ impl EventEmitter<SettingsEvent> for SettingsDialog {}
 impl SettingsDialog {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        arcade: bool,
         droid: bool,
         teams: Entity<crate::arakun_teams::Teams>,
         look: crate::customize_view::Summary,
@@ -528,6 +304,9 @@ impl SettingsDialog {
         window.focus(&input.focus_handle(cx), cx);
         let section =
             Section::ALL[LAST_SECTION.load(Ordering::Relaxed) as usize % Section::ALL.len()];
+        if let Some(id) = START_ROW.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            input.update(cx, |i, cx| i.set_text(reg::entry(id).label, cx));
+        }
 
         let voice = voice::settings();
         let key_input = cx.new(|cx| TextInput::new("sk_…", cx).mono().secret());
@@ -664,7 +443,6 @@ impl SettingsDialog {
         let teams_sub = cx.observe(&teams, |_, _, cx| cx.notify());
 
         Self {
-            arcade,
             droid,
             teams,
             #[cfg(feature = "coderlabs")]
@@ -779,15 +557,6 @@ impl SettingsDialog {
             project: project.path.clone(),
             names,
         });
-    }
-
-    fn set_voice_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.voice.enabled = on;
-        voice::store(&self.voice);
-        if !on {
-            voice::stop();
-        }
-        cx.notify();
     }
 
     /// Opens the field to rename or replace a saved secret. The value field
@@ -1240,14 +1009,14 @@ impl SettingsDialog {
         Section::ALL
             .iter()
             .copied()
-            .filter(|s| s.matches(&q))
+            .filter(|s| listed(*s, &q))
             .collect()
     }
 
     /// Moves an open dialog to Branches; its pending edits stay.
     pub fn show_branches(&mut self, cx: &mut Context<Self>) {
         // A search that leaves Branches out would show its own empty page.
-        if !Section::Branches.matches(&self.query(cx)) {
+        if !listed(Section::Branches, &self.query(cx)) {
             self.input.update(cx, |input, cx| input.set_text("", cx));
         }
         self.select(Section::Branches, cx);
@@ -1325,6 +1094,61 @@ impl SettingsDialog {
         }
     }
 
+    /// Whether the search leaves the row of `id`: everything shows for an
+    /// empty search or one that matches the row's section by name.
+    fn shows(id: Id, query: &str) -> bool {
+        let e = reg::entry(id);
+        e.available() && (query.is_empty() || e.section.matches_itself(query) || e.matches(query))
+    }
+
+    /// The parts of a section that are not rows of the registry show only
+    /// when the whole section does.
+    fn whole(s: Section, query: &str) -> bool {
+        query.is_empty() || s.matches_itself(query)
+    }
+
+    /// A registry switch, as the palette turns it too.
+    fn switch_row(&self, id: Id, cx: &mut Context<Self>) -> AnyElement {
+        self.switch_row_hint(id, reg::entry(id).hint, cx)
+    }
+
+    /// A registry switch with a hint that says more than the registry's.
+    fn switch_row_hint(
+        &self,
+        id: Id,
+        hint: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let e = reg::entry(id);
+        toggle_row(e.key, e.label, hint, e.on().unwrap_or(false))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let on = !reg::entry(id).on().unwrap_or(false);
+                reg::set(id, on);
+                if id == Id::ReadAloud {
+                    this.voice.enabled = on;
+                }
+                cx.emit(SettingsEvent::Switched(id));
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The card of `rows`, under the registry's caption for the first, with
+    /// only the rows the search leaves. `None` when it leaves none.
+    fn card(query: &str, rows: Vec<(Id, AnyElement)>) -> Option<AnyElement> {
+        let caption = reg::entry(rows.first()?.0).card;
+        Self::card_titled(caption, query, rows)
+    }
+
+    fn card_titled(caption: &str, query: &str, rows: Vec<(Id, AnyElement)>) -> Option<AnyElement> {
+        let rows: Vec<AnyElement> = rows
+            .into_iter()
+            .filter(|(id, _)| Self::shows(*id, query))
+            .map(|(_, r)| r)
+            .collect();
+        (!rows.is_empty()).then(|| titled(caption, rows))
+    }
+
     /// One line of the section list: its icon (an agent's logo), its name,
     /// and a dot when the agent is signed in.
     fn render_row(&self, s: Section, cx: &mut Context<Self>) -> AnyElement {
@@ -1391,42 +1215,26 @@ impl SettingsDialog {
                     .text_color(theme::text_subtle())
                     .child(s.description()),
             );
+        let q = self.query(cx);
         let body: AnyElement = match s {
             Section::General => {
-                let raccoon = vec![
-                    toggle_row("set-arcade", "Raccoon animation", "Follows the cursor and acts out what agents do. Off, it holds still.", self.arcade)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.arcade = !this.arcade;
-                        cx.emit(SettingsEvent::Arcade(this.arcade));
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                    toggle_row("set-island", "Dynamic Island", "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. On Linux it needs Wayland.", crate::island::enabled())
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(SettingsEvent::Island(!crate::island::enabled()));
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                    #[cfg(target_os = "linux")]
-                    toggle_row("set-background", "Keep running in the background", "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.", crate::background::enabled())
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.emit(SettingsEvent::Background(!crate::background::enabled()));
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-                    #[cfg(feature = "coderlabs")]
+                #[allow(unused_mut)]
+                let mut island = vec![(Id::Island, self.switch_row(Id::Island, cx))];
+                #[cfg(feature = "coderlabs")]
+                island.push((
+                    Id::Island,
                     toggle_row("set-wake", "Oye Arakun", "The island listens for \"Oye Arakun\" to start a call, on this computer. Off, it doesn't use the microphone until you call it yourself.", crate::island_host::wake::enabled())
                     .on_click(cx.listener(|_, _, _, cx| {
                         crate::island_host::wake::set_enabled(!crate::island_host::wake::enabled());
                         cx.notify();
                     }))
                     .into_any_element(),
-                ];
+                ));
                 let mut chips = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
                 for (i, agent) in AgentKind::WITH_PLAN.into_iter().enumerate() {
                     let on = crate::account_view::rail_shows(agent);
                     chips = chips.child(
-                        ui::chip(("set-rail-usage", i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
+                        ui::chip((reg::entry(Id::UsageCard).key, i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(SettingsEvent::RailUsage(agent, !on));
                             cx.notify();
                         })),
@@ -1436,7 +1244,7 @@ impl SettingsDialog {
                 for (i, view) in crate::sidebar::View::EXTENSIONS.iter().copied().enumerate() {
                     let on = self.views_on.contains(&view);
                     views = views.child(
-                        ui::chip(("set-sidebar-view", i), view.label(), on).on_click(cx.listener(move |this, _, _, cx| {
+                        ui::chip((reg::entry(Id::SidebarViews).key, i), view.label(), on).on_click(cx.listener(move |this, _, _, cx| {
                             if on {
                                 this.views_on.retain(|v| *v != view);
                             } else {
@@ -1447,57 +1255,38 @@ impl SettingsDialog {
                         })),
                     );
                 }
-                stack(vec![
-                    titled("Raccoon", raccoon),
-                    titled(
-                        "Sidebar",
+                let links = self.switch_row_hint(
+                    Id::LinksInArakun,
+                    if crate::browser::ENABLED {
+                        reg::entry(Id::LinksInArakun).hint
+                    } else {
+                        "This build has no browser tabs, so leave it off: links then open in your own browser."
+                    },
+                    cx,
+                );
+                stack_cards(vec![
+                    Self::card(&q, vec![(Id::Arcade, self.switch_row(Id::Arcade, cx))]),
+                    Self::card(&q, island),
+                    Self::card(&q, vec![(Id::Background, self.switch_row(Id::Background, cx))]),
+                    Self::card(
+                        &q,
                         vec![
-                            stacked_row(
-                                "Views",
-                                "The extra views the sidebar shows. The Marketplace has the same switches, with what each view does.",
-                                views.into_any_element(),
-                            )
-                            .into_any_element(),
-                            stacked_row(
-                                "Usage card",
-                                "The plans the card at the bottom of the sidebar shows; OpenCode's once a Go key is connected. The Usage tab always shows them all.",
-                                chips.into_any_element(),
-                            )
-                            .into_any_element(),
+                            (Id::SidebarViews, reg_stacked(Id::SidebarViews, views)),
+                            (Id::UsageCard, reg_stacked(Id::UsageCard, chips)),
                         ],
                     ),
-                    titled("Updates", self.update_rows(cx)),
-                    titled(
-                        "Browser",
-                        vec![
-                            toggle_row("set-links-in-arakun", "Open links in Arakun", if crate::browser::ENABLED {
-                                    "Links from sessions, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
-                                } else {
-                                    "This build has no browser tabs, so leave it off: links then open in your own browser."
-                                }, crate::browser::links_in_arakun())
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                crate::browser::set_links_in_arakun(!crate::browser::links_in_arakun());
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                            toggle_row("set-drive-pages", "Agents drive any web page", "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.", crate::page_drive::any_page())
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                crate::page_drive::set_any_page(!crate::page_drive::any_page());
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                        ],
-                    ),
+                    Self::card(&q, self.update_rows(cx)),
+                    Self::card(&q, vec![(Id::LinksInArakun, links)]),
                 ])
             }
-            Section::Appearance => self.render_appearance(cx),
-            Section::Project => self.render_project(cx),
+            Section::Appearance => self.render_appearance(&q, cx),
+            Section::Project => self.render_project(&q, cx),
             Section::Branches => {
                 let current = self.namer.choice;
                 let mut choices = ui::segmented();
                 for (i, choice) in env_name::Choice::ALL.into_iter().enumerate() {
                     choices = choices.child(
-                        ui::segment(("set-namer", i), None, choice.label(), choice == current)
+                        ui::segment((reg::entry(Id::NameBranches).key, i), None, choice.label(), choice == current)
                             .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                     );
                 }
@@ -1506,7 +1295,7 @@ impl SettingsDialog {
                 for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
                     days = days.child(
                         ui::segment(
-                            ("set-env-cleanup", i),
+                            (reg::entry(Id::RemoveOldEnvironments).key, i),
                             None,
                             crate::cleanup::label(d),
                             d == current_days,
@@ -1517,64 +1306,47 @@ impl SettingsDialog {
                         })),
                     );
                 }
-                let cleanup = stacked_row(
-                    "Remove old environments",
-                    "Removes an environment's folder once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
-                    days.into_any_element(),
+                let naming_model = row(
+                    reg::entry(Id::NamingModel).label,
+                    match self.namer.choice {
+                        env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default. Claude Code names with no tools.",
+                        env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default. Droid names read-only: it can read files, not change them.",
+                        env_name::Choice::Session => "The agent the prompt went to names it, if it is Claude Code or Droid, so the prompt goes nowhere else: haiku for Claude Code, the CLI's default for Droid.",
+                        env_name::Choice::Off => "Naming is off: new branches keep their random name.",
+                    },
+                    // Only an agent picked here takes a model of its own.
+                    if self.namer.choice.agent().is_some() {
+                        field(self.namer_input.clone(), 180.).into_any_element()
+                    } else {
+                        div().into_any_element()
+                    },
                 )
                 .into_any_element();
-                let settle = toggle_row("set-settle-after-merge", "Archive after merge", "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its GitHub notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the GitHub notifications of every merged pull request.", crate::settle::on())
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::settle::set(!crate::settle::on());
-                    cx.notify();
-                }))
-                .into_any_element();
-                stack(vec![titled(
-                    "Naming",
-                    vec![
-                        stacked_row(
-                            "Name new branches",
-                            "After the first prompt, an agent names the branch after the task and Arakun renames it. The folder keeps its name.",
-                            choices.into_any_element(),
-                        )
-                        .into_any_element(),
-                        row(
-                            "Naming model",
-                            match self.namer.choice {
-                                env_name::Choice::Claude => "A small, fast model, as the CLI names it: haiku, or a full ID. Empty uses the CLI's default. Claude Code names with no tools.",
-                                env_name::Choice::Droid => "A small, fast model, as the CLI names it. Empty uses the CLI's default. Droid names read-only: it can read files, not change them.",
-                                env_name::Choice::Session => "The agent the prompt went to names it, if it is Claude Code or Droid, so the prompt goes nowhere else: haiku for Claude Code, the CLI's default for Droid.",
-                                env_name::Choice::Off => "Naming is off: new branches keep their random name.",
-                            },
-                            // Only an agent picked here takes a model of its own.
-                            if self.namer.choice.agent().is_some() {
-                                field(self.namer_input.clone(), 180.).into_any_element()
-                            } else {
-                                div().into_any_element()
-                            },
-                        )
-                        .into_any_element(),
-                    ],
-                ),
-                    titled("After merge", vec![settle, cleanup]),
+                stack_cards(vec![
+                    Self::card(
+                        &q,
+                        vec![
+                            (Id::NameBranches, reg_stacked(Id::NameBranches, choices)),
+                            (Id::NamingModel, naming_model),
+                        ],
+                    ),
+                    Self::card(
+                        &q,
+                        vec![
+                            (Id::ArchiveAfterMerge, self.switch_row(Id::ArchiveAfterMerge, cx)),
+                            (Id::RemoveOldEnvironments, reg_stacked(Id::RemoveOldEnvironments, days)),
+                        ],
+                    ),
                 ])
             }
             Section::Privacy => {
-                let redacted = toggle_row("set-redacted", "Redacted mode", "For streams, demos and screen sharing: hides account emails, keys and tokens, pairing codes, addresses and your user name, in the views, the terminals and the agents' replies. Ctrl+Shift+H turns it on and off.", crate::redact::on())
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::redact::set(!crate::redact::on());
-                    cx.refresh_windows();
-                }))
-                .into_any_element();
-                let secrets = toggle_row("set-hide-secrets", "Hide secrets in sessions", "Keys, tokens and passwords an agent prints show as stars until you click them, and copying one asks first. Redacted mode hides them too, and doesn't show them on a click.", crate::redact::hides_secrets())
-                .on_click(cx.listener(|_, _, _, cx| {
-                    crate::redact::set_hides_secrets(!crate::redact::hides_secrets());
-                    cx.refresh_windows();
-                }))
-                .into_any_element();
-                let mut rows = vec![self.telemetry_row(true, cx), self.telemetry_row(false, cx)];
+                let mut sent = vec![
+                    (Id::CrashReports, self.telemetry_row(true, cx)),
+                    (Id::UsageCounts, self.telemetry_row(false, cx)),
+                ];
                 if let Some(e) = &self.telemetry_error {
-                    rows.push(
+                    sent.push((
+                        Id::CrashReports,
                         div()
                             .px(crate::ui::sp(14.))
                             .py(crate::ui::sp(10.))
@@ -1582,21 +1354,26 @@ impl SettingsDialog {
                             .text_color(theme::error())
                             .child(e.clone())
                             .into_any_element(),
-                    );
+                    ));
                 }
-                rows.push(
-                    row(
-                        "Feedback",
-                        "A bug, an idea or anything else, sent to the Arakun team when you press Send.",
-                        ui::button("set-feedback", "Send Feedback…", ButtonKind::Outline, true)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::SendFeedback)))
-                            .into_any_element(),
-                    )
-                    .into_any_element(),
-                );
-                stack(vec![
-                    titled("On screen", vec![secrets, redacted]),
-                    titled("Sent to Arakun", rows),
+                sent.push((
+                    Id::Feedback,
+                    reg_row(
+                        Id::Feedback,
+                        ui::button(reg::entry(Id::Feedback).key, "Send Feedback…", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::SendFeedback))),
+                    ),
+                ));
+                stack_cards(vec![
+                    Self::card(
+                        &q,
+                        vec![
+                            (Id::HideSecrets, self.switch_row(Id::HideSecrets, cx)),
+                            (Id::Redacted, self.switch_row(Id::Redacted, cx)),
+                        ],
+                    ),
+                    Self::card(&q, vec![(Id::DrivePages, self.switch_row(Id::DrivePages, cx))]),
+                    Self::card(&q, sent),
                 ])
             }
             Section::Claude => {
@@ -1766,8 +1543,10 @@ impl SettingsDialog {
                     no_sign_in_row(AgentKind::Antigravity),
                 ],
             )]),
-            Section::Droid => stack(vec![
-                titled(
+            Section::Droid => {
+                let whole = Self::whole(Section::Droid, &q);
+                let mut parts = vec![
+                whole.then(|| titled(
                     "Factory",
                     vec![
                         row(
@@ -1784,8 +1563,8 @@ impl SettingsDialog {
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Droid),
                     ],
-                ),
-                titled(
+                )),
+                whole.then(|| titled(
                     "Extensions",
                     vec![
                         row(
@@ -1797,8 +1576,11 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                     ],
-                ),
-            ]),
+                )),
+                ];
+                parts.extend(self.render_voice(&q, cx));
+                stack_cards(parts)
+            }
             Section::OpenCode => {
                 let signed_in = !self.opencode.is_empty();
                 let go = self.opencode.iter().any(|p| p == "opencode-go");
@@ -1845,7 +1627,6 @@ impl SettingsDialog {
                     ],
                 )])
             }
-            Section::Voice => self.render_voice(cx),
             Section::Account => self.render_account(cx),
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => {
@@ -1937,26 +1718,21 @@ impl SettingsDialog {
 
     /// The Updates card: the automatic switch, and the version with what
     /// the last check found.
-    fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn update_rows(&self, cx: &mut Context<Self>) -> Vec<(Id, AnyElement)> {
         use crate::update::{self, Status};
         let version = format!("Arakun {}", env!("ARAKUN_VERSION"));
         if !update::release_build() {
-            return vec![
+            return vec![(
+                Id::Version,
                 row(
                     version,
                     "Built from source, so it does not update itself. Pull and build it again, or install a release.",
                     div().into_any_element(),
                 )
                 .into_any_element(),
-            ];
+            )];
         }
-        let automatic = update::automatic();
-        let auto = toggle_row("set-auto-update", "Update automatically", "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.", automatic)
-        .on_click(cx.listener(move |_, _, _, cx| {
-            update::set_automatic(!automatic);
-            cx.notify();
-        }))
-        .into_any_element();
+        let auto = self.switch_row(Id::AutoUpdate, cx);
         let nightly = self.nightly_row(cx);
         let status = update::status();
         let busy = matches!(status, Status::Checking | Status::Downloading(_));
@@ -1969,25 +1745,33 @@ impl SettingsDialog {
                 true,
             )
             .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::RestartToUpdate))),
-            _ => ui::button("set-update-check", "Check now", ButtonKind::Outline, !busy).on_click(
-                cx.listener(move |_, _, _, cx| {
-                    if busy {
-                        return;
-                    }
-                    update::set_status(Status::Checking);
-                    cx.spawn(async move |this, cx| {
-                        cx.background_spawn(crate::guard::task(async { update::check() }))
-                            .await
-                            .ok();
-                        this.update(cx, |_, cx| cx.notify()).ok();
-                    })
-                    .detach();
-                    cx.notify();
-                }),
-            ),
+            _ => ui::button(
+                reg::entry(Id::Version).key,
+                "Check now",
+                ButtonKind::Outline,
+                !busy,
+            )
+            .on_click(cx.listener(move |_, _, _, cx| {
+                if busy {
+                    return;
+                }
+                update::set_status(Status::Checking);
+                cx.spawn(async move |this, cx| {
+                    cx.background_spawn(crate::guard::task(async { update::check() }))
+                        .await
+                        .ok();
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                })
+                .detach();
+                cx.notify();
+            })),
         };
         let current = row(version, status.text(), action.into_any_element()).into_any_element();
-        vec![auto, nightly, current]
+        vec![
+            (Id::AutoUpdate, auto),
+            (Id::Nightly, nightly),
+            (Id::Version, current),
+        ]
     }
 
     /// The nightly channel: a switch that shows what nightlies risk, and asks
@@ -2014,16 +1798,16 @@ impl SettingsDialog {
             })
             .detach();
         };
-        let switch_row = toggle_row("set-nightly", "Nightly builds", hint, on).on_click(
-            cx.listener(move |this, _, _, cx| {
+        let e = reg::entry(Id::Nightly);
+        let switch_row =
+            toggle_row(e.key, e.label, hint, on).on_click(cx.listener(move |this, _, _, cx| {
                 if on {
                     set(Channel::Stable, cx);
                 } else {
                     this.confirm_nightly = !this.confirm_nightly;
                     cx.notify();
                 }
-            }),
-        );
+            }));
         if on || !self.confirm_nightly {
             return switch_row.into_any_element();
         }
@@ -2101,29 +1885,18 @@ impl SettingsDialog {
         } else {
             saved
         };
-        let (title, hint, on) = if crashes {
-            (
-                "Crash reports",
-                "Crashes, with their stack trace, and the kind of error when an agent stops. Paths, links, emails and key-like values are removed from a crash's message; its other words are sent.",
-                shown.crashes,
-            )
+        let (e, on) = if crashes {
+            (reg::entry(Id::CrashReports), shown.crashes)
         } else {
-            (
-                "Usage counts",
-                "Counts such as sessions started, with the agent's name. Never prompts, replies, files or URLs.",
-                shown.usage,
-            )
+            (reg::entry(Id::UsageCounts), shown.usage)
         };
+        let (title, hint) = (e.label, e.hint);
         let hint: SharedString = match locked {
             Some(var) => format!("{hint} Set by {var} in the environment.").into(),
             None => hint.into(),
         };
         row(title, hint.clone(), switch(on).into_any_element())
-            .id(if crashes {
-                "set-crash-reports"
-            } else {
-                "set-usage-counts"
-            })
+            .id(e.key)
             .map(|d| ui::as_switch(d, title, on))
             .aria_description(hint)
             .when(locked.is_none(), |d| d.cursor_pointer())
@@ -2150,7 +1923,7 @@ impl SettingsDialog {
 
     /// What Colors and Shape are set to, and the way to the Customize panel
     /// where they are changed: there the app stays in view, not under a dialog.
-    fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_appearance(&self, q: &str, cx: &mut Context<Self>) -> AnyElement {
         let value = |text: String| {
             div()
                 .flex_none()
@@ -2195,9 +1968,8 @@ impl SettingsDialog {
                     })
                     .when(to == pct, |b| b.opacity(0.4))
             };
-            row(
-                "Zoom",
-                "Makes the whole interface bigger or smaller, like a browser's zoom. Ctrl+= and Ctrl+- do it too, Ctrl+0 goes back to 100%.",
+            reg_row(
+                Id::Zoom,
                 div()
                     .flex()
                     .flex_none()
@@ -2213,18 +1985,15 @@ impl SettingsDialog {
                     )
                     .child(step("set-zoom-in", "add01", "Zoom in", 1))
                     .child(
-                        ui::button("set-zoom-reset", "Reset", ButtonKind::Ghost, pct != 100).on_click(
-                            cx.listener(move |_, _, _, cx| {
+                        ui::button("set-zoom-reset", "Reset", ButtonKind::Ghost, pct != 100)
+                            .on_click(cx.listener(move |_, _, _, cx| {
                                 if pct != 100 {
                                     cx.emit(SettingsEvent::Zoom(100));
                                     cx.notify();
                                 }
-                            }),
-                        ),
-                    )
-                    .into_any_element(),
+                            })),
+                    ),
             )
-            .into_any_element()
         };
         let motion = {
             use crate::ui::motion::{self, Reduce};
@@ -2244,34 +2013,41 @@ impl SettingsDialog {
                     })),
                 );
             }
-            row(
-                "Reduce motion",
-                "Holds the mascot, spinners and the island's working dots still, and shows menus and dialogs without sliding them in. System follows your computer's setting.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
+            reg_row(Id::ReduceMotion, seg)
         };
-        stack(vec![
-            self.render_tabs_and_sessions(cx),
-            group(vec![
-                row("Colors", "", value(self.look.colors.clone())).into_any_element(),
-                row("Shape", "", value(self.look.shape.clone())).into_any_element(),
-                row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
-            ]),
-            open,
-            titled("Window", vec![zoom, motion]),
+        // The panel shows these; here they are only what they are set to.
+        let summary = |id: Id, text: String| {
+            (
+                id,
+                row(reg::entry(id).label, "", value(text)).into_any_element(),
+            )
+        };
+        let look = Self::card(
+            q,
+            vec![
+                summary(Id::Colors, self.look.colors.clone()),
+                summary(Id::Shape, self.look.shape.clone()),
+                summary(Id::SidebarLook, self.look.sidebar.clone()),
+            ],
+        );
+        let has_look = look.is_some();
+        stack_cards(vec![
+            self.render_tabs_and_sessions(q, cx),
+            look,
+            has_look.then_some(open),
+            Self::card(q, vec![(Id::Zoom, zoom), (Id::ReduceMotion, motion)]),
         ])
     }
 
     /// Tabs and sessions: three presets on top, then the options they set.
-    fn render_tabs_and_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tabs_and_sessions(&self, q: &str, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::tab_layout::{
             BarShows, LongTitles, Opt, Preset, Quiet, SessionsIn, Sort, StateMark, TabLayout,
         };
         let layout = crate::tab_layout::current();
         let chosen = layout.preset();
         let tiles = div()
-            .id("tabs-presets")
+            .id(reg::entry(Id::TabsPreset).key)
             .role(gpui::Role::RadioGroup)
             .aria_label("Tabs and sessions preset")
             .flex()
@@ -2428,7 +2204,7 @@ impl SettingsDialog {
                 .items_center()
                 .gap(crate::ui::sp(12.))
                 .child(div().w(px(200.)).child(ui::slider(
-                    "tabs-sidebar-w",
+                    reg::entry(Id::SidebarWidth).key,
                     (w - MIN) / (MAX - MIN),
                     ui::blend_track(theme::fill_selected(), theme::text_faint()),
                     theme::text(),
@@ -2453,65 +2229,88 @@ impl SettingsDialog {
                 .into_any_element()
         };
         let dim = |on: bool, r: gpui::Div| r.when(!on, |d| d.opacity(0.6)).into_any_element();
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(8.))
-            .child(ui::overline("Tabs and sessions").px(crate::ui::sp(4.)))
-            .child(
-                div()
-                    .px(crate::ui::sp(4.))
-                    .text_size(px(ui::TEXT_SM))
-                    .text_color(theme::text_subtle())
-                    .child("Start from a preset, then change what you like. Changes show in the window at once."),
-            )
-            .child(tiles)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .px(crate::ui::sp(4.))
-                    .pt(crate::ui::sp(8.))
-                    .child(div().flex_1().child(ui::overline("Options")))
-                    .child(
+        let opt = |id: Id, control: AnyElement| {
+            let e = reg::entry(id);
+            row(e.label, e.hint, control)
+        };
+        let options: Vec<AnyElement> = [
+            (
+                Id::SessionsIn,
+                opt(Id::SessionsIn, sessions_in).into_any_element(),
+            ),
+            (
+                Id::BarShows,
+                opt(Id::BarShows, bar_shows).into_any_element(),
+            ),
+            (Id::StateMark, opt(Id::StateMark, state).into_any_element()),
+            (
+                Id::GroupByProject,
+                dim(group_on, opt(Id::GroupByProject, group_switch)),
+            ),
+            (
+                Id::SortSessions,
+                dim(layout.applies(Opt::Sort), opt(Id::SortSessions, sort)),
+            ),
+            (
+                Id::QuietProjects,
+                dim(layout.applies(Opt::Quiet), opt(Id::QuietProjects, quiet)),
+            ),
+            (
+                Id::LongTitles,
+                dim(layout.applies(Opt::Titles), opt(Id::LongTitles, titles)),
+            ),
+            (
+                Id::SidebarWidth,
+                opt(Id::SidebarWidth, width).into_any_element(),
+            ),
+        ]
+        .into_iter()
+        .filter(|(id, _)| Self::shows(*id, q))
+        .map(|(_, r)| r)
+        .collect();
+        let presets = Self::shows(Id::TabsPreset, q);
+        if !presets && options.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .child(ui::overline(reg::entry(Id::TabsPreset).card).px(crate::ui::sp(4.)))
+                .when(presets, |d| {
+                    d.child(
                         div()
-                            .text_size(px(ui::TEXT_XS))
-                            .text_color(theme::text_faint())
-                            .child(note),
-                    ),
-            )
-            .child(group(vec![
-                row("Sessions live in", "Where every session of every project is listed", sessions_in)
-                    .into_any_element(),
-                row("Title bar shows", "Pinned: only what you pull up from the sidebar", bar_shows)
-                    .into_any_element(),
-                row("State", "How a working, waiting or failed session shows", state)
-                    .into_any_element(),
-                dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
-                dim(
-                    layout.applies(Opt::Sort),
-                    row("Sort sessions", "In the sidebar tree; Recent puts the last one that moved on top", sort),
-                ),
-                dim(
-                    layout.applies(Opt::Quiet),
-                    row("Projects with nothing running", "In the sidebar tree", quiet),
-                ),
-                dim(
-                    layout.applies(Opt::Titles),
-                    row("Long titles", "In the sidebar; tabs always cut", titles),
-                ),
-                row(
-                    "Sidebar width",
-                    "The tree needs about 240 to show a title and its state",
-                    width,
-                )
+                            .px(crate::ui::sp(4.))
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_subtle())
+                            .child(reg::entry(Id::TabsPreset).hint),
+                    )
+                    .child(tiles)
+                })
+                .when(!options.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .px(crate::ui::sp(4.))
+                            .pt(crate::ui::sp(8.))
+                            .child(div().flex_1().child(ui::overline("Options")))
+                            .child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_faint())
+                                    .child(note),
+                            ),
+                    )
+                    .child(group(options))
+                })
                 .into_any_element(),
-            ]))
-            .into_any_element()
+        )
     }
 
     /// The open project's setup script, check and base branch, saved as they are typed.
-    fn render_project(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_project(&self, q: &str, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = &self.project else {
             return group(vec![
                 row(
@@ -2535,66 +2334,54 @@ impl SettingsDialog {
                 ],
             )]);
         }
-        stack(vec![titled(
-            &project.name,
-            vec![
-                stacked_row(
-                    "Setup script",
-                    "Runs in a terminal of every new environment of this project on this computer, right after it is created. Not on servers. Empty turns it off.",
-                    field(self.setup_input.clone(), 420.).into_any_element(),
-                )
-                .into_any_element(),
-                stacked_row(
-                    "Check command",
-                    "Runs in the environment after every agent turn that edits files. When it fails, Arakun sends the output back to the agent, up to 3 times in a row. Agents can run it themselves with arakun check. Empty turns it off.",
-                    field(self.check_input.clone(), 420.).into_any_element(),
-                )
-                .into_any_element(),
-                stacked_row(
-                    "Base branch",
-                    "New environments of this project on this computer start from this branch as it is on origin, fetched first, or from the local branch when origin has none. Empty uses origin's default branch, usually main.",
-                    field(self.base_input.clone(), 420.).into_any_element(),
-                )
-                .into_any_element(),
-                stacked_row(
-                    "Pass to agents",
-                    "Agents don't get Arakun's own variables that look like secrets, such as GH_TOKEN or a cloud key, sandboxed or not. Their own provider keys stay. Name the variables this project's agents need, separated by spaces. Terminals keep them all. Applies to sessions started afterwards.",
-                    field(self.pass_input.clone(), 420.).into_any_element(),
-                )
-                .into_any_element(),
-                // Windows has no sandbox to put them in.
-                if cfg!(windows) {
-                    row(
-                        "Sandbox agents",
-                        "Windows has no agent sandbox yet. On macOS and Linux this runs the agents of a project in a sandbox.",
-                        div().into_any_element(),
-                    )
-                    .into_any_element()
+        let sandbox = if cfg!(windows) {
+            // Windows has no sandbox to put them in.
+            row(
+                reg::entry(Id::Sandbox).label,
+                "Windows has no agent sandbox yet. On macOS and Linux this runs the agents of a project in a sandbox.",
+                div().into_any_element(),
+            )
+            .into_any_element()
+        } else {
+            let e = reg::entry(Id::Sandbox);
+            toggle_row(e.key, e.label, if cfg!(target_os = "macos") {
+                    "Agents of this project run in a Seatbelt sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network and the keychain. Applies to sessions started afterwards."
                 } else {
-                toggle_row("set-project-sandbox", "Sandbox agents", if cfg!(target_os = "macos") {
-                        "Agents of this project run in a Seatbelt sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network and the keychain. Applies to sessions started afterwards."
-                    } else {
-                        "Agents of this project run in a bubblewrap sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network. Applies to sessions started afterwards."
-                    }, project.sandbox)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    let Some(p) = this.project.as_mut().filter(|p| !p.remote) else {
-                        return;
-                    };
-                    p.sandbox = !p.sandbox;
-                    cx.emit(SettingsEvent::ProjectSandbox {
-                        project: p.path.clone(),
-                        on: p.sandbox,
-                    });
-                    cx.notify();
-                }))
-                .into_any_element()
-                },
-            ],
-        ), self.render_saved_secrets(project, cx)])
+                    "Agents of this project run in a bubblewrap sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network. Applies to sessions started afterwards."
+                }, project.sandbox)
+            .on_click(cx.listener(|this, _, _, cx| {
+                let Some(p) = this.project.as_mut().filter(|p| !p.remote) else {
+                    return;
+                };
+                p.sandbox = !p.sandbox;
+                cx.emit(SettingsEvent::ProjectSandbox {
+                    project: p.path.clone(),
+                    on: p.sandbox,
+                });
+                cx.notify();
+            }))
+            .into_any_element()
+        };
+        let text =
+            |id: Id, input: &Entity<TextInput>| (id, reg_stacked(id, field(input.clone(), 420.)));
+        stack_cards(vec![
+            Self::card_titled(
+                &project.name,
+                q,
+                vec![
+                    text(Id::SetupScript, &self.setup_input),
+                    text(Id::CheckCommand, &self.check_input),
+                    text(Id::BaseBranch, &self.base_input),
+                    text(Id::PassEnv, &self.pass_input),
+                    (Id::Sandbox, sandbox),
+                ],
+            ),
+            Self::shows(Id::SavedSecrets, q).then(|| self.render_saved_secrets(project, cx)),
+        ])
     }
 
-    fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = self.voice.enabled;
+    /// Droid's questions read aloud: the cards under Droid's own.
+    fn render_voice(&self, q: &str, cx: &mut Context<Self>) -> Vec<Option<AnyElement>> {
         let busy = self.voice_busy;
         let key_set = self.voice_key == Some(true);
         let typed_id = self.voice_input.read(cx).text().trim().to_string();
@@ -2620,12 +2407,10 @@ impl SettingsDialog {
         let key_hint = match self.voice_key {
             None => "Checking the system keyring…",
             Some(true) => "Saved in the system keyring. Paste a new one and Save to replace it.",
-            Some(false) => {
-                "From elevenlabs.io › Developers › API Keys. Arakun keeps it in the system keyring."
-            }
+            Some(false) => reg::entry(Id::VoiceKey).hint,
         };
         let id_hint = if typed_id.is_empty() || id_ok {
-            "Add a voice from the Voice Library to My Voices, then copy its ID."
+            reg::entry(Id::VoiceName).hint
         } else {
             "A voice ID is only letters and digits."
         };
@@ -2644,7 +2429,7 @@ impl SettingsDialog {
             .when(busy, |d| d.child(ui::spinner(12., theme::mix(0.5))))
             .child(
                 ui::button(
-                    "set-voice-test",
+                    reg::entry(Id::VoiceTest).key,
                     "Test voice",
                     ButtonKind::Outline,
                     can_test,
@@ -2663,38 +2448,40 @@ impl SettingsDialog {
             })
         });
 
+        let key = reg::entry(Id::VoiceKey);
+        let voice_id = reg::entry(Id::VoiceName);
         let mut blocks = vec![
-            titled(
-                "Read aloud",
+            Self::card(
+                q,
                 vec![
-                    toggle_row("set-voice", "Read questions aloud", "When Droid asks you something, Arakun says the question and its options, even with the session on screen. It stops once you answer.", enabled)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_voice_enabled(!enabled, cx)))
-                    .into_any_element(),
-                    row(
-                        "Tone",
-                        "How much the voice acts out what it reads. Calm sounds the steadiest.",
-                        tones.into_any_element(),
-                    )
-                    .into_any_element(),
+                    (Id::ReadAloud, self.switch_row(Id::ReadAloud, cx)),
+                    (Id::VoiceTone, reg_row(Id::VoiceTone, tones)),
                 ],
             ),
-            titled(
-                "ElevenLabs",
+            Self::card(
+                q,
                 vec![
-                    stacked_row("API key", key_hint, key_control.into_any_element()).into_any_element(),
-                    stacked_row("Voice ID", id_hint, field(self.voice_input.clone(), 260.).into_any_element())
+                    (
+                        Id::VoiceKey,
+                        stacked_row(key.label, key_hint, key_control.into_any_element())
+                            .into_any_element(),
+                    ),
+                    (
+                        Id::VoiceName,
+                        stacked_row(
+                            voice_id.label,
+                            id_hint,
+                            field(self.voice_input.clone(), 260.).into_any_element(),
+                        )
                         .into_any_element(),
-                    row(
-                        "Test voice",
-                        "Says a short sample with this key and voice.",
-                        test_control.into_any_element(),
-                    )
-                    .into_any_element(),
+                    ),
+                    (Id::VoiceTest, reg_row(Id::VoiceTest, test_control)),
                 ],
             ),
         ];
-        if let Some((text, failed)) = note {
-            blocks.push(
+        let any_shown = blocks.iter().any(Option::is_some);
+        if let Some((text, failed)) = note.filter(|_| any_shown) {
+            blocks.push(Some(
                 div()
                     .px(crate::ui::sp(4.))
                     .text_size(px(ui::TEXT_SM))
@@ -2706,9 +2493,9 @@ impl SettingsDialog {
                     })
                     .child(text)
                     .into_any_element(),
-            );
+            ));
         }
-        stack(blocks)
+        blocks
     }
 
     fn render_shortcuts(&self, cx: &App) -> AnyElement {
@@ -2933,6 +2720,23 @@ fn preset_tile(
             cx.notify();
         }))
         .into_any_element()
+}
+
+/// The cards the search leaves, one under the other.
+fn stack_cards(parts: Vec<Option<AnyElement>>) -> AnyElement {
+    stack(parts.into_iter().flatten().collect())
+}
+
+/// A registry row: its label and hint, its control on the right.
+fn reg_row(id: Id, control: impl IntoElement) -> AnyElement {
+    let e = reg::entry(id);
+    row(e.label, e.hint, control.into_any_element()).into_any_element()
+}
+
+/// A registry row with its control under the text.
+fn reg_stacked(id: Id, control: impl IntoElement) -> AnyElement {
+    let e = reg::entry(id);
+    stacked_row(e.label, e.hint, control.into_any_element()).into_any_element()
 }
 
 /// A section's parts, one under the other.
@@ -3228,13 +3032,6 @@ impl Render for SettingsDialog {
 mod tests {
     use super::*;
 
-    /// The link setting is in General in every build, whichever keyword list it has.
-    #[test]
-    fn searching_for_links_finds_general() {
-        assert!(Section::General.matches("open links"));
-        assert!(Section::General.matches("external browser"));
-    }
-
     #[test]
     fn pass_to_agents_takes_names_once() {
         assert_eq!(
@@ -3242,14 +3039,6 @@ mod tests {
             ["GH_TOKEN", "NPM_TOKEN"]
         );
         assert!(pass_env_names("  ").is_empty());
-        assert!(Section::Project.matches("gh_token"));
-    }
-
-    #[test]
-    fn searching_for_merge_finds_branches() {
-        assert!(Section::Branches.matches("archive after merge"));
-        assert!(Section::Branches.matches("settle threads"));
-        assert!(Section::Branches.matches("after merge"));
     }
 
     #[test]
@@ -3281,34 +3070,20 @@ mod tests {
     }
 
     #[test]
-    fn search_finds_settings_where_they_moved() {
-        let found = |q: &str| -> Vec<Section> {
-            Section::ALL
-                .iter()
-                .copied()
-                .filter(|s| s.matches(q))
-                .collect()
-        };
-        assert!(found("branch").contains(&Section::Branches));
-        assert!(found("haiku").contains(&Section::Branches));
-        assert!(found("crash").contains(&Section::Privacy));
-        assert!(found("update").contains(&Section::General));
-        assert!(found("automatic updates").contains(&Section::General));
-        assert!(found("redacted").contains(&Section::Privacy));
-        assert!(found("stream").contains(&Section::Privacy));
-        assert!(found("secrets").contains(&Section::Privacy));
-        assert!(!found("crash").contains(&Section::General));
-        assert!(found("factory").contains(&Section::Droid));
-        assert!(found("github").contains(&Section::Account));
-        assert!(found("teams").contains(&Section::Account));
-        assert!(found("ctrl+w").contains(&Section::Shortcuts));
-        assert!(found("zoom").contains(&Section::Appearance));
-        assert!(found("check command").contains(&Section::Project));
-        assert!(found("setup script").contains(&Section::Project));
-        assert!(found("saved secrets").contains(&Section::Project));
-        assert!(found("replace").contains(&Section::Project));
-        assert!(found("github").contains(&Section::General));
-        assert_eq!(found("").len(), Section::ALL.len());
-        assert!(found("zzz-nothing").is_empty());
+    fn shortcuts_list_by_their_keys() {
+        assert!(listed(Section::Shortcuts, "ctrl+w"));
+        assert!(!listed(Section::General, "ctrl+w"));
+    }
+
+    /// A search that names the section shows all of it; one that names a
+    /// row shows that row's card and not the rest.
+    #[test]
+    fn rows_show_by_row_or_by_section() {
+        assert!(SettingsDialog::shows(Id::AutoUpdate, "general"));
+        assert!(SettingsDialog::shows(Id::Island, "island"));
+        assert!(!SettingsDialog::shows(Id::AutoUpdate, "island"));
+        assert!(SettingsDialog::whole(Section::Droid, "factory"));
+        assert!(!SettingsDialog::whole(Section::Droid, "elevenlabs"));
+        assert!(SettingsDialog::shows(Id::VoiceKey, "elevenlabs"));
     }
 }

@@ -37,6 +37,13 @@ looks like a plain word still shows. The choice is kept in
 [`settings.json`](storage-and-env.md#the-data-folder), so it is still on after a restart.
 `ARAKUN_REDACTED=1` turns it on for one run without changing that file.
 
+## Agents in browser tabs
+
+Agents drive pages on localhost and only read the others. Settings › Privacy › Agents
+drive any web page lets them click, type and run scripts in any browser tab too, with the
+accounts you are signed in to there. It is off by default and kept in
+[`settings.json`](storage-and-env.md#the-data-folder).
+
 ## Usage and crash reports
 
 Arakun sends nothing until you say so. On first launch it asks whether to send crash

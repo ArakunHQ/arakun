@@ -2885,7 +2885,6 @@ impl Shell {
         }
         self.menu = None;
         self.env_menu_open = false;
-        let arcade = self.arcade;
         let droid = self.account.read(cx).connected();
         let teams = self.teams.clone();
         #[cfg(feature = "coderlabs")]
@@ -2929,7 +2928,6 @@ impl Shell {
         );
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
-                arcade,
                 droid,
                 teams,
                 look,
@@ -2947,12 +2945,7 @@ impl Shell {
             &dialog,
             window,
             |this, _, ev: &SettingsEvent, window, cx| match ev {
-                SettingsEvent::Arcade(on) => {
-                    this.arcade = *on;
-                    crate::mascot::set_animated(*on);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
+                SettingsEvent::Switched(id) => this.after_setting(*id, window, cx),
                 SettingsEvent::RailUsage(agent, on) => {
                     account_view::set_rail_shows(*agent, *on);
                     this.save(cx);
@@ -2960,16 +2953,6 @@ impl Shell {
                 }
                 SettingsEvent::ReduceMotion(r) => {
                     crate::ui::motion::set_choice(*r, cx);
-                    this.save(cx);
-                }
-                #[cfg(target_os = "linux")]
-                SettingsEvent::Background(on) => {
-                    crate::background::set_enabled(*on);
-                    this.save(cx);
-                }
-                SettingsEvent::Island(on) => {
-                    crate::island::set_enabled(*on);
-                    this.sync_island(window, cx);
                     this.save(cx);
                 }
                 SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
@@ -3322,6 +3305,33 @@ impl Shell {
 
     /// Turns redacted mode on or off. Every window draws again at once, so
     /// nothing private stays on screen for a frame longer than it must.
+    /// What follows a registry switch turned in Settings or the palette,
+    /// besides the value it keeps itself.
+    pub(super) fn after_setting(
+        &mut self,
+        id: crate::settings_registry::Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::settings_registry::Id;
+        match id {
+            Id::Arcade => {
+                // The shell saves it with the layout.
+                self.arcade = crate::mascot::chosen();
+                self.save(cx);
+                cx.refresh_windows();
+            }
+            Id::Island => {
+                self.sync_island(window, cx);
+                self.save(cx);
+            }
+            Id::Background => self.save(cx),
+            Id::Redacted | Id::HideSecrets => cx.refresh_windows(),
+            _ => {}
+        }
+        cx.notify();
+    }
+
     pub(super) fn toggle_redacted(&mut self, cx: &mut Context<Self>) {
         crate::redact::set(!crate::redact::on());
         cx.refresh_windows();

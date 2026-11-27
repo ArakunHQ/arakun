@@ -1453,63 +1453,51 @@ impl Shell {
         items.extend(cloud_command(pilot));
     }
 
+    /// Every row of Settings under its name and place there, from the same
+    /// registry the dialog draws. Switches turn in place; the rest open
+    /// Settings on their row.
     fn palette_settings(&self, items: &mut Vec<Item>) {
-        let rows: [(Setting, &str, &str, &str, bool); 4] = [
-            (
-                Setting::Redacted,
-                "Redacted mode",
-                "Settings › Privacy",
-                "Hides emails, keys, tokens, pairing codes and addresses, for streams, demos and screen sharing (Ctrl+Shift+H).",
-                crate::redact::on(),
-            ),
-            (
-                Setting::Island,
-                "Dynamic Island",
-                "Settings › Island",
-                "A small overlay at the top of the screen with what every agent is doing, and their notices.",
-                crate::island::enabled(),
-            ),
-            (
-                Setting::Glass,
-                "Glass window",
-                "Customize › Shape",
-                "Lets the desktop show through the window's background.",
-                theme::glass_chosen(),
-            ),
-            (
-                Setting::Arcade,
-                "Animated raccoon",
-                "Settings › General",
-                "The mascot moves with what the agents do.",
-                self.arcade,
-            ),
-        ];
-        for (s, name, path, blurb, on) in rows {
-            let mut item = Item::new(
-                format!("setting:{s:?}").to_lowercase(),
-                Kind::Setting,
-                name,
-                Target::Setting(s),
-            )
-            .icon(
-                match s {
-                    Setting::Redacted => "view-off",
-                    Setting::Island => "sparkles",
-                    Setting::Glass | Setting::Arcade => "paint-board",
-                },
-                Tint::Neutral,
-            )
-            .section("Settings")
-            .boost(-30)
-            .extra(path)
-            .preview(Preview::Setting {
-                path: path.to_string(),
-                blurb: blurb.to_string(),
-                on,
-            });
-            item.toggle = Some(on);
+        use crate::settings_registry as reg;
+        for e in reg::ALL.iter().filter(|e| e.available()) {
+            let on = e.on();
+            let target = match on {
+                Some(_) => Target::Setting(Setting::Row(e.id)),
+                None => Target::OpenSetting(e.id),
+            };
+            let path = e.path();
+            let mut item = Item::new(format!("setting:{}", e.key), Kind::Setting, e.label, target)
+                .icon(e.section.icon(), Tint::Neutral)
+                .section("Settings")
+                .boost(-30)
+                .extra(format!("{path} {}", e.keywords))
+                .preview(Preview::Setting {
+                    path,
+                    blurb: e.hint.to_string(),
+                    on,
+                });
+            item.toggle = on;
             items.push(item);
         }
+        // Glass is Customize's, not a row of Settings.
+        let path = "Customize › Shape";
+        let on = theme::glass_chosen();
+        let mut item = Item::new(
+            "setting:glass",
+            Kind::Setting,
+            "Glass",
+            Target::Setting(Setting::Glass),
+        )
+        .icon("paint-board", Tint::Neutral)
+        .section("Settings")
+        .boost(-30)
+        .extra(path)
+        .preview(Preview::Setting {
+            path: path.to_string(),
+            blurb: "Lets the desktop show through the window's background.".to_string(),
+            on: Some(on),
+        });
+        item.toggle = Some(on);
+        items.push(item);
     }
 
     pub(super) fn run_palette_target(
@@ -1599,6 +1587,10 @@ impl Shell {
             }
             Target::Url(url) => self.open_url(url, window, cx),
             Target::Setting(s) => self.flip_setting(s, window, cx),
+            Target::OpenSetting(id) => {
+                crate::settings_view::start_on_setting(id);
+                self.open_settings(window, cx);
+            }
             Target::Memory => self.open_memory_tab(window, cx),
             Target::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
             Target::Ask {
@@ -1672,21 +1664,14 @@ impl Shell {
 
     fn flip_setting(&mut self, s: Setting, window: &mut Window, cx: &mut Context<Self>) {
         match s {
-            Setting::Redacted => self.toggle_redacted(cx),
-            Setting::Island => {
-                crate::island::set_enabled(!crate::island::enabled());
-                self.sync_island(window, cx);
-                self.save(cx);
+            Setting::Row(id) => {
+                let on = !crate::settings_registry::entry(id).on().unwrap_or(false);
+                crate::settings_registry::set(id, on);
+                self.after_setting(id, window, cx);
             }
             Setting::Glass => {
                 theme::set_glass(!theme::glass_chosen());
                 window.set_background_appearance(theme::window_background());
-                self.save(cx);
-                cx.refresh_windows();
-            }
-            Setting::Arcade => {
-                self.arcade = !self.arcade;
-                crate::mascot::set_animated(self.arcade);
                 self.save(cx);
                 cx.refresh_windows();
             }

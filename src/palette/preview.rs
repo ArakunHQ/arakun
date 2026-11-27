@@ -387,19 +387,24 @@ impl Palette {
                 kit::preview_eyebrow("settings01", path.clone()).into_any_element(),
                 kit::preview_title(item.title.clone()).into_any_element(),
                 kit::preview_text(blurb.clone()).into_any_element(),
-                kit::props()
-                    .child(kit::prop("Toggle", kit::keycap("↵")))
-                    .child(kit::prop(
-                        "Status",
-                        div()
-                            .text_color(if *on {
-                                theme::success().into()
-                            } else {
-                                theme::text_muted()
-                            })
-                            .child(if *on { "On" } else { "Off" }),
-                    ))
-                    .into_any_element(),
+                match on {
+                    Some(on) => kit::props()
+                        .child(kit::prop("Toggle", kit::keycap("↵")))
+                        .child(kit::prop(
+                            "Status",
+                            div()
+                                .text_color(if *on {
+                                    theme::success().into()
+                                } else {
+                                    theme::text_muted()
+                                })
+                                .child(if *on { "On" } else { "Off" }),
+                        ))
+                        .into_any_element(),
+                    None => kit::props()
+                        .child(kit::prop("Open in Settings", kit::keycap("↵")))
+                        .into_any_element(),
+                },
             ],
             Preview::Project {
                 path,

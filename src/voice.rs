@@ -238,7 +238,7 @@ fn temp_path(ext: &str) -> PathBuf {
 pub fn fetch(api_key: &str, voice_id: &str, tone: Tone, text: &str) -> Result<PathBuf, String> {
     let voice_id = voice_id.trim();
     if !valid_voice_id(voice_id) {
-        return Err("Set the voice ID in Settings › Voice (the letters and digits ElevenLabs shows for a voice).".into());
+        return Err("Set the voice ID in Settings › Droid (the letters and digits ElevenLabs shows for a voice).".into());
     }
     let raw = temp_path("pcm");
     let url = format!(
@@ -464,7 +464,7 @@ fn run() {
 }
 
 fn synthesize(text: &str) -> Result<PathBuf, String> {
-    let key = api_key().ok_or("Add your ElevenLabs API key in Settings › Voice.")?;
+    let key = api_key().ok_or("Add your ElevenLabs API key in Settings › Droid.")?;
     let settings = settings();
     let path = fetch(&key, &settings.voice_id, settings.tone, text)?;
     *lock(last_error_slot()) = None;

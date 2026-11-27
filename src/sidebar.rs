@@ -1522,7 +1522,8 @@ impl Extensions {
             View::EXTENSIONS
                 .iter()
                 .copied()
-                .filter(|v| layout.has(&Piece::view(*v)))
+                // More views reaches every view without a row of its own.
+                .filter(|v| layout.has(&Piece::view(*v)) || layout.has(&Piece::MoreViews))
                 .collect()
         } else {
             Vec::new()
@@ -1955,6 +1956,10 @@ mod tests {
         assert!(!before.shows(View::PostHog));
         // The core shows whether or not anything is on.
         assert!(before.shows(View::Runs));
+
+        // More views holds every view: the default from before kept them all.
+        let kept = Extensions::first(&Sidebar::default(), true);
+        assert_eq!(kept.on, View::EXTENSIONS);
 
         let new = Extensions::first(&Sidebar::default(), false);
         assert!(new.on.is_empty());

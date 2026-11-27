@@ -100,12 +100,22 @@ impl Mode {
     }
 }
 
+/// The mode the user chose, for the setting's switch and the saved state.
 pub fn mode() -> Mode {
-    if is_light() { Mode::Light } else { Mode::Dark }
+    if LIGHT.load(Ordering::Relaxed) {
+        Mode::Light
+    } else {
+        Mode::Dark
+    }
 }
 
+/// Whether colors are drawn light now: the chosen mode, or with Windows'
+/// high contrast colors in use, whether its window color is light.
 pub fn is_light() -> bool {
-    LIGHT.load(Ordering::Relaxed)
+    match system_colors() {
+        Some(c) => c.is_light(),
+        None => LIGHT.load(Ordering::Relaxed),
+    }
 }
 
 pub fn set_mode(m: Mode) {
@@ -215,6 +225,76 @@ pub fn set_system_high_contrast(on: bool) {
 /// Whether the high contrast grays are in use now.
 pub fn high_contrast() -> bool {
     contrast_setting().is_high(system_high_contrast())
+}
+
+/// The colors of a Windows high contrast theme, as `0xRRGGBB`. Whoever
+/// picked the theme chose these to read by, so with high contrast in force
+/// Arakun draws with them in place of its palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SystemColors {
+    /// The window background (`COLOR_WINDOW`): every surface.
+    pub window: u32,
+    /// Text on it (`COLOR_WINDOWTEXT`): the content color, so the gray
+    /// roles are its alphas.
+    pub text: u32,
+    /// Links (`COLOR_HOTLIGHT`): the accent.
+    pub link: u32,
+}
+
+impl SystemColors {
+    /// Takes the text color for the accent when the link color doesn't
+    /// reach the 3:1 a mark needs, as in a theme someone edited badly.
+    pub fn new(window: u32, text: u32, link: u32) -> Self {
+        let link = if contrast(rgb(link), rgb(window)) >= 3. {
+            link
+        } else {
+            text
+        };
+        SystemColors { window, text, link }
+    }
+
+    /// Light when black text would stand out more on the window than white.
+    fn is_light(self) -> bool {
+        contrast(rgb(self.window), rgb(0x000000)) > contrast(rgb(self.window), rgb(0xffffff))
+    }
+}
+
+/// No system color: the palette is drawn.
+const NO_COLOR: u32 = u32::MAX;
+static SYSTEM_WINDOW: AtomicU32 = AtomicU32::new(NO_COLOR);
+static SYSTEM_TEXT: AtomicU32 = AtomicU32::new(NO_COLOR);
+static SYSTEM_LINK: AtomicU32 = AtomicU32::new(NO_COLOR);
+
+/// What the system last gave: Windows' colors while its high contrast is
+/// on, `None` otherwise and on other systems.
+pub fn system_colors_read() -> Option<SystemColors> {
+    let window = SYSTEM_WINDOW.load(Ordering::Relaxed);
+    (window != NO_COLOR).then(|| SystemColors {
+        window,
+        text: SYSTEM_TEXT.load(Ordering::Relaxed),
+        link: SYSTEM_LINK.load(Ordering::Relaxed),
+    })
+}
+
+pub fn set_system_colors(c: Option<SystemColors>) {
+    let (window, text, link) = c.map_or((NO_COLOR, NO_COLOR, NO_COLOR), |c| {
+        (c.window, c.text, c.link)
+    });
+    // The window color goes last and says whether the others are set.
+    SYSTEM_WINDOW.store(NO_COLOR, Ordering::Relaxed);
+    SYSTEM_TEXT.store(text, Ordering::Relaxed);
+    SYSTEM_LINK.store(link, Ordering::Relaxed);
+    SYSTEM_WINDOW.store(window, Ordering::Relaxed);
+}
+
+/// The system's colors when they are drawn: only with high contrast in
+/// force, so Contrast set to Standard brings the palette back.
+pub fn system_colors() -> Option<SystemColors> {
+    if high_contrast() {
+        system_colors_read()
+    } else {
+        None
+    }
 }
 
 /// The background lightness the surface offsets were tuned on: callers of
@@ -600,6 +680,11 @@ pub fn set_palette(p: &Palette) {
 /// The palette in use, without making it readable again: [`set_palette`]
 /// already did, and these run on every color call.
 fn current_surface(l: f32) -> Hsla {
+    // Windows' high contrast themes draw one flat window color; borders,
+    // which high contrast lifts to 3:1, tell the surfaces apart.
+    if let Some(c) = system_colors() {
+        return rgb(c.window).into();
+    }
     if is_light() {
         return light_tinted(
             HUE_X100.load(Ordering::Relaxed) as f32 / 100.,
@@ -616,6 +701,9 @@ fn current_surface(l: f32) -> Hsla {
 }
 
 fn current_content() -> Hsla {
+    if let Some(c) = system_colors() {
+        return rgb(c.text).into();
+    }
     hsla(
         hue(),
         (TINT_X1000.load(Ordering::Relaxed) as f32 / 1000. * 0.8).min(CONTENT_S_MAX),
@@ -797,8 +885,21 @@ pub const HIGH_CONTRAST_RAMP: Ramp = Ramp {
     fill_selected: 0.2,
 };
 
+/// High contrast's grays over a Windows high contrast theme. Its text can
+/// be softer than Arakun's (Desert's is `#3d3d3d` on cream, 10:1), so
+/// borders take more of it to hold 3:1. Windows' own controls draw their
+/// outlines in solid text color, so firm ones fit in.
+pub const SYSTEM_COLORS_RAMP: Ramp = Ramp {
+    border_subtle: 0.3,
+    border: 0.62,
+    border_strong: 0.75,
+    ..HIGH_CONTRAST_RAMP
+};
+
 fn ramp() -> Ramp {
-    if high_contrast() {
+    if system_colors().is_some() {
+        SYSTEM_COLORS_RAMP
+    } else if high_contrast() {
         HIGH_CONTRAST_RAMP
     } else {
         grays().ramp()
@@ -923,6 +1024,9 @@ pub fn warn() -> Rgba {
 
 /// The palette's accent; `#ffb547` in the default one.
 pub fn accent() -> Hsla {
+    if let Some(c) = system_colors() {
+        return rgb(c.link).into();
+    }
     let a = if is_light() { &ACCENT_LIGHT } else { &ACCENT };
     rgb(a.load(Ordering::Relaxed)).into()
 }
@@ -1323,7 +1427,10 @@ mod tests {
     /// High contrast's grays on `back`, with `text` as the content color
     /// and `lift` as the text roles' light mode boost.
     fn assert_high_contrast(what: &str, text: Hsla, back: Hsla, lift: f32) {
-        let r = HIGH_CONTRAST_RAMP;
+        assert_ramp(HIGH_CONTRAST_RAMP, what, text, back, lift);
+    }
+
+    fn assert_ramp(r: Ramp, what: &str, text: Hsla, back: Hsla, lift: f32) {
         let on = |alpha: f32| contrast(over(text.opacity(alpha), back), back);
         let text_on = |alpha: f32| on((alpha * lift).min(1.));
         assert!(text_on(r.text_muted) >= 7., "{what} muted");
@@ -1361,6 +1468,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Windows 11's high contrast themes, and Windows 10's black and white
+    /// ones: (window, window text, hyperlink).
+    const WINDOWS_THEMES: [(&str, u32, u32, u32); 6] = [
+        ("Aquatic", 0x202020, 0xffffff, 0x75e9fc),
+        ("Desert", 0xfffaef, 0x3d3d3d, 0x1c5e75),
+        ("Dusk", 0x2d3236, 0xb6f6f0, 0x70ebde),
+        ("Night sky", 0x000000, 0xffffff, 0x8080ff),
+        ("High Contrast Black", 0x000000, 0xffffff, 0xffff00),
+        ("High Contrast White", 0xffffff, 0x000000, 0x00009f),
+    ];
+
+    #[test]
+    fn windows_high_contrast_themes_stay_readable() {
+        for (name, window, text, link) in WINDOWS_THEMES {
+            let c = SystemColors::new(window, text, link);
+            assert_eq!(c.link, link, "{name} keeps its link color");
+            let lift = if c.is_light() { LIGHT_TEXT_LIFT } else { 1. };
+            let (text, back) = (rgb(text).into(), rgb(window).into());
+            assert_ramp(SYSTEM_COLORS_RAMP, name, text, back, lift);
+            assert!(contrast(rgb(c.link), rgb(window)) >= 3., "{name} accent");
+        }
+        assert!(SystemColors::new(0xfffaef, 0x3d3d3d, 0x1c5e75).is_light());
+        assert!(!SystemColors::new(0x2d3236, 0xb6f6f0, 0x70ebde).is_light());
+    }
+
+    #[test]
+    fn an_unreadable_system_link_color_falls_back_to_text() {
+        let c = SystemColors::new(0x000000, 0xffffff, 0x101010);
+        assert_eq!(c.link, 0xffffff);
     }
 
     #[test]

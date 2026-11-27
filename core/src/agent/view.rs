@@ -299,6 +299,12 @@ struct SecretState {
     /// Save for this project as well, under the name in `name`.
     keep: bool,
     name: Entity<TextInput>,
+    /// The inputs take password manager references, not values.
+    manager: bool,
+    /// A read from the password manager is under way; the card waits.
+    reading: bool,
+    /// What the last Check found, when it worked.
+    note: Option<SharedString>,
     _subs: Vec<Subscription>,
 }
 
@@ -1419,6 +1425,9 @@ impl ThreadView {
                 error: None,
                 keep: false,
                 name,
+                manager: false,
+                reading: false,
+                note: None,
                 _subs: subs,
             });
         }
@@ -1428,7 +1437,8 @@ impl ThreadView {
 
     fn secret_ready(&self, cx: &App) -> bool {
         self.secret.as_ref().is_some_and(|s| {
-            s.inputs.iter().all(|i| !i.read(cx).text().is_empty())
+            !s.reading
+                && s.inputs.iter().all(|i| !i.read(cx).text().is_empty())
                 && (!s.keep || !s.name.read(cx).text().trim().is_empty())
         })
     }
@@ -1443,11 +1453,157 @@ impl ThreadView {
         cx.notify();
     }
 
+    /// Switches the card's inputs between values and password manager
+    /// references. What was typed goes, so a value never shows as a
+    /// reference does.
+    fn set_secret_manager(&mut self, manager: bool, cx: &mut Context<Self>) {
+        let Some(state) = self
+            .secret
+            .as_mut()
+            .filter(|s| s.manager != manager && !s.reading)
+        else {
+            return;
+        };
+        state.manager = manager;
+        state.error = None;
+        state.note = None;
+        for (input, shown) in state.inputs.iter().zip(state.revealed.iter_mut()) {
+            *shown = false;
+            input.update(cx, |i, cx| {
+                i.clear(cx);
+                i.set_revealed(manager, cx);
+                i.set_placeholder(if manager { "op://vault/item/field" } else { "" }, cx);
+            });
+        }
+        self.remeasure_last();
+        cx.notify();
+    }
+
+    /// The references typed into the card, checked, or why not.
+    fn secret_references(&self, cx: &App) -> Option<Result<Vec<String>, String>> {
+        let state = self.secret.as_ref().filter(|s| s.manager)?;
+        Some(
+            state
+                .inputs
+                .iter()
+                .map(|i| {
+                    crate::password_manager::Reference::parse(i.read(cx).text())
+                        .map(|r| r.as_str().to_string())
+                })
+                .collect(),
+        )
+    }
+
+    /// Check: reads each reference again and says whether it worked, never
+    /// what it read.
+    fn check_secret_references(&mut self, cx: &mut Context<Self>) {
+        let refs = match self.secret_references(cx) {
+            Some(Ok(refs)) => refs,
+            Some(Err(e)) => {
+                if let Some(state) = self.secret.as_mut() {
+                    state.error = Some(e.into());
+                    state.note = None;
+                }
+                cx.notify();
+                return;
+            }
+            None => return,
+        };
+        self.read_secret_references(refs, true, cx, |this, id, got, _cx| {
+            if let Some(state) = this.secret.as_mut().filter(|s| s.id == id) {
+                match got {
+                    Ok(_) => {
+                        state.error = None;
+                        state.note = Some("It worked: Arakun can read it.".into());
+                    }
+                    Err(e) => state.error = Some(e.into()),
+                }
+            }
+        });
+    }
+
+    /// Refresh: forgets what was read from the password manager in this run,
+    /// so the next read asks it again, after the user unlocked it.
+    fn refresh_secret_references(&mut self, cx: &mut Context<Self>) {
+        crate::password_manager::refresh();
+        if let Some(state) = self.secret.as_mut() {
+            state.error = None;
+            state.note = None;
+        }
+        cx.notify();
+    }
+
+    /// Reads `refs` off the UI thread, as unlocking can take a while, then
+    /// hands the values, or the first error, to `then`.
+    fn read_secret_references(
+        &mut self,
+        refs: Vec<String>,
+        fresh: bool,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, u64, Result<Vec<String>, String>, &mut Context<Self>) + 'static,
+    ) {
+        let Some(state) = self.secret.as_mut().filter(|s| !s.reading) else {
+            return;
+        };
+        state.reading = true;
+        state.error = None;
+        state.note = None;
+        let id = state.id;
+        cx.spawn(async move |this, cx| {
+            let got = cx
+                .background_spawn(async move {
+                    refs.iter()
+                        .map(|r| {
+                            if fresh {
+                                crate::password_manager::check(r)?;
+                            }
+                            crate::password_manager::read_text(r).map(|v| v.expose().to_string())
+                        })
+                        .collect::<Result<Vec<String>, String>>()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(state) = this.secret.as_mut().filter(|s| s.id == id) {
+                    state.reading = false;
+                }
+                then(this, id, got, cx);
+                this.remeasure_last();
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Empties the inputs before the card can close, and puts the values back
-    /// if saving fails, so the user need not type them again.
+    /// if saving fails, so the user need not type them again. References are
+    /// read from the password manager first.
     fn save_secret(&mut self, cx: &mut Context<Self>) {
         if !self.secret_ready(cx) {
             return;
+        }
+        match self.secret_references(cx) {
+            None => {}
+            Some(Err(e)) => {
+                if let Some(state) = self.secret.as_mut() {
+                    state.error = Some(e.into());
+                    state.note = None;
+                }
+                cx.notify();
+                return;
+            }
+            Some(Ok(refs)) => {
+                let kept = refs.clone();
+                self.read_secret_references(refs, false, cx, move |this, id, got, cx| match got {
+                    Ok(values) => this.finish_secret(id, values, Some(kept), cx),
+                    Err(e) => {
+                        if let Some(state) = this.secret.as_mut().filter(|s| s.id == id) {
+                            state.error = Some(e.into());
+                        }
+                    }
+                });
+                return;
+            }
         }
         let Some(state) = self.secret.as_mut() else {
             return;
@@ -1461,22 +1617,41 @@ impl ThreadView {
             input.update(cx, |i, cx| i.clear(cx));
         }
         let id = state.id;
-        let keep_as = state
-            .keep
-            .then(|| state.name.read(cx).text().trim().to_string());
-        let saved = self.thread.update(cx, |t, cx| {
-            t.save_secret(id, values.clone(), keep_as.as_deref(), cx)
-        });
-        if let Err(e) = saved
-            && let Some(state) = self.secret.as_mut().filter(|s| s.id == id)
+        self.finish_secret(id, values.clone(), None, cx);
+        if let Some(state) = self
+            .secret
+            .as_mut()
+            .filter(|s| s.id == id && s.error.is_some())
         {
             for (input, value) in state.inputs.iter().zip(values) {
                 input.update(cx, |i, cx| i.set_text(value, cx));
             }
-            state.error = Some(e.into());
         }
         self.remeasure_last();
         cx.notify();
+    }
+
+    /// Hands the card's values to the thread; `references` when they were
+    /// read from a password manager. On an error the card says why.
+    fn finish_secret(
+        &mut self,
+        id: u64,
+        values: Vec<String>,
+        references: Option<Vec<String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.secret.as_mut().filter(|s| s.id == id) else {
+            return;
+        };
+        let keep_as = state
+            .keep
+            .then(|| state.name.read(cx).text().trim().to_string());
+        let saved = self.thread.update(cx, |t, cx| {
+            t.save_secret(id, values, references.as_deref(), keep_as.as_deref(), cx)
+        });
+        if let Some(state) = self.secret.as_mut().filter(|s| s.id == id) {
+            state.error = saved.err().map(Into::into);
+        }
     }
 
     fn decline_secret(&mut self, cx: &mut Context<Self>) {

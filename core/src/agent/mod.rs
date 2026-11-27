@@ -17,7 +17,7 @@ pub mod diff;
 pub mod extensions;
 mod kind;
 mod knobs;
-mod launch;
+pub(crate) mod launch;
 pub mod ledger;
 pub mod log;
 mod loops;

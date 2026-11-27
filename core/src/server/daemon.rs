@@ -4888,25 +4888,28 @@ fn secret_request(
         let _ = done.send(Reply::err("usage: secret <token> <arguments>"));
         return;
     };
-    let asked = serde_json::from_str(args)
-        .map_err(|e| format!("bad arguments: {e}"))
-        .and_then(|args| secret::call(token, &args));
-    match asked {
-        Ok(secret::Answer::Now(v)) => {
-            let _ = done.send(Reply::ok(v.to_string()));
-        }
-        Ok(secret::Answer::Later(outcome)) => cx
-            .spawn(async move |_| {
+    let (token, args) = (token.clone(), args.clone());
+    // Off the UI thread: a saved secret kept in a password manager is read
+    // here, and unlocking it can take a while.
+    let asked = cx.background_spawn(async move {
+        serde_json::from_str(&args)
+            .map_err(|e| format!("bad arguments: {e}"))
+            .and_then(|args| secret::call(&token, &args))
+    });
+    cx.spawn(async move |_| {
+        let reply = match asked.await {
+            Ok(secret::Answer::Now(v)) => Reply::ok(v.to_string()),
+            Ok(secret::Answer::Later(outcome)) => {
                 let outcome = outcome
                     .await
                     .unwrap_or(secret::Outcome::Cancelled(secret::Why::Closed));
-                let _ = done.send(Reply::ok(outcome.to_json().to_string()));
-            })
-            .detach(),
-        Err(e) => {
-            let _ = done.send(Reply::err(e));
-        }
-    }
+                Reply::ok(outcome.to_json().to_string())
+            }
+            Err(e) => Reply::err(e),
+        };
+        let _ = done.send(reply);
+    })
+    .detach();
 }
 
 /// Answers the questionnaire a session waits on: one answer for each question.

@@ -8,6 +8,10 @@
 //! them a fresh one-use handle (`super::secret::keep`) or a private file.
 //! One with a variable set is in the environment of the project's agents
 //! from their start ([`env_for`]).
+//!
+//! One can hold a password manager reference instead of a value
+//! (`crate::password_manager`): then the keyring holds nothing for it, and
+//! the value is read when an agent needs it.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +29,10 @@ pub struct Saved {
     /// The environment variable the project's agents start with it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
+    /// Where a password manager keeps the value (`op://vault/item/field`),
+    /// in place of one in the keyring. Not a secret itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// The keyring account of the saved secret `id`.
@@ -77,18 +85,31 @@ pub fn find<'a>(list: &'a [Saved], name: &str) -> Option<&'a Saved> {
 /// Keeps `value` in the keyring under a new id, and returns the entry for
 /// the project's state. Check the name with [`check_name`] first.
 pub fn store(name: &str, value: &str) -> Result<Saved, String> {
-    let mut id = [0u8; 16];
-    getrandom::fill(&mut id).map_err(|_| "the system gave no random bytes")?;
-    let saved = Saved {
-        id: id.iter().map(|b| format!("{b:02x}")).collect(),
-        name: name.to_string(),
-        env: None,
-    };
+    let saved = fresh(name, None)?;
     replace(&saved, value)?;
     Ok(saved)
 }
 
-/// Puts `value` in place of the saved secret's value.
+/// The entry for a saved secret that a password manager keeps, under a new
+/// id. Nothing goes to the keyring. Check the name with [`check_name`] first.
+pub fn store_reference(name: &str, reference: &str) -> Result<Saved, String> {
+    let reference = crate::password_manager::Reference::parse(reference)?;
+    fresh(name, Some(reference.as_str().to_string()))
+}
+
+fn fresh(name: &str, reference: Option<String>) -> Result<Saved, String> {
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|_| "the system gave no random bytes")?;
+    Ok(Saved {
+        id: id.iter().map(|b| format!("{b:02x}")).collect(),
+        name: name.to_string(),
+        env: None,
+        reference,
+    })
+}
+
+/// Puts `value` in place of the saved secret's value. Set
+/// [`Saved::reference`] to `None` with it: a reference comes first.
 pub fn replace(saved: &Saved, value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("The value is empty.".into());
@@ -100,13 +121,24 @@ pub fn replace(saved: &Saved, value: &str) -> Result<(), String> {
     )
 }
 
-/// Deletes the saved secret's value from the keyring.
+/// Deletes the saved secret's value from the keyring. One that a password
+/// manager keeps has none there; this changes nothing in the password manager.
 pub fn remove(saved: &Saved) {
     vault().forget(&account(&saved.id));
 }
 
-/// The saved secret's value.
+/// The saved secret's value: from its password manager when it has a
+/// reference, which can block while the user unlocks it, else from the
+/// keyring.
 pub fn value(saved: &Saved) -> Result<Secret, String> {
+    if let Some(reference) = &saved.reference {
+        return crate::password_manager::read_text(reference).map_err(|e| {
+            format!(
+                "could not read \"{}\" from the password manager: {e}",
+                saved.name
+            )
+        });
+    }
     match vault().get(&account(&saved.id))? {
         Some(v) => Ok(Secret::new(v)),
         None => Err(format!(
@@ -219,6 +251,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             env: None,
+            reference: None,
         }
     }
 
@@ -280,6 +313,38 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_is_kept_in_place_of_a_value_and_read_when_needed() {
+        assert!(store_reference("Key", "sk_live_not_a_reference").is_err());
+        let mut s = store_reference("Stripe", " op://Dev/stripe-saved/credential ").unwrap();
+        assert_eq!(
+            s.reference.as_deref(),
+            Some("op://Dev/stripe-saved/credential")
+        );
+        // Nothing went to the keyring.
+        assert!(vault().get(&account(&s.id)).unwrap().is_none());
+        assert_eq!(value(&s).unwrap().expose(), "value-of-stripe-saved");
+        s.env = Some("STRIPE_KEY".into());
+        assert_eq!(
+            env_from(std::slice::from_ref(&s)),
+            [("STRIPE_KEY".to_string(), "value-of-stripe-saved".into())]
+        );
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("op://Dev/stripe-saved/credential"));
+        assert!(!json.contains("value-of"));
+        assert_eq!(serde_json::from_str::<Saved>(&json).unwrap(), s);
+
+        let locked = Saved {
+            reference: Some("op://Dev/locked/credential".into()),
+            ..saved("l", "Locked")
+        };
+        let e = value(&locked).unwrap_err();
+        assert!(
+            e.contains("\"Locked\"") && e.contains("locked or not signed in"),
+            "{e}"
+        );
+    }
+
+    #[test]
     fn find_ignores_case_and_spaces() {
         let list = [saved("a", "Stripe key")];
         assert_eq!(find(&list, " stripe KEY").map(|s| s.id.as_str()), Some("a"));
@@ -292,6 +357,7 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("sk_live"));
         assert!(!json.contains("env"));
+        assert!(!json.contains("reference"));
         let back: Saved = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
     }

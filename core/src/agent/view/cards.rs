@@ -699,6 +699,9 @@ impl ThreadView {
         let error = state.and_then(|s| s.error.clone());
         let can_keep = private && self.thread.read(cx).can_keep_secrets();
         let keep = state.is_some_and(|s| s.keep);
+        let manager = state.is_some_and(|s| s.manager);
+        let reading = state.is_some_and(|s| s.reading);
+        let note = state.and_then(|s| s.note.clone());
         let button = |id: &'static str, label: &'static str, primary: bool, on: bool| {
             crate::ui::labelled(div().id(id), gpui::Role::Button, label)
                 .flex()
@@ -803,6 +806,35 @@ impl ThreadView {
                         .child(crate::agent::secret::NOT_PRIVATE),
                 )
             })
+            .when(private && state.is_some(), |d| {
+                d.child(
+                    div()
+                        .pl(crate::ui::sp(22.))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .child(crate::ui::toggle_group(
+                            "secret-source",
+                            &[(false, "Value"), (true, "Password manager")],
+                            manager,
+                            |seg, on| {
+                                seg.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.set_secret_manager(on, cx)
+                                }))
+                            },
+                        ))
+                        .when(manager, |d| {
+                            d.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(crate::ui::TEXT_XS))
+                                    .text_color(theme::text_faint())
+                                    .child("A 1Password reference, such as op://vault/item/field"),
+                            )
+                        }),
+                )
+            })
             .children(
                 req.fields
                     .iter()
@@ -825,12 +857,33 @@ impl ThreadView {
                                     .text_color(theme::text_subtle())
                                     .child(field.label.clone()),
                             )
-                            .child(masked_field(
-                                ("secret-reveal", i),
-                                input,
-                                shown,
-                                cx.listener(move |this, _, _, cx| this.toggle_reveal(i, cx)),
-                            ))
+                            .map(|d| {
+                                if manager {
+                                    // A reference is not a secret: no Show.
+                                    d.child(
+                                        div()
+                                            .h(px(28.))
+                                            .flex()
+                                            .items_center()
+                                            .px(crate::ui::sp(8.))
+                                            .rounded(crate::ui::rad(8.))
+                                            .border_1()
+                                            .border_color(theme::border_strong())
+                                            .bg(theme::fill_raised())
+                                            .text_size(px(crate::ui::TEXT_MD))
+                                            .children(input),
+                                    )
+                                } else {
+                                    d.child(masked_field(
+                                        ("secret-reveal", i),
+                                        input,
+                                        shown,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.toggle_reveal(i, cx)
+                                        }),
+                                    ))
+                                }
+                            })
                     }),
             )
             .when(can_keep, |d| {
@@ -889,12 +942,39 @@ impl ThreadView {
                         button("secret-decline", "Decline", false, true)
                             .on_click(cx.listener(|this, _, _, cx| this.decline_secret(cx))),
                     )
+                    .when(manager && private, |d| {
+                        d.child(button("secret-check", "Check", false, !reading).when(
+                            !reading,
+                            |d| {
+                                d.on_click(
+                                    cx.listener(|this, _, _, cx| this.check_secret_references(cx)),
+                                )
+                            },
+                        ))
+                        .child(
+                            button("secret-refresh", "Refresh", false, !reading).when(
+                                !reading,
+                                |d| {
+                                    d.on_click(cx.listener(|this, _, _, cx| {
+                                        this.refresh_secret_references(cx)
+                                    }))
+                                },
+                            ),
+                        )
+                    })
                     .child(div().flex_1())
-                    .child(div().text_size(px(crate::ui::TEXT_XS)).map(|d| {
-                        match &error {
-                            Some(e) => d.text_color(theme::danger()).child(e.clone()),
-                            None if !private => d,
-                            None => d
+                    .child(div().min_w_0().text_size(px(crate::ui::TEXT_XS)).map(|d| {
+                        match (&error, &note) {
+                            (Some(e), _) => d.text_color(theme::danger()).child(e.clone()),
+                            _ if reading => d
+                                .text_color(theme::text_faint())
+                                .child("Reading from the password manager…"),
+                            (None, Some(n)) => d.text_color(theme::success()).child(n.clone()),
+                            _ if !private => d,
+                            _ if manager && keep => d
+                                .text_color(theme::text_faint())
+                                .child("The project keeps the reference, never the value"),
+                            _ => d
                                 .text_color(theme::text_faint())
                                 .child("The agent gets a handle, never the value"),
                         }

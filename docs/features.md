@@ -243,6 +243,17 @@ sees the project's skills.
   an environment variable (such as `STRIPE_KEY`) that the project's agents start
   with, sandboxed or not, so tools that read it work without the value passing
   through the chat. The agent's commands can read it, as they can a file.
+- **Secrets from a password manager.** On the card, choose **Password manager**
+  instead of **Value** and enter a 1Password reference such as
+  `op://vault/item/field` (**Copy Secret Reference** on the field in 1Password).
+  Arakun reads the value through the 1Password CLI (`op`) when you save, and a saved
+  secret keeps only the reference: its value is read again when an agent needs it.
+  In Settings › Project › Saved secrets, **Password manager** points an existing one
+  at a reference, and **Value** puts a value back in the keyring. **Check** reads a
+  reference and says whether it worked, without showing the value. Arakun remembers
+  what it read, and what failed, until it quits, so you unlock 1Password once;
+  **Refresh** forgets it. A read waits up to 45 seconds for you to unlock. Install
+  `op` and turn on **Integrate with 1Password CLI** in the 1Password app first.
 
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that

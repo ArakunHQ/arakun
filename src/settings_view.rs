@@ -83,6 +83,13 @@ pub enum SettingsEvent {
         id: String,
         env: Option<String>,
     },
+    /// A project's saved secret `id` is read from a password manager at
+    /// `reference`, or from the keyring for `None`.
+    ProjectSecretReference {
+        project: std::path::PathBuf,
+        id: String,
+        reference: Option<String>,
+    },
     /// A project's saved secret `id` is removed; its value is gone already.
     ProjectSecretRemove {
         project: std::path::PathBuf,
@@ -129,12 +136,17 @@ enum SecretEdit {
     Rename(String),
     Replace(String),
     Env(String),
+    /// Read from a password manager, at the reference typed.
+    Reference(String),
 }
 
 impl SecretEdit {
     fn id(&self) -> &str {
         match self {
-            SecretEdit::Rename(id) | SecretEdit::Replace(id) | SecretEdit::Env(id) => id,
+            SecretEdit::Rename(id)
+            | SecretEdit::Replace(id)
+            | SecretEdit::Env(id)
+            | SecretEdit::Reference(id) => id,
         }
     }
 }
@@ -277,11 +289,12 @@ pub struct SettingsDialog {
     secret_name_input: Entity<TextInput>,
     secret_value_input: Entity<TextInput>,
     secret_env_input: Entity<TextInput>,
+    secret_ref_input: Entity<TextInput>,
     /// What the last change to a saved secret did, and whether it failed.
     secret_note: Option<(SharedString, bool)>,
     /// The sidebar's width, which the Tabs and sessions part sets too.
     pub rail_w: f32,
-    _subs: [Subscription; 12],
+    _subs: [Subscription; 13],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -392,15 +405,26 @@ impl SettingsDialog {
         let secret_name_input = cx.new(|cx| TextInput::new("Name", cx));
         let secret_value_input = cx.new(|cx| TextInput::new("Paste the new value", cx).secret());
         let secret_env_input = cx.new(|cx| TextInput::new("STRIPE_KEY", cx).mono());
-        let secret_subs =
-            [&secret_name_input, &secret_value_input, &secret_env_input].map(|input| {
-                cx.subscribe_in(input, window, |this: &mut Self, _, ev, _, cx| match ev {
-                    InputEvent::Submit => this.finish_secret_edit(cx),
-                    InputEvent::Cancel => this.cancel_secret_edit(cx),
-                    _ => {}
-                })
-            });
-        let [secret_name_sub, secret_value_sub, secret_env_sub] = secret_subs;
+        let secret_ref_input = cx.new(|cx| TextInput::new("op://vault/item/field", cx).mono());
+        let secret_subs = [
+            &secret_name_input,
+            &secret_value_input,
+            &secret_env_input,
+            &secret_ref_input,
+        ]
+        .map(|input| {
+            cx.subscribe_in(input, window, |this: &mut Self, _, ev, _, cx| match ev {
+                InputEvent::Submit => this.finish_secret_edit(cx),
+                InputEvent::Cancel => this.cancel_secret_edit(cx),
+                _ => {}
+            })
+        });
+        let [
+            secret_name_sub,
+            secret_value_sub,
+            secret_env_sub,
+            secret_ref_sub,
+        ] = secret_subs;
         let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
             this.on_project_input(ProjectField::Setup, ev, cx)
         });
@@ -479,6 +503,7 @@ impl SettingsDialog {
             secret_name_input,
             secret_value_input,
             secret_env_input,
+            secret_ref_input,
             secret_note: None,
             look,
             rail_w: crate::state::RAIL_W,
@@ -497,6 +522,7 @@ impl SettingsDialog {
                 secret_name_sub,
                 secret_value_sub,
                 secret_env_sub,
+                secret_ref_sub,
             ],
         }
     }
@@ -579,6 +605,17 @@ impl SettingsDialog {
                 self.secret_value_input.update(cx, |i, cx| i.clear(cx));
                 self.secret_value_input.clone()
             }
+            SecretEdit::Reference(id) => {
+                let reference = project
+                    .secrets
+                    .iter()
+                    .find(|s| &s.id == id)
+                    .and_then(|s| s.reference.clone())
+                    .unwrap_or_default();
+                self.secret_ref_input
+                    .update(cx, |i, cx| i.set_text(reference, cx));
+                self.secret_ref_input.clone()
+            }
             SecretEdit::Env(id) => {
                 let var = project
                     .secrets
@@ -655,8 +692,43 @@ impl SettingsDialog {
                     Err(e) => self.secret_note = Some((e.into(), true)),
                 }
             }
+            SecretEdit::Reference(id) => {
+                let typed = self.secret_ref_input.read(cx).text().to_string();
+                let reference = match crate::password_manager::Reference::parse(&typed) {
+                    Ok(r) => r.as_str().to_string(),
+                    Err(e) => {
+                        self.secret_note = Some((e.into(), true));
+                        cx.notify();
+                        return;
+                    }
+                };
+                let Some(s) = project.secrets.iter_mut().find(|s| s.id == id) else {
+                    return;
+                };
+                s.reference = Some(reference.clone());
+                let saved = s.clone();
+                cx.emit(SettingsEvent::ProjectSecretReference {
+                    project: project.path.clone(),
+                    id,
+                    reference: Some(reference),
+                });
+                self.secret_edit = None;
+                self.secret_note = Some((
+                    format!(
+                        "{} is read from the password manager now. Check reads it once to see that it works.",
+                        saved.name
+                    )
+                    .into(),
+                    false,
+                ));
+                // The value it had in the keyring is not needed any more.
+                cx.background_spawn(crate::guard::task(async move {
+                    crate::agent::saved_secret::remove(&saved);
+                }))
+                .detach();
+            }
             SecretEdit::Replace(id) => {
-                let Some(saved) = project.secrets.iter().find(|s| s.id == id).cloned() else {
+                let Some(mut saved) = project.secrets.iter().find(|s| s.id == id).cloned() else {
                     return;
                 };
                 let value = self.secret_value_input.read(cx).text().to_string();
@@ -665,14 +737,31 @@ impl SettingsDialog {
                 }
                 self.secret_value_input.update(cx, |i, cx| i.clear(cx));
                 self.secret_edit = None;
+                let project_path = project.path.clone();
                 cx.spawn(async move |this, cx| {
                     let name = saved.name.clone();
+                    // A value typed here takes the place of a reference.
+                    let had_reference = saved.reference.take().is_some();
                     let done = cx
                         .background_spawn(crate::guard::task(async move {
                             crate::agent::saved_secret::replace(&saved, &value)
                         }))
                         .await;
                     let _ = this.update(cx, |this, cx| {
+                        if done.is_ok() && had_reference {
+                            if let Some(s) = this
+                                .project
+                                .as_mut()
+                                .and_then(|p| p.secrets.iter_mut().find(|s| s.id == id))
+                            {
+                                s.reference = None;
+                            }
+                            cx.emit(SettingsEvent::ProjectSecretReference {
+                                project: project_path,
+                                id,
+                                reference: None,
+                            });
+                        }
                         this.secret_note = Some(match done {
                             Ok(()) => (format!("Replaced the value of {name}.").into(), false),
                             Err(e) => (format!("Could not replace it: {e}").into(), true),
@@ -683,6 +772,55 @@ impl SettingsDialog {
                 .detach();
             }
         }
+        cx.notify();
+    }
+
+    /// Check: reads a saved secret from its password manager, past what was
+    /// read before, and says whether that worked, never what it read.
+    fn check_secret(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(saved) = self
+            .project
+            .as_ref()
+            .and_then(|p| p.secrets.iter().find(|s| s.id == id))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(reference) = saved.reference.clone() else {
+            return;
+        };
+        self.secret_note = Some((
+            format!("Reading {} from the password manager…", saved.name).into(),
+            false,
+        ));
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_spawn(crate::guard::task(async move {
+                    crate::password_manager::check(&reference)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.secret_note = Some(match done {
+                    Ok(()) => (
+                        format!("It worked: Arakun can read {}.", saved.name).into(),
+                        false,
+                    ),
+                    Err(e) => (e.into(), true),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Refresh: forgets what was read from password managers in this run.
+    fn refresh_secrets(&mut self, cx: &mut Context<Self>) {
+        crate::password_manager::refresh();
+        self.secret_note = Some((
+            "Arakun asks the password manager again the next time it needs a value.".into(),
+            false,
+        ));
         cx.notify();
     }
 
@@ -741,6 +879,7 @@ impl SettingsDialog {
                         SecretEdit::Rename(_) => self.secret_name_input.clone(),
                         SecretEdit::Replace(_) => self.secret_value_input.clone(),
                         SecretEdit::Env(_) => self.secret_env_input.clone(),
+                        SecretEdit::Reference(_) => self.secret_ref_input.clone(),
                     };
                     div()
                         .flex()
@@ -764,6 +903,7 @@ impl SettingsDialog {
                 None => {
                     let (rename, replace, remove, env) =
                         (s.id.clone(), s.id.clone(), s.id.clone(), s.id.clone());
+                    let (reference, check) = (s.id.clone(), s.id.clone());
                     div()
                         .flex()
                         .flex_none()
@@ -781,10 +921,46 @@ impl SettingsDialog {
                                     this.edit_secret(SecretEdit::Env(env.clone()), window, cx)
                                 })),
                         )
+                        .when(s.reference.is_some(), |d| {
+                            d.child(
+                                ui::button(
+                                    ("set-secret-check", i),
+                                    "Check",
+                                    ButtonKind::Ghost,
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.check_secret(&check, cx)
+                                    }),
+                                ),
+                            )
+                        })
+                        .child(
+                            ui::button(
+                                ("set-secret-ref", i),
+                                "Password manager",
+                                ButtonKind::Ghost,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.edit_secret(
+                                        SecretEdit::Reference(reference.clone()),
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        )
                         .child(
                             ui::button(
                                 ("set-secret-replace", i),
-                                "Replace",
+                                if s.reference.is_some() {
+                                    "Value"
+                                } else {
+                                    "Replace"
+                                },
                                 ButtonKind::Outline,
                                 true,
                             )
@@ -811,12 +987,30 @@ impl SettingsDialog {
                         )
                 }
             };
+            let kept = match &s.reference {
+                Some(r) => format!("From the password manager: {r}"),
+                None => MASKED.to_string(),
+            };
             let hint = match (&s.env, editing) {
                 (_, Some(SecretEdit::Env(_))) => "The variable this project's agents start with it in, such as STRIPE_KEY. Empty sets none. Applies to sessions started afterwards.".to_string(),
-                (Some(var), _) => format!("{MASKED}  ·  ${var} for this project's agents"),
-                (None, _) => MASKED.to_string(),
+                (_, Some(SecretEdit::Reference(_))) => "A 1Password reference, such as op://vault/item/field (Copy Secret Reference in 1Password). Arakun keeps the reference, not the value, and reads it when an agent needs it.".to_string(),
+                (_, Some(SecretEdit::Replace(_))) if s.reference.is_some() => "A value to keep in the keyring in place of the password manager reference.".to_string(),
+                (Some(var), _) => format!("{kept}  ·  ${var} for this project's agents"),
+                (None, _) => kept,
             };
             rows.push(row(s.name.clone(), hint, control.into_any_element()).into_any_element());
+        }
+        if project.secrets.iter().any(|s| s.reference.is_some()) {
+            rows.push(
+                row(
+                    "Password manager",
+                    "Arakun remembers what it read from the password manager until it quits, so you unlock it once. Refresh forgets it, after you unlocked it or changed an entry.",
+                    ui::button("set-secret-refresh", "Refresh", ButtonKind::Outline, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_secrets(cx)))
+                        .into_any_element(),
+                )
+                .into_any_element(),
+            );
         }
         let mut parts = vec![titled("Saved secrets", rows)];
         if let Some((text, failed)) = &self.secret_note {

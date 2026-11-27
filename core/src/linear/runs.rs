@@ -94,6 +94,10 @@ pub struct Run {
     /// a restart.
     #[serde(skip)]
     pub progress: Option<(u64, String)>,
+    /// The pull request link Linear was last sent for this run, so it goes
+    /// once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -134,6 +138,7 @@ impl std::fmt::Debug for Run {
             .field("stopped", &self.stopped)
             .field("held", &self.held)
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
+            .field("linked", &self.linked.is_some())
             .finish()
     }
 }
@@ -148,6 +153,8 @@ pub enum ReportKind {
     /// What a working session does right now. Linear replaces it with the
     /// next activity, and a newer report makes an unsent one moot.
     Progress,
+    /// Only a link for the session, such as its pull request: no activity.
+    Link,
 }
 
 /// A report to Linear not sent yet. Debug leaves out the body: it can hold
@@ -444,6 +451,28 @@ impl Runs {
         !self.outbox.is_empty()
     }
 
+    /// The agent session to send `url` to as the pull request of the run of
+    /// `arakun_session`, when Linear has not been sent it yet. Only a web
+    /// address, and only for a run that has started.
+    pub fn link(&mut self, arakun_session: &str, url: &str) -> Option<String> {
+        let run = self.by_session(arakun_session)?;
+        if !url.starts_with("https://") || run.linked.as_deref() == Some(url) {
+            return None;
+        }
+        run.linked = Some(url.to_string());
+        Some(run.agent_session.clone())
+    }
+
+    /// The started runs Linear has no pull request link for yet: their
+    /// Arakun session, project and branch.
+    pub fn unlinked(&self) -> Vec<(String, PathBuf, String)> {
+        self.runs
+            .iter()
+            .filter(|r| r.linked.is_none() && !r.branch.is_empty())
+            .filter_map(|r| Some((r.session.clone()?, r.project.clone(), r.branch.clone())))
+            .collect()
+    }
+
     /// The agent session to report `line` to as the progress of the run of
     /// `arakun_session`, when Linear should hear it: the run works, the line
     /// is new, and the last one is `PROGRESS_SECS` old.
@@ -528,6 +557,7 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
         }
     }
 
@@ -543,6 +573,39 @@ mod tests {
 
     fn state(r: &mut Runs, id: &str) -> RunState {
         r.by_agent_session(id).unwrap().state
+    }
+
+    #[test]
+    fn a_pull_request_link_goes_once_and_only_as_a_web_address() {
+        let mut r = Runs::default();
+        r.add(Run {
+            session: Some("s1".into()),
+            branch: "rik/eng-412".into(),
+            state: RunState::Running,
+            ..run("a")
+        });
+        r.add(Run {
+            agent_session: "b".into(),
+            issue: "i2".into(),
+            ..run("b")
+        });
+        // Only a run with a session and a branch can have a pull request.
+        let unlinked: Vec<String> = r.unlinked().into_iter().map(|(s, _, _)| s).collect();
+        assert_eq!(unlinked, ["s1"]);
+        let pr = "https://github.com/a/b/pull/1";
+        assert_eq!(r.link("s1", "file:///x"), None);
+        assert_eq!(r.link("other", pr), None);
+        assert_eq!(r.link("s1", pr).as_deref(), Some("a"));
+        assert_eq!(r.link("s1", pr), None, "told once");
+        assert!(r.unlinked().is_empty());
+        // It still goes after the run ended, and a new one replaces it.
+        r.by_session("s1").unwrap().state = RunState::Done;
+        let next = "https://github.com/a/b/pull/2";
+        assert_eq!(r.link("s1", next).as_deref(), Some("a"));
+        // The link survives a save, so a restart does not send it again.
+        let saved = serde_json::to_string(&r).unwrap();
+        let mut back: Runs = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.link("s1", next), None);
     }
 
     #[test]

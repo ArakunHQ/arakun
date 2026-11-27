@@ -718,8 +718,8 @@ after a week).
   starts when one finishes.`; a question from the session, with its choices one
   per line; `Waiting for your permission: run a command. Answer it in Arakun or on
   your phone.` (only the kind of action, never the command or file; a permission
-  is never answered from Linear); the result, with the pull request's link when
-  one is known; `The session failed: {reason}` on a failure; and `Still working.`
+  is never answered from Linear); the result; the pull request's link, added to the
+  session in Linear as soon as Arakun knows it, also after the result; `The session failed: {reason}` on a failure; and `Still working.`
   after 25 quiet minutes. While the session works, the issue also shows the step it
   is on, such as Editing `src/main.rs`, Reading `README.md`, `Running a command` or
   `Searching the code`: only the kind of step and, for a file, its path in the

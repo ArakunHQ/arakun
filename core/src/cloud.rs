@@ -594,6 +594,27 @@ pub fn linear_activity(
     linear_done(status, &answer)
 }
 
+/// Adds links to a delegated session in Linear without a new activity: its
+/// pull request can turn up at any time, also after the last reply.
+pub fn linear_session_links(
+    base: &str,
+    session: &str,
+    agent_session: &str,
+    links: &[LinearLinkOut],
+) -> Result<(), Error> {
+    let path = format!("/linear/sessions/{}/links", path_id(agent_session)?);
+    let payload = serde_json::json!({ "links": links });
+    let (status, answer) = send(
+        base,
+        "POST",
+        &path,
+        Some(session),
+        Some(payload),
+        SMALL_LIMIT,
+    )?;
+    linear_done(status, &answer)
+}
+
 /// An id that goes into a path. Anything that could change the path is
 /// refused before a request is made.
 fn path_id(id: &str) -> Result<&str, Error> {

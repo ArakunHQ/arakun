@@ -40,7 +40,10 @@ impl Shell {
             link,
             made_at: now,
         });
-        if let Some(run) = self.linear_runs.by_agent_session(agent_session) {
+        // A link is no activity: Linear still needs to hear the run works.
+        if kind != ReportKind::Link
+            && let Some(run) = self.linear_runs.by_agent_session(agent_session)
+        {
             run.reported_at = now;
         }
         self.linear_save();

@@ -11,6 +11,7 @@
 //   POST /linear/deliveries/<id>/accept
 //                         → the computer took a delivery
 //   POST /linear/sessions/<agent_session>/activity
+//   POST /linear/sessions/<agent_session>/links
 //                         → the computer's progress, posted as Arakun
 //
 // Without all four LINEAR_* secrets, or with a LINEAR_TOKEN_KEY that is not 32
@@ -71,6 +72,8 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
       if (taken) return accept(env, who, taken[1]!);
       const said = request.method === "POST" ? /^\/linear\/sessions\/([^/]+)\/activity$/.exec(pathname) : null;
       if (said) return sessionActivity(request, env, who, said[1]!);
+      const linked = request.method === "POST" ? /^\/linear\/sessions\/([^/]+)\/links$/.exec(pathname) : null;
+      if (linked) return sessionLinks(request, env, who, linked[1]!);
       return error(404, "not found");
     }
   }
@@ -321,6 +324,13 @@ function parseActivity(v: unknown): Activity | null {
   // Linear takes it for a thought only.
   if (typeof ephemeral !== "boolean" || (ephemeral && type !== "thought")) return null;
   if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
+  const out = parseLinks(links);
+  if (!out) return null;
+  return { type: type as Activity["type"], body, ephemeral, links: out };
+}
+
+/// At most MAX_LINKS links, each a label and a plain https address, or null.
+function parseLinks(links: unknown): Activity["links"] | null {
   if (!Array.isArray(links) || links.length > MAX_LINKS) return null;
   const out: Activity["links"] = [];
   for (const l of links) {
@@ -330,7 +340,19 @@ function parseActivity(v: unknown): Activity | null {
     if (typeof url !== "string" || !url.startsWith("https://") || /\s/.test(url) || url.length > MAX_URL) return null;
     out.push({ label, url });
   }
-  return { type: type as Activity["type"], body, ephemeral, links: out };
+  return out;
+}
+
+/// The workspace of a session the caller was given. It comes from the
+/// delivery, not the caller.
+async function ownedSession(env: Env, who: Session, agentSessionId: string): Promise<string | null> {
+  const owned = await env.DB.prepare(
+    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
+     ORDER BY created_at DESC LIMIT 1`,
+  )
+    .bind(agentSessionId, who.accountId)
+    .first<{ organization_id: string }>();
+  return owned?.organization_id ?? null;
 }
 
 /// The computer's progress in a session it was given, posted as Arakun. The
@@ -341,17 +363,32 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
   if (!activity) return error(400, "bad activity");
   const refused = await overLimit(env, who);
   if (refused) return refused;
-  // The workspace comes from the delivery, not the caller.
-  const owned = await env.DB.prepare(
-    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
-     ORDER BY created_at DESC LIMIT 1`,
-  )
-    .bind(agentSessionId, who.accountId)
-    .first<{ organization_id: string }>();
-  if (!owned) return error(404, "no such session");
+  const organizationId = await ownedSession(env, who, agentSessionId);
+  if (!organizationId) return error(404, "no such session");
   try {
-    await postActivity(env, owned.organization_id, agentSessionId, activity.type, activity.body, activity.ephemeral);
-    if (activity.links.length > 0) await addLinks(env, owned.organization_id, agentSessionId, activity.links);
+    await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral);
+    if (activity.links.length > 0) await addLinks(env, organizationId, agentSessionId, activity.links);
+  } catch (e) {
+    if (e instanceof LinearRefused) return error(502, "linear refused");
+    throw e;
+  }
+  return new Response(null, { status: 204 });
+}
+
+/// Links for a session the computer was given, such as its pull request,
+/// without a new activity: a link can turn up at any time, also after the
+/// last reply.
+async function sessionLinks(request: Request, env: Env, who: Session, agentSessionId: string): Promise<Response> {
+  if (!UUID.test(agentSessionId)) return error(404, "no such session");
+  const body = await jsonBody(request, MAX_ACTIVITY_BODY);
+  const links = isObject(body) ? parseLinks(body["links"]) : null;
+  if (!links || links.length === 0) return error(400, "bad links");
+  const refused = await overLimit(env, who);
+  if (refused) return refused;
+  const organizationId = await ownedSession(env, who, agentSessionId);
+  if (!organizationId) return error(404, "no such session");
+  try {
+    await addLinks(env, organizationId, agentSessionId, links);
   } catch (e) {
     if (e instanceof LinearRefused) return error(502, "linear refused");
     throw e;

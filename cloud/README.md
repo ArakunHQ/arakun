@@ -974,6 +974,7 @@ JSON `{ "error": "..." }`.
 | `PUT /linear/routes` with `{ "label", "organization_id", "teams": [<uuid>], "projects": [<uuid>] }` | the account | Replaces what that computer takes in that workspace: `204`. At most 200 ids in all, up to 32 KiB. `400 bad routes` for a bad body, `404 no such computer` for a label that is not one of the account's machines, `409 link linear first` when the account has no link in that workspace. Of two computers that take the same issue, the one with the project route wins over the team route, and then the one seen last. |
 | `POST /linear/deliveries/<id>/accept` | the account | The computer took the delivery: `204`, also on a second call. The relay forgets it. `404 no such delivery` for an id that is unknown or another account's. |
 | `POST /linear/sessions/<agent_session>/activity` with `{ "type", "body", "links"? }` | the account | Posts the computer's progress in the session as Arakun: `204`. `type` is `thought`, `elicitation`, `response` or `error`; `body` is 1 to 8000 characters; `links` is at most 5 of `{ label, url }`, a label of 1 to 80 characters and an `https://` URL without spaces, at most 2048 characters, which become the session's external URLs. The body is at most 64 KiB. `400 bad activity`, `404 no such session` for a session that is not a `created` delivery of this account (the workspace comes from the delivery, not the caller), `429`, `503`, `502 linear refused` when Linear refuses or does not answer. |
+| `POST /linear/sessions/<agent_session>/links` with `{ "links" }` | the account | Adds external URLs to the session without a new activity, for a link that turns up at any time, such as the pull request: `204`. `links` is 1 to 5 of `{ label, url }`, checked as for an activity. `400 bad links`, `404 no such session`, `429`, `503`, `502 linear refused`, as for an activity. |
 | `POST /linear/webhook` | Linear | See below. |
 
 ### The webhook
@@ -1089,7 +1090,8 @@ burst or daily limits.
 
 `LINEAR_LIMIT` (`wrangler.toml`, `namespace_id` 1017 at the top level and 1018 in
 `[env.production]`) counts, per account, the calls
-that ask Linear: `POST /linear/link` and `POST /linear/sessions/<id>/activity`. It is
+that ask Linear: `POST /linear/link`, `POST /linear/sessions/<id>/activity` and
+`POST /linear/sessions/<id>/links`. It is
 about 30 a minute, and a call over it answers `429 too many requests`. If the limit
 cannot be checked, the answer is `503`. Every call from the Worker to Linear times out
 after 3 seconds.

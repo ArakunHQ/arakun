@@ -48,7 +48,7 @@ pub struct Delegation {
 }
 
 fn file() -> PathBuf {
-    crate::paths::shared("linear").join("delegation.json")
+    crate::paths::shared(crate::paths::LINEAR_DELEGATION)
 }
 
 impl Delegation {

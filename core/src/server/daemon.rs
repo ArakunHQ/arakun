@@ -1209,6 +1209,13 @@ impl Daemon {
             catalog::refresh_cursor();
             catalog::refresh_antigravity();
         })));
+        // A device unpaired while the server was stopped left its sign-ins behind.
+        let paired: Vec<String> = (parts.access.lock().unwrap().devices.iter())
+            .map(|d| d.id.clone())
+            .collect();
+        tasks.push(cx.background_spawn(crate::guard::task(async move {
+            mirror::forget_unpaired(&paired)
+        })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
         Daemon {
@@ -2518,6 +2525,22 @@ impl Daemon {
         }
     }
 
+    /// Takes out the MCP sign-ins that devices no longer paired copied here.
+    fn forget_unpaired_sign_ins(&self, cx: &mut Context<Self>) {
+        let paired: Vec<String> = self
+            .access
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+        cx.background_spawn(crate::guard::task(async move {
+            mirror::forget_unpaired(&paired)
+        }))
+        .detach();
+    }
+
     /// Writes the devices as the transport now knows them (paired, seen, unpaired).
     fn save_devices(&mut self) {
         self.settings.devices = self.access.lock().unwrap().devices.clone();
@@ -2847,8 +2870,11 @@ impl Daemon {
             Incoming::Paired
             | Incoming::NewDevice { .. }
             | Incoming::Renamed
-            | Incoming::Subscribed
-            | Incoming::Unpaired => self.save_devices(),
+            | Incoming::Subscribed => self.save_devices(),
+            Incoming::Unpaired => {
+                self.save_devices();
+                self.forget_unpaired_sign_ins(cx);
+            }
             Incoming::Relay(status) => {
                 if let Transport::Relay(client) = &self.transport {
                     let page = client.page_url().to_string();
@@ -3445,8 +3471,22 @@ impl Daemon {
             ClientMsg::Mirror(snapshot) => {
                 let places: Vec<PathBuf> =
                     self.store.places.iter().map(|p| p.path.clone()).collect();
-                self.answer_off_thread(client, move || mirror::apply(snapshot, &places), cx);
+                let device = self.transport.device_of(client);
+                self.answer_off_thread(
+                    client,
+                    move || mirror::apply(snapshot, &places, device.as_deref()),
+                    cx,
+                );
             }
+            ClientMsg::ForgetSignIns => match self.transport.device_of(client) {
+                Some(device) => {
+                    self.answer_off_thread(client, move || mirror::forget_sign_ins(&device), cx)
+                }
+                None => self.transport.send(
+                    client,
+                    wire::error("only a paired device has sign-ins here"),
+                ),
+            },
             ClientMsg::Visible { visible } => {
                 if visible {
                     self.hidden.remove(&client);
@@ -4355,7 +4395,7 @@ impl Daemon {
             "pair" => self.pair().into(),
             login::CHANGED => self.account_changed(cx),
             "devices" => Reply::ok(self.devices_text()),
-            "unpair" => self.unpair(arg(0)).into(),
+            "unpair" => self.unpair(arg(0), cx).into(),
             "add" => self.add_place(Path::new(arg(0)), arg(1)).into(),
             "remove" => {
                 let path = Path::new(arg(0));
@@ -4520,7 +4560,7 @@ impl Daemon {
     }
 
     /// Unpairs the device `which` names: its id, the start of it, or its name.
-    fn unpair(&mut self, which: &str) -> Result<String, String> {
+    fn unpair(&mut self, which: &str, cx: &mut Context<Self>) -> Result<String, String> {
         let found: Vec<(String, String)> = self
             .access
             .lock()
@@ -4543,6 +4583,7 @@ impl Daemon {
         self.access.lock().unwrap().unpair(&id);
         self.transport.disconnect_device(&id);
         self.save_devices();
+        self.forget_unpaired_sign_ins(cx);
         Ok(format!("unpaired {name} ({id})"))
     }
 

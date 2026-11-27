@@ -52,7 +52,7 @@ pub fn set(on: bool) {
 }
 
 fn choice_path() -> PathBuf {
-    crate::paths::store("settle-after-merge")
+    crate::paths::store(crate::paths::SETTLE_AFTER_MERGE)
 }
 
 fn parse_choice(text: &str) -> Option<bool> {
@@ -197,7 +197,7 @@ impl Book {
 
 /// Next to the state, so a test Arakun (`ARAKUN_STATE`) keeps its own.
 fn book_path() -> PathBuf {
-    crate::paths::store("settled.json")
+    crate::paths::store(crate::paths::SETTLED)
 }
 
 #[cfg(test)]

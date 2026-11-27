@@ -237,11 +237,11 @@ impl Store {
 }
 
 fn dir() -> PathBuf {
-    crate::paths::shared("posthog")
+    crate::paths::shared(crate::paths::POSTHOG)
 }
 
 pub(crate) fn cache_dir() -> PathBuf {
-    crate::paths::shared("cache")
+    crate::paths::shared(crate::paths::CACHE)
 }
 
 fn store_file() -> PathBuf {

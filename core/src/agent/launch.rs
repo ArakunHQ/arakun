@@ -48,7 +48,7 @@ pub(crate) fn home() -> PathBuf {
 /// `~/.local/share/arakun/agents` (`%LOCALAPPDATA%\arakun\agents` on Windows), where adapters
 /// are installed and agent stderr is logged.
 pub fn agents_dir() -> PathBuf {
-    crate::paths::shared("agents")
+    crate::paths::shared(crate::paths::AGENTS)
 }
 
 pub fn log_path(kind: AgentKind) -> PathBuf {

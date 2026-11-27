@@ -315,7 +315,7 @@ impl Section {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
             }
             Section::Privacy => {
-                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito feedback bug report idea"
+                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide secrets secret keys tokens mask reveal streamer stream demo screen share sharing incognito feedback bug report idea"
             }
             Section::Account => "github sign in sign out login logout teams pilot device code",
             #[cfg(feature = "coderlabs")]
@@ -1323,6 +1323,20 @@ impl SettingsDialog {
                     cx.refresh_windows();
                 }))
                 .into_any_element();
+                let secrets = row(
+                    "Hide secrets in sessions",
+                    "Keys, tokens and passwords an agent prints show as stars until you click them, and copying one asks first. Redacted mode hides them too, and doesn't show them on a click.",
+                    switch(crate::redact::hides_secrets()).into_any_element(),
+                )
+                .id("set-hide-secrets")
+                .cursor_pointer()
+                .on_click(cx.listener(|_, _, _, cx| {
+                    if let Err(e) = crate::redact::set_hides_secrets(!crate::redact::hides_secrets()) {
+                        eprintln!("arakun: hiding secrets in sessions will not last past a restart: {e}");
+                    }
+                    cx.refresh_windows();
+                }))
+                .into_any_element();
                 let mut rows = vec![self.telemetry_row(true, cx), self.telemetry_row(false, cx)];
                 if let Some(e) = &self.telemetry_error {
                     rows.push(
@@ -1346,7 +1360,7 @@ impl SettingsDialog {
                     .into_any_element(),
                 );
                 stack(vec![
-                    titled("On screen", vec![redacted]),
+                    titled("On screen", vec![secrets, redacted]),
                     titled("Sent to Arakun", rows),
                 ])
             }
@@ -3043,6 +3057,7 @@ mod tests {
         assert!(found("automatic updates").contains(&Section::General));
         assert!(found("redacted").contains(&Section::Privacy));
         assert!(found("stream").contains(&Section::Privacy));
+        assert!(found("secrets").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));
         assert!(found("factory").contains(&Section::Droid));
         assert!(found("github").contains(&Section::Account));

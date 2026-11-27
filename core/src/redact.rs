@@ -51,7 +51,7 @@ pub fn set(on: bool) -> std::io::Result<()> {
 }
 
 fn marker_path() -> std::path::PathBuf {
-    crate::paths::store("redacted")
+    crate::paths::store(crate::paths::REDACTED)
 }
 
 /// `value` as it is, or [`MASK`] while the mode is on. For what is private as
@@ -103,6 +103,212 @@ fn stars(text: &str, me: &Me) -> Option<String> {
         }
     }
     Some(out)
+}
+
+// ---- secrets in chats ----------------------------------------------------------
+
+/// 0: not read yet, 1: shown, 2: hidden.
+static CHAT: AtomicU8 = AtomicU8::new(0);
+
+/// Whether chats hide the secrets in them until clicked. On unless the user
+/// turned it off: an agent that prints a token should not put it on screen.
+pub fn hides_secrets() -> bool {
+    match CHAT.load(Ordering::Relaxed) {
+        0 => {
+            let hides = !shows_secrets_path().is_file();
+            CHAT.store(if hides { 2 } else { 1 }, Ordering::Relaxed);
+            hides
+        }
+        s => s == 2,
+    }
+}
+
+/// Turns hiding secrets in chats on or off and remembers it, as [`set`] does.
+pub fn set_hides_secrets(hides: bool) -> std::io::Result<()> {
+    CHAT.store(if hides { 2 } else { 1 }, Ordering::Relaxed);
+    let path = shows_secrets_path();
+    if hides {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    } else {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, "show secrets in sessions\n")
+    }
+}
+
+fn shows_secrets_path() -> std::path::PathBuf {
+    crate::paths::store(crate::paths::SHOW_SECRETS)
+}
+
+/// Secrets the user clicked to see, with how many chat views show each. A
+/// view forgets what it showed when it closes.
+static SHOWN: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+
+fn shown() -> std::sync::MutexGuard<'static, Vec<(String, usize)>> {
+    SHOWN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Shows `value` in chats until every view that called this calls [`forget`].
+/// Does nothing in redacted mode, which shows no secret.
+pub fn show(value: &str) {
+    if !on() {
+        count(value);
+    }
+}
+
+fn count(value: &str) {
+    let mut shown = shown();
+    match shown.iter_mut().find(|(v, _)| v == value) {
+        Some((_, n)) => *n += 1,
+        None => shown.push((value.to_string(), 1)),
+    }
+}
+
+/// Undoes one [`show`] of `value`.
+pub fn forget(value: &str) {
+    let mut shown = shown();
+    if let Some(i) = shown.iter().position(|(v, _)| v == value) {
+        shown[i].1 -= 1;
+        if shown[i].1 == 0 {
+            shown.swap_remove(i);
+        }
+    }
+}
+
+fn is_shown(value: &str) -> bool {
+    shown().iter().any(|(v, _)| v == value)
+}
+
+/// A secret a chat hides: where, in bytes, and what it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hidden {
+    pub range: std::ops::Range<usize>,
+    pub value: String,
+}
+
+/// Text from a chat as it shows on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Masked {
+    /// The text with `*` for each byte it hides, so offsets into it stay valid.
+    pub text: String,
+    /// The secrets it hides. A click shows them, outside redacted mode.
+    pub hidden: Vec<Hidden>,
+}
+
+/// `text` from a chat with its secrets hidden, or `None` when nothing is.
+/// Redacted mode hides what [`same_bytes`] hides; otherwise, while
+/// [`hides_secrets`], only the secrets the detector finds, less the ones the
+/// user clicked to see. A known key keeps its first four characters.
+pub fn in_chat(text: &str) -> Option<Masked> {
+    if on() {
+        let hidden = found(text)
+            .into_iter()
+            .map(|s| Hidden {
+                value: text[s.range.clone()].to_string(),
+                range: s.range,
+            })
+            .collect();
+        return same_bytes(text).map(|text| Masked { text, hidden });
+    }
+    if !hides_secrets() {
+        return None;
+    }
+    secrets_masked(text, is_shown)
+}
+
+/// What [`crate::secrets::find`] finds in `text`, remembered: a chat lays out
+/// the same text on every frame, and the detector runs several patterns.
+fn found(text: &str) -> Vec<crate::secrets::Secret> {
+    // Enough for every piece on a screen or two.
+    const KEEP: usize = 4096;
+    thread_local! {
+        static FOUND: std::cell::RefCell<std::collections::HashMap<String, Vec<crate::secrets::Secret>>> =
+            Default::default();
+    }
+    if let Some(hit) = FOUND.with(|f| f.borrow().get(text).cloned()) {
+        return hit;
+    }
+    let hit = crate::secrets::find(text);
+    FOUND.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.len() >= KEEP {
+            f.clear();
+        }
+        f.insert(text.to_string(), hit.clone());
+    });
+    hit
+}
+
+/// `text` with the secrets in it starred, but those `shown` says to show.
+fn secrets_masked(text: &str, shown: impl Fn(&str) -> bool) -> Option<Masked> {
+    let found: Vec<_> = found(text)
+        .into_iter()
+        .filter(|s| !shown(&text[s.range.clone()]))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    let mut out = text.to_string();
+    for s in &found {
+        let keep = match s.kind {
+            crate::secrets::Kind::Token => text[s.range.clone()]
+                .char_indices()
+                .nth(4)
+                .map_or(s.range.len(), |(b, _)| b),
+            _ => 0,
+        };
+        star(&mut out, s.range.start + keep..s.range.end);
+    }
+    let hidden = found
+        .into_iter()
+        .map(|s| Hidden {
+            value: text[s.range.clone()].to_string(),
+            range: s.range,
+        })
+        .collect();
+    Some(Masked { text: out, hidden })
+}
+
+/// `*` over every byte in `range`, but for line breaks: a private key keeps
+/// its lines.
+fn star(text: &mut String, range: std::ops::Range<usize>) {
+    let starred: String = text[range.clone()]
+        .chars()
+        .flat_map(|c| {
+            let n = if matches!(c, '\n' | '\r') {
+                0
+            } else {
+                c.len_utf8()
+            };
+            std::iter::repeat_n('*', n).chain((n == 0).then_some(c))
+        })
+        .collect();
+    text.replace_range(range, &starred);
+}
+
+/// Plain text from a chat as it shows on screen, and the secrets clicking it
+/// shows. In redacted mode it is [`text`], and shows nothing.
+pub fn chat_text(text: &str) -> (Cow<'_, str>, Vec<String>) {
+    if on() {
+        return (self::text(text), Vec::new());
+    }
+    match in_chat(text) {
+        Some(m) => (
+            Cow::Owned(m.text),
+            m.hidden.into_iter().map(|h| h.value).collect(),
+        ),
+        None => (Cow::Borrowed(text), Vec::new()),
+    }
+}
+
+/// Whether copying `text` out of a chat would copy a secret the chat hides,
+/// so copying asks first.
+pub fn hides_in_chat(text: &str) -> bool {
+    in_chat(text).is_some_and(|m| !m.hidden.is_empty())
 }
 
 /// Who the user is, as text on screen shows it.
@@ -422,5 +628,55 @@ mod tests {
         assert_eq!(out, "/home/****/x");
         assert_eq!(out.len(), s.len());
         assert_eq!(stars("plain words", &ann()), None);
+    }
+
+    #[test]
+    fn a_chat_hides_only_secrets_and_keeps_offsets() {
+        let none = |_: &str| false;
+        let s = "ann@example.com set OPENAI_API_KEY=abc/def== and sk-ant-api03-FAKEFAKEFAKE1234";
+        let m = secrets_masked(s, none).unwrap();
+        assert_eq!(m.text.len(), s.len());
+        let key = "sk-ant-api03-FAKEFAKEFAKE1234";
+        assert_eq!(
+            m.text,
+            format!(
+                "ann@example.com set OPENAI_API_KEY=********* and sk-a{}",
+                "*".repeat(key.len() - 4)
+            )
+        );
+        let values: Vec<&str> = m.hidden.iter().map(|h| h.value.as_str()).collect();
+        assert_eq!(values, ["abc/def==", key]);
+        for h in &m.hidden {
+            assert_eq!(&s[h.range.clone()], h.value);
+        }
+        assert_eq!(secrets_masked("cd /home/ann 10.1.2.3", none), None);
+    }
+
+    #[test]
+    fn a_chat_shows_what_was_clicked() {
+        let s = "a=1 TOKEN=hunter22 and DB_PASSWORD=s3cr3t";
+        let m = secrets_masked(s, |v| v == "hunter22").unwrap();
+        assert_eq!(m.text, "a=1 TOKEN=hunter22 and DB_PASSWORD=******");
+        assert_eq!(m.hidden.len(), 1);
+        assert_eq!(secrets_masked(s, |_| true), None);
+    }
+
+    #[test]
+    fn a_private_key_keeps_its_lines() {
+        let key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----";
+        let m = secrets_masked(key, |_| false).unwrap();
+        assert_eq!(m.text.lines().count(), 3);
+        assert!(m.text.chars().all(|c| c == '*' || c == '\n'));
+    }
+
+    #[test]
+    fn shown_values_are_counted_per_view() {
+        let v = "count-me-0f3e9a";
+        count(v);
+        count(v);
+        forget(v);
+        assert!(is_shown(v));
+        forget(v);
+        assert!(!is_shown(v));
     }
 }

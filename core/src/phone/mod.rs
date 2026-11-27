@@ -346,6 +346,9 @@ pub enum ClientMsg {
     /// What the app installed from the marketplace on its own computer: the
     /// server adds what it lacks, removing nothing. Answered with `mirror_done`.
     Mirror(crate::agent::mirror::Snapshot),
+    /// Takes the MCP sign-ins this app copied here with `mirror` out again.
+    /// Answered with `sign_ins_forgotten`.
+    ForgetSignIns,
     /// Whether the page is on the phone's screen. A page in the background
     /// keeps its socket, so without this it would pass for someone watching.
     Visible {
@@ -1415,7 +1418,7 @@ fn settings_file() -> PathBuf {
         return path.clone();
     }
     // A test instance with its own state file keeps its own phone, on its own port.
-    crate::paths::store("phone.json")
+    crate::paths::store(crate::paths::PHONE)
 }
 
 impl Settings {
@@ -2728,6 +2731,11 @@ mod tests {
                 plugins: vec!["a@b".into()],
                 ..Default::default()
             })
+        );
+        let forget = serde_json::json!({ "type": "forget_sign_ins" });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(forget).unwrap(),
+            ClientMsg::ForgetSignIns
         );
         let market = serde_json::json!({ "type": "market" });
         assert_eq!(

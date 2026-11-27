@@ -977,7 +977,7 @@ fn fallback_macos_path(current: Option<&std::ffi::OsStr>, home: &Path) -> std::f
 
 #[cfg(target_os = "macos")]
 fn login_path_cache_file() -> PathBuf {
-    app_dir().join("login-path.txt")
+    crate::paths::shared(crate::paths::LOGIN_PATH)
 }
 
 #[cfg(target_os = "macos")]
@@ -1081,7 +1081,7 @@ pub fn refresh_login_path_async() {
 /// user may read it: it gets all of stderr, the ACP trace included.
 #[cfg(windows)]
 fn open_log() -> Option<std::fs::File> {
-    let path = app_dir().join("arakun.log");
+    let path = crate::paths::shared(crate::paths::LOG);
     let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 << 20);
     crate::durable::open_private_log(&path, too_big).ok()
 }

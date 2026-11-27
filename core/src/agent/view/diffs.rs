@@ -78,7 +78,13 @@ impl ThreadView {
                                     cx.emit(ThreadViewEvent::OpenFile(full.clone(), line))
                                 }))
                         })
-                        .child(diff_card(path, diff.old, diff.new, cwd)),
+                        .child(diff_card(
+                            path,
+                            diff.old,
+                            diff.new,
+                            cwd,
+                            &Self::reveal_handle(cx),
+                        )),
                 );
             }
         }
@@ -255,12 +261,13 @@ fn build_card(path: &Path, old: Option<&str>, new: &str) -> DiffCard {
 }
 
 /// One line of code in its syntax colors over `base`; `dim` fades the colors.
+/// With it, the secrets it hides, which a click shows.
 pub(super) fn colored_line(
     text: &str,
     spans: Option<&LineSpans>,
     base: Hsla,
     dim: f32,
-) -> StyledText {
+) -> (StyledText, Vec<String>) {
     let f = font(theme::FONT_MONO);
     let run = |len: usize, color: Hsla| TextRun {
         len,
@@ -287,8 +294,23 @@ pub(super) fn colored_line(
         runs.push(run(text.len() - at, base));
     }
     // Masked to the same length, so the syntax colors still line up.
-    let text = crate::redact::same_bytes(text).unwrap_or_else(|| text.to_string());
-    StyledText::new(SharedString::from(text)).with_runs(runs)
+    let Some(m) = crate::redact::in_chat(text) else {
+        return (
+            StyledText::new(SharedString::from(text.to_string())).with_runs(runs),
+            Vec::new(),
+        );
+    };
+    let runs = if crate::redact::on() {
+        runs
+    } else {
+        let ranges: Vec<_> = m.hidden.iter().map(|h| h.range.clone()).collect();
+        crate::agent::markdown::secret_runs(runs, &ranges)
+    };
+    let hidden = m.hidden.into_iter().map(|h| h.value).collect();
+    (
+        StyledText::new(SharedString::from(m.text)).with_runs(runs),
+        hidden,
+    )
 }
 
 pub(super) fn diff_bg(kind: LineKind) -> Option<Hsla> {
@@ -301,7 +323,13 @@ pub(super) fn diff_bg(kind: LineKind) -> Option<Hsla> {
 
 /// A file edit as a card: file header with +/- counts, then the changed
 /// lines with a little context.
-pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -> AnyElement {
+pub(super) fn diff_card(
+    path: &Path,
+    old: Option<&str>,
+    new: &str,
+    cwd: &Path,
+    reveal: &Reveal,
+) -> AnyElement {
     let card = diff_card_model(path, old, new);
     let DiffCard {
         added,
@@ -441,35 +469,36 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                                                         .text_color(mark_color)
                                                         .child(mark),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .flex_none()
-                                                        .pr(crate::ui::sp(8.))
-                                                        .whitespace_nowrap()
-                                                        .font_family(theme::FONT_MONO)
-                                                        .text_size(px(crate::ui::TEXT_XS))
-                                                        .child({
-                                                            let base = if kind == LineKind::Context
-                                                            {
-                                                                theme::mix(0.55)
-                                                            } else {
-                                                                theme::mix(0.85)
-                                                            };
-                                                            let dim = if kind == LineKind::Context {
-                                                                0.7
-                                                            } else {
-                                                                1.
-                                                            };
-                                                            colored_line(
-                                                                &card.texts[n],
-                                                                card.spans
-                                                                    .as_ref()
-                                                                    .and_then(|s| s.get(n)),
-                                                                base,
-                                                                dim,
-                                                            )
-                                                        }),
-                                                )
+                                                .child({
+                                                    let base = if kind == LineKind::Context {
+                                                        theme::mix(0.55)
+                                                    } else {
+                                                        theme::mix(0.85)
+                                                    };
+                                                    let dim = if kind == LineKind::Context {
+                                                        0.7
+                                                    } else {
+                                                        1.
+                                                    };
+                                                    let (line, hidden) = colored_line(
+                                                        &card.texts[n],
+                                                        card.spans.as_ref().and_then(|s| s.get(n)),
+                                                        base,
+                                                        dim,
+                                                    );
+                                                    reveal
+                                                        .on(
+                                                            div()
+                                                                .id(("diff-line", n))
+                                                                .flex_none()
+                                                                .pr(crate::ui::sp(8.))
+                                                                .whitespace_nowrap()
+                                                                .font_family(theme::FONT_MONO)
+                                                                .text_size(px(crate::ui::TEXT_XS)),
+                                                            hidden,
+                                                        )
+                                                        .child(line)
+                                                })
                                         }
                                     }
                                 })),

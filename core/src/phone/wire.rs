@@ -146,16 +146,24 @@ fn image_file(path: &str, scope: &Scope) -> Option<String> {
 }
 
 /// The file of an image a session names (`link`, as written), when its agent
-/// named it. Only those are sent, so asking cannot read any file the server can.
+/// named it or a prompt mentioned it. Only those are sent, so asking cannot
+/// read any file the server can.
 pub fn named_image(all: &[Entry], cwd: &Path, link: &str) -> Option<PathBuf> {
-    let named = all.iter().any(|e| match e {
+    let by_agent = all.iter().any(|e| match e {
         Entry::Agent { text } => crate::agent::markdown::image_files(text)
             .iter()
             .any(|l| l == link),
         _ => false,
     });
-    named
-        .then(|| crate::agent::markdown::image_path(link, Some(cwd)))
+    if by_agent {
+        return crate::agent::markdown::image_path(link, Some(cwd));
+    }
+    let by_user = all.iter().any(|e| match e {
+        Entry::User { text, .. } => attach::image_mentions(text).iter().any(|l| l == link),
+        _ => false,
+    });
+    by_user
+        .then(|| attach::mentioned_image(link, cwd))
         .flatten()
 }
 
@@ -1302,6 +1310,21 @@ mod tests {
         assert_eq!(data, b"png");
         assert_eq!(named_image(&all, &dir, "other.png"), None);
         assert_eq!(named_image(&all, &dir, "../shot.png"), None);
+        // And the ones a prompt mentioned, as the prompt wrote them.
+        let mut all = all;
+        all.push(Entry::User {
+            text: "look at @other.png and email@shot.png".into(),
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        });
+        assert_eq!(
+            named_image(&all, &dir, "other.png"),
+            Some(dir.join("other.png"))
+        );
+        assert_eq!(named_image(&all, &dir, "../other.png"), None);
         let v = image_message(
             "s1",
             "missing.png",

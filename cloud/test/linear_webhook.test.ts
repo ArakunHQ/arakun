@@ -433,6 +433,7 @@ describe("Linear's webhook", () => {
 });
 
 const ACT = "77777777-7777-4777-8777-777777777777";
+const ACT2 = "77777777-7777-4777-8777-888888888888";
 const SENT = { agentSessionId: SESSION, type: "thought", body: "Sent to Desk. A session starts there now." };
 const SOMEONE_ELSE = { agentSessionId: SESSION, type: "thought", body: "Only the person who delegated this can steer it." };
 
@@ -590,6 +591,25 @@ describe("follow-ups from Linear", () => {
     const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
     expect(kinds).toEqual(["created", "prompt"]);
     expect(await storedAll(me.label)).not.toContain("SECRET-FOLLOW-UP");
+  });
+
+  it("says so when a reply or a stop waits for an offline computer", async () => {
+    const { me, pc, owner } = await delegatedIssue();
+    await away(me.label, pc);
+    const reply = signedWebhook(prompted({ userId: LU, body: "SECRET-FOLLOW-UP", activityId: ACT, agentSessionId: SESSION }));
+    expect((await send(reply)).status).toBe(200);
+    const waits = { agentSessionId: SESSION, type: "thought", body: "Desk is offline. Your message reaches the session when it is back." };
+    expect(linearFake.activities()).toEqual([SENT, waits]);
+    // Linear's retry of the same reply says it once.
+    expect((await send(reply)).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT, waits]);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", activityId: ACT2, signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
+    const stops = { agentSessionId: SESSION, type: "response", body: "Desk is offline. The session there is stopped as soon as it is back." };
+    expect(linearFake.activities()).toEqual([SENT, waits, stops]);
+    // Both still reach the computer.
+    const back = await connectedComputerAgain(me, owner.session);
+    const kinds = [(await back.inbox.control())["kind"], (await back.inbox.control())["kind"], (await back.inbox.control())["kind"]].sort();
+    expect(kinds).toEqual(["created", "prompt", "stop"]);
   });
 
   it("the same follow-up twice is one delivery and one frame", async () => {
@@ -753,6 +773,45 @@ describe("what the computer sends back", () => {
     expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: "Working on it." });
     expect(linearFake.links()).toHaveLength(1);
     expect(await dump(env.DB)).not.toMatch(/Done\.|Working on it/);
+  });
+
+  it("passes a question's choices on as a select, and only for a question", async () => {
+    const { owner } = await delegatedIssue();
+    const ask = { type: "elicitation", body: "Which database?", options: ["Postgres", "SQLite"] };
+    expect((await activity(owner.session, ask)).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "elicitation", body: "Which database?", signal: "select", options: ["Postgres", "SQLite"] });
+    // Without choices it is a plain question.
+    expect((await activity(owner.session, { type: "elicitation", body: "Go on?", options: [] })).status).toBe(204);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "elicitation", body: "Go on?" });
+    for (const bad of [
+      { ...ask, type: "thought" },
+      { ...ask, options: ["Only one"] },
+      { ...ask, options: ["a", " "] },
+      { ...ask, options: ["a", 2] },
+      { ...ask, options: ["a", "x".repeat(81)] },
+      { ...ask, options: Array(11).fill("a") },
+      { ...ask, options: "Postgres" },
+    ]) {
+      expect((await activity(owner.session, bad)).status).toBe(400);
+    }
+    expect(await dump(env.DB)).not.toMatch(/Postgres|Which database/);
+  });
+
+  it("adds links to a session without an activity, only for its owner and only https", async () => {
+    const { owner } = await delegatedIssue();
+    const links = (session: string, body: unknown) => call("POST", `/linear/sessions/${SESSION}/links`, as(session), JSON.stringify(body));
+    const pr = { label: "Pull request", url: "https://github.com/a/b/pull/1" };
+    expect((await links(owner.session, { links: [pr], extra: "ignored" })).status).toBe(204);
+    expect(linearFake.links()).toEqual([{ agentSessionId: SESSION, ...pr }]);
+    expect(linearFake.activities()).toEqual([SENT]);
+    for (const bad of [{}, { links: [] }, { links: [{ label: "x", url: "http://github.com/a" }] }, { links: [{ label: "", url: pr.url }] }, { links: Array(6).fill(pr) }]) {
+      const res = await links(owner.session, bad);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad links" });
+    }
+    expect((await links((await stranger()).session, { links: [pr] })).status).toBe(404);
+    expect((await call("POST", `/linear/sessions/${SESSION}/links`, {}, JSON.stringify({ links: [pr] }))).status).toBe(401);
+    expect(linearFake.links()).toHaveLength(1);
   });
 
   it("passes an ephemeral thought on as one", async () => {

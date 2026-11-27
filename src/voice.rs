@@ -65,7 +65,7 @@ impl Tone {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("voice.json")
+    crate::paths::store(crate::paths::VOICE)
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {

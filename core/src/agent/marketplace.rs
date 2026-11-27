@@ -41,7 +41,7 @@ pub struct PluginEntry {
 }
 
 fn cache_file() -> PathBuf {
-    crate::paths::shared("cache")
+    crate::paths::shared(crate::paths::CACHE)
         .join("extensions")
         .join("plugin-catalog.json")
 }
@@ -411,7 +411,7 @@ fn rank(list: &mut [RegistryServer], query: &str) {
 }
 
 fn official_file() -> PathBuf {
-    crate::paths::shared("cache")
+    crate::paths::shared(crate::paths::CACHE)
         .join("extensions")
         .join("registry-official.json")
 }

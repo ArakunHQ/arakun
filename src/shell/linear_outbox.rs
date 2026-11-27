@@ -32,15 +32,33 @@ impl Shell {
         link: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.linear_report_with(agent_session, kind, body, link, Vec::new(), cx);
+    }
+
+    /// [`Self::linear_report`] for a question with `options`: its choices,
+    /// which Linear shows to pick from.
+    pub(super) fn linear_report_with(
+        &mut self,
+        agent_session: &str,
+        kind: ReportKind,
+        body: String,
+        link: Option<String>,
+        options: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let now = unix_now();
         self.linear_runs.queue(Report {
             agent_session: agent_session.to_string(),
             kind,
             body,
             link,
+            options,
             made_at: now,
         });
-        if let Some(run) = self.linear_runs.by_agent_session(agent_session) {
+        // A link is no activity: Linear still needs to hear the run works.
+        if kind != ReportKind::Link
+            && let Some(run) = self.linear_runs.by_agent_session(agent_session)
+        {
             run.reported_at = now;
         }
         self.linear_save();

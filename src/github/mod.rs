@@ -442,7 +442,7 @@ pub struct Settings {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("github.json")
+    crate::paths::store(crate::paths::GITHUB)
 }
 
 pub fn load() -> Settings {
@@ -2475,8 +2475,7 @@ mod tests {
         };
         let items = pilot::fetch(&cfg).unwrap_or_else(|e| panic!("{e}"));
         let book: pilot::Book =
-            crate::durable::load_json(crate::state::data_dir().join("pilot.json"))
-                .unwrap_or_default();
+            crate::durable::load_json(crate::paths::store(crate::paths::PILOT)).unwrap_or_default();
         let shown: Vec<&pilot::Item> = items.iter().filter(|i| !book.handled(&i.id)).collect();
         let mut kinds: HashMap<String, usize> = HashMap::new();
         for c in &shown {

@@ -289,6 +289,8 @@ impl Shell {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
+            kept: Vec::new(),
         });
         self.linear_save();
         match added {
@@ -473,6 +475,7 @@ impl Shell {
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
+        self.linear_send_kept(&start.agent_session, &start.organization, window, cx);
     }
 
     fn linear_still_running(&mut self, agent_session: &str) -> bool {

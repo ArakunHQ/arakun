@@ -137,7 +137,8 @@ struct Following {
     /// The prompts waiting there for the running turn, as its last `state`
     /// said: the server keeps the queue.
     queue: RemoteQueue,
-    /// The images its agent named that are on the server, by link as written.
+    /// The images its agent named or its prompts mentioned that are on the
+    /// server, by link as written.
     images: HashMap<String, ImageCopy>,
 }
 
@@ -274,6 +275,8 @@ pub(super) struct ServersLink {
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
     pairing_timeout: Option<Task<()>>,
+    /// The pairing under way copies the MCP sign-ins there.
+    pair_sign_ins: bool,
     error: Option<String>,
     /// The terminals open in servers' environments.
     terms: terms::Terms,
@@ -970,14 +973,21 @@ fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
     }));
 }
 
-/// The images `entries` name to ask the server for, each with the last entry
+/// The images `entries` name or mention to ask the server for, each with the last entry
 /// naming it: the ones not asked for yet, and the ones named again since they
 /// were. The files are the server's: one at the same path here is another.
 fn images_to_ask(entries: &[Entry], asked: &HashMap<String, ImageCopy>) -> Vec<(String, usize)> {
     let mut last: Vec<(String, usize)> = Vec::new();
     for (at, e) in entries.iter().enumerate() {
-        let Entry::Agent { text } = e else { continue };
-        for link in crate::agent::markdown::image_files(text) {
+        let links = match e {
+            Entry::Agent { text } => crate::agent::markdown::image_files(text),
+            // As the prompt is shown: a mention in a pasted block is not one.
+            Entry::User { text, .. } => {
+                crate::agent::attach::image_mentions(&crate::agent::attach::split_pastes(text).0)
+            }
+            _ => continue,
+        };
+        for link in links {
             match last.iter_mut().find(|(l, _)| *l == link) {
                 Some(seen) => seen.1 = at,
                 None => last.push((link, at)),
@@ -1145,6 +1155,7 @@ impl Shell {
             deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
+            pair_sign_ins: false,
             error: None,
             terms: terms::Terms::new(window, cx),
             balance: balance::load(),
@@ -1215,6 +1226,8 @@ impl Shell {
                     since: conn.since,
                     seen,
                     agents: conn.agents.clone(),
+                    sign_ins: s.sign_ins,
+                    holds_sign_ins: s.holds_sign_ins,
                 })
             })
             .collect();
@@ -1433,6 +1446,10 @@ impl Shell {
                 }
                 return;
             }
+            ServersEvent::SignIns { server, on } => {
+                self.server_set_sign_ins(server, *on, cx);
+                return;
+            }
             ServersEvent::Remove(id) => {
                 // Taken off the account after the pairing is forgotten: the
                 // list asked again then no longer brings it back.
@@ -1457,8 +1474,12 @@ impl Shell {
         };
         link.error = None;
         match ev {
-            ServersEvent::Pair(text) => match servers::parse_link(text) {
+            ServersEvent::Pair {
+                link: text,
+                sign_ins,
+            } => match servers::parse_link(text) {
                 Ok(invite) => {
+                    link.pair_sign_ins = *sign_ins;
                     let id = servers::new_id();
                     let client = Client::pair(
                         id.clone(),
@@ -1500,7 +1521,10 @@ impl Shell {
                     link.from_picker.remove(server);
                 }
             }
-            ServersEvent::Remove(_) | ServersEvent::OpenHere { .. } | ServersEvent::SignIn => {}
+            ServersEvent::Remove(_)
+            | ServersEvent::OpenHere { .. }
+            | ServersEvent::SignIn
+            | ServersEvent::SignIns { .. } => {}
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);
@@ -3038,6 +3062,8 @@ impl Shell {
                 link.pairing_timeout = None;
                 // "The server is not at the relay" was about the wait that just ended.
                 link.error = None;
+                let mut saved = saved;
+                saved.sign_ins = link.pair_sign_ins;
                 link.saved.push(saved);
                 servers::save(&link.saved);
             }
@@ -3235,8 +3261,15 @@ impl Shell {
                     self.server_mirrored(id, &msg, cx);
                     return;
                 }
-                // A server from before mirroring: it keeps what it has.
-                if kind == "error" && older_server_refused(&text(&msg, "message"), &["mirror"]) {
+                if kind == "sign_ins_forgotten" {
+                    self.server_forgot_sign_ins(id, &msg, cx);
+                    return;
+                }
+                // A server from before mirroring, or before it kept sign-ins
+                // by device: it keeps what it has.
+                if kind == "error"
+                    && older_server_refused(&text(&msg, "message"), &["mirror", "forget_sign_ins"])
+                {
                     return;
                 }
                 // A server from before it took idle time: it waits as it did.
@@ -4034,6 +4067,22 @@ mod tests {
             images_to_ask(&entries, &asked),
             [("shot.png".to_string(), 2)]
         );
+        // The images a prompt mentions are the server's too.
+        entries.push(Entry::User {
+            text: "compare @shot.png with @\"my shots/b.jpg\" and @notes.md".into(),
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        });
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [
+                ("shot.png".to_string(), 3),
+                ("my shots/b.jpg".to_string(), 3)
+            ]
+        );
     }
 
     #[test]
@@ -4629,6 +4678,8 @@ mod tests {
             key: String::new(),
             token: "t".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         };
         assert!(in_the_clear(&saved(
             "http://10.0.0.2:7474",
@@ -4662,6 +4713,8 @@ mod tests {
             key: String::new(),
             token: "t".into(),
             removed: false,
+            sign_ins: false,
+            holds_sign_ins: false,
         };
         let servers = [
             saved("clear", "http://10.0.0.2:7474"),

@@ -132,7 +132,7 @@ fn set(c: Choice) {
 }
 
 fn choice_path() -> std::path::PathBuf {
-    crate::paths::store("env-cleanup")
+    crate::paths::store(crate::paths::ENV_CLEANUP)
 }
 
 /// "Off", "7 days"…
@@ -316,13 +316,12 @@ pub fn sweep_leftovers(images: &Path) {
     if std::fs::symlink_metadata(images).is_ok_and(|m| m.is_dir()) {
         removed += remove_old(images, SERVER_IMAGE_AGE, is_server_image);
     }
-    let data = crate::state::data_dir();
     for dir in [
         crate::platform::app_dir(),
-        data.clone(),
-        data.join("sessions"),
-        data.join("linked"),
-        crate::paths::shared("cache"),
+        crate::state::data_dir(),
+        crate::paths::store(crate::paths::SESSIONS),
+        crate::paths::store(crate::paths::LINKED),
+        crate::paths::shared(crate::paths::CACHE),
     ] {
         removed += remove_write_leftovers(&dir);
     }

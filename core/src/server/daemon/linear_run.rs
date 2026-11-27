@@ -21,14 +21,15 @@ use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
-    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, pr_link, progress_line,
-    removed_line, to_report, turn_reply,
+    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of, pr_link,
+    progress_line, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
-    message, no_directions_line, no_session_line, not_started_line, passed_line, pending_in,
-    release_stops, reply_no_sign_in_line, reply_off_line, reply_source, run_state, skips_question,
-    stop, stopped_after_reply, unread_line,
+    kept_line, kept_message, kept_unread_line, message, no_directions_line, no_session_line,
+    not_started_line, passed_line, pending_in, release_stops, reply_no_sign_in_line,
+    reply_off_line, reply_source, run_state, skips_question, stop, stopped_after_reply,
+    unread_line,
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
@@ -288,6 +289,8 @@ impl Daemon {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
+            kept: Vec::new(),
         });
         self.linear_save_runs();
         match added {
@@ -405,6 +408,58 @@ impl Daemon {
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
+        self.linear_send_kept(&start.agent_session, &start.organization, cx);
+    }
+
+    /// The replies kept while the run waited for a slot: read from Linear
+    /// now, in order, and sent to its session, which queues them behind the
+    /// first prompt.
+    fn linear_send_kept(
+        &mut self,
+        agent_session: &str,
+        organization: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let kept = self.linear_run.runs.take_kept(agent_session);
+        if kept.is_empty() {
+            return;
+        }
+        self.linear_save_runs();
+        let Some(key) = self.linear_key(organization) else {
+            let line = reply_no_sign_in_line(&computer());
+            return self.linear_report(agent_session, ReportKind::Thought, line, None, cx);
+        };
+        let agent_session = agent_session.to_string();
+        cx.spawn(async move |this, cx| {
+            let of = agent_session.clone();
+            // Any error, a panic too, means a text could not be read.
+            let texts = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        kept.iter()
+                            .map(|a| {
+                                issues::prompt_text(|q, v| crate::linear::call(&key, q, v), a, &of)
+                                    .ok()
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    |_| vec![None],
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                for text in texts {
+                    let sent = kept_message(text.as_deref()).is_some_and(|m| {
+                        this.linear_pass_on(&agent_session, m.to_string(), false, cx)
+                            .is_some()
+                    });
+                    if !sent {
+                        let line = kept_unread_line(&computer());
+                        this.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     fn linear_still_running(&mut self, agent_session: &str) -> bool {
@@ -481,6 +536,19 @@ impl Daemon {
         };
         // Without its text yet: is there a session to read it for?
         let decided = self.linear_follow_up(&d, None);
+        if decided == FollowUp::NotStarted
+            && let Some(activity) = &activity
+            && self
+                .linear_run
+                .runs
+                .keep_reply(&d.agent_session, &d.organization, activity)
+        {
+            // Saved with the report. Its text is read when the session starts.
+            self.linear_run.runs.mark_seen(&d.id);
+            let line = kept_line(&computer());
+            self.linear_report(&d.agent_session, ReportKind::Thought, line, None, cx);
+            return self.linear_accept(&d.id, cx);
+        }
         let (Some(activity), Some(key), FollowUp::Unreadable) = (activity, key, decided) else {
             return self.linear_answer(&d.id, &d.agent_session, decided, None, cx);
         };
@@ -735,6 +803,9 @@ impl Daemon {
         };
         let reply = matches!(event, Event::Finished(_)).then(|| turn_reply(t.entries()));
         let session_pr = t.meta().pr.clone();
+        if matches!(event, Event::Finished(_)) {
+            self.linear_link(id, session_pr.as_deref(), cx);
+        }
         let Some(run) = self.linear_run.runs.by_session(id) else {
             return;
         };
@@ -771,13 +842,13 @@ impl Daemon {
             Step::Cancelled => Some(Seen::Cancelled),
             Step::Working | Step::Background | Step::Nothing => None,
         };
-        let report = seen.filter(|_| effect.report).and_then(to_report);
-        let link = matches!(effect.step, Step::Finished | Step::Background)
-            .then(|| pr_link(session_pr.as_deref(), None))
-            .flatten();
-        let link = self.linear_hold_link(id, effect.step, link);
+        let seen = seen.filter(|_| effect.report);
+        let options = seen.as_ref().map(options_of).unwrap_or_default();
+        let report = seen.and_then(to_report);
         match report {
-            Some((kind, body)) => self.linear_report(&agent_session, kind, body, link, cx),
+            Some((kind, body)) => {
+                self.linear_report_with(&agent_session, kind, body, None, options, cx)
+            }
             None => self.linear_save_runs(),
         }
         if to == RunState::Running {
@@ -866,15 +937,33 @@ impl Daemon {
         link: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.linear_report_with(agent_session, kind, body, link, Vec::new(), cx);
+    }
+
+    /// [`Self::linear_report`] for a question with `options`: its choices,
+    /// which Linear shows to pick from.
+    fn linear_report_with(
+        &mut self,
+        agent_session: &str,
+        kind: ReportKind,
+        body: String,
+        link: Option<String>,
+        options: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
         let now = unix_now();
         self.linear_run.runs.queue(Report {
             agent_session: agent_session.to_string(),
             kind,
             body,
             link,
+            options,
             made_at: now,
         });
-        if let Some(run) = self.linear_run.runs.by_agent_session(agent_session) {
+        // A link is no activity: Linear still needs to hear the run works.
+        if kind != ReportKind::Link
+            && let Some(run) = self.linear_run.runs.by_agent_session(agent_session)
+        {
             run.reported_at = now;
         }
         self.linear_save_runs();
@@ -962,21 +1051,24 @@ impl Daemon {
         .detach();
     }
 
-    /// A held turn keeps its pull request with its reply; any other step
-    /// sends the link now.
-    fn linear_hold_link(&mut self, id: &str, step: Step, link: Option<String>) -> Option<String> {
-        if step != Step::Background {
-            return link;
-        }
-        if let Some(held) = self
-            .linear_run
-            .runs
-            .by_session(id)
-            .and_then(|r| r.held.as_mut())
-        {
-            held.link = link;
-        }
-        None
+    /// The run's pull request, once the session knows it: its link goes to
+    /// Linear at once and only once, whatever the run does then. A server
+    /// has no CI view, so the session's own record is all there is.
+    fn linear_link(&mut self, id: &str, session_pr: Option<&str>, cx: &mut Context<Self>) {
+        let Some(url) = pr_link(session_pr, None) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_run.runs.link(id, &url) else {
+            return;
+        };
+        self.linear_report(
+            &agent_session,
+            ReportKind::Link,
+            String::new(),
+            Some(url),
+            cx,
+        );
+        self.linear_watch(cx);
     }
 
     fn linear_needs_watch(&self) -> bool {

@@ -52,7 +52,7 @@ fn key(path: &Path) -> Option<String> {
 }
 
 fn cache_path() -> std::path::PathBuf {
-    crate::paths::shared("devin-plan.json")
+    crate::paths::shared(crate::paths::DEVIN_PLAN)
 }
 
 /// The last fetch, however old; `None` when never fetched.

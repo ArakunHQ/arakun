@@ -26,8 +26,11 @@ use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 
 pub enum ServersEvent {
-    /// Pair with the server this link is for.
-    Pair(String),
+    /// Pair with the server this link is for, copying the MCP sign-ins
+    /// there or not.
+    Pair { link: String, sign_ins: bool },
+    /// Copy the MCP sign-ins to a server, or take them off it.
+    SignIns { server: String, on: bool },
     /// Give up the pairing under way.
     CancelPairing,
     /// Remove a server: it is told to forget this app, and one on the
@@ -175,6 +178,10 @@ pub struct ServerRow {
     pub seen: Option<u64>,
     /// Its agents, from its last `usage` message.
     pub agents: Vec<AgentRow>,
+    /// This app copies its MCP sign-ins there.
+    pub sign_ins: bool,
+    /// The server last said it holds some this app copied.
+    pub holds_sign_ins: bool,
 }
 
 /// A server signed in to the same account, as the account lists it.
@@ -235,6 +242,20 @@ pub struct ServersState {
     pub error: Option<String>,
     /// Where new environments go.
     pub balance: Balance,
+}
+
+/// Where a server's MCP sign-ins stand, under their switch.
+pub fn sign_ins_note(server: &ServerRow) -> &'static str {
+    let clear = server.via == (Via::Direct { clear: true });
+    match (server.sign_ins && !clear, server.holds_sign_ins) {
+        (true, true) => "It holds a copy. Turn this off to remove it.",
+        (true, false) => "A copy goes there when it connects.",
+        (false, true) => "It holds a copy, which goes when it next connects.",
+        (false, false) if clear => {
+            "Not over plain http: they only go to a server whose key is checked."
+        }
+        (false, false) => "Agents there sign in to your MCP servers themselves.",
+    }
 }
 
 /// How a computer is doing, as a dot and a word. Only what is live gets a
@@ -456,6 +477,8 @@ pub struct ServersView {
     confirm_remove: Option<String>,
     /// The ⋯ menu is open on this server.
     menu: Option<String>,
+    /// The pairing by link copies the MCP sign-ins.
+    pair_sign_ins: bool,
     focus: FocusHandle,
     _inputs: Vec<Subscription>,
 }
@@ -494,6 +517,7 @@ impl ServersView {
             draft_for: None,
             confirm_remove: None,
             menu: None,
+            pair_sign_ins: false,
             focus: cx.focus_handle(),
             _inputs: inputs,
         }
@@ -597,13 +621,18 @@ impl ServersView {
     fn pair(&mut self, cx: &mut Context<Self>) {
         let link = self.link.read(cx).text().trim().to_string();
         if !link.is_empty() && !self.state.pairing {
-            cx.emit(ServersEvent::Pair(link));
+            cx.emit(ServersEvent::Pair {
+                link,
+                sign_ins: self.pair_sign_ins,
+            });
         }
     }
 
     fn open_sheet(&mut self, sheet: Sheet, window: &mut Window, cx: &mut Context<Self>) {
         self.sheet = Some(sheet);
         self.menu = None;
+        // Each pairing asks anew.
+        self.pair_sign_ins = false;
         if sheet == Sheet::Link {
             window.focus(&self.link.focus_handle(cx), cx);
         }
@@ -1306,6 +1335,37 @@ impl ServersView {
             .into_any_element()
     }
 
+    /// The switch that copies the MCP sign-ins there, and where they stand.
+    fn sign_ins_row(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
+        let clear = server.via == (Via::Direct { clear: true });
+        let on = server.sign_ins && !clear;
+        let id = server.id.clone();
+        let note = sign_ins_note(server);
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(4.))
+            .py(ui::sp(12.))
+            .border_t_1()
+            .border_color(theme::border_subtle())
+            .child(
+                ui::switch_row("computers-sign-ins", "Copy MCP sign-ins", on)
+                    .px_0()
+                    .when(!clear, |d| {
+                        d.on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(ServersEvent::SignIns {
+                                server: id.clone(),
+                                on: !on,
+                            });
+                        }))
+                    }),
+            )
+            .when(!note.is_empty(), |d| {
+                d.child(ui::text(Type::Caption, theme::text_subtle(), note))
+            })
+            .into_any_element()
+    }
+
     fn remove_row(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
         let name = crate::redact::text(&server.name).into_owned();
         let asking = self.confirm_remove.as_deref() == Some(server.id.as_str());
@@ -1550,6 +1610,9 @@ impl ServersView {
         if !connected && let Some(t) = server.seen.filter(|t| *t > 0) {
             rows.push(("Last seen", ago(t, now)));
         }
+        if server.holds_sign_ins {
+            rows.push(("MCP sign-ins", "A copy from here".into()));
+        }
         let info = Self::computer_card(rows, &server.agents);
         let settings = Self::side_card(
             "Settings",
@@ -1557,6 +1620,7 @@ impl ServersView {
                 .flex()
                 .flex_col()
                 .child(self.preference_row(Some(server.id.clone()), cx))
+                .child(self.sign_ins_row(server, cx))
                 .child(self.remove_row(server, cx)),
         );
         let form = (self.adding_place.as_deref() == Some(server.id.as_str()))
@@ -1922,6 +1986,11 @@ impl ServersView {
                 Self::command("computers-copy-login", "arakun-server login"),
             ))
             .child(Self::step(3, "It shows up here by itself", status))
+            .child(ui::text(
+                Type::Caption,
+                theme::text_faint(),
+                "Your MCP sign-ins are not copied to it. Turn that on in its settings.",
+            ))
             .into_any_element()
     }
 
@@ -1980,6 +2049,29 @@ impl ServersView {
                     })
                     .into_any_element(),
             ))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(ui::sp(2.))
+                    .child(
+                        ui::switch_row(
+                            "computers-pair-sign-ins",
+                            "Copy my MCP sign-ins there",
+                            self.pair_sign_ins,
+                        )
+                        .px_0()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pair_sign_ins = !this.pair_sign_ins;
+                            cx.notify();
+                        })),
+                    )
+                    .child(ui::text(
+                        Type::Caption,
+                        theme::text_subtle(),
+                        "Agents there then use the MCP servers you signed in to here, with your tokens. You can change this in its settings.",
+                    )),
+            )
             .children(self.state.error.clone().map(|e| {
                 ui::text(
                     Type::Label,
@@ -2220,7 +2312,26 @@ mod tests {
             since: None,
             seen: None,
             agents: Vec::new(),
+            sign_ins: false,
+            holds_sign_ins: false,
         }
+    }
+
+    #[test]
+    fn the_sign_ins_note_says_whether_a_copy_is_there() {
+        let mut s = server("a", "box", Reach::Connected);
+        assert!(sign_ins_note(&s).contains("themselves"));
+        s.sign_ins = true;
+        assert!(sign_ins_note(&s).contains("when it connects"));
+        s.holds_sign_ins = true;
+        assert!(sign_ins_note(&s).contains("Turn this off"));
+        s.sign_ins = false;
+        assert!(sign_ins_note(&s).contains("next connects"));
+        // Over plain http nothing goes, whatever the setting says.
+        s.holds_sign_ins = false;
+        s.sign_ins = true;
+        s.via = Via::Direct { clear: true };
+        assert!(sign_ins_note(&s).contains("plain http"));
     }
 
     #[test]

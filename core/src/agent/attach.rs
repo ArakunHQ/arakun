@@ -78,8 +78,28 @@ pub fn images(text: &str, cwd: &Path) -> Vec<PathBuf> {
 /// A prompt without its image mentions, and the images, to show them as
 /// pictures instead of paths.
 pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
+    split_mentions(text, |m| mentioned_image(m, cwd))
+}
+
+/// The image file a mention written as `mention` names, when it is one.
+pub fn mentioned_image(mention: &str, cwd: &Path) -> Option<PathBuf> {
+    resolve(mention, cwd).filter(|p| is_image_file(p))
+}
+
+/// The mentions in `text` that name images by their extension, as written.
+/// For a server's session, whose files are not here to look at.
+pub fn image_mentions(text: &str) -> Vec<String> {
+    split_mentions(text, |m| mime_type(Path::new(m)).map(|_| m.to_string())).1
+}
+
+/// A prompt without the mentions `image` takes, and what it made of them.
+/// Split as [`split_images`] does, whatever the images are read from.
+pub fn split_mentions<T: PartialEq>(
+    text: &str,
+    mut image: impl FnMut(&str) -> Option<T>,
+) -> (String, Vec<T>) {
     let mut out = String::with_capacity(text.len());
-    let mut found: Vec<PathBuf> = Vec::new();
+    let mut found: Vec<T> = Vec::new();
     let mut rest = text;
     while let Some(at) = rest.find('@') {
         let starts_token = at == 0 || rest[..at].ends_with(char::is_whitespace);
@@ -95,9 +115,8 @@ pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
             }
         };
         let image = (starts_token && !path.is_empty())
-            .then(|| resolve(path, cwd))
-            .flatten()
-            .filter(|p| is_image_file(p));
+            .then(|| image(path))
+            .flatten();
         match image {
             Some(p) => {
                 out.push_str(&rest[..at]);
@@ -224,7 +243,7 @@ pub fn title(text: &str, max: usize) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    let text = crate::secrets::scrub(&text[..end]).into_owned();
+    let text = without_handles(&crate::secrets::scrub(&text[..end]));
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
     let Some(first) = lines.clone().next() else {
         return String::new();
@@ -239,6 +258,26 @@ pub fn title(text: &str, max: usize) -> String {
         None if first.contains(crate::secrets::SECRET) => UNTITLED.to_string(),
         None => crate::agent::log::head(first, max),
     }
+}
+
+/// `text` with each secret handle (`secret-ref:…`) as
+/// [`crate::secrets::SECRET`]: a handle saved in place of a pasted secret is
+/// not the value, but it is no title either.
+fn without_handles(text: &str) -> String {
+    let prefix = crate::agent::secret::HANDLE_PREFIX;
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(prefix) {
+        out.push_str(&rest[..at]);
+        out.push_str(crate::secrets::SECRET);
+        let after = &rest[at + prefix.len()..];
+        let len = after
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(after.len());
+        rest = &after[len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// An ACP `image` content block, or why the file can't be sent.
@@ -323,6 +362,12 @@ mod tests {
         assert_eq!(title(key, 80), UNTITLED);
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
         assert_eq!(title(pem, 80), UNTITLED);
+        // A handle saved in a secret's place is not a title either.
+        assert_eq!(
+            title("deploy with secret-ref:0a1b2c3d, then tag", 80),
+            "deploy with [secret], then tag"
+        );
+        assert_eq!(title("secret-ref:0a1b2c3d", 80), UNTITLED);
         // A secret is replaced before the title is cut, so none of it is left.
         let long = format!("{} {key}", "x".repeat(70));
         assert_eq!(title(&long, 80), format!("{} [secret]", "x".repeat(70)));

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 /// Delegated sessions running at once. A computer back after days must not
 /// start dozens of agents; the rest wait their turn.
 pub const MAX_RUNNING: usize = 3;
+/// The most replies kept for a run that waits for a slot.
+pub const KEPT_REPLIES: usize = 8;
 /// Delivery ids remembered, so a delivery sent again is not run twice.
 pub const HANDLED_KEPT: usize = 500;
 /// How long a report Linear has not taken is tried again.
@@ -94,6 +96,15 @@ pub struct Run {
     /// a restart.
     #[serde(skip)]
     pub progress: Option<(u64, String)>,
+    /// The pull request link Linear was last sent for this run, so it goes
+    /// once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
+    /// Replies that came in Linear while the run waited for a slot, as the
+    /// ids of their agent activities, oldest first. Never their text: it is
+    /// read from Linear when the session starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -134,6 +145,8 @@ impl std::fmt::Debug for Run {
             .field("stopped", &self.stopped)
             .field("held", &self.held)
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
+            .field("linked", &self.linked.is_some())
+            .field("kept", &self.kept.len())
             .finish()
     }
 }
@@ -148,6 +161,8 @@ pub enum ReportKind {
     /// What a working session does right now. Linear replaces it with the
     /// next activity, and a newer report makes an unsent one moot.
     Progress,
+    /// Only a link for the session, such as its pull request: no activity.
+    Link,
 }
 
 /// A report to Linear not sent yet. Debug leaves out the body: it can hold
@@ -159,6 +174,9 @@ pub struct Report {
     pub body: String,
     #[serde(default)]
     pub link: Option<String>,
+    /// A question's choices, for Linear to show as ones to pick from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
     pub made_at: u64,
 }
 
@@ -169,6 +187,7 @@ impl std::fmt::Debug for Report {
             .field("kind", &self.kind)
             .field("body", &format_args!("…"))
             .field("link", &self.link.is_some())
+            .field("options", &self.options.len())
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -199,7 +218,7 @@ pub struct Runs {
 }
 
 fn file() -> PathBuf {
-    crate::paths::shared("linear").join("runs.json")
+    crate::paths::shared(crate::paths::LINEAR_RUNS)
 }
 
 impl Runs {
@@ -444,6 +463,55 @@ impl Runs {
         !self.outbox.is_empty()
     }
 
+    /// Keeps a reply for a run of `organization` that waits for a slot, by
+    /// the id of its agent activity. False when there is no such run or it
+    /// holds `KEPT_REPLIES` already. The same reply twice is kept once.
+    pub fn keep_reply(&mut self, agent_session: &str, organization: &str, activity: &str) -> bool {
+        let Some(run) = self.by_agent_session(agent_session) else {
+            return false;
+        };
+        if run.organization != organization || run.state != RunState::Waiting {
+            return false;
+        }
+        if run.kept.iter().any(|a| a == activity) {
+            return true;
+        }
+        if run.kept.len() >= KEPT_REPLIES {
+            return false;
+        }
+        run.kept.push(activity.to_string());
+        true
+    }
+
+    /// The replies kept for a run, taken out: its session starts now.
+    pub fn take_kept(&mut self, agent_session: &str) -> Vec<String> {
+        self.by_agent_session(agent_session)
+            .map(|r| std::mem::take(&mut r.kept))
+            .unwrap_or_default()
+    }
+
+    /// The agent session to send `url` to as the pull request of the run of
+    /// `arakun_session`, when Linear has not been sent it yet. Only a web
+    /// address, and only for a run that has started.
+    pub fn link(&mut self, arakun_session: &str, url: &str) -> Option<String> {
+        let run = self.by_session(arakun_session)?;
+        if !url.starts_with("https://") || run.linked.as_deref() == Some(url) {
+            return None;
+        }
+        run.linked = Some(url.to_string());
+        Some(run.agent_session.clone())
+    }
+
+    /// The started runs Linear has no pull request link for yet: their
+    /// Arakun session, project and branch.
+    pub fn unlinked(&self) -> Vec<(String, PathBuf, String)> {
+        self.runs
+            .iter()
+            .filter(|r| r.linked.is_none() && !r.branch.is_empty())
+            .filter_map(|r| Some((r.session.clone()?, r.project.clone(), r.branch.clone())))
+            .collect()
+    }
+
     /// The agent session to report `line` to as the progress of the run of
     /// `arakun_session`, when Linear should hear it: the run works, the line
     /// is new, and the last one is `PROGRESS_SECS` old.
@@ -528,6 +596,8 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            linked: None,
+            kept: Vec::new(),
         }
     }
 
@@ -537,12 +607,72 @@ mod tests {
             kind: ReportKind::Thought,
             body: body.into(),
             link: None,
+            options: Vec::new(),
             made_at,
         }
     }
 
     fn state(r: &mut Runs, id: &str) -> RunState {
         r.by_agent_session(id).unwrap().state
+    }
+
+    #[test]
+    fn a_pull_request_link_goes_once_and_only_as_a_web_address() {
+        let mut r = Runs::default();
+        r.add(Run {
+            session: Some("s1".into()),
+            branch: "rik/eng-412".into(),
+            state: RunState::Running,
+            ..run("a")
+        });
+        r.add(Run {
+            agent_session: "b".into(),
+            issue: "i2".into(),
+            ..run("b")
+        });
+        // Only a run with a session and a branch can have a pull request.
+        let unlinked: Vec<String> = r.unlinked().into_iter().map(|(s, _, _)| s).collect();
+        assert_eq!(unlinked, ["s1"]);
+        let pr = "https://github.com/a/b/pull/1";
+        assert_eq!(r.link("s1", "file:///x"), None);
+        assert_eq!(r.link("other", pr), None);
+        assert_eq!(r.link("s1", pr).as_deref(), Some("a"));
+        assert_eq!(r.link("s1", pr), None, "told once");
+        assert!(r.unlinked().is_empty());
+        // It still goes after the run ended, and a new one replaces it.
+        r.by_session("s1").unwrap().state = RunState::Done;
+        let next = "https://github.com/a/b/pull/2";
+        assert_eq!(r.link("s1", next).as_deref(), Some("a"));
+        // The link survives a save, so a restart does not send it again.
+        let saved = serde_json::to_string(&r).unwrap();
+        let mut back: Runs = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.link("s1", next), None);
+    }
+
+    #[test]
+    fn replies_are_kept_only_for_a_waiting_run_of_the_same_workspace() {
+        let mut r = Runs::default();
+        r.add(run("a"));
+        // With a free slot it would start at once; here it waits for one.
+        r.by_agent_session("a").unwrap().state = RunState::Waiting;
+        assert!(!r.keep_reply("other", "w1", "act-1"));
+        assert!(!r.keep_reply("a", "w2", "act-1"), "another workspace");
+        assert!(r.keep_reply("a", "w1", "act-1"));
+        assert!(r.keep_reply("a", "w1", "act-1"), "the relay sent it again");
+        for i in 2..=KEPT_REPLIES {
+            assert!(r.keep_reply("a", "w1", &format!("act-{i}")));
+        }
+        assert!(!r.keep_reply("a", "w1", "one-too-many"));
+        // Only ids are saved, and they survive a restart.
+        let saved = serde_json::to_string(&r).unwrap();
+        let mut back: Runs = serde_json::from_str(&saved).unwrap();
+        let kept = back.take_kept("a");
+        assert_eq!(kept.len(), KEPT_REPLIES);
+        assert_eq!((kept[0].as_str(), kept[1].as_str()), ("act-1", "act-2"));
+        assert!(back.take_kept("a").is_empty(), "taken once");
+        // A run at work takes a reply at once: nothing to keep.
+        back.by_agent_session("a").unwrap().state = RunState::Running;
+        assert!(!back.keep_reply("a", "w1", "act-9"));
     }
 
     #[test]

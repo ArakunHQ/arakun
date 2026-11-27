@@ -14,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity,
-    EventEmitter, FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollEvent,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
-    StyledText, Subscription, Task, TextRun, Transformation, Window, anchored, deferred, div, font,
-    linear_color_stop, linear_gradient, list, point, px, radians,
+    Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId,
+    Entity, EventEmitter, FocusHandle, Focusable, FollowMode, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+    ScrollEvent, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, StyledText, Subscription, Task, TextRun, Transformation, Window, anchored,
+    deferred, div, font, linear_color_stop, linear_gradient, list, point, px, radians,
 };
 
 use super::diff::{self, LineKind};
@@ -129,7 +129,7 @@ fn waiting_on(content: &[Entry], cwd: &Path) -> Option<(String, Option<String>)>
                 let cmd = cmd.as_str();
                 (
                     "waiting on".to_string(),
-                    Some(crate::redact::text(cmd).into_owned()),
+                    Some(crate::redact::chat_text(cmd).0.into_owned()),
                 )
             }
         }),
@@ -441,7 +441,47 @@ pub struct ThreadView {
     pending_status: bool,
     /// The raccoon, shown by the shell perched on the composer under this session.
     mascot: Entity<Mascot>,
+    /// Secrets the user clicked to see here, forgotten when the view closes.
+    shown: HashSet<String>,
+    /// The selection holds a hidden secret and Copy asked what to copy.
+    copy_asks: bool,
     _subs: Vec<Subscription>,
+}
+
+impl Drop for ThreadView {
+    fn drop(&mut self) {
+        for value in &self.shown {
+            crate::redact::forget(value);
+        }
+    }
+}
+
+/// Shows the secrets a chat hides when they are clicked, in one view.
+#[derive(Clone)]
+pub(super) struct Reveal(gpui::WeakEntity<ThreadView>);
+
+impl Reveal {
+    /// `d`, which shows `hidden` hidden, made to show them when clicked.
+    /// Redacted mode shows no secret, so there `d` stays as it is.
+    pub(super) fn on(&self, d: gpui::Stateful<Div>, hidden: Vec<String>) -> gpui::Stateful<Div> {
+        if hidden.is_empty() || crate::redact::on() {
+            return d;
+        }
+        let view = self.0.clone();
+        crate::ui::labelled(d, gpui::Role::Button, "Show the secret")
+            .cursor_pointer()
+            .tooltip(crate::ui::tip("Show the secret"))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                let _ = view.update(cx, |this, cx| this.reveal(hidden.clone(), cx));
+            })
+    }
+
+    /// `d` with `text` in it, its secrets hidden until clicked.
+    pub(super) fn text(&self, d: gpui::Stateful<Div>, text: &str) -> gpui::Stateful<Div> {
+        let (shown, hidden) = crate::redact::chat_text(text);
+        self.on(d.child(shown.into_owned()), hidden)
+    }
 }
 
 impl ThreadView {
@@ -521,6 +561,8 @@ impl ThreadView {
             pending_reset: false,
             pending_from: None,
             pending_status: false,
+            shown: HashSet::new(),
+            copy_asks: false,
             mascot: cx.new(|cx| Mascot::new(MASCOT_W, cx).dancer().shy()),
             _subs: subs,
         };
@@ -550,6 +592,7 @@ impl ThreadView {
 
     fn clear_selection(&mut self) -> bool {
         self.menu_at = None;
+        self.copy_asks = false;
         self.selection.take().is_some()
     }
 
@@ -567,9 +610,24 @@ impl ThreadView {
             || (t.is_busy() && turn + 1 == self.turns.len() && t.turn_entry().is_none())
     }
 
+    /// A prompt's text, its secrets hidden until clicked.
+    fn user_text(&self, ix: usize, shown: String, cx: &Context<Self>) -> AnyElement {
+        let (shown, hidden) = match crate::redact::in_chat(&shown) {
+            Some(m) => (m.text, m.hidden.into_iter().map(|h| h.value).collect()),
+            None => (shown, Vec::new()),
+        };
+        let text = self.user_text_found(ix, shown);
+        if hidden.is_empty() || crate::redact::on() {
+            return text;
+        }
+        Self::reveal_handle(cx)
+            .on(div().id(("user-secret", ix)), hidden)
+            .child(text)
+            .into_any_element()
+    }
+
     /// A prompt's text, with the search matches in it painted.
-    fn user_text(&self, ix: usize, shown: String) -> AnyElement {
-        let shown = crate::redact::same_bytes(&shown).unwrap_or(shown);
+    fn user_text_found(&self, ix: usize, shown: String) -> AnyElement {
         let Some(find) = self.find_for(ix) else {
             return shown.into_any_element();
         };
@@ -1007,6 +1065,7 @@ impl ThreadView {
                     .map(|t| t.fetched_images()),
                 fade,
                 self.find_for(ix).filter(|_| ix != PLAN_SURFACE),
+                true,
             ))
             .into_any_element()
     }
@@ -1030,6 +1089,7 @@ impl ThreadView {
             _ => at..at,
         };
         self.menu_at = None;
+        self.copy_asks = false;
         self.selection = Some(Selection {
             surface,
             anchor: range.start,
@@ -1071,6 +1131,15 @@ impl ThreadView {
                 self.menu_at = Some(ev.position);
                 cx.notify();
             }
+            return;
+        }
+        let secret = self
+            .maps
+            .borrow()
+            .get(&sel.surface)
+            .and_then(|m| m.secret_at(sel.head));
+        if let Some(secret) = secret.filter(|_| !crate::redact::on()) {
+            self.reveal(vec![secret], cx);
             return;
         }
         let file = self
@@ -1165,14 +1234,59 @@ impl ThreadView {
         path.is_file().then_some(path)
     }
 
-    fn selected_text(&self) -> Option<String> {
+    /// The selected text; with `plain`, the secrets hidden in it as they are.
+    fn selected_text(&self, plain: bool) -> Option<String> {
         let sel = self.selection.as_ref()?;
         let range = sel.range();
         if range.is_empty() {
             return None;
         }
-        let text = self.maps.borrow().get(&sel.surface)?.text_in(range);
+        let text = self.maps.borrow().get(&sel.surface)?.text_in(range, plain);
         (!text.is_empty()).then_some(text)
+    }
+
+    /// Whether the selection takes in a secret the chat hides.
+    fn selection_hides_secret(&self) -> bool {
+        self.selection.as_ref().is_some_and(|sel| {
+            self.maps
+                .borrow()
+                .get(&sel.surface)
+                .is_some_and(|m| m.hides_in(sel.range()))
+        })
+    }
+
+    /// Copies the selection. When it holds a hidden secret, the selection's
+    /// menu asks first whether to copy the secret or the text as shown.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selection_hides_secret() && self.menu_at.is_some() {
+            self.copy_asks = true;
+            cx.notify();
+            return;
+        }
+        // Without the menu to ask in, the copy is the text as shown.
+        if let Some(text) = self.selected_text(false) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Shows `values` in this view until it closes.
+    fn reveal(&mut self, values: Vec<String>, cx: &mut Context<Self>) {
+        if crate::redact::on() {
+            return;
+        }
+        for value in values {
+            if !self.shown.contains(&value) {
+                crate::redact::show(&value);
+                self.shown.insert(value);
+            }
+        }
+        // Shown text can wrap differently from the stars it replaces.
+        self.list.remeasure();
+        cx.notify();
+    }
+
+    fn reveal_handle(cx: &Context<Self>) -> Reveal {
+        Reveal(cx.weak_entity())
     }
 
     fn toggle_open(&mut self, entry: usize, cx: &mut Context<Self>) {
@@ -1457,9 +1571,9 @@ impl ThreadView {
         if ks.key == "c"
             && (ks.modifiers.control || ks.modifiers.platform)
             && !ks.modifiers.alt
-            && let Some(text) = self.selected_text()
+            && self.selected_text(false).is_some()
         {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.copy_selection(cx);
             cx.stop_propagation();
             return;
         }
@@ -2009,7 +2123,14 @@ impl ThreadView {
     ) -> AnyElement {
         let group: SharedString = format!("user-{ix}").into();
         let (typed, pastes) = super::attach::split_pastes(full);
-        let (typed, images) = super::attach::split_images(&typed, self.thread.read(cx).cwd());
+        let thread = self.thread.read(cx);
+        let (typed, images) = if thread.is_remote() {
+            // A server's files are not here: its mentions show the copies that came.
+            let fetched = thread.fetched_images();
+            super::attach::split_mentions(&typed, |m| fetched.get(m).cloned())
+        } else {
+            super::attach::split_images(&typed, thread.cwd())
+        };
         let single_image = images.len() == 1;
         let text = typed.as_str();
         let expanded = self.open.contains(&ix);
@@ -2056,7 +2177,7 @@ impl ThreadView {
                             .text_size(px(crate::ui::TEXT_LG))
                             .line_height(px(20.))
                             .text_color(theme::content())
-                            .when(!text.is_empty(), |d| d.child(self.user_text(ix, shown)))
+                            .when(!text.is_empty(), |d| d.child(self.user_text(ix, shown, cx)))
                             .when(!images.is_empty(), |d| {
                                 d.child(
                                     div()
@@ -2847,7 +2968,7 @@ fn notice_row(text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
             div()
                 .flex_1()
                 .min_w_0()
-                .child(crate::redact::text(text).into_owned()),
+                .child(crate::redact::chat_text(text).0.into_owned()),
         )
         .into_any_element()
 }

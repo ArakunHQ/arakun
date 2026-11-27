@@ -873,9 +873,9 @@ pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
     paths.extend(
         [
             crate::paths::state_file(),
-            crate::paths::store("sessions"),
-            crate::paths::store("linked"),
-            crate::paths::store("pastes"),
+            crate::paths::store(crate::paths::SESSIONS),
+            crate::paths::store(crate::paths::LINKED),
+            crate::paths::store(crate::paths::PASTES),
         ]
         .into_iter()
         .filter(|p| p.is_absolute()),

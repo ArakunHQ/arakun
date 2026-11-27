@@ -7,14 +7,16 @@
 use super::runs::{Report, ReportKind};
 use crate::cloud::{self, LinearActivity, LinearLinkOut};
 
-fn activity(kind: ReportKind) -> LinearActivity {
-    match kind {
+/// The activity a report is posted as, or None for one that is only a link.
+fn activity(kind: ReportKind) -> Option<LinearActivity> {
+    Some(match kind {
         ReportKind::Thought => LinearActivity::Thought,
         ReportKind::Elicitation => LinearActivity::Elicitation,
         ReportKind::Response => LinearActivity::Response,
         ReportKind::Error => LinearActivity::Error,
         ReportKind::Progress => LinearActivity::Progress,
-    }
+        ReportKind::Link => return None,
+    })
 }
 
 /// An id the server takes in a path. Any other would be refused before it is
@@ -75,8 +77,16 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
                 url: url.clone(),
             })
             .collect();
-        let kind = activity(r.kind);
-        match cloud::linear_activity(base, session, &r.agent_session, kind, &r.body, &links) {
+        let sent = match activity(r.kind) {
+            Some(kind) => {
+                let (to, body) = (&r.agent_session, &r.body);
+                cloud::linear_activity_with(base, session, to, kind, body, &links, &r.options)
+            }
+            // A link report without its link says nothing: it is let go.
+            None if links.is_empty() => Ok(()),
+            None => cloud::linear_session_links(base, session, &r.agent_session, &links),
+        };
+        match sent {
             Ok(()) => out.sent.push(r),
             Err(cloud::Error::Status { status, .. }) if refused_for_good(status) => {
                 out.dropped.push(r)
@@ -104,6 +114,7 @@ mod tests {
             kind: ReportKind::Thought,
             body: body.into(),
             link: None,
+            options: Vec::new(),
             made_at: 1,
         }
     }
@@ -131,6 +142,30 @@ mod tests {
             "{}",
             got[2]
         );
+    }
+
+    #[test]
+    fn a_link_report_adds_the_link_without_an_activity() {
+        let (base, rx) = serve(vec![(204, ""), (204, "")]);
+        let mut link = report("");
+        link.kind = ReportKind::Link;
+        link.link = Some("https://github.com/a/b/pull/1".into());
+        // One that lost its link is let go without a request.
+        let mut empty = report("");
+        empty.kind = ReportKind::Link;
+        let out = flush(&base, "s", vec![link, empty, report("after")]);
+        assert_eq!(out.sent.len(), 3);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got.len(), 2);
+        assert!(got[0].starts_with("POST /linear/sessions/as-1/links "));
+        assert!(
+            got[0].ends_with(
+                r#"{"links":[{"label":"Pull request","url":"https://github.com/a/b/pull/1"}]}"#
+            ),
+            "{}",
+            got[0]
+        );
+        assert!(got[1].starts_with("POST /linear/sessions/as-1/activity "));
     }
 
     #[test]

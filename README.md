@@ -736,16 +736,21 @@ after a week).
   *How many.* At most three such sessions run at once on a computer. More wait in a
   saved queue and start, in the order they came, as others finish. A queued issue
   is read again when it starts, so its text may have changed since you delegated
-  it.
+  it. A reply you send in Linear while it waits is kept (up to eight) and the
+  issue hears `Kept your message. The session on {computer} gets it when it
+  starts.`; Arakun keeps only which message it was, and reads its text from
+  Linear when the session starts.
 
   *What the issue hears.* Arakun writes to the issue as the work goes:
   `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
   `Waiting on {computer}: {n} other sessions from Linear are running. This one
-  starts when one finishes.`; a question from the session, with its choices one
-  per line; `Waiting for your permission: run a command. Answer it in Arakun or on
+  starts when one finishes.`; a question from the session, with its choices to
+  pick from when it is one question with one answer and two to ten short
+  choices (a pick reaches the session as if you had typed it), and otherwise
+  with its choices one per line; `Waiting for your permission: run a command. Answer it in Arakun or on
   your phone.` (only the kind of action, never the command or file; a permission
-  is never answered from Linear); the result, with the pull request's link when
-  one is known; `The session failed: {reason}` on a failure; and `Still working.`
+  is never answered from Linear); the result; the pull request's link, added to the
+  session in Linear as soon as Arakun knows it, also after the result; `The session failed: {reason}` on a failure; and `Still working.`
   after 25 quiet minutes. While the session works, the issue also shows the step it
   is on, such as Editing `src/main.rs`, Reading `README.md`, `Running a command` or
   `Searching the code`: only the kind of step and, for a file, its path in the
@@ -778,7 +783,8 @@ after a week).
   has no Linear sign-in for the workspace, the issue can't be read, an environment
   can't be made, or the same issue is already in work on this computer. If this
   computer is off, the server says so in the issue and keeps the delivery for up to
-  7 days; it starts when the computer is back.
+  7 days; it starts when the computer is back. A reply or a stop sent while this
+  computer is off is kept the same way, and the issue hears that it waits.
 
   *What goes where.* The Linear key of each workspace you connect goes to Arakun's
   server, to prove which Linear user you are, and the server does not store it. You
@@ -1158,6 +1164,19 @@ system. The choice is kept in `state.json` as `reduce_motion`.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
   them at once.
+
+### Secrets in sessions
+
+Keys, tokens, passwords and private keys an agent prints show as stars in a session: in
+replies, your prompts, tool rows and command output, diffs, permission cards and
+questions. A key keeps its first four characters (`sk-a****`), which say what it is.
+Click a hidden secret to show it in that session's view until the view closes. Copying
+text that holds one asks first: the copy button asks "Copy the secret too?" and copies
+on a second click, and the selection menu offers "Copy as shown" or "Copy with secret".
+
+Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept as a
+`show-secrets` file in Arakun's data folder while it is off. Redacted mode hides more
+(see below), and a click there shows nothing.
 
 ### Redacted mode
 
@@ -1870,15 +1889,23 @@ reach each other this way. There are two ways to use it:
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
   Every paired server also mirrors this computer: when it connects, and after each
-  install here, it adds the plugins (and their marketplaces), the user MCP servers,
-  the skills from skills.sh and the MCP sign-ins it lacks. What you installed in a repo
+  install here, it adds the plugins (and their marketplaces), the user MCP servers
+  and the skills from skills.sh it lacks. What you installed in a repo
   just for you is added to the server's folders that have the same `origin`; what you
-  shared with the repo goes with git. It never removes anything,
-  and keeps a sign-in of its own that lasts longer. Over plain http only plugins
-  and skills go. A server on macOS does not take sign-ins, which Claude keeps in the
-  Keychain there. The skills installed from skills.sh are listed in
-  `skills-installed.json` in arakun's folder, and what was installed in a repo in
-  `repo-installs.json`.
+  shared with the repo goes with git. It never removes anything you installed.
+  Over plain http only plugins and skills go.
+  Your MCP sign-ins (Claude Code's tokens for the MCP servers you signed in to) go
+  only to a server you let have them: pairing by link asks, and the answer is no
+  unless you change it. **Copy MCP sign-ins** in the server's Settings in the
+  Computers tab changes it later, and the server's card says when it holds a copy.
+  Turning it off takes the copy off the server when it next connects, and so does
+  removing the server, or unpairing this app on it. A server paired before pairing
+  asked keeps getting them until you turn it off. The server keeps a sign-in of its
+  own that lasts longer, and lists which device copied each sign-in in
+  `sign-ins-copied.json` in arakun's folder. A server on macOS does not take
+  sign-ins, which Claude keeps in the Keychain there. The skills installed from
+  skills.sh are listed in `skills-installed.json` in arakun's folder, and what was
+  installed in a repo in `repo-installs.json`.
   To add a folder on a server, press **Add a folder** on it in the Computers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
@@ -1971,7 +1998,8 @@ arakun-server service install   # keep it running; see Keep it running
   the app does: it reads the issue with the workspace's Linear key the app gave it,
   checks the mapping, makes a worktree on the issue's branch under
   `~/arakun-workspaces/`, and starts a session there with the project's agent that
-  ends in a draft pull request. At most three run at once; the rest wait. Replies
+  ends in a draft pull request. At most three run at once; the rest wait, and a
+  reply to one that waits is kept for when it starts. Replies
   and stops from Linear reach the session (a reply that starts with `!` interrupts
   the turn), and the issue hears what it does. It needs the
   sign-in (`login`) and the relay. `linear-runs.json` in its folder holds the

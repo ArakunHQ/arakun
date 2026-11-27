@@ -8,5 +8,5 @@ use std::path::PathBuf;
 
 /// Where the app keeps its headless sessions. The sandbox hides it from agents.
 pub fn root() -> PathBuf {
-    crate::paths::shared("headless")
+    crate::paths::store(crate::paths::HEADLESS)
 }

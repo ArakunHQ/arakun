@@ -19,7 +19,7 @@ pub struct SavedPrompt {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("prompts.json")
+    crate::paths::store(crate::paths::PROMPTS)
 }
 
 pub fn load() -> Vec<SavedPrompt> {

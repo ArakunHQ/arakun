@@ -1148,38 +1148,50 @@ fn clip_saved(text: &str, max: usize, path: &str, bytes: usize, newlines: usize)
 const CUT_DAYS: u64 = 7;
 const CUT_BYTES: u64 = 64 << 20;
 
-/// Where `keep_cut` keeps a session's cut results: on this machine, and as the
-/// model's tools see it. In a sandbox that is its `/tmp`, the only place both
-/// see; outside, a folder beside the session's file.
-fn cut_dir(sid: &str) -> Option<(PathBuf, String)> {
-    match sandbox() {
-        Some(j) => {
-            let s = j.sandbox.as_ref().unwrap();
-            let shown = s.shown_tmp().join("arakun-cut").display().to_string();
-            Some((s.tmp.join("arakun-cut"), shown))
-        }
-        None => {
-            let dir = Session::path(sid)?.with_extension("cut");
-            let shown = dir.display().to_string();
-            Some((dir, shown))
-        }
-    }
-}
-
-/// The file a call's whole result goes in, made ready: the folder there and
-/// within its bounds. `None` when it can't be.
+/// The file a call's whole result goes in: on this machine, and as the
+/// model's tools see it. `None` when it can't be had.
+///
+/// In a sandbox that is its `/tmp`, the only place both see. The model can
+/// write there, so the file goes straight in it, with no folder it could swap
+/// for a link, and is opened only as a new file ([`create_new_private`]).
+/// Nothing there is swept: it goes with the session's sandbox. Outside, it
+/// goes in a folder beside the session's file, kept within bounds.
 fn cut_file(sid: &str, call_id: &str) -> Option<(PathBuf, String)> {
-    let (dir, shown) = cut_dir(sid)?;
-    crate::durable::create_private_dir(&dir).ok()?;
-    sweep_cut(&dir);
     let name: String = call_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(60)
         .collect();
-    let name = format!("{}.txt", if name.is_empty() { "call" } else { &name });
-    let shown = format!("{shown}{}{name}", std::path::MAIN_SEPARATOR);
-    Some((dir.join(name), shown))
+    let name = format!("arakun-cut-{name}.txt");
+    match sandbox() {
+        Some(j) => {
+            let s = j.sandbox.as_ref().unwrap();
+            let shown = s.shown_tmp().join(&name).display().to_string();
+            Some((s.tmp.join(name), shown))
+        }
+        None => {
+            let dir = Session::path(sid)?.with_extension("cut");
+            crate::durable::create_private_dir(&dir).ok()?;
+            sweep_cut(&dir);
+            let path = dir.join(name);
+            let shown = path.display().to_string();
+            Some((path, shown))
+        }
+    }
+}
+
+/// Opens `path` as a new file only its owner may read. It fails when anything
+/// is there already, a link included, so a link the model left in a folder it
+/// can write never sends the write elsewhere.
+fn create_new_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Drops the files in `dir` older than [`CUT_DAYS`], then the oldest until the
@@ -1245,7 +1257,7 @@ fn clip_result(sid: &str, call_id: &str, text: &str) -> String {
     let Some((host, shown)) = cut_file(sid, call_id) else {
         return clip_middle(text, max);
     };
-    let written = crate::durable::open_private_log(&host, true).and_then(|mut f| {
+    let written = create_new_private(&host).and_then(|mut f| {
         use std::io::Write as _;
         f.write_all(text.as_bytes())
     });
@@ -1573,7 +1585,7 @@ impl Spool {
             if self.mem.len() <= tool_chars() {
                 return;
             }
-            match crate::durable::open_private_log(&self.host, true) {
+            match create_new_private(&self.host) {
                 Ok(f) => self.file = Some(f),
                 Err(_) => {
                     self.failed = true;
@@ -4028,6 +4040,24 @@ mod tests {
             "{out}"
         );
         assert!(out.contains(&format!("{} bytes cut", tail - head)), "{out}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cut_file_is_never_written_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("arakun-cut-link-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target");
+        std::fs::write(&target, "keep me").unwrap();
+        let link = dir.join("arakun-cut-x.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(create_new_private(&link).is_err());
+        let mut spool = Spool::at(link, "/p".into());
+        spool.push(&"a".repeat(tool_chars() + 1));
+        spool.finish();
+        assert_eq!(spool.saved(), None);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Feedback from the app (bug reports, feature requests, UX notes and the
 // rest) as Linear customer requests. The app cannot hold a Linear key, since
 // anyone could read it out of the binary, so it posts here and the Worker

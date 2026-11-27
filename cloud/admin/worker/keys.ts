@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Operators' authenticator keys, kept by the cloud Worker at
 // /admin/operators/<github_id>/totp (../../src/admin_totp.ts), sealed here
 // first. The browser never reaches those routes: worker/proxy.ts refuses them.

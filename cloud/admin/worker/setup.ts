@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Operators set up their own authenticator app, in two places:
 //
 // - At the first sign-in: GitHub said who this is and there is no key yet,

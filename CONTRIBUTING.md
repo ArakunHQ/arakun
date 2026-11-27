@@ -587,7 +587,8 @@ which stacks don't support), do the same with Git and `gh pr`:
 
 By contributing you agree that your contribution is released under the
 [GNU Affero General Public License v3.0](LICENSE), in addition to the grants in
-the [CLA](CLA.md). The exception is `cloud/machine/`, the cloud machine container
-image: a contribution there is released under the
-[PolyForm Noncommercial License 1.0.0](cloud/machine/LICENSE), and only Arakun may
-sell it or use it commercially.
+the [CLA](CLA.md). The exception is `cloud/`, Arakun's cloud (the cloud Worker, the
+admin panel and the cloud machine container image): a contribution there is released
+under the [PolyForm Noncommercial License 1.0.0](cloud/LICENSE), and only Arakun may
+sell it or use it commercially. Start every new file there with the SPDX line the
+others have, and don't copy code between `cloud/` and the rest of the repository.

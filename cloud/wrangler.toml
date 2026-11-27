@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # Arakun's cloud, one Worker: the relay phones reach a computer through (one
 # Durable Object per computer, the phone page served as static assets), and
 # the teams API (sign-in with GitHub, per-user feature flags and the teams of

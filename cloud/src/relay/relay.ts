@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // One computer's relay: its socket and its devices' sockets. Sockets hibernate
 // between messages, so everything a socket is lives in its attachment, and
 // what the claim established in storage.

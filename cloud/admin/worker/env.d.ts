@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The bindings wrangler.toml gives the Worker, in the shape the test runner's
 // `env` is typed with.
 declare namespace Cloudflare {

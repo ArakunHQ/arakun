@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Prints a panel session cookie for a local run, so screenshots need no GitHub
 // OAuth App and no authenticator code: `node scripts/dev-cookie.mjs 1001 octo`.
 // It signs with SESSION_SECRET from .dev.vars, as signSession in

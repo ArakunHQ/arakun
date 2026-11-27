@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The arithmetic of cloud machine metering: months, limits, and what the owner
 // reads. The lifecycle that uses it is in cloud_machine.test.ts.
 import { env } from "cloudflare:test";

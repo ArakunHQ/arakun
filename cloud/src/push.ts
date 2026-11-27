@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The push service for the native apps. A browser brings its own push service;
 // the iOS and Android apps can only be woken through Apple (APNs) and Google
 // (FCM), and only with Arakun's credentials, which cannot sit on every

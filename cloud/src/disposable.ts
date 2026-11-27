@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Mail domains that hand out throwaway inboxes. An address there gets no
 // sign-in code: an account made with one would be gone with the inbox, and
 // such accounts are how free cloud would be farmed. The operator adds more

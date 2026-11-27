@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Metering of cloud machines by awake time. The clock runs from a container's
 // start to the stop after its snapshot, and not while it sleeps on one. The
 // machine's object (cloud_machine.ts) adds what ran to `cloud_usage` at every

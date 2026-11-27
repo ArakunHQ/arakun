@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../worker/index";
 import { CODE_STEP_COOKIE, SESSION_COOKIE } from "../worker/session";

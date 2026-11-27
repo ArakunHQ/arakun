@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Devices, teams, invites, envelopes, members and channels: the endpoints of
 // PROTOCOL.md. Every one needs a session and the user's `teams` flag. Team
 // endpoints answer 404 to non-members, so a team's existence does not leak,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The one way the panel talks to its Worker. The Worker answers /api/me itself
 // and forwards the rest of /api/* to the cloud Worker, so every error comes as
 // JSON { error } from one of the two, or from Cloudflare in front of them.

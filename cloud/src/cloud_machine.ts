@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A cloud machine: `arakun-server` in a container we run for an account with
 // the `cloud` flag. One object per machine, named by its relay label, drives
 // the container through `ctx.container` under the `durable_object` scheduling

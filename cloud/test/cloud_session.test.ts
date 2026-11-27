@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Cloud sessions: made only by the Worker for one machine we host, and good
 // only at that machine's computer door.
 import { env } from "cloudflare:test";

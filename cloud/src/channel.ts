@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // One channel's messages, `seq` and live sockets: a SQLite-backed Durable
 // Object per channel, named `<team_id>/<channel_id>`.
 //

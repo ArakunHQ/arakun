@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # Runs an agent's ACP adapter, or its CLI, as `agent`, called as root by
 # machine/run through sudo. The capabilities go before the user changes, bounding set
 # included, so nothing the agent starts can get them back; no_new_privs keeps

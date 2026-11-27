@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";

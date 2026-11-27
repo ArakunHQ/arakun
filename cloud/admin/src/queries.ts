@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Every read and change of the panel. A change invalidates the reads it
 // touches, always the log, and never edits the cache by hand: the server's
 // answer after the change is the truth.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { MIN_NEW_ACCOUNT_ID } from "../src/auth";

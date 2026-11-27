@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { avatarUrl } from "../format";
 
 /// The avatar of the GitHub user linked to an account. An account with none

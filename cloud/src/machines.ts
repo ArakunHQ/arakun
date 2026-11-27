@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The account's machines, and the two doors to the relay. A computer comes in
 // at /machines/<label>/pc with its account's session and registers the label
 // to the account when it claims; a device comes in at /machines/<label>/ws

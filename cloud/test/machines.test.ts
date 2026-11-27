@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The account's machines: listing and forgetting them, and how a signed-out
 // session, a forgotten machine or a foreign page ends or stops a socket.
 import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";

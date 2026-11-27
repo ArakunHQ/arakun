@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Linear's tokens are stored sealed: AES-GCM under LINEAR_TOKEN_KEY, with the
 // organization id as additional data, so a token copied to another
 // workspace's row does not open.

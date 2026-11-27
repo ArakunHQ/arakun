@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { authCallback, authCode, authStart, logout } from "./auth";
 import { page, proxy } from "./proxy";
 import { setupFinish, setupStart } from "./setup";

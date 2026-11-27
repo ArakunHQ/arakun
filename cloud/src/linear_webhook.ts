@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // POST /linear/webhook: Linear tells Arakun that someone delegated an issue to
 // it, mentioned it, or wrote in its session; or that it was unassigned, its
 // issue closed, or its access taken away, which stops the session. It carries

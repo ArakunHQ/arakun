@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The record of what the operator changed: one row per change, kept by
 // `record()` and read at GET /admin/log. Nothing here edits or deletes a row.
 //

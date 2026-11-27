@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What KV says about how much an account and its machines may do, and whether
 // the relay is open at all. Reading KV instead of baking numbers in lets the
 // limits move without a deploy. Reads are few: one or two per socket opened,

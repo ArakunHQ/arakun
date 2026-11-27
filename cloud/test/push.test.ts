@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The push service for the native apps (src/push.ts): what a computer's Web
 // Push request turns into at Apple and Google, and what comes back.
 import { env } from "cloudflare:test";

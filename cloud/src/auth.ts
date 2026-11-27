@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sign-in: the desktop app runs GitHub's device flow itself and hands us the
 // user access token once. We ask GitHub whether our OAuth App issued it and
 // to whom, keep only the numeric ID and the login, and answer with a session

@@ -1,6 +1,7 @@
 {
   "name": "arakun-admin",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Arakun's operator panel: a Worker that signs operators in with GitHub and serves a React page that calls the cloud Worker's admin API.",
   "type": "module",
   "scripts": {

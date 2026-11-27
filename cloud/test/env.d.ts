@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What vitest.config.ts adds to the Worker's bindings for the tests.
 declare namespace Cloudflare {
   interface Env {

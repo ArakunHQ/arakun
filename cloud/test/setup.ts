@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Runs before each test file: the tables from migrations/ and the relay's KV,
 // emptied before each test, and GitHub and Email Sending replaced by the
 // fakes in helpers.ts.

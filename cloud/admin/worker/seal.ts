@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sealing for what leaves this Worker and must come back unread and unchanged:
 // an operator's authenticator key in the cloud Worker's database, and a new
 // key in the setup cookie. AES-256-GCM with a key derived from SESSION_SECRET,

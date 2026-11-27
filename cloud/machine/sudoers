@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # The server's user may start the agents' adapters and CLIs, as as-agent does
 # it, and nothing else. SETENV: an adapter needs the variables the server gives it.
 Defaults:arakun !lecture

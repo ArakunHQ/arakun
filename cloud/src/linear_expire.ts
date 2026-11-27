@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What happens to a Linear delivery the computer never took. It lives apart
 // from linear.ts because the relay calls it, and linear.ts reaches the relay
 // through machines.ts: importing it from the relay would make a cycle.

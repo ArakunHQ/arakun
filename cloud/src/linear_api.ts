@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Calls to Linear as the installed Arakun app: the OAuth token endpoint and
 // the GraphQL API. Nothing here logs or reports a token; an error carries the
 // HTTP status and Linear's error code only.

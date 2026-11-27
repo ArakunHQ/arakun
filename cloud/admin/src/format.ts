@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Times on the wire are Unix seconds; these turn them into words.
 
 const MINUTE = 60;

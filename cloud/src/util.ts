@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 export type Env = Cloudflare.Env;
 
 export const DAY = 24 * 60 * 60;

@@ -224,10 +224,11 @@ Arakun is free software under the [GNU Affero General Public License v3.0](LICEN
 (Karlo Aldrete). Contributions require signing the [CLA](CLA.md); see
 [CONTRIBUTING.md](CONTRIBUTING.md). Third-party notices are in [NOTICE](NOTICE).
 
-The cloud machine container image in [`cloud/machine/`](cloud/machine/) has its own
-license, the [PolyForm Noncommercial License 1.0.0](cloud/machine/LICENSE): you may
-use, change and share it for noncommercial purposes, and only Arakun may sell it or
-use it commercially. `arakun-server`, which it runs, stays AGPL-3.0.
+Arakun's cloud in [`cloud/`](cloud/) (the cloud Worker with the relay and sign-in,
+the admin panel and the cloud machine container image) has its own license, the
+[PolyForm Noncommercial License 1.0.0](cloud/LICENSE): you may use, change and share
+it for noncommercial purposes, and only Arakun may sell it or offer it as a paid or
+hosted service. The app, `arakun-server` and the phone page stay AGPL-3.0.
 
 <div align="center">
 <br>

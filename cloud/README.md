@@ -71,8 +71,7 @@ cloud/
   src/cloud_meter.ts    awake time of cloud machines: the monthly allowance, the
                         task cap and the operator's switches
   machine/              the cloud machine's image: Dockerfile, entrypoint and the
-                        wrapper that runs agents as their own user. Noncommercial
-                        license (machine/LICENSE), not AGPL-3.0
+                        wrapper that runs agents as their own user
   src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the
@@ -97,6 +96,12 @@ cloud/
                         "The admin panel"); its own package, wrangler.toml and tests
 ```
 
+
+Everything in this folder is under the
+[PolyForm Noncommercial License 1.0.0](LICENSE), not the AGPL-3.0 of the rest of the
+repository: you may run, change and share it for noncommercial purposes, and only
+Arakun may sell it or offer it as a paid or hosted service. The phone page it serves
+(`../phone/`) and `arakun-server`, which a cloud machine runs, stay AGPL-3.0.
 ## Teams
 
 D1 holds what is small and relational: users, devices, teams, members, invites,
@@ -465,6 +470,9 @@ The compatibility date is after 2026-04-07, so the runtime answers a WebSocket
 client's close by itself; `src/channel.ts` relies on that.
 
 ## Relay: hosting your own
+
+You may host your own for noncommercial use; to run it as a paid or hosted service,
+ask Arakun for a commercial license (see [LICENSE](LICENSE)).
 
 One deploy of this Worker serves every computer and every device of every account,
 on any host, `workers.dev` included. Labels travel in the path, so there is one

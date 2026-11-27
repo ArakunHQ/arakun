@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Access to cloud environments. They run on CPU we pay for, so they are given
 // by hand, one grant per GitHub account: a person with many accounts must not
 // get many allowances. An account asks here; the operator grants or declines

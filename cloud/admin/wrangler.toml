@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # Arakun's operator panel, a second Worker: it signs operators in with GitHub,
 # forwards /api/* to the cloud Worker over the CLOUD service binding, and
 # serves the React page that vite builds into dist/client.

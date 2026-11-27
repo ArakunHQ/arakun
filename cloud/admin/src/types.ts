@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The JSON the panel reads, field for field as the Workers write it:
 // /api/me from worker/index.ts, the rest from the cloud Worker's
 // src/admin_lists.ts, src/admin_log.ts, src/cloud_access.ts, src/beta.ts and

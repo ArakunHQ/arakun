@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Confirm } from "./Confirm";

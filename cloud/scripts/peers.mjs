@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A fake computer and two fake devices against a running Worker, to see the
 // relay work end to end before Arakun itself speaks the protocol.
 //

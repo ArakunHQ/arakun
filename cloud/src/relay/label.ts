@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A computer's label: the first level of its host, derived from its public key
 // so nobody can claim a label that is not theirs. SHA-256 of the raw P-256 point
 // (65 bytes), the first 80 bits, base32 in lower case: 16 characters.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { exact, relative } from "../format";
 
 /// A Unix time as "3 days ago", with the exact time on hover.

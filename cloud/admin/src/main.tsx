@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // First: in dev, the Worker's page policy blocks the inline script that sets
 // up React's hot reload, so this module does it. In a build it is empty.
 import "@vitejs/plugin-react/preamble";

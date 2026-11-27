@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The account host: sign-in with GitHub or an emailed code, sessions, per-user feature flags, the
 // account's machines and their relay sockets, and the teams of PROTOCOL.md.
 // There is no CORS: the app and the page on this same host call it. Every

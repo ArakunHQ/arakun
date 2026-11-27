@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A computer and devices made of WebCrypto and signed-in accounts, talking to
 // the Worker under test.
 import { SELF, env, runInDurableObject } from "cloudflare:test";

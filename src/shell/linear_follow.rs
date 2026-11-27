@@ -148,7 +148,7 @@ impl Shell {
             // Signed out of Arakun meanwhile: not handled. It is kept, or the
             // relay sends it again, for when there is an account to accept
             // it with. The text is read again then.
-            self.linear_keep(d.clone(), cx);
+            self.linear_keep_first(d.clone(), cx);
         } else if !Delegation::load().enabled {
             // Turned off while the text was read.
             self.linear_turn_away(&d, reply_off_line(&computer()), cx);
@@ -264,16 +264,17 @@ impl Shell {
             }
             // What the message waits behind, before it starts a turn itself.
             let waits = (pending_in(t), t.is_busy());
-            if interrupt {
+            // Already stopping, `interrupt_with` cancels nothing more: the
+            // reply goes as soon as the turn stopped.
+            let first =
+                interrupt || jumps_paused_queue(t.is_busy(), t.is_cancelling(), t.queue_paused());
+            if first {
                 t.interrupt_with(text, cx);
             } else {
                 t.send(text, cx);
             }
             // The cancelled turn still winds down: its end is not the run's.
-            (
-                waits,
-                interrupt && waits.1 && t.is_busy() && t.is_cancelling(),
-            )
+            (waits, first && waits.1 && t.is_busy() && t.is_cancelling())
         });
         let (waits, winding_down) = waits;
         if let Some(s) = self.session_mut(&env, &sid) {

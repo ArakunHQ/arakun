@@ -32,6 +32,9 @@ pub(super) struct LinearSync {
     /// The session of the Arakun account last seen, flag or not, to tell
     /// when the installs the page learned belong to another account.
     seen: Option<String>,
+    /// The Arakun account last loaded, by server and GitHub id: what was
+    /// kept under it is not handled under another one.
+    owner: Option<(String, u64)>,
 }
 
 /// What one run learned, and the call that stopped it, if one did.
@@ -281,6 +284,16 @@ impl Shell {
                 .update(cx, |v, cx| v.set_installed(&[], cx));
         }
         let teams = self.teams.read(cx);
+        let owner = teams.account().map(|a| (a.base, a.github_id));
+        if kept_for_another(self.linear_sync.owner.as_ref(), owner.as_ref()) {
+            // Kept while signed out of the last account, or over the read
+            // limit: the server would refuse this one's accepts and reports
+            // for them, after a session started here.
+            self.linear_kept.clear();
+        }
+        if owner.is_some() {
+            self.linear_sync.owner = owner;
+        }
         let now = teams
             .account()
             .filter(|_| teams.linear_enabled())
@@ -480,10 +493,30 @@ pub fn outcome(e: &cloud::Error) -> Sync {
     }
 }
 
+/// Whether the account loaded now is another one than the last one loaded.
+/// None now is a sign-out, not another account: the same one may come back.
+fn kept_for_another(last: Option<&(String, u64)>, now: Option<&(String, u64)>) -> bool {
+    matches!((last, now), (Some(last), Some(now)) if last != now)
+}
+
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
     use crate::linear::delegation::{Kind, Mapping};
+
+    #[test]
+    fn kept_deliveries_go_only_when_another_account_loads() {
+        let a = ("https://arakun.dev".to_string(), 1);
+        let b = ("https://arakun.dev".to_string(), 2);
+        let a_elsewhere = ("http://localhost:8787".to_string(), 1);
+        // The first account since Arakun started takes what came before it.
+        assert!(!kept_for_another(None, Some(&a)));
+        // Signed out, or back as the same account: they stay.
+        assert!(!kept_for_another(Some(&a), None));
+        assert!(!kept_for_another(Some(&a), Some(&a)));
+        assert!(kept_for_another(Some(&a), Some(&b)));
+        assert!(kept_for_another(Some(&a), Some(&a_elsewhere)));
+    }
 
     fn mapping(workspace: &str, kind: Kind, target: &str, path: &str) -> Mapping {
         Mapping {

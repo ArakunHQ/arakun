@@ -15,7 +15,8 @@ const REASON_LIMIT: usize = 300;
 /// Linear, in place of its text.
 pub const HIT_AN_ERROR: &str = "Arakun hit an error.";
 
-/// Deliveries kept while the Arakun account is not loaded yet.
+/// Deliveries kept in memory: while the Arakun account is not loaded yet,
+/// or while [`MAX_READS`] issues are being read.
 pub const KEPT: usize = 50;
 
 /// New issues read from Linear at once. A computer back after days can get
@@ -31,6 +32,23 @@ pub fn keep(kept: &mut Vec<Delivery>, d: Delivery) {
     kept.push(d);
     let extra = kept.len().saturating_sub(KEPT);
     kept.drain(..extra);
+}
+
+/// Keeps `d` ahead of the others: a delegation that was read already and is
+/// kept again, so a stop or a reply kept behind it still comes after it.
+/// Beyond [`KEPT`] the newest go.
+pub fn keep_first(kept: &mut Vec<Delivery>, d: Delivery) {
+    if kept.iter().any(|k| k.id == d.id) {
+        return;
+    }
+    kept.insert(0, d);
+    kept.truncate(KEPT);
+}
+
+/// Whether `agent_session` has a delivery kept: one more for it is kept
+/// behind it, or a stop would find no run and the delegation start anyway.
+pub fn waits_behind(kept: &[Delivery], agent_session: &str) -> bool {
+    kept.iter().any(|k| k.agent_session == agent_session)
 }
 
 /// What becomes of the kept deliveries when the account changes.
@@ -351,6 +369,37 @@ mod tests {
         // One that fell off is new again.
         keep(&mut kept, delivery("d0"));
         assert_eq!((kept.len(), kept[KEPT - 1].id.as_str()), (KEPT, "d0"));
+    }
+
+    #[test]
+    fn a_delegation_kept_again_goes_first() {
+        let mut kept = Vec::new();
+        // A stop came while its delegation was read, then the read ended
+        // signed out: the delegation must still come before its stop.
+        let stop = Delivery {
+            kind: DeliveryKind::Stop,
+            agent_session: "as-d1".into(),
+            ..delivery("s1")
+        };
+        keep(&mut kept, stop);
+        keep_first(&mut kept, delivery("d1"));
+        keep_first(&mut kept, delivery("d1"));
+        let ids: Vec<&str> = kept.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["d1", "s1"]);
+        // Full: the newest go, not the one put first.
+        for i in 0..KEPT {
+            keep(&mut kept, delivery(&format!("x{i}")));
+        }
+        keep_first(&mut kept, delivery("d2"));
+        assert_eq!((kept.len(), kept[0].id.as_str()), (KEPT, "d2"));
+    }
+
+    #[test]
+    fn a_follow_up_waits_behind_what_is_kept_for_its_agent_session() {
+        let kept = vec![delivery("d1")];
+        assert!(waits_behind(&kept, "as-d1"));
+        assert!(!waits_behind(&kept, "as-d2"));
+        assert!(!waits_behind(&[], "as-d1"));
     }
 
     #[test]

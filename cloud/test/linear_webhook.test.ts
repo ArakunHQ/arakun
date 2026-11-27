@@ -19,6 +19,8 @@ const TEAM = "33333333-3333-4333-8333-333333333333";
 const TEAM2 = "33333333-3333-4333-8333-444444444444";
 const PROJECT = "44444444-4444-4444-8444-444444444444";
 const ACCESS = "lin_oauth_ws";
+const COMMENT = "88888888-8888-4888-8888-888888888888";
+const SESSION2 = "55555555-5555-4555-8555-111111111111";
 
 type Hook = { text: string; headers: Record<string, string> };
 
@@ -150,6 +152,24 @@ describe("Linear's webhook", () => {
     });
     expect(rows[0]!["id"]).toMatch(/^[0-9a-f]{32}$/);
     expect(rows[0]!["announced_at"]).toBeTypeOf("number");
+  });
+
+  it("passes the id of the comment that mentioned Arakun, never its text", async () => {
+    const { me, pc } = await linkedComputerWithRoute({ team: TEAM });
+    const comment = { id: COMMENT, body: "SECRET-MENTION only do the migration", userId: LU };
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION, comment })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "created", comment: COMMENT, body: null });
+    const everything = (await dump(env.DB)) + (await storedAll(me.label));
+    expect(everything).not.toMatch(/SECRET-/);
+  });
+
+  it("a delegation, or a comment id that is not one, passes no comment", async () => {
+    const { pc } = await linkedComputerWithRoute({ team: TEAM });
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", comment: null });
+    const odd = created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION2, comment: { id: "x".repeat(80) } });
+    expect((await send(signedWebhook(odd))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", agent_session: SESSION2, comment: null });
   });
 
   it("takes a project route too", async () => {

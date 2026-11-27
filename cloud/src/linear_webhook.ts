@@ -52,6 +52,8 @@ interface Hook {
   agentSessionId: string;
   creatorId: string | null;
   issueId: string | null;
+  /// The comment that mentioned Arakun, when a mention started the session.
+  commentId: string | null;
 }
 
 const ok = () => new Response(null, { status: 200 });
@@ -114,6 +116,7 @@ async function handle(env: Env, event: string | null, parsed: Record<string, unk
     agentSessionId: session["id"],
     creatorId: typeof session["creatorId"] === "string" && session["creatorId"] !== "" ? session["creatorId"] : null,
     issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
+    commentId: commentOf(session),
   };
   return action === "created" ? await delegated(env, hook, guidanceOf(parsed)) : await followUp(env, hook, parsed);
 }
@@ -126,6 +129,15 @@ function lasting(e: unknown): boolean {
 
 function isUuid(v: unknown): v is string {
   return typeof v === "string" && UUID.test(v);
+}
+
+/// The id of the comment that mentioned Arakun, or null when a delegation
+/// started the session. Linear's schema has it as `commentId` and again as
+/// `comment.id`. Only the id goes on: the computer reads the text from Linear.
+function commentOf(session: Record<string, unknown>): string | null {
+  const comment = session["comment"];
+  const id = session["commentId"] ?? (isObject(comment) ? comment["id"] : undefined);
+  return isUuid(id) ? id : null;
 }
 
 /// A follow-up's text goes to the computer only up to this length. A longer
@@ -227,6 +239,7 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
     issue: row.issue_id,
     organization: row.organization_id,
     activity: row.activity_id,
+    comment: null,
     created: row.created_at,
   };
   let online: boolean;
@@ -349,6 +362,8 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
     issue: row.issue_id,
     organization: row.organization_id,
     activity: null,
+    // From the signed body, as a retry carries the same one.
+    comment: hook.commentId,
     created: row.created_at,
   };
   let online: boolean;

@@ -966,11 +966,13 @@ function isObj(v: unknown): v is Record<string, unknown> {
 /// is stored with it; null when any field is off.
 function parseDelivery(v: unknown): Delivery | null {
   if (!isObj(v)) return null;
-  const { id, kind, agent_session, issue, organization, activity, created, reason = null } = v;
+  const { id, kind, agent_session, issue, organization, activity, comment, created, reason = null } = v;
   if (typeof id !== "string" || !DELIVERY_ID.test(id)) return null;
   if (typeof kind !== "string" || !DELIVERY_KINDS.includes(kind)) return null;
   for (const u of [agent_session, issue, organization]) if (typeof u !== "string" || !UUID.test(u)) return null;
   if (activity !== null && (typeof activity !== "string" || !UUID.test(activity))) return null;
+  // Absent in a delivery from a Worker before the field.
+  if (comment !== undefined && comment !== null && (typeof comment !== "string" || !UUID.test(comment))) return null;
   if (typeof created !== "number" || !Number.isSafeInteger(created) || created <= 0) return null;
   // Only a stop has a reason.
   if (reason !== null && (kind !== "stop" || typeof reason !== "string" || !STOP_REASONS.includes(reason))) return null;
@@ -982,6 +984,7 @@ function parseDelivery(v: unknown): Delivery | null {
     organization: organization as string,
     activity,
     reason: reason as StopReason | null,
+    comment: comment ?? null,
     created,
   };
 }
@@ -1018,6 +1021,7 @@ function linearMessage(d: Delivery, body: string | null, guidance: GuidanceRule[
     organization: d.organization,
     activity: d.activity,
     reason: d.reason ?? null,
+    comment: d.comment ?? null,
     body,
     guidance,
   };

@@ -61,7 +61,7 @@ impl LinearView {
         self.detail.start(
             cx,
             |this| &mut this.detail,
-            async move { linear::issues::detail(&s, &issue) },
+            async move { linear::issues::detail(&s, &issue, None) },
             move |this, got, _| {
                 if this.open.as_deref() != Some(id.as_str())
                     || this.current_id().as_deref() != Some(session.as_str())

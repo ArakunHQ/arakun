@@ -776,6 +776,7 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            plan: None,
             linked: None,
             kept: Vec::new(),
             comment: None,

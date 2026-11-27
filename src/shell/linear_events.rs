@@ -44,11 +44,17 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let event = match ev {
-            ThreadEvent::EntriesChanged { .. } => return self.linear_progress(id, thread, cx),
+            ThreadEvent::EntriesChanged { .. } => {
+                self.linear_plan(id, thread, false, cx);
+                return self.linear_progress(id, thread, cx);
+            }
             ThreadEvent::StatusChanged | ThreadEvent::NeedsPermission => Event::Status,
             ThreadEvent::Finished { stop_reason } => Event::Finished(stop_reason),
             _ => return,
         };
+        // Before the run moves on: the plan a turn ends with goes ahead of
+        // its reply, whatever the rate.
+        self.linear_plan(id, thread, true, cx);
         if self.linear_runs.by_session(id).is_none() {
             return;
         }
@@ -119,6 +125,28 @@ impl Shell {
         if effect.frees {
             self.linear_start_waiting(window, cx);
         }
+    }
+
+    /// The agent's plan, for its issue to show as the session's checklist.
+    /// Linear hears a change at most every `PLAN_SECS` while the turn goes
+    /// on, and at once when `ends`: the turn ended or its status changed.
+    fn linear_plan(
+        &mut self,
+        id: &str,
+        thread: &Entity<Thread>,
+        ends: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.linear_runs.by_session(id).is_none() {
+            return;
+        }
+        let Some(plan) = plan_items(thread.read(cx).entries()) else {
+            return;
+        };
+        let Some(agent_session) = self.linear_runs.plan(id, &plan, unix_now(), ends) else {
+            return;
+        };
+        self.linear_report_plan(&agent_session, plan, cx);
     }
 
     /// The step a working delegated session is on, for its issue to show

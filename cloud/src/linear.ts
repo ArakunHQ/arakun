@@ -14,9 +14,11 @@
 //                         → the computer took a delivery
 //   POST /linear/sessions/<agent_session>/activity
 //   POST /linear/sessions/<agent_session>/links
+//   PUT /linear/sessions/<agent_session>/plan
 //                         → the computer's progress, posted as Arakun. The
 //                           activity that says the session started also
-//                           marks the issue as being worked on.
+//                           marks the issue as being worked on. A plan
+//                           replaces the session's whole checklist.
 //
 // Without all four LINEAR_* secrets, or with a LINEAR_TOKEN_KEY that is not 32
 // bytes of base64url, every /linear path is a 404. All routes
@@ -24,7 +26,7 @@
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
-import { addLinks, exchangeCode, LinearRefused, postAction, postActivity, saveWorkspace, startIssue, UUID, viewer } from "./linear_api";
+import { addLinks, exchangeCode, LinearRefused, postAction, postActivity, saveWorkspace, setPlan, startIssue, UUID, viewer, type PlanItem } from "./linear_api";
 import { keyUsable } from "./linear_seal";
 import { webhook } from "./linear_webhook";
 import { dropDelivery } from "./machines";
@@ -78,6 +80,8 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
       if (said) return sessionActivity(request, env, who, said[1]!);
       const linked = request.method === "POST" ? /^\/linear\/sessions\/([^/]+)\/links$/.exec(pathname) : null;
       if (linked) return sessionLinks(request, env, who, linked[1]!);
+      const planned = request.method === "PUT" ? /^\/linear\/sessions\/([^/]+)\/plan$/.exec(pathname) : null;
+      if (planned) return sessionPlan(request, env, who, planned[1]!);
       return error(404, "not found");
     }
   }
@@ -447,6 +451,46 @@ async function sessionLinks(request: Request, env: Env, who: Session, agentSessi
   const { organizationId } = owned;
   try {
     await addLinks(env, organizationId, agentSessionId, links);
+  } catch (e) {
+    if (e instanceof LinearRefused) return error(502, "linear refused");
+    throw e;
+  }
+  return new Response(null, { status: 204 });
+}
+
+const PLAN_STATUSES = ["pending", "inProgress", "completed", "canceled"] as const;
+const MAX_PLAN_ITEMS = 50;
+const MAX_PLAN_ITEM = 300;
+const MAX_PLAN_BODY = 128 * 1024;
+
+/// A plan, checked, or null: at most MAX_PLAN_ITEMS items of one short line
+/// and one of Linear's statuses. Only the known fields are copied out.
+function parsePlan(v: unknown): PlanItem[] | null {
+  if (!Array.isArray(v) || v.length > MAX_PLAN_ITEMS) return null;
+  const out: PlanItem[] = [];
+  for (const item of v) {
+    if (!isObject(item)) return null;
+    const { content, status } = item;
+    if (typeof content !== "string" || content.trim().length === 0 || chars(content) > MAX_PLAN_ITEM || /[\p{Cc}]/u.test(content)) return null;
+    if (!PLAN_STATUSES.includes(status as PlanItem["status"])) return null;
+    out.push({ content, status: status as PlanItem["status"] });
+  }
+  return out;
+}
+
+/// The plan of a session the computer was given: its checklist in Linear.
+/// Linear replaces the whole plan each time, so the body is all of it.
+async function sessionPlan(request: Request, env: Env, who: Session, agentSessionId: string): Promise<Response> {
+  if (!UUID.test(agentSessionId)) return error(404, "no such session");
+  const body = await jsonBody(request, MAX_PLAN_BODY);
+  const plan = isObject(body) ? parsePlan(body["plan"]) : null;
+  if (!plan) return error(400, "bad plan");
+  const refused = await overLimit(env, who);
+  if (refused) return refused;
+  const owned = await ownedSession(env, who, agentSessionId);
+  if (!owned) return error(404, "no such session");
+  try {
+    await setPlan(env, owned.organizationId, agentSessionId, plan);
   } catch (e) {
     if (e instanceof LinearRefused) return error(502, "linear refused");
     throw e;

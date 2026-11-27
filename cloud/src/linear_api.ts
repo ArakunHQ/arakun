@@ -261,6 +261,23 @@ export async function addLinks(env: Env, organizationId: string, agentSessionId:
   );
 }
 
+/// One item of a session's plan, as Linear takes it.
+export interface PlanItem {
+  content: string;
+  status: "pending" | "inProgress" | "completed" | "canceled";
+}
+
+/// Replaces a session's plan, the checklist Linear shows at its top. Linear
+/// takes only the whole plan, never one item. It is in technology preview.
+export async function setPlan(env: Env, organizationId: string, agentSessionId: string, plan: PlanItem[]): Promise<void> {
+  await asApp(
+    env,
+    organizationId,
+    "mutation($id: String!, $input: AgentSessionUpdateInput!) { agentSessionUpdate(id: $id, input: $input) { success } }",
+    { id: agentSessionId, input: { plan } },
+  );
+}
+
 export async function issuePlace(env: Env, organizationId: string, issueId: string): Promise<{ teamId: string; projectId: string | null }> {
   const data = await asApp<{ issue?: { team?: { id?: unknown } | null; project?: { id?: unknown } | null } | null }>(
     env,

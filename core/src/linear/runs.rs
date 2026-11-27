@@ -28,6 +28,9 @@ pub const PROGRESS_SECS: u64 = 30;
 /// A progress report not sent by then says what the session did long ago:
 /// it is dropped instead.
 pub const PROGRESS_KEPT_SECS: u64 = 5 * 60;
+/// The least time between two plans of one run while its turn goes on. The
+/// plan a turn ends with always goes.
+pub const PLAN_SECS: u64 = 15;
 
 /// How long a run waits on work its session left in the background before
 /// its reply goes to Linear anyway. A server started in the background never
@@ -98,6 +101,9 @@ pub struct Run {
     /// a restart.
     #[serde(skip)]
     pub progress: Option<(u64, String)>,
+    /// The last plan queued, and when. Not saved, like `progress`.
+    #[serde(skip)]
+    pub plan: Option<(u64, Vec<PlanItem>)>,
     /// The pull request link Linear was last sent for this run, so it goes
     /// once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +163,7 @@ impl std::fmt::Debug for Run {
             .field("stopped", &self.stopped)
             .field("held", &self.held)
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
+            .field("plan", &self.plan.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
             .field("kept", &self.kept.len())
             .field("comment", &self.comment)
@@ -178,6 +185,36 @@ pub enum ReportKind {
     Progress,
     /// Only a link for the session, such as its pull request: no activity.
     Link,
+    /// The agent's plan, as the session's checklist in Linear. A newer plan
+    /// makes an unsent one moot.
+    Plan,
+}
+
+/// One item of a plan as Linear shows it. `content` is the agent's words,
+/// scrubbed and cut.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanItem {
+    pub content: String,
+    pub status: PlanItemStatus,
+}
+
+/// Linear's statuses of a plan item, in its spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanItemStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Canceled,
+}
+
+impl std::fmt::Debug for PlanItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlanItem")
+            .field("content", &format_args!("…"))
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 /// A report to Linear not sent yet. Debug leaves out the body: it can hold
@@ -199,6 +236,9 @@ pub struct Report {
     /// What a progress step works on: a file, or `a command`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameter: Option<String>,
+    /// The whole plan, for a plan report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan: Vec<PlanItem>,
     pub made_at: u64,
 }
 
@@ -212,6 +252,7 @@ impl std::fmt::Debug for Report {
             .field("options", &self.options.len())
             .field("started", &self.started)
             .field("parameter", &self.parameter.is_some())
+            .field("plan", &self.plan.len())
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -553,11 +594,40 @@ impl Runs {
         Some(run.agent_session.clone())
     }
 
+    /// The agent session to send `plan` to as the plan of the run of
+    /// `arakun_session`, when Linear should hear it: the run works, the plan
+    /// changed, and the last one is `PLAN_SECS` old. `ends` is set when the
+    /// turn ends or waits on a person: then the plan goes at once, so Linear
+    /// is left with the last one.
+    pub fn plan(
+        &mut self,
+        arakun_session: &str,
+        plan: &[PlanItem],
+        now: u64,
+        ends: bool,
+    ) -> Option<String> {
+        let run = self.by_session(arakun_session)?;
+        if !matches!(run.state, RunState::Running | RunState::Asked) || run.stopped {
+            return None;
+        }
+        if let Some((at, last)) = &run.plan
+            && (last == plan || (!ends && now.saturating_sub(*at) < PLAN_SECS))
+        {
+            return None;
+        }
+        run.plan = Some((now, plan.to_vec()));
+        Some(run.agent_session.clone())
+    }
+
     /// Adds a report, dropping the oldest beyond `OUTBOX_KEPT`. Any report
-    /// makes the unsent progress of its agent session moot.
+    /// makes the unsent progress of its agent session moot, and a plan the
+    /// unsent plan.
     pub fn queue(&mut self, r: Report) {
-        self.outbox
-            .retain(|o| o.kind != ReportKind::Progress || o.agent_session != r.agent_session);
+        self.outbox.retain(|o| {
+            let moot = o.kind == ReportKind::Progress
+                || (o.kind == ReportKind::Plan && r.kind == ReportKind::Plan);
+            !moot || o.agent_session != r.agent_session
+        });
         self.outbox.push(r);
         let extra = self.outbox.len().saturating_sub(OUTBOX_KEPT);
         self.outbox.drain(..extra);
@@ -620,6 +690,7 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            plan: None,
             linked: None,
             kept: Vec::new(),
             comment: None,
@@ -636,6 +707,7 @@ mod tests {
             options: Vec::new(),
             started: false,
             parameter: None,
+            plan: Vec::new(),
             made_at,
         }
     }
@@ -729,6 +801,84 @@ mod tests {
         run.state = RunState::Running;
         run.stopped = true;
         assert_eq!(r.progress("s1", "Running", 1_000), None);
+    }
+
+    fn items(content: &str) -> Vec<PlanItem> {
+        vec![PlanItem {
+            content: content.into(),
+            status: PlanItemStatus::Pending,
+        }]
+    }
+
+    #[test]
+    fn a_plan_goes_when_it_changes_and_not_too_often_unless_the_turn_ends() {
+        let mut r = Runs::default();
+        r.add(Run {
+            session: Some("s1".into()),
+            state: RunState::Running,
+            ..run("a")
+        });
+        let (one, two, three) = (items("one"), items("two"), items("three"));
+        assert_eq!(r.plan("s1", &one, 100, false).as_deref(), Some("a"));
+        assert_eq!(r.plan("s1", &one, 200, false), None, "the same plan");
+        assert_eq!(r.plan("s1", &two, 100 + PLAN_SECS - 1, false), None);
+        assert_eq!(
+            r.plan("s1", &two, 100 + PLAN_SECS - 1, true).as_deref(),
+            Some("a"),
+            "the turn ends: it goes at once"
+        );
+        assert_eq!(r.plan("s1", &two, 1_000, true), None, "told already");
+        assert_eq!(r.plan("other", &three, 1_000, false), None);
+        r.by_session("s1").unwrap().state = RunState::Asked;
+        assert_eq!(r.plan("s1", &three, 1_000, true).as_deref(), Some("a"));
+        let run = r.by_session("s1").unwrap();
+        run.state = RunState::Running;
+        run.stopped = true;
+        assert_eq!(r.plan("s1", &one, 2_000, true), None, "Linear stopped it");
+        r.by_session("s1").unwrap().state = RunState::Done;
+        r.by_session("s1").unwrap().stopped = false;
+        assert_eq!(r.plan("s1", &one, 2_000, true), None);
+    }
+
+    #[test]
+    fn a_newer_plan_replaces_the_unsent_one_of_its_session_only() {
+        let mut r = Runs::default();
+        let plan = |a: &str, body: &str, at| Report {
+            kind: ReportKind::Plan,
+            plan: items(body),
+            ..report(a, "", at)
+        };
+        r.queue(plan("a", "one", 1));
+        r.queue(report("a", "reply", 2));
+        r.queue(plan("b", "other", 3));
+        r.queue(plan("a", "two", 4));
+        let got: Vec<(String, ReportKind)> = r
+            .due(5)
+            .into_iter()
+            .map(|x| (x.agent_session, x.kind))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a".to_string(), ReportKind::Thought),
+                ("b".to_string(), ReportKind::Plan),
+                ("a".to_string(), ReportKind::Plan),
+            ]
+        );
+        assert_eq!(r.due(5)[2].plan, items("two"));
+        // A plan is no step: another report leaves it be.
+        r.queue(report("b", "reply", 6));
+        assert_eq!(r.due(6).len(), 4);
+    }
+
+    #[test]
+    fn a_plan_never_prints_its_items() {
+        let r = Report {
+            kind: ReportKind::Plan,
+            plan: items("rotate the secret key"),
+            ..report("a", "", 1)
+        };
+        assert!(!format!("{r:?}").contains("secret"));
     }
 
     #[test]

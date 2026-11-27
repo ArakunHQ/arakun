@@ -1047,6 +1047,58 @@ describe("what the computer sends back", () => {
     expect(linearFake.links()).toHaveLength(1);
   });
 
+  it("sets a session's whole plan, only for its owner and only Linear's statuses", async () => {
+    const { owner } = await delegatedIssue();
+    const plan = (session: string, body: unknown) => call("PUT", `/linear/sessions/${SESSION}/plan`, as(session), JSON.stringify(body));
+    const items = [
+      { content: "Read the code", status: "completed" },
+      { content: "Fix the bug", status: "inProgress", extra: "ignored" },
+      { content: "Test it", status: "pending" },
+    ];
+    expect((await plan(owner.session, { plan: items })).status).toBe(204);
+    expect(linearFake.plans()).toEqual([
+      {
+        agentSessionId: SESSION,
+        plan: [
+          { content: "Read the code", status: "completed" },
+          { content: "Fix the bug", status: "inProgress" },
+          { content: "Test it", status: "pending" },
+        ],
+      },
+    ]);
+    // A plan is no link and no activity.
+    expect(linearFake.links()).toEqual([]);
+    expect(linearFake.activities()).toEqual([SENT]);
+    const one = { content: "x", status: "pending" };
+    for (const bad of [
+      {},
+      { plan: "x" },
+      { plan: [{ ...one, status: "in_progress" }] },
+      { plan: [{ ...one, content: " " }] },
+      { plan: [{ ...one, content: "a\nb" }] },
+      { plan: [{ ...one, content: "x".repeat(301) }] },
+      { plan: [{ status: "pending" }] },
+      { plan: Array(51).fill(one) },
+    ]) {
+      const res = await plan(owner.session, bad);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad plan" });
+    }
+    expect((await plan((await stranger()).session, { plan: [one] })).status).toBe(404);
+    expect((await call("PUT", `/linear/sessions/${SESSION}/plan`, {}, JSON.stringify({ plan: [one] }))).status).toBe(401);
+    expect((await call("POST", `/linear/sessions/${SESSION}/plan`, as(owner.session), JSON.stringify({ plan: [one] }))).status).toBe(404);
+    expect(linearFake.plans()).toHaveLength(1);
+    expect(await dump(env.DB)).not.toMatch(/Fix the bug/);
+  });
+
+  it("answers 502 when Linear refuses a plan", async () => {
+    const { owner } = await delegatedIssue();
+    linearFake.refuse = 400;
+    linearFake.refuseOnly = "agentSessionUpdate";
+    const res = await call("PUT", `/linear/sessions/${SESSION}/plan`, as(owner.session), JSON.stringify({ plan: [{ content: "x", status: "pending" }] }));
+    expect(res.status).toBe(502);
+  });
+
   it("passes an ephemeral thought on as one", async () => {
     const { owner } = await delegatedIssue();
     expect((await activity(owner.session, { type: "thought", body: "Running a command", ephemeral: true })).status).toBe(204);

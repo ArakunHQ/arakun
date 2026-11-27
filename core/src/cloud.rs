@@ -829,6 +829,28 @@ pub fn linear_session_links(
     linear_done(status, &answer)
 }
 
+/// Sets the plan of a delegated session in Linear, its checklist at the top.
+/// Linear replaces the whole plan each time, so `plan` is all of it. Its items
+/// are text from the session: the caller scrubs and cuts them.
+pub fn linear_session_plan(
+    base: &str,
+    session: &str,
+    agent_session: &str,
+    plan: &[crate::linear::runs::PlanItem],
+) -> Result<(), Error> {
+    let path = format!("/linear/sessions/{}/plan", path_id(agent_session)?);
+    let payload = serde_json::json!({ "plan": plan });
+    let (status, answer) = send(
+        base,
+        "PUT",
+        &path,
+        Some(session),
+        Some(payload),
+        SMALL_LIMIT,
+    )?;
+    linear_done(status, &answer)
+}
+
 /// An id that goes into a path. Anything that could change the path is
 /// refused before a request is made.
 fn path_id(id: &str) -> Result<&str, Error> {

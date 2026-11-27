@@ -9,9 +9,9 @@
 
 use std::path::Path;
 
-use super::runs::{ReportKind, Run, RunState, cut};
+use super::runs::{PlanItem, PlanItemStatus, ReportKind, Run, RunState, cut};
 use super::start::failed_line;
-use crate::agent::{AskUserRequest, Entry, Question, Thread, ThreadStatus, ToolStatus};
+use crate::agent::{AskUserRequest, Entry, PlanStatus, Question, Thread, ThreadStatus, ToolStatus};
 use crate::phone::notify;
 
 /// The most characters of a question sent to Linear.
@@ -199,6 +199,50 @@ fn shown_path(path: &Path, cwd: &Path) -> String {
         }
         _ => chars.into_iter().collect(),
     }
+}
+
+/// The most items of a plan sent to Linear, and the most characters of one.
+/// The server refuses more.
+pub const PLAN_ITEMS_LIMIT: usize = 50;
+pub const PLAN_ITEM_LIMIT: usize = 300;
+
+/// The plan of the turn that runs now, as Linear shows it at the top of the
+/// session. Each item is scrubbed of secrets, kept to one line and cut like a
+/// reply. None when the turn has no plan: Linear keeps the last one.
+pub fn plan_items(entries: &[Entry]) -> Option<Vec<PlanItem>> {
+    let turn = entries
+        .iter()
+        .rposition(|e| matches!(e, Entry::User { .. }))
+        .map_or(entries, |at| &entries[at + 1..]);
+    let plan = turn.iter().rev().find_map(|e| match e {
+        Entry::Plan { entries } => Some(entries),
+        _ => None,
+    })?;
+    let items = plan
+        .iter()
+        .filter_map(|p| {
+            let content = crate::secrets::scrub(p.content.trim());
+            let content: String = content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect();
+            let content = match content.char_indices().nth(PLAN_ITEM_LIMIT - 1) {
+                Some((end, _)) => format!("{}…", &content[..end]),
+                None => content,
+            };
+            let status = match p.status {
+                PlanStatus::InProgress => PlanItemStatus::InProgress,
+                PlanStatus::Completed => PlanItemStatus::Completed,
+                PlanStatus::Pending | PlanStatus::Unknown => PlanItemStatus::Pending,
+            };
+            (!content.is_empty()).then_some(PlanItem { content, status })
+        })
+        .take(PLAN_ITEMS_LIMIT)
+        .collect();
+    Some(items)
 }
 
 /// What a permission is for, from its tool's kind alone, as the session
@@ -550,6 +594,7 @@ mod tests {
             stopped: false,
             held: None,
             progress: None,
+            plan: None,
             linked: None,
             kept: Vec::new(),
             comment: None,
@@ -769,6 +814,84 @@ mod tests {
         // nothing, is not shown.
         assert_eq!(at(tool("edit", "in_progress", &[])), None);
         assert_eq!(at(tool("other", "in_progress", &[])), None);
+    }
+
+    fn plan(items: &[(&str, PlanStatus)]) -> Entry {
+        Entry::Plan {
+            entries: items
+                .iter()
+                .map(|(content, status)| crate::agent::PlanEntry {
+                    content: content.to_string(),
+                    priority: String::new(),
+                    status: *status,
+                })
+                .collect(),
+        }
+    }
+
+    fn item(content: &str, status: PlanItemStatus) -> PlanItem {
+        PlanItem {
+            content: content.into(),
+            status,
+        }
+    }
+
+    #[test]
+    fn the_plan_goes_in_linears_statuses() {
+        let entries = [
+            user(),
+            plan(&[
+                ("Read the code", PlanStatus::Completed),
+                ("Fix it", PlanStatus::InProgress),
+                ("Test it", PlanStatus::Pending),
+                ("Ship it", PlanStatus::Unknown),
+                ("   ", PlanStatus::Pending),
+            ]),
+        ];
+        assert_eq!(
+            plan_items(&entries),
+            Some(vec![
+                item("Read the code", PlanItemStatus::Completed),
+                item("Fix it", PlanItemStatus::InProgress),
+                item("Test it", PlanItemStatus::Pending),
+                item("Ship it", PlanItemStatus::Pending),
+            ])
+        );
+        let wire = serde_json::to_string(&plan_items(&entries).unwrap()[1]).unwrap();
+        assert_eq!(wire, r#"{"content":"Fix it","status":"inProgress"}"#);
+    }
+
+    #[test]
+    fn the_plan_is_only_this_turns() {
+        let old = plan(&[("Old", PlanStatus::Completed)]);
+        assert_eq!(plan_items(&[old.clone(), user()]), None);
+        assert_eq!(
+            plan_items(&[user(), old, tool("edit", "completed", &[])]),
+            Some(vec![item("Old", PlanItemStatus::Completed)])
+        );
+        assert_eq!(plan_items(&[user()]), None);
+    }
+
+    #[test]
+    fn a_plan_item_is_scrubbed_one_line_and_cut() {
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ";
+        let long = "x".repeat(PLAN_ITEM_LIMIT + 10);
+        let many: Vec<(&str, PlanStatus)> = (0..PLAN_ITEMS_LIMIT + 5)
+            .map(|_| ("Step", PlanStatus::Pending))
+            .collect();
+        let got = plan_items(&[
+            user(),
+            plan(&[
+                (&format!("Use {key}\nthen\trun"), PlanStatus::Pending),
+                (&long, PlanStatus::Pending),
+            ]),
+        ])
+        .unwrap();
+        assert_eq!(got[0].content, "Use [secret] then run");
+        assert_eq!(got[1].content.chars().count(), PLAN_ITEM_LIMIT);
+        assert!(got[1].content.ends_with('…'));
+        let got = plan_items(&[user(), plan(&many)]).unwrap();
+        assert_eq!(got.len(), PLAN_ITEMS_LIMIT);
     }
 
     #[test]

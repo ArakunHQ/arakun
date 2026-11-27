@@ -151,8 +151,8 @@ impl Shell {
         // From the shell's state, not `group_hover`: that one only paints, and
         // the title needs the room the project name gives up.
         // Not on the open session: archiving it there is too easy by accident.
-        let archive_shown =
-            can_archive && !current && self.rail.active_hover.as_ref() == Some(&s.id);
+        let under_pointer = self.rail.active_hover.as_ref() == Some(&s.id);
+        let archive_shown = can_archive && !current && under_pointer && !cx.has_active_drag();
         let hovered = s.id.clone();
         div()
             .id(SharedString::from(format!("active-{pi}-{ei}-{}", s.id)))
@@ -236,17 +236,17 @@ impl Shell {
                     ),
                 )
             })
-            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                if *over {
-                    this.rail.active_hover = Some(hovered.clone());
-                } else if this.rail.active_hover.as_ref() == Some(&hovered) {
-                    this.rail.active_hover = None;
-                } else {
-                    return;
-                }
-                // The archive button comes and goes with the pointer.
-                cx.notify();
-            }))
+            // The archive button comes and goes with the pointer, as the
+            // row's hover background does.
+            .child(super::hover::probe(
+                under_pointer,
+                cx.listener(move |this, over: &bool, _, cx| {
+                    let row = hovered.clone();
+                    if super::hover::track(&mut this.rail.active_hover, row, *over, |a, b| a == b) {
+                        cx.notify();
+                    }
+                }),
+            ))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 // Picks its worktree for the bar's actions, as in the list below.
                 let m = ev.modifiers();

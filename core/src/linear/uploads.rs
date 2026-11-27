@@ -278,9 +278,16 @@ mod tests {
                 .map(|b| Comment {
                     author: "A".into(),
                     body: b.to_string(),
-                    at: 0,
+                    ..Comment::default()
                 })
                 .collect(),
+            more_comments: false,
+            mention: None,
+            labels: Vec::new(),
+            parent: None,
+            children: Vec::new(),
+            relations: Vec::new(),
+            links: Vec::new(),
         }
     }
 

@@ -667,12 +667,16 @@ pub enum LinearActivity {
     /// What the session does right now: a thought Linear replaces with the
     /// next activity, so the steps do not pile up on the issue.
     Progress,
+    /// The thought that says the session started. With it the server moves
+    /// an issue not begun to its team's first started state, and makes Arakun
+    /// its delegate when it has none.
+    Started,
 }
 
 impl LinearActivity {
     fn wire(self) -> &'static str {
         match self {
-            Self::Thought | Self::Progress => "thought",
+            Self::Thought | Self::Progress | Self::Started => "thought",
             Self::Elicitation => "elicitation",
             Self::Response => "response",
             Self::Error => "error",
@@ -716,6 +720,9 @@ pub fn linear_activity_with(
     let mut payload = serde_json::json!({ "type": kind.wire(), "body": body });
     if kind == LinearActivity::Progress {
         payload["ephemeral"] = serde_json::json!(true);
+    }
+    if kind == LinearActivity::Started {
+        payload["started"] = serde_json::json!(true);
     }
     if !links.is_empty() {
         payload["links"] = serde_json::json!(links);
@@ -1969,6 +1976,16 @@ mod tests {
         assert_eq!(
             body_of(&rx.recv().unwrap()),
             serde_json::json!({ "type": "thought", "body": "hi" })
+        );
+    }
+
+    #[test]
+    fn started_is_a_thought_that_says_so() {
+        let (base, rx) = serve(204, "");
+        linear_activity(&base, "s", "as-1", LinearActivity::Started, "hi", &[]).unwrap();
+        assert_eq!(
+            body_of(&rx.recv().unwrap()),
+            serde_json::json!({ "type": "thought", "body": "hi", "started": true })
         );
     }
 

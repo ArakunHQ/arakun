@@ -946,7 +946,7 @@ impl Palette {
                 d.child(kit::footer_hint(&["Tab"], "filter"))
             })
             .when(pinnable && q.is_empty(), |d| {
-                d.child(kit::footer_hint(&["Ctrl", "P"], "pin"))
+                d.child(kit::footer_hint(&["Alt", "P"], "pin"))
             })
             .child(
                 div()

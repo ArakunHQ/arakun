@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::runs::{Run, RunState};
 use crate::agent::Thread;
-use crate::phone::linear::{Delivery, DeliveryKind};
+use crate::phone::linear::{Delivery, DeliveryKind, StopReason};
 
 /// Whether the first look at a delivery of `kind` refuses it for lack of a
 /// Linear sign-in here. A stop needs no key. A reply needs one too, but the
@@ -242,16 +242,32 @@ pub enum Stop {
     Cancel,
 }
 
-pub fn stop(run: Option<RunState>) -> Stop {
+/// `reason` is set for a stop nobody pressed. A run that is already over
+/// then says nothing: its session may have ended long ago, and a "Stopped."
+/// under its last reply would only confuse.
+pub fn stop(run: Option<RunState>, reason: Option<StopReason>) -> Stop {
     match run {
         None => Stop::Nothing,
         Some(RunState::Waiting) => Stop::Dequeue,
         Some(RunState::Running | RunState::Asked) => Stop::Cancel,
+        Some(RunState::Done | RunState::Interrupted) if reason.is_some() => Stop::Nothing,
         Some(RunState::Done | RunState::Interrupted) => Stop::Report,
     }
 }
 
 pub const STOPPED: &str = "Stopped.";
+
+/// What Linear hears once a run stopped: why, when nobody pressed stop.
+pub fn stopped_line(reason: Option<StopReason>) -> &'static str {
+    match reason {
+        None => STOPPED,
+        Some(StopReason::Unassigned) => "Stopped: Arakun was unassigned.",
+        Some(StopReason::Canceled) => "Stopped: the issue was canceled.",
+        Some(StopReason::Completed) => "Stopped: the issue was marked done.",
+        Some(StopReason::TeamAccess) => "Stopped: Arakun lost access to this team.",
+        Some(StopReason::Revoked) => "Stopped: Arakun was removed from this workspace.",
+    }
+}
 
 pub fn no_session_line(computer: &str) -> String {
     format!("{computer} has no session for this any more. Delegate the issue again.")
@@ -660,12 +676,48 @@ mod tests {
 
     #[test]
     fn a_stop_does_what_the_run_needs() {
-        assert_eq!(stop(None), Stop::Nothing);
-        assert_eq!(stop(Some(RunState::Waiting)), Stop::Dequeue);
-        assert_eq!(stop(Some(RunState::Running)), Stop::Cancel);
-        assert_eq!(stop(Some(RunState::Asked)), Stop::Cancel);
-        assert_eq!(stop(Some(RunState::Done)), Stop::Report);
-        assert_eq!(stop(Some(RunState::Interrupted)), Stop::Report);
+        assert_eq!(stop(None, None), Stop::Nothing);
+        assert_eq!(stop(Some(RunState::Waiting), None), Stop::Dequeue);
+        assert_eq!(stop(Some(RunState::Running), None), Stop::Cancel);
+        assert_eq!(stop(Some(RunState::Asked), None), Stop::Cancel);
+        assert_eq!(stop(Some(RunState::Done), None), Stop::Report);
+        assert_eq!(stop(Some(RunState::Interrupted), None), Stop::Report);
+    }
+
+    #[test]
+    fn a_stop_nobody_pressed_is_quiet_for_a_run_that_is_over() {
+        let why = Some(StopReason::Unassigned);
+        assert_eq!(stop(None, why), Stop::Nothing);
+        assert_eq!(stop(Some(RunState::Waiting), why), Stop::Dequeue);
+        assert_eq!(stop(Some(RunState::Running), why), Stop::Cancel);
+        assert_eq!(stop(Some(RunState::Asked), why), Stop::Cancel);
+        assert_eq!(stop(Some(RunState::Done), why), Stop::Nothing);
+        assert_eq!(stop(Some(RunState::Interrupted), why), Stop::Nothing);
+    }
+
+    #[test]
+    fn a_stop_says_why() {
+        assert_eq!(stopped_line(None), "Stopped.");
+        assert_eq!(
+            stopped_line(Some(StopReason::Unassigned)),
+            "Stopped: Arakun was unassigned."
+        );
+        assert_eq!(
+            stopped_line(Some(StopReason::Canceled)),
+            "Stopped: the issue was canceled."
+        );
+        assert_eq!(
+            stopped_line(Some(StopReason::Completed)),
+            "Stopped: the issue was marked done."
+        );
+        assert_eq!(
+            stopped_line(Some(StopReason::TeamAccess)),
+            "Stopped: Arakun lost access to this team."
+        );
+        assert_eq!(
+            stopped_line(Some(StopReason::Revoked)),
+            "Stopped: Arakun was removed from this workspace."
+        );
     }
 
     fn delivery(id: &str, kind: DeliveryKind, agent_session: &str) -> Delivery {
@@ -676,6 +728,8 @@ mod tests {
             issue: "i1".into(),
             organization: "w1".into(),
             activity: None,
+            reason: None,
+            comment: None,
             body: None,
             guidance: Vec::new(),
         }
@@ -724,12 +778,13 @@ mod tests {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            comment: None,
             guidance: Vec::new(),
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);
         assert_eq!(run_state(None, "w1"), None);
-        assert_eq!(stop(run_state(Some(&run), "w2")), Stop::Nothing);
+        assert_eq!(stop(run_state(Some(&run), "w2"), None), Stop::Nothing);
         assert_eq!(
             follow_up(run_state(Some(&run), "w2"), true, false, Some("go on")),
             FollowUp::NoRun

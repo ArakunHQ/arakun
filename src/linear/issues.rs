@@ -14,9 +14,10 @@ pub fn assigned(s: &Session) -> Result<Assigned, ApiError> {
     shared::assigned(|q, v| graphql(s, q, v))
 }
 
-/// One issue with its description and its comments, oldest first.
-pub fn detail(s: &Session, id: &str) -> Result<Detail, ApiError> {
-    shared::detail(|q, v| graphql(s, q, v), id)
+/// One issue in full, comments oldest first. `mention` is the comment that
+/// mentioned Arakun, when a mention started the session.
+pub fn detail(s: &Session, id: &str, mention: Option<&str>) -> Result<Detail, ApiError> {
+    shared::detail(|q, v| graphql(s, q, v), id, mention)
 }
 
 /// A follow-up's text, read with the person's own key.

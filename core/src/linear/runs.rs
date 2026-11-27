@@ -107,6 +107,11 @@ pub struct Run {
     /// read from Linear when the session starts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kept: Vec<String>,
+    /// The comment that mentioned Arakun, when a mention started the run.
+    /// Its id only, so it is saved: the text is read from Linear when the
+    /// session starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     /// The guidance Linear sent with the delegation, for the first prompt.
     /// Never saved, as no text from Linear is: a run that waits across a
     /// restart starts without it.
@@ -154,6 +159,7 @@ impl std::fmt::Debug for Run {
             .field("progress", &self.progress.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
             .field("kept", &self.kept.len())
+            .field("comment", &self.comment)
             .field("guidance", &self.guidance.len())
             .finish()
     }
@@ -185,6 +191,10 @@ pub struct Report {
     /// A question's choices, for Linear to show as ones to pick from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// The thought that says the session started on this computer. The
+    /// server then marks the issue as being worked on in Linear.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub started: bool,
     pub made_at: u64,
 }
 
@@ -196,6 +206,7 @@ impl std::fmt::Debug for Report {
             .field("body", &format_args!("…"))
             .field("link", &self.link.is_some())
             .field("options", &self.options.len())
+            .field("started", &self.started)
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -606,6 +617,7 @@ mod tests {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            comment: None,
             guidance: Vec::new(),
         }
     }
@@ -617,6 +629,7 @@ mod tests {
             body: body.into(),
             link: None,
             options: Vec::new(),
+            started: false,
             made_at,
         }
     }

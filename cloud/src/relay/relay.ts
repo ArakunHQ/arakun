@@ -37,7 +37,7 @@ import {
   utf8,
 } from "./frames";
 import { expired } from "../linear_expire";
-import type { Delivery, GuidanceRule } from "../machines";
+import type { Delivery, GuidanceRule, StopReason } from "../machines";
 import type { Env } from "../util";
 import { labelOf } from "./label";
 import { planFor, type Plan } from "./limits";
@@ -956,6 +956,7 @@ const DELIVERY_ID = /^[0-9a-f]{32}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const DELIVERY_KINDS: readonly string[] = ["created", "prompt", "stop"] satisfies Delivery["kind"][];
+const STOP_REASONS: readonly string[] = ["unassigned", "canceled", "completed", "team_access", "revoked"] satisfies StopReason[];
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -965,12 +966,16 @@ function isObj(v: unknown): v is Record<string, unknown> {
 /// is stored with it; null when any field is off.
 function parseDelivery(v: unknown): Delivery | null {
   if (!isObj(v)) return null;
-  const { id, kind, agent_session, issue, organization, activity, created } = v;
+  const { id, kind, agent_session, issue, organization, activity, comment, created, reason = null } = v;
   if (typeof id !== "string" || !DELIVERY_ID.test(id)) return null;
   if (typeof kind !== "string" || !DELIVERY_KINDS.includes(kind)) return null;
   for (const u of [agent_session, issue, organization]) if (typeof u !== "string" || !UUID.test(u)) return null;
   if (activity !== null && (typeof activity !== "string" || !UUID.test(activity))) return null;
+  // Absent in a delivery from a Worker before the field.
+  if (comment !== undefined && comment !== null && (typeof comment !== "string" || !UUID.test(comment))) return null;
   if (typeof created !== "number" || !Number.isSafeInteger(created) || created <= 0) return null;
+  // Only a stop has a reason.
+  if (reason !== null && (kind !== "stop" || typeof reason !== "string" || !STOP_REASONS.includes(reason))) return null;
   return {
     id,
     kind: kind as Delivery["kind"],
@@ -978,6 +983,8 @@ function parseDelivery(v: unknown): Delivery | null {
     issue: issue as string,
     organization: organization as string,
     activity,
+    reason: reason as StopReason | null,
+    comment: comment ?? null,
     created,
   };
 }
@@ -1013,6 +1020,8 @@ function linearMessage(d: Delivery, body: string | null, guidance: GuidanceRule[
     issue: d.issue,
     organization: d.organization,
     activity: d.activity,
+    reason: d.reason ?? null,
+    comment: d.comment ?? null,
     body,
     guidance,
   };

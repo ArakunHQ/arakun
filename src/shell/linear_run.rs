@@ -43,6 +43,8 @@ struct Start {
     /// The delivery to accept once handled. None for a run from the queue:
     /// its delivery was accepted when it began to wait.
     delivery: Option<String>,
+    /// The comment that mentioned Arakun, when a mention started the run.
+    comment: Option<String>,
     /// The guidance Linear sent with the delegation: from the live frame,
     /// or kept in memory with the run while it waited.
     guidance: Vec<GuidanceRule>,
@@ -90,6 +92,7 @@ impl Shell {
                     organization: d.organization,
                     issue: d.issue,
                     delivery: Some(d.id),
+                    comment: d.comment,
                     guidance: d.guidance,
                 };
                 self.linear_read(start, sign_in, window, cx);
@@ -152,6 +155,7 @@ impl Shell {
                 organization: run.organization.clone(),
                 issue: run.issue.clone(),
                 delivery: None,
+                comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
             };
             self.linear_save();
@@ -175,11 +179,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let issue = start.issue.clone();
+        let mention = start.comment.clone();
         cx.spawn_in(window, async move |this, cx| {
             let read = cx
                 // A panic's text could hold anything; Linear gets a fixed reason.
                 .background_spawn(crate::guard::task_or(
-                    async move { issues::detail(&sign_in, &issue) },
+                    async move { issues::detail(&sign_in, &issue, mention.as_deref()) },
                     |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
                 ))
                 .await;
@@ -231,6 +236,8 @@ impl Shell {
                     issue: start.issue,
                     organization: start.organization,
                     activity: None,
+                    reason: None,
+                    comment: start.comment,
                     body: None,
                     guidance: start.guidance,
                 };
@@ -298,6 +305,7 @@ impl Shell {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            comment: start.comment.clone(),
             guidance: start.guidance.clone(),
         });
         self.linear_save();
@@ -523,7 +531,7 @@ impl Shell {
         self.linear_save();
         self.linear_watch(cx);
         let line = started_line(&name, &computer(), &branch);
-        self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
+        self.linear_report_started(&start.agent_session, line, cx);
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }

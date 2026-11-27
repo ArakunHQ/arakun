@@ -49,68 +49,6 @@ gpui::actions!(
     ]
 );
 
-/// The palette's keys, in its own context so they win over the shell's.
-pub fn bind_keys(cx: &mut App) {
-    use crate::platform::keystroke;
-    use gpui::KeyBinding;
-    let ctx = Some("Palette");
-    cx.bind_keys([
-        KeyBinding::new("space", MarkRow, ctx),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-p")),
-            TogglePin,
-            ctx,
-        ),
-        KeyBinding::new("alt-up", PinUp, ctx),
-        KeyBinding::new("alt-down", PinDown, ctx),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-1")),
-            Pinned1,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-2")),
-            Pinned2,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-3")),
-            Pinned3,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-4")),
-            Pinned4,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-5")),
-            Pinned5,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-6")),
-            Pinned6,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-7")),
-            Pinned7,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-8")),
-            Pinned8,
-            ctx,
-        ),
-        KeyBinding::new(
-            crate::platform::static_keys(&keystroke("ctrl-9")),
-            Pinned9,
-            ctx,
-        ),
-    ]);
-}
-
 /// Numbered lines of a file and how many lines it has.
 pub type Snippet = (Vec<(u32, String)>, usize);
 

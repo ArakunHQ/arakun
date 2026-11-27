@@ -5,7 +5,7 @@ import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
 import { guidanceOf, MAX_GUIDANCE, verified, webhook } from "../src/linear_webhook";
-import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
+import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, notification, nowSeconds, prompted, signedWebhook } from "./helpers";
 import { account, away, claim, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./relay/helpers";
 
 const ORG = HOOK_ORG;
@@ -19,6 +19,8 @@ const TEAM = "33333333-3333-4333-8333-333333333333";
 const TEAM2 = "33333333-3333-4333-8333-444444444444";
 const PROJECT = "44444444-4444-4444-8444-444444444444";
 const ACCESS = "lin_oauth_ws";
+const COMMENT = "88888888-8888-4888-8888-888888888888";
+const SESSION2 = "55555555-5555-4555-8555-111111111111";
 
 type Hook = { text: string; headers: Record<string, string> };
 
@@ -150,6 +152,24 @@ describe("Linear's webhook", () => {
     });
     expect(rows[0]!["id"]).toMatch(/^[0-9a-f]{32}$/);
     expect(rows[0]!["announced_at"]).toBeTypeOf("number");
+  });
+
+  it("passes the id of the comment that mentioned Arakun, never its text", async () => {
+    const { me, pc } = await linkedComputerWithRoute({ team: TEAM });
+    const comment = { id: COMMENT, body: "SECRET-MENTION only do the migration", userId: LU };
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION, comment })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "created", comment: COMMENT, body: null });
+    const everything = (await dump(env.DB)) + (await storedAll(me.label));
+    expect(everything).not.toMatch(/SECRET-/);
+  });
+
+  it("a delegation, or a comment id that is not one, passes no comment", async () => {
+    const { pc } = await linkedComputerWithRoute({ team: TEAM });
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", comment: null });
+    const odd = created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION2, comment: { id: "x".repeat(80) } });
+    expect((await send(signedWebhook(odd))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "created", agent_session: SESSION2, comment: null });
   });
 
   it("takes a project route too", async () => {
@@ -735,6 +755,158 @@ describe("follow-ups from Linear", () => {
   });
 });
 
+describe("stops Linear did not ask for", () => {
+  const unassigned = (n: Partial<Parameters<typeof notification>[0]> = {}) => notification({ action: "issueUnassignedFromYou", issueId: ISSUE, ...n });
+  const statusChanged = (n: Partial<Parameters<typeof notification>[0]> = {}) => notification({ action: "issueStatusChanged", issueId: ISSUE, ...n });
+  const setState = (stateType: string) => linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+
+  it("stops the session when Arakun is unassigned, from anyone, and says nothing in Linear", async () => {
+    const { pc, me } = await delegatedIssue();
+    expect((await send(signedWebhook(unassigned({ actorId: OTHER })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({
+      type: "linear",
+      kind: "stop",
+      reason: "unassigned",
+      agent_session: SESSION,
+      issue: ISSUE,
+      organization: ORG,
+      activity: null,
+      body: null,
+    });
+    expect(linearFake.activities()).toEqual([SENT]);
+    const rows = await env.DB.prepare("SELECT kind, reason, label, team_id FROM linear_deliveries ORDER BY kind").all();
+    expect(rows.results).toEqual([
+      { kind: "created", reason: null, label: me.label, team_id: TEAM },
+      { kind: "stop", reason: "unassigned", label: me.label, team_id: null },
+    ]);
+  });
+
+  it("the same notification twice is one stop", async () => {
+    const { pc } = await delegatedIssue();
+    const n = unassigned();
+    expect((await send(signedWebhook(n))).status).toBe(200);
+    expect((await send(signedWebhook(n))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop" });
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("stops the newest session of the issue only", async () => {
+    const { pc } = await delegatedIssue();
+    const NEWER = crypto.randomUUID();
+    await env.DB.prepare("UPDATE linear_deliveries SET created_at = created_at - 10").run();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: NEWER })))).status).toBe(200);
+    await pc.inbox.control();
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", agent_session: NEWER });
+  });
+
+  it.each([
+    ["canceled, or a duplicate", "canceled", "22222222-2222-4222-8222-222222222222", "canceled"],
+    ["done by a person", "completed", "22222222-2222-4222-8222-222222222222", "completed"],
+  ])("stops the session when the issue is %s", async (_n, state, actorId, reason) => {
+    const { pc } = await delegatedIssue();
+    setState(state);
+    expect((await send(signedWebhook(statusChanged({ actorId })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason, agent_session: SESSION });
+    expect(linearFake.calls.at(-1)!.query).toContain("state { type }");
+  });
+
+  it.each([
+    ["done by an integration, such as a merged pull request", "completed", null],
+    ["done by Arakun itself", "completed", "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a"],
+    ["moved to another open state", "started", "22222222-2222-4222-8222-222222222222"],
+  ])("leaves the session alone when the issue is %s", async (_n, state, actorId) => {
+    const { pc } = await delegatedIssue();
+    setState(state);
+    expect((await send(signedWebhook(statusChanged({ actorId })))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("does nothing for an issue with no session, or one whose delegation ran out", async () => {
+    const { pc, id } = await delegatedIssue();
+    expect((await send(signedWebhook(unassigned({ issueId: UNMAPPED })))).status).toBe(200);
+    await env.DB.prepare("UPDATE linear_deliveries SET expired_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("an issue the app can no longer see is left to the access change", async () => {
+    const { pc } = await delegatedIssue();
+    linearFake.malformed = "issue-null";
+    expect((await send(signedWebhook(statusChanged()))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("an offline computer gets the stop when it is back", async () => {
+    const { me, pc, owner } = await delegatedIssue();
+    await away(me.label, pc);
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT]);
+    const back = await connectedComputerAgain(me, owner.session);
+    const frames = [await back.inbox.control(), await back.inbox.control()];
+    expect(frames.find((f) => f["kind"] === "stop")).toMatchObject({ reason: "unassigned", agent_session: SESSION });
+  });
+
+  it("stops the sessions of a team Arakun lost, and no others", async () => {
+    const { pc } = await delegatedIssue();
+    const change = (removedTeamIds: string[]) => ({
+      type: "PermissionChange",
+      action: "teamAccessChanged",
+      organizationId: ORG,
+      oauthClientId: "lin-test",
+      appUserId: "app-user",
+      canAccessAllPublicTeams: false,
+      addedTeamIds: [],
+      removedTeamIds,
+    });
+    expect((await send(signedWebhook(change([TEAM2])))).status).toBe(200);
+    expect((await send(signedWebhook(change([])))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect((await send(signedWebhook(change([TEAM2, TEAM])))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason: "team_access", agent_session: SESSION });
+    // Linear's retry stops nothing twice.
+    expect((await send(signedWebhook(change([TEAM])))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect((await send(signedWebhook(change(["team"])))).status).toBe(400);
+  });
+
+  it("when the app is removed, stops its sessions and shows the workspace as not installed", async () => {
+    const { pc, owner } = await delegatedIssue();
+    const removed = { type: "OAuthApp", action: "revoked", organizationId: ORG, oauthClientId: "lin-test" };
+    expect((await send(signedWebhook(removed))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason: "revoked", agent_session: SESSION });
+    expect(await count("linear_workspaces")).toBe(0);
+    const links = (await (await call("GET", "/linear/link", as(owner.session))).json()) as { links: { installed: boolean }[] };
+    expect(links.links).toEqual([expect.objectContaining({ organization_id: ORG, installed: false })]);
+    // A retry after the tokens are gone still answers 200 and sends nothing again.
+    expect((await send(signedWebhook(removed))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("refuses a notification without its ids", async () => {
+    await delegatedIssue();
+    const n = unassigned();
+    expect((await send(signedWebhook({ ...n, notification: { ...(n["notification"] as object), issueId: "x" } }))).status).toBe(400);
+    expect((await send(signedWebhook({ ...n, organizationId: "org" }))).status).toBe(400);
+  });
+
+  it("ignores the notifications it does not act on", async () => {
+    const { pc } = await delegatedIssue();
+    expect((await send(signedWebhook(notification({ action: "issueNewComment", issueId: ISSUE })))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("the relay takes a reason on a stop only", async () => {
+    const { me } = await linkedComputerWithRoute();
+    const d = { id: "a".repeat(32), kind: "created" as const, agent_session: SESSION, issue: ISSUE, organization: ORG, activity: null, created: nowSeconds() };
+    await expect(deliver(env, me.label, { ...d, reason: "unassigned" }, null)).rejects.toThrow(/400/);
+    await expect(deliver(env, me.label, { ...d, kind: "stop", reason: "bored" as never }, null)).rejects.toThrow(/400/);
+    await expect(deliver(env, me.label, { ...d, kind: "stop", reason: "canceled" }, null)).resolves.toEqual({ online: true });
+  });
+});
+
 describe("what the computer sends back", () => {
   const accept = (id: string, session: string) => call("POST", `/linear/deliveries/${id}/accept`, as(session));
   const activity = (session: string, body: unknown, agentSession = SESSION) =>
@@ -898,6 +1070,92 @@ describe("what the computer sends back", () => {
     linearFake.refuseOnly = "agentSessionUpdate";
     const links = await activity(owner.session, { type: "response", body: "Done.", links: [{ label: "PR", url: "https://github.com/a/b/pull/1" }] });
     expect(links.status).toBe(502);
+  });
+
+  describe("the thought that says the session started", () => {
+    const START = { type: "thought", body: "Started in arakun on Desk.", started: true };
+    const FIRST = "77777777-7777-4777-8777-000000000001";
+    const LATER = "77777777-7777-4777-8777-000000000002";
+    const startedStates = () => linearFake.startedStates.set(TEAM, [{ id: LATER, position: 2 }, { id: FIRST, position: 1 }]);
+
+    it("moves an issue not begun to the team's first started state and makes Arakun its delegate", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      for (const stateType of ["triage", "backlog", "unstarted"]) {
+        linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+        expect((await activity(owner.session, START)).status).toBe(204);
+        expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: START.body });
+        expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { stateId: FIRST, delegateId: "app-user" } });
+      }
+      expect(linearFake.issueUpdates()).toHaveLength(3);
+    });
+
+    it("leaves a state someone already moved it to, and a delegate already set", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      for (const stateType of ["started", "completed", "canceled"]) {
+        linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+        expect((await activity(owner.session, START)).status).toBe(204);
+        expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { delegateId: "app-user" } });
+      }
+      linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType: "backlog", delegateId: "someone-else" });
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { stateId: FIRST } });
+      const before = linearFake.issueUpdates().length;
+      linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType: "started", delegateId: "app-user" });
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates()).toHaveLength(before);
+    });
+
+    it("sets only the delegate when the team has no started state", async () => {
+      const { owner } = await delegatedIssue();
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates()).toEqual([{ id: ISSUE, input: { delegateId: "app-user" } }]);
+    });
+
+    it("does not touch the issue for any other activity", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      expect((await activity(owner.session, { type: "thought", body: "Waiting on Desk." })).status).toBe(204);
+      expect((await activity(owner.session, { type: "response", body: "Done.", started: false })).status).toBe(204);
+      expect(linearFake.issueUpdates()).toEqual([]);
+      expect(linearFake.calls.filter((c) => c.query.includes("states("))).toEqual([]);
+    });
+
+    it("is for a thought only, and not an ephemeral one", async () => {
+      const { owner } = await delegatedIssue();
+      for (const bad of [
+        { ...START, type: "response" },
+        { ...START, ephemeral: true },
+        { ...START, started: "yes" },
+      ]) {
+        const res = await activity(owner.session, bad);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "bad activity" });
+      }
+      expect(linearFake.issueUpdates()).toEqual([]);
+    });
+
+    it("still answers 204 when Linear refuses the update, and logs only the status", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      linearFake.refuse = 403;
+      linearFake.refuseOnly = "issueUpdate";
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: START.body });
+      expect(log.mock.calls).toEqual([["linear start issue: 403"]]);
+      log.mockRestore();
+    });
+
+    it("posts no issue update when the activity itself was refused", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      linearFake.refuse = 500;
+      linearFake.refuseOnly = "agentActivityCreate";
+      expect((await activity(owner.session, START)).status).toBe(502);
+      expect(linearFake.calls.filter((c) => c.query.includes("states(") || c.query.includes("issueUpdate"))).toEqual([]);
+    });
   });
 
   it("counts activities per account", async () => {

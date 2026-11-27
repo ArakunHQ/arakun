@@ -25,11 +25,10 @@ use crate::linear::events::{
     progress_line, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
-    FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
-    kept_line, kept_message, kept_unread_line, message, no_directions_line, no_session_line,
-    not_started_line, passed_line, pending_in, release_stops, reply_no_sign_in_line,
-    reply_off_line, reply_source, run_state, skips_question, stop, stopped_after_reply,
-    unread_line,
+    FollowUp, SKIPS, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line, kept_line,
+    kept_message, kept_unread_line, message, no_directions_line, no_session_line, not_started_line,
+    passed_line, pending_in, release_stops, reply_no_sign_in_line, reply_off_line, reply_source,
+    run_state, skips_question, stop, stopped_after_reply, stopped_line, unread_line,
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
@@ -94,6 +93,8 @@ struct Start {
     /// The delivery to accept once handled. None for a run from the queue:
     /// its delivery was accepted when it began to wait.
     delivery: Option<String>,
+    /// The comment that mentioned Arakun, when a mention started the run.
+    comment: Option<String>,
     /// The guidance Linear sent with the delegation: from the live frame,
     /// or kept in memory with the run while it waited.
     guidance: Vec<GuidanceRule>,
@@ -179,6 +180,7 @@ impl Daemon {
                     organization: d.organization,
                     issue: d.issue,
                     delivery: Some(d.id),
+                    comment: d.comment,
                     guidance: d.guidance,
                 };
                 self.linear_read(start, key, cx);
@@ -189,11 +191,15 @@ impl Daemon {
     /// Reads the issue with the workspace's key, off the UI thread.
     fn linear_read(&mut self, start: Start, key: String, cx: &mut Context<Self>) {
         let issue = start.issue.clone();
+        let mention = start.comment.clone();
         cx.spawn(async move |this, cx| {
             let read = cx
                 // A panic's text could hold anything; Linear gets a fixed reason.
                 .background_spawn(crate::guard::task_or(
-                    async move { issues::detail(|q, v| crate::linear::call(&key, q, v), &issue) },
+                    async move {
+                        let q = |q: &str, v| crate::linear::call(&key, q, v);
+                        issues::detail(q, &issue, mention.as_deref())
+                    },
                     |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
                 ))
                 .await;
@@ -296,6 +302,7 @@ impl Daemon {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            comment: start.comment.clone(),
             guidance: start.guidance.clone(),
         });
         self.linear_save_runs();
@@ -428,7 +435,7 @@ impl Daemon {
         let name = crate::server::store::repo_name(&project)
             .unwrap_or_else(|| project.display().to_string());
         let line = started_line(&name, &computer(), &branch);
-        self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
+        self.linear_report_started(&start.agent_session, line, cx);
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
@@ -530,6 +537,7 @@ impl Daemon {
                 organization: run.organization.clone(),
                 issue: run.issue.clone(),
                 delivery: None,
+                comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
             };
             self.linear_save_runs();
@@ -755,7 +763,7 @@ impl Daemon {
             return;
         }
         let run = self.linear_run.runs.by_agent_session(&d.agent_session);
-        let decided = stop(run_state(run.as_deref(), &d.organization));
+        let decided = stop(run_state(run.as_deref(), &d.organization), d.reason);
         let session = run.and_then(|r| r.session.clone());
         self.linear_run.runs.mark_seen(&d.id);
         if matches!(decided, Stop::Dequeue | Stop::Cancel)
@@ -780,7 +788,7 @@ impl Daemon {
         match decided {
             Stop::Nothing => self.linear_save_runs(),
             Stop::Report | Stop::Dequeue | Stop::Cancel => {
-                let line = STOPPED.to_string();
+                let line = stopped_line(d.reason).to_string();
                 self.linear_report(&d.agent_session, ReportKind::Response, line, None, cx);
             }
         }
@@ -976,23 +984,44 @@ impl Daemon {
         options: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        let now = unix_now();
-        self.linear_run.runs.queue(Report {
+        self.linear_queue(Report {
             agent_session: agent_session.to_string(),
             kind,
             body,
             link,
             options,
-            made_at: now,
+            started: false,
+            made_at: unix_now(),
         });
+        self.linear_flush(cx);
+    }
+
+    /// The thought that says the session started: with it, Arakun's server
+    /// marks the issue as being worked on in Linear.
+    fn linear_report_started(&mut self, agent_session: &str, body: String, cx: &mut Context<Self>) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Thought,
+            body,
+            link: None,
+            options: Vec::new(),
+            started: true,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
+
+    fn linear_queue(&mut self, r: Report) {
+        let (kind, now) = (r.kind, r.made_at);
+        let agent_session = r.agent_session.clone();
+        self.linear_run.runs.queue(r);
         // A link is no activity: Linear still needs to hear the run works.
         if kind != ReportKind::Link
-            && let Some(run) = self.linear_run.runs.by_agent_session(agent_session)
+            && let Some(run) = self.linear_run.runs.by_agent_session(&agent_session)
         {
             run.reported_at = now;
         }
         self.linear_save_runs();
-        self.linear_flush(cx);
     }
 
     /// Sends what the outbox holds, in order, off the UI thread.

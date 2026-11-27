@@ -118,6 +118,8 @@ pub struct Flow {
     lines: Vec<Vec<String>>,
     placed: Vec<Placed>,
     curves: Vec<Curve>,
+    /// Where each edge's label is centered, for the edges that have one.
+    labels: Vec<Option<(f32, f32)>>,
     width: f32,
     height: f32,
 }
@@ -722,6 +724,7 @@ fn parse_flow(horizontal: bool, statements: &[String]) -> Option<Flow> {
         lines,
         placed: laid.placed,
         curves: laid.curves,
+        labels: laid.labels,
         width: laid.width,
         height: laid.height,
     })
@@ -914,6 +917,8 @@ fn rank_nodes(n: usize, edges: &[FlowEdge]) -> (Vec<usize>, Vec<Vec<usize>>) {
 struct Laid {
     placed: Vec<Placed>,
     curves: Vec<Curve>,
+    /// Where each edge's label is centered, for the edges that have one.
+    labels: Vec<Option<(f32, f32)>>,
     width: f32,
     height: f32,
 }
@@ -990,6 +995,117 @@ fn place(
         (i, layer.len() - 1 - i)
     };
 
+    // Whether a curve passes through a node other than its two ends.
+    let hits = |c: &Curve, from: usize, to: usize| {
+        (0..=32).any(|k| {
+            let (x, y) = c.at(k as f32 / 32.);
+            placed.iter().enumerate().any(|(v, p)| {
+                v != from
+                    && v != to
+                    && x > p.x + 1.
+                    && x < p.x + p.w - 1.
+                    && y > p.y + 1.
+                    && y < p.y + p.h - 1.
+            })
+        })
+    };
+    // A curve outside every node in the ranks from `from` to `to`, on the
+    // near side (top, or left when vertical) or the far side.
+    let around = |from: usize, to: usize, near: bool| {
+        let (a, b) = (placed[from], placed[to]);
+        let (lo, hi) = (rank[from].min(rank[to]), rank[from].max(rank[to]));
+        let band: Vec<Placed> = (0..n)
+            .filter(|&v| (lo..=hi).contains(&rank[v]))
+            .map(|v| placed[v])
+            .collect();
+        let out = 36.;
+        if h {
+            if near {
+                let y = band.iter().map(|p| p.y).fold(f32::MAX, f32::min) - out;
+                let (f, t) = ((a.x + a.w / 2., a.y), (b.x + b.w / 2., b.y));
+                Curve {
+                    from: f,
+                    c1: (f.0, y),
+                    c2: (t.0, y),
+                    to: t,
+                }
+            } else {
+                let y = band.iter().map(|p| p.y + p.h).fold(f32::MIN, f32::max) + out;
+                let (f, t) = ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y + b.h));
+                Curve {
+                    from: f,
+                    c1: (f.0, y),
+                    c2: (t.0, y),
+                    to: t,
+                }
+            }
+        } else if near {
+            let x = band.iter().map(|p| p.x).fold(f32::MAX, f32::min) - out;
+            let (f, t) = ((a.x, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
+            Curve {
+                from: f,
+                c1: (x, f.1),
+                c2: (x, t.1),
+                to: t,
+            }
+        } else {
+            let x = band.iter().map(|p| p.x + p.w).fold(f32::MIN, f32::max) + out;
+            let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x + b.w, b.y + b.h / 2.));
+            Curve {
+                from: f,
+                c1: (x, f.1),
+                c2: (x, t.1),
+                to: t,
+            }
+        }
+    };
+
+    // A forward curve from `from`'s exit to `to`'s entry that bends `out`
+    // past the nodes of the ranks between them, on the near or the far side.
+    // Its ends leave and arrive along the flow, so only those ranks matter.
+    let skip = |from: usize, to: usize, near: bool, out: f32| {
+        let (a, b) = (placed[from], placed[to]);
+        let between: Vec<Placed> = (0..n)
+            .filter(|&v| rank[v] > rank[from] && rank[v] < rank[to])
+            .map(|v| placed[v])
+            .collect();
+        if h {
+            let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
+            let y = if near {
+                between.iter().map(|p| p.y).fold(f.1.min(t.1), f32::min) - out
+            } else {
+                between
+                    .iter()
+                    .map(|p| p.y + p.h)
+                    .fold(f.1.max(t.1), f32::max)
+                    + out
+            };
+            Curve {
+                from: f,
+                c1: (f.0, y),
+                c2: (t.0, y),
+                to: t,
+            }
+        } else {
+            let (f, t) = ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y));
+            let x = if near {
+                between.iter().map(|p| p.x).fold(f.0.min(t.0), f32::min) - out
+            } else {
+                between
+                    .iter()
+                    .map(|p| p.x + p.w)
+                    .fold(f.0.max(t.0), f32::max)
+                    + out
+            };
+            Curve {
+                from: f,
+                c1: (x, f.1),
+                c2: (x, t.1),
+                to: t,
+            }
+        }
+    };
+
     let mut curves = Vec::with_capacity(edges.len());
     for e in edges {
         let (a, b) = (placed[e.from], placed[e.to]);
@@ -1013,7 +1129,7 @@ fn place(
                 }
             }
         } else if rank[e.to] > rank[e.from] {
-            if h {
+            let direct = if h {
                 let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
                 let d = (t.0 - f.0) * 0.5;
                 Curve {
@@ -1031,6 +1147,21 @@ fn place(
                     c2: (t.0, t.1 - d),
                     to: t,
                 }
+            };
+            // An edge that skips ranks would run straight through a node in
+            // between; it bends around the ranks it skips instead, wider on
+            // each try, starting on the side with fewer nodes in the way.
+            if rank[e.to] > rank[e.from] + 1 && hits(&direct, e.from, e.to) {
+                let ((ab, aa), (bb, ba)) = (slot(e.from), slot(e.to));
+                let near = ab + bb < aa + ba;
+                [36., 72., 108., 144.]
+                    .into_iter()
+                    .flat_map(|out| [(near, out), (!near, out)])
+                    .map(|(side, out)| skip(e.from, e.to, side, out))
+                    .find(|c| !hits(c, e.from, e.to))
+                    .unwrap_or(direct)
+            } else {
+                direct
             }
         } else if rank[e.to] == rank[e.from] {
             let l = if h { a.y < b.y } else { a.x < b.x };
@@ -1062,55 +1193,50 @@ fn place(
         } else {
             // A back edge goes around the ranks it spans, on the side with fewer
             // nodes in the way at its two ends, so it does not cross the flow.
-            let (lo, hi) = (rank[e.to], rank[e.from]);
-            let band: Vec<Placed> = (0..n)
-                .filter(|&v| (lo..=hi).contains(&rank[v]))
-                .map(|v| placed[v])
-                .collect();
             let ((ab, aa), (bb, ba)) = (slot(e.from), slot(e.to));
-            let near = ab + bb < aa + ba;
-            let out = 36.;
-            if h {
-                if near {
-                    let y = band.iter().map(|p| p.y).fold(f32::MAX, f32::min) - out;
-                    let (f, t) = ((a.x + a.w / 2., a.y), (b.x + b.w / 2., b.y));
-                    Curve {
-                        from: f,
-                        c1: (f.0, y),
-                        c2: (t.0, y),
-                        to: t,
-                    }
-                } else {
-                    let y = band.iter().map(|p| p.y + p.h).fold(f32::MIN, f32::max) + out;
-                    let (f, t) = ((a.x + a.w / 2., a.y + a.h), (b.x + b.w / 2., b.y + b.h));
-                    Curve {
-                        from: f,
-                        c1: (f.0, y),
-                        c2: (t.0, y),
-                        to: t,
-                    }
-                }
-            } else if near {
-                let x = band.iter().map(|p| p.x).fold(f32::MAX, f32::min) - out;
-                let (f, t) = ((a.x, a.y + a.h / 2.), (b.x, b.y + b.h / 2.));
-                Curve {
-                    from: f,
-                    c1: (x, f.1),
-                    c2: (x, t.1),
-                    to: t,
-                }
-            } else {
-                let x = band.iter().map(|p| p.x + p.w).fold(f32::MIN, f32::max) + out;
-                let (f, t) = ((a.x + a.w, a.y + a.h / 2.), (b.x + b.w, b.y + b.h / 2.));
-                Curve {
-                    from: f,
-                    c1: (x, f.1),
-                    c2: (x, t.1),
-                    to: t,
-                }
-            }
+            around(e.from, e.to, ab + bb < aa + ba)
         };
         curves.push(curve);
+    }
+
+    // Each label sits on its edge, as near the middle as it can without
+    // covering a node, or another label when there is room for that too.
+    let clear = |(x, y): (f32, f32), (w, lh): (f32, f32), p: &Placed| {
+        x + w / 2. + 2. <= p.x
+            || p.x + p.w + 2. <= x - w / 2.
+            || y + lh / 2. + 2. <= p.y
+            || p.y + p.h + 2. <= y - lh / 2.
+    };
+    let mut labels: Vec<Option<(f32, f32)>> = vec![None; edges.len()];
+    let mut taken: Vec<Placed> = Vec::new();
+    for (i, (e, c)) in edges.iter().zip(&curves).enumerate() {
+        let Some(l) = &e.label else { continue };
+        let (_, size) = edge_label_box(l);
+        let spots: Vec<(f32, f32)> = (0..=14)
+            .map(|k| {
+                let d = (k + 1) / 2;
+                let t = if k % 2 == 1 {
+                    0.5 - 0.025 * d as f32
+                } else {
+                    0.5 + 0.025 * d as f32
+                };
+                c.at(t)
+            })
+            .collect();
+        let off_nodes = |at: (f32, f32)| placed.iter().all(|p| clear(at, size, p));
+        let at = spots
+            .iter()
+            .copied()
+            .find(|&at| off_nodes(at) && taken.iter().all(|p| clear(at, size, p)))
+            .or_else(|| spots.iter().copied().find(|&at| off_nodes(at)))
+            .unwrap_or_else(|| c.mid());
+        taken.push(Placed {
+            x: at.0 - size.0 / 2.,
+            y: at.1 - size.1 / 2.,
+            w: size.0,
+            h: size.1,
+        });
+        labels[i] = Some(at);
     }
 
     // Everything drawn, edge labels included, then moved inside the padding.
@@ -1125,16 +1251,15 @@ fn place(
         grow(p.x, p.y);
         grow(p.x + p.w, p.y + p.h);
     }
-    for (e, c) in edges.iter().zip(&curves) {
+    for c in &curves {
         for k in 0..=16 {
             let (x, y) = c.at(k as f32 / 16.);
             grow(x, y);
         }
-        if let Some(l) = &e.label {
-            let ((mx, my), (_, (w, lh))) = (c.mid(), edge_label_box(l));
-            grow(mx - w / 2., my - lh / 2.);
-            grow(mx + w / 2., my + lh / 2.);
-        }
+    }
+    for p in &taken {
+        grow(p.x, p.y);
+        grow(p.x + p.w, p.y + p.h);
     }
     let (dx, dy) = (PAD - x0, PAD - y0);
     for p in &mut placed {
@@ -1142,6 +1267,9 @@ fn place(
         p.y += dy;
     }
     let shift = |(x, y): (f32, f32)| (x + dx, y + dy);
+    for at in labels.iter_mut().flatten() {
+        *at = shift(*at);
+    }
     for c in &mut curves {
         *c = Curve {
             from: shift(c.from),
@@ -1153,6 +1281,7 @@ fn place(
     Laid {
         placed,
         curves,
+        labels,
         width: (x1 - x0 + 2. * PAD).ceil(),
         height: (y1 - y0 + 2. * PAD).ceil(),
     }
@@ -1742,9 +1871,10 @@ fn render_flow(ix: usize, f: &Flow) -> AnyElement {
                 ),
         );
     }
-    for (e, c) in f.edges.iter().zip(&f.curves) {
-        let Some(label) = &e.label else { continue };
-        let (mx, my) = c.mid();
+    for (e, at) in f.edges.iter().zip(&f.labels) {
+        let (Some(label), Some((mx, my))) = (&e.label, *at) else {
+            continue;
+        };
         let (lines, (w, lh)) = edge_label_box(label);
         area = area.child(
             div()
@@ -2081,6 +2211,60 @@ mod tests {
         assert_eq!(two, vec!["x 62".to_string(), "capas".to_string()]);
         assert_eq!(one.len(), 1);
         assert!(h2 > h1);
+    }
+
+    /// Shaped like the report: an LR chart of nine nodes where labeled edges
+    /// from one node skip a rank that holds another node.
+    const SKIPS_A_RANK: &str = "flowchart LR
+  U[Usuario] --> A[API]
+  A --> Q[Queue importar]
+  A -->|lecturas| I[Índice]
+  A -->|escrituras| D[(Postgres)]
+  Q --> W[Worker]
+  W --> I
+  W --> D
+  W --> S[S3]
+  I --> B[Buscador]";
+
+    fn overlaps(p: &Placed, (x, y): (f32, f32), (w, h): (f32, f32)) -> bool {
+        x + w / 2. > p.x && x - w / 2. < p.x + p.w && y + h / 2. > p.y && y - h / 2. < p.y + p.h
+    }
+
+    #[test]
+    fn edge_labels_stay_off_nodes() {
+        let short =
+            "flowchart LR\n  A[API] --> Q[Queue importar] --> W[Worker]\n  A -->|lecturas| W";
+        for src in [short, SKIPS_A_RANK, HARNESS_LOOP] {
+            let Some(Diagram::Flow(f)) = parse("mermaid", src) else {
+                panic!()
+            };
+            assert!(f.horizontal || src != short);
+            for (i, e) in f.edges.iter().enumerate() {
+                if let Some(l) = &e.label {
+                    let at = f.labels[i].expect("a labeled edge has a label spot");
+                    let (_, size) = edge_label_box(l);
+                    for (v, p) in f.placed.iter().enumerate() {
+                        assert!(
+                            !overlaps(p, at, size),
+                            "label {l:?} covers {}",
+                            f.nodes[v].id
+                        );
+                    }
+                } else {
+                    assert!(f.labels[i].is_none());
+                }
+                for (v, p) in f.placed.iter().enumerate() {
+                    if v == e.from || v == e.to {
+                        continue;
+                    }
+                    assert!(
+                        (0..=32).all(|k| !inside(p, f.curves[i].at(k as f32 / 32.))),
+                        "edge {e:?} crosses {}",
+                        f.nodes[v].id
+                    );
+                }
+            }
+        }
     }
 
     #[test]

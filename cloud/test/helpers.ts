@@ -245,8 +245,11 @@ export const linearFake = {
   /// answers the same pair again for 30 minutes; with `grace` off it refuses.
   rotated: new Map<string, { access: string; refresh: string }>(),
   grace: true,
-  /// Issue id → its team and project.
-  issues: new Map<string, { teamId: string; projectId: string | null }>(),
+  /// Issue id → its team and project, and for `startIssue` its state type
+  /// (`unstarted` when not given) and delegate.
+  issues: new Map<string, { teamId: string; projectId: string | null; stateType?: string; delegateId?: string }>(),
+  /// Team id → its `started` states, in any order.
+  startedStates: new Map<string, { id: string; position: number }[]>(),
   /// Every GraphQL call: the query, its variables and the access token.
   calls: [] as { query: string; variables: unknown; token: string }[],
   /// The calls Linear accepted, apart from `calls`: what `activities()` and `links()` read.
@@ -292,6 +295,12 @@ export const linearFake = {
         return { ...sent, ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }), ...select };
       });
   },
+  /// The issue updates, in order.
+  issueUpdates(): { id: string; input: { stateId?: string; delegateId?: string } }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("issueUpdate"))
+      .map((c) => c.variables as { id: string; input: { stateId?: string; delegateId?: string } });
+  },
   /// The links added to agent sessions, in order.
   links(): { agentSessionId: string; label: string; url: string }[] {
     return this.accepted
@@ -312,6 +321,7 @@ function resetLinear(): void {
   linearFake.rotated.clear();
   linearFake.grace = true;
   linearFake.issues.clear();
+  linearFake.startedStates.clear();
   linearFake.calls = [];
   linearFake.accepted = [];
   linearFake.auth = [];
@@ -381,10 +391,25 @@ async function linearReply(req: Request): Promise<Response> {
     });
   if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))
     return Response.json({ data: { agentActivityCreate: { success: true }, agentSessionUpdate: { success: true } } });
+  if (query.includes("issueUpdate")) return Response.json({ data: { issueUpdate: { success: true } } });
   if (query.includes("issue(")) {
     const issue = linearFake.issues.get((variables as { id: string }).id);
     if (!issue) return Response.json({ errors: [{ message: "Entity not found", extensions: { code: "INVALID_INPUT" } }] });
-    return Response.json({ data: { issue: { team: { id: issue.teamId }, project: issue.projectId ? { id: issue.projectId } : null } } });
+    if (query.includes("states("))
+      return Response.json({
+        data: {
+          issue: {
+            state: { type: issue.stateType ?? "unstarted" },
+            delegate: issue.delegateId ? { id: issue.delegateId } : null,
+            team: { states: { nodes: linearFake.startedStates.get(issue.teamId) ?? [] } },
+          },
+        },
+      });
+    return Response.json({
+      data: {
+        issue: { team: { id: issue.teamId }, project: issue.projectId ? { id: issue.projectId } : null, state: { type: issue.stateType ?? "started" } },
+      },
+    });
   }
   throw new Error(`unexpected Linear query: ${query}`);
 }
@@ -421,7 +446,8 @@ export async function signedWebhook(
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
   const signature = Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
-  return { text, headers: { "Content-Type": "application/json", "Linear-Signature": signature, "Linear-Event": "AgentSessionEvent" } };
+  const event = typeof body["type"] === "string" ? body["type"] : "AgentSessionEvent";
+  return { text, headers: { "Content-Type": "application/json", "Linear-Signature": signature, "Linear-Event": event } };
 }
 
 /// The body of a `created` AgentSessionEvent: someone delegated or mentioned
@@ -434,11 +460,14 @@ export function created({
   organizationId = HOOK_ORG,
   agentSessionId = crypto.randomUUID(),
   guidance = [],
+  comment = null,
 }: {
   creatorId: string | null;
   issueId: string | null;
   promptContext?: string;
   guidance?: unknown[];
+  /// The comment that mentioned Arakun, as Linear sends it.
+  comment?: Record<string, unknown> | null;
   webhookId?: string;
   organizationId?: string;
   agentSessionId?: string;
@@ -454,7 +483,8 @@ export function created({
       issueId,
       creatorId,
       issue: issueId ? { id: issueId, identifier: "ENG-1", title: "Make it blue", description: "The button is grey.", teamId: null } : null,
-      comment: null,
+      commentId: comment && typeof comment["id"] === "string" ? comment["id"] : null,
+      comment,
     },
     promptContext,
     previousComments: [],
@@ -494,5 +524,39 @@ export function prompted({
     appUserId: "app-user",
     agentSession: { id: agentSessionId, issueId, creatorId: null, comment: null },
     agentActivity: { id: activityId, ...author, body, signal, content: { type: "prompt", body } },
+  };
+}
+
+/// The body of an inbox notification for the app user: `issueUnassignedFromYou`
+/// or `issueStatusChanged`. `actorId` is who caused it; null for an
+/// integration. Each call has a fresh notification id unless one is given.
+export function notification({
+  action,
+  issueId,
+  actorId = "22222222-2222-4222-8222-222222222222",
+  notificationId = crypto.randomUUID(),
+  organizationId = HOOK_ORG,
+}: {
+  action: string;
+  issueId: string;
+  actorId?: string | null;
+  notificationId?: string;
+  organizationId?: string;
+}): Record<string, unknown> {
+  return {
+    type: "AppUserNotification",
+    action,
+    organizationId,
+    oauthClientId: "lin-test",
+    appUserId: FAKE_APP_USER,
+    webhookId: HOOK_WEBHOOK,
+    notification: {
+      id: notificationId,
+      type: action,
+      actorId,
+      issueId,
+      issue: { id: issueId, identifier: "ENG-1", title: "Make it blue", teamId: "t", team: {}, url: "https://linear.app/x" },
+      userId: FAKE_APP_USER,
+    },
   };
 }

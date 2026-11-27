@@ -2106,6 +2106,8 @@ mod tests {
                 issue: "5b0c1f9e-0000-4000-8000-000000000002".into(),
                 organization: "5b0c1f9e-0000-4000-8000-000000000003".into(),
                 activity: None,
+                reason: None,
+                comment: None,
                 body: None,
                 guidance: Vec::new(),
             }

@@ -47,6 +47,21 @@ describe("a cloud session", () => {
     }
   });
 
+  it("lists the account's sessions by id, without their names", async () => {
+    // What arakun-server asks to keep the devices the relay let in; a 401
+    // here reads to it as the end of its own sign-in.
+    const { owner, cloud } = await cloudMachine();
+    const res = await call("GET", "/sessions", as(cloud.session));
+    expect(res.status).toBe(200);
+    const list = (await res.json()) as { id: string; name: string; created_at: number; last_used_at: number; current: boolean }[];
+    expect(list.map((s) => [s.id, s.name, s.created_at, s.last_used_at, s.current]).sort()).toEqual(
+      [
+        [owner.session_id, "", 0, 0, false],
+        [cloud.session_id, "", 0, 0, true],
+      ].sort(),
+    );
+  });
+
   it("is not signed in anywhere else", async () => {
     const { owner, me, cloud } = await cloudMachine();
     await call("PUT", `/admin/users/${owner.account_id}/flags/teams`, ADMIN);
@@ -54,7 +69,6 @@ describe("a cloud session", () => {
       ["GET", "/me"],
       ["GET", "/machines"],
       ["DELETE", `/machines/${me.label}`],
-      ["GET", "/sessions"],
       ["DELETE", `/sessions/${owner.session_id}`],
       ["DELETE", `/sessions/${cloud.session_id}`],
       ["POST", "/auth/logout"],

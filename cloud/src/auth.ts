@@ -59,7 +59,8 @@ export interface GitHubUser {
 const KINDS = ["app", "server", "phone", "ios", "android"];
 /// A session for an `arakun-server` in a container we host. An agent there
 /// may be talked into reading the token, so it is good for one door only:
-/// `/machines/<label>/pc` of the label it was made for.
+/// `/machines/<label>/pc` of the label it was made for. Besides that it may
+/// list the account's sessions by id (`listSessions`).
 export const CLOUD_KIND = "cloud";
 /// A machine label, as the relay derives it from the computer's key.
 const LABEL = /^[a-z2-7]{16}$/;
@@ -300,15 +301,24 @@ function withoutCookie(request: Request, res: Response): Response {
 }
 
 /// The account's signed-in devices, the calling one marked.
+///
+/// A cloud session may ask too. `arakun-server` asks to learn which of the
+/// devices the relay let in are still signed in, and takes a 401 as the end
+/// of its own sign-in: it then forgets every one of them. It needs the ids
+/// only, so a token an agent leaked reads no device names or times here;
+/// the fields stay, empty, because the server reads the whole row.
 export async function listSessions(request: Request, env: Env): Promise<Response> {
-  const s = await session(request, env);
+  const s = await session(request, env, { cloud: true });
   if (!s) return error(401, "not signed in");
   const rows = await env.DB.prepare(
     "SELECT id, name, kind, created_at, last_used_at FROM sessions WHERE account_id = ? AND expires_at > ? ORDER BY created_at, id",
   )
     .bind(s.accountId, now())
     .all<{ id: string; name: string; kind: string; created_at: number; last_used_at: number }>();
-  return Response.json(rows.results.map((r) => ({ ...r, current: r.id === s.id })));
+  const idsOnly = s.kind === CLOUD_KIND;
+  return Response.json(
+    rows.results.map((r) => (idsOnly ? { id: r.id, name: "", kind: r.kind, created_at: 0, last_used_at: 0, current: r.id === s.id } : { ...r, current: r.id === s.id })),
+  );
 }
 
 /// Signs one of the account's devices out. Another account's id is not found.
@@ -331,11 +341,17 @@ export async function deleteSession(request: Request, env: Env, id: string): Pro
 /// A cloud session counts as no session, unless the caller is the computer
 /// door and passes `machine`, the label it serves, and that is the session's
 /// label. Refusing here rather than in each caller means a new endpoint is
-/// closed to it without anyone remembering to.
+/// closed to it without anyone remembering to. `cloud` is for the one other
+/// caller that takes it, at any label: `GET /sessions`.
 export async function session(
   request: Request,
   env: Env,
-  { renew = true, flag = null, machine = null }: { renew?: boolean; flag?: string | null; machine?: string | null } = {},
+  {
+    renew = true,
+    flag = null,
+    machine = null,
+    cloud = false,
+  }: { renew?: boolean; flag?: string | null; machine?: string | null; cloud?: boolean } = {},
 ): Promise<Session | null> {
   let token = bearer(request);
   if (token === null && !request.headers.has("Authorization")) {
@@ -374,7 +390,8 @@ export async function session(
     }>();
   if (!row) return null;
   // Before the renewal: a refused request must not keep the session alive.
-  if ((row.kind === CLOUD_KIND || row.machine_label !== null) && (machine === null || row.machine_label !== machine)) return null;
+  const bound = row.kind === CLOUD_KIND || row.machine_label !== null;
+  if (bound && !(cloud && row.kind === CLOUD_KIND) && (machine === null || row.machine_label !== machine)) return null;
   const t = now();
   if (row.expires_at <= t) {
     // Only while it is still expired: a request that renewed it meanwhile wins.

@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# One of the agents' programs as the user `agent`, by the name this file was
+# called with. The image links it under four names:
+#
+#   /opt/arakun/bin/claude-acp   what arakun-server runs for a Claude Code
+#   /opt/arakun/bin/codex-acp    or a Codex session (ARAKUN_CLAUDE_ACP,
+#                                ARAKUN_CODEX_ACP): the agent's ACP adapter
+#   /usr/local/bin/claude        the agents' own CLIs in a terminal on the
+#   /usr/local/bin/codex         machine, for the owner's sign-in
+#
+# The owner signs in to their plan here (`claude`, then /login; or
+# `codex login`), and the sign-in lands in the home folder of
+# `agent`, where the sessions find it. Run as the server's user it would land
+# where no session looks. The token goes from the provider to this disk and
+# nowhere else.
+#
+# sudo lets `arakun` run as-agent and nothing else, and as-agent starts
+# nothing but these four. -E keeps the variables the caller gives the program;
+# sudo still drops the dangerous ones (LD_*).
+exec sudo -n -E /opt/arakun/bin/as-agent "$(basename "$0")" "$@"

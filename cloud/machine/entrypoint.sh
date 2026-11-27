@@ -11,11 +11,17 @@
 #   ARAKUN_CLOUD_LOGIN           the owner's login
 #   ARAKUN_CLOUD_IDENTITY        the relay key (PKCS#8, base64url), on a start
 #   ARAKUN_CLOUD_IDENTITY_PUBLIC from the image only, with its public half
+#   ARAKUN_CLOUD_MODEL           the owner's model credentials, for model-env;
+#   ARAKUN_CLOUD_VERTEX          empty when the owner gave none
+#   ARAKUN_CLOUD_SIGNIN_KEY      opens the plan sign-ins sealed before the
+#                                snapshot, on a start from one
 #
 # It writes the sign-in where the server reads it (account.json), the relay key
 # into phone.json on the first start, and starts `arakun-server serve` as
 # `arakun` with none of these variables. A new session comes with every start;
-# the object removes account.json before it snapshots the disk.
+# the object removes account.json before it snapshots the disk. The model
+# credentials go to model-env, which keeps them for as-agent: the server never
+# has them.
 set -eu
 umask 077
 
@@ -64,8 +70,12 @@ write_private "$dir/account.json" <<EOF
 {"base":"$ARAKUN_CLOUD_BASE","session":"$ARAKUN_CLOUD_SESSION","session_id":"$ARAKUN_CLOUD_SESSION_ID","github_id":$ARAKUN_CLOUD_GITHUB_ID,"login":"$ARAKUN_CLOUD_LOGIN"}
 EOF
 
+# Every start: with none given, this removes what an older disk may hold.
+/opt/arakun/bin/model-env
+
 base=$ARAKUN_CLOUD_BASE
 name=$ARAKUN_CLOUD_NAME
+unset ARAKUN_CLOUD_MODEL ARAKUN_CLOUD_VERTEX ARAKUN_CLOUD_SIGNIN_KEY
 unset ARAKUN_CLOUD_SESSION ARAKUN_CLOUD_SESSION_ID ARAKUN_CLOUD_IDENTITY ARAKUN_CLOUD_IDENTITY_PUBLIC
 
 # As `arakun`, with an environment of its own: nothing of this one, the
@@ -74,7 +84,7 @@ as_arakun() {
   setpriv --reuid=arakun --regid=arakun --init-groups -- env -i \
     PATH=/usr/local/bin:/usr/bin:/bin HOME="$home" USER=arakun LOGNAME=arakun LANG=C.UTF-8 \
     HOSTNAME="$name" ARAKUN_TEAMS_URL="$base" ARAKUN_SERVER_DIR="$dir" \
-    ARAKUN_CLAUDE_ACP=/opt/arakun/bin/claude-acp \
+    ARAKUN_CLAUDE_ACP=/opt/arakun/bin/claude-acp ARAKUN_CODEX_ACP=/opt/arakun/bin/codex-acp \
     sh -c 'umask 002 && exec "$@"' sh "$@"
 }
 

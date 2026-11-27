@@ -11,6 +11,13 @@
 //   DELETE /cloud/machines/<label>        → 204; the container, its snapshot and key go
 //   GET    /cloud/usage                   → Usage: this month's awake time and limits
 //
+// The owner's model credentials for the agents there (cloud_model.ts). Only
+// which providers are set ever comes back, never a key:
+//
+//   GET    /cloud/machines/<label>/model            → [{provider, set_at}]
+//   PUT    /cloud/machines/<label>/model/<provider> → { model, applied }
+//   DELETE /cloud/machines/<label>/model/<provider> → { model, applied }
+//
 // A wake past a limit (cloud_meter.ts) answers 403 with `{ error, limit }`,
 // `limit` one of `stopped_all`, `held`, `allowance_used` or `task_cap`, and
 // `error` the sentence to show. A machine stopped at the task cap wakes again
@@ -27,6 +34,7 @@ import { session } from "./auth";
 import { CLOUD_FLAG } from "./cloud_access";
 import { allowedOwner, newMachineKey, type Refused } from "./cloud_machine";
 import { STOP_ALL_KEY, budgetOf, limitOf, limitText, type Limit } from "./cloud_meter";
+import { isProvider, keyUsable, parseModel } from "./cloud_model";
 import { recheckMachine } from "./machines";
 import { planFor } from "./relay/limits";
 import { error, isObject, jsonBody, now, type Env } from "./util";
@@ -37,7 +45,9 @@ export const MAX_CLOUD_MACHINES = 1;
 const MAX_NAME = 100;
 const MAX_BODY = 4096;
 const DEFAULT_NAME = "Cloud";
-const ROUTE = /^\/cloud\/machines\/([a-z2-7]{16})(?:\/(wake|sleep))?$/;
+/// A Google credentials file is a few kilobytes.
+const MAX_MODEL_BODY = 32 * 1024;
+const ROUTE = /^\/cloud\/machines\/([a-z2-7]{16})(?:\/(wake|sleep|model)(?:\/([a-z]+))?)?$/;
 
 /// The answer for a /cloud/machines route, or null when the path is not one.
 export async function cloudMachines(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response | null> {
@@ -58,6 +68,8 @@ export async function cloudMachines(request: Request, env: Env, url: URL, ctx: E
   }
   const label = one[1]!;
   const action = one[2];
+  const provider = one[3];
+  if (provider !== undefined && action !== "model") return error(404, "not found");
   const owner = await env.DB.prepare("SELECT account_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("account_id");
   if (owner !== s.accountId) return error(404, "no such cloud machine");
   const stub = ns.get(ns.idFromName(label));
@@ -69,6 +81,20 @@ export async function cloudMachines(request: Request, env: Env, url: URL, ctx: E
   if (action === "sleep" && request.method === "POST") {
     await stub.sleep("asked by the owner");
     return new Response(null, { status: 204 });
+  }
+  if (action === "model") {
+    if (provider === undefined) return request.method === "GET" ? Response.json(await stub.model()) : error(404, "not found");
+    if (!isProvider(provider)) return error(404, "no such provider");
+    if (request.method === "DELETE") {
+      const cleared = await stub.clearModel(provider);
+      return cleared ? Response.json(cleared) : error(404, "no such cloud machine");
+    }
+    if (request.method !== "PUT") return error(404, "not found");
+    if (!keyUsable(env)) return error(503, "cloud machines take no API key here");
+    const parsed = parseModel(provider, await jsonBody(request, MAX_MODEL_BODY));
+    if (typeof parsed === "string") return error(400, parsed);
+    const set = await stub.setModel(provider, parsed);
+    return set ? Response.json(set) : error(404, "no such cloud machine");
   }
   if (!action && request.method === "DELETE") {
     await removeMachine(env, ns, label, s.accountId);

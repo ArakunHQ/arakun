@@ -63,6 +63,8 @@ cloud/
                         arakun-server per cloud machine, its key, start, sleep and wake
   src/cloud_machines.ts the account's cloud machines: /cloud/machines, /cloud/usage,
                         and the operator's side of them
+  src/cloud_model.ts    the owner's model credentials for a cloud machine, sealed
+                        with AES-GCM under CLOUD_MODEL_KEY
   src/cloud_meter.ts    awake time of cloud machines: the monthly allowance, the
                         task cap and the operator's switches
   machine/              the cloud machine's image: Dockerfile, entrypoint and the
@@ -839,6 +841,39 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   the account's sessions the server asks for ("How sign-in works"). It goes in as an
   environment variable. Sleep removes the server's sign-in file and ends the
   session before the snapshot, so no snapshot holds a live token.
+- **Model credentials.** The agents run on the owner's own account with the model
+  provider, in one of two ways. A plan's sign-in never passes through the Worker,
+  and no snapshot holds one that can be read.
+  - *A sign-in* to a plan, made inside the machine with the agent's own flow: a
+    Claude plan (Pro, Max, Team) for Claude Code, a ChatGPT plan for Codex. Open a
+    terminal on the machine and run `claude`, then `/login`, or run
+    `codex login` (which asks for a device code here); open the link it prints and enter the code.
+    `claude` and `codex` there are `machine/run`, which runs the CLI as `agent`,
+    so the sign-in lands in that user's home folder, where the sessions find it.
+    The token goes from the provider to the machine's disk: the Worker never sees
+    it, and no route takes one. A snapshot holds it only sealed: before each
+    one, `model-env forget` seals the two sign-in files under a new key and
+    removes them, and the machine's object keeps that key with the snapshot's
+    record, never on the disk. The wake from that snapshot hands the key back and
+    the files return, so the owner signs in once. A snapshot alone gives no
+    token. `/logout` or `codex logout` there, or removing the machine, ends
+    it. With both an API key and a sign-in, Claude Code uses the key and Codex
+    uses the sign-in.
+  - *An API key*, given to `PUT /cloud/machines/<label>/model/<provider>`
+    (`src/cloud_model.ts`): an Anthropic API key, Amazon Bedrock or Google Vertex AI
+    for Claude Code, one of the three at a time, and an OpenAI API key for Codex.
+    The machine's object keeps it sealed with AES-GCM under `CLOUD_MODEL_KEY`, with
+    the label and the provider as additional data, and no route gives it back. It
+    goes into the container on every start and when it changes:
+    `machine/model-env` writes it under `/run/arakun` for root alone, and
+    `machine/as-agent` puts it in the environment of each agent it starts, so the
+    server never holds it. A session that runs keeps the key it started with.
+    Before a snapshot, sleep runs `model-env forget`, which stops the agents,
+    removes `/run/arakun` and the copy Codex makes of an API key in its sign-in
+    file, and it takes no snapshot when that fails, so no snapshot holds a key. An agent can read its
+    own environment, so the key is as safe as what the owner lets the agent do.
+  Other agents (Droid, Cursor, Devin, Antigravity, OpenCode) are not in the image:
+  the server does not install their CLIs, and each comes from its maker's installer.
 - **Lifecycle.** A device at the machine's door wakes it, from its snapshot when
   there is one. Every 5 minutes an alarm asks the server (`arakun-server status`)
   whether an agent turn runs or a device is connected; while one does, it renews
@@ -847,13 +882,13 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   stops the container. Taking the `cloud` flag or blocking the account stops the
   machine at the next check and refuses the next wake.
 - **Users.** `arakun` runs the server; `agent` runs the agents, without
-  capabilities, through `machine/claude-acp`. Tried on a Cloudflare container:
+  capabilities, through `machine/run`. Tried on a Cloudflare container:
   the server runs without capabilities, and a process started the way
   `machine/as-agent` starts the adapter has none, cannot get them back and cannot
   read the server's sign-in or key. Only what the object starts with `exec` has
   root's capabilities whatever its user, as Cloudflare says of the
-  `durable_object` policy; the object runs `arakun-server status` and `rm` that
-  way, never an agent. The session's one door still limits a token that leaks.
+  `durable_object` policy; the object runs `arakun-server status`, `rm` and
+  `machine/model-env` that way, never an agent. The session's one door still limits a token that leaks.
 - **Size.** 1 vCPU, 6 GiB and 20 GB of disk (`INSTANCE`), the most disk an
   account gets and a snapshot holds.
 - **Metering** (`src/cloud_meter.ts`). The clock runs from a container's start
@@ -883,6 +918,13 @@ may push container images. `wrangler deploy` of the test Worker builds the image
 with Docker, from the repository (`/.dockerignore` lets in what it needs); the
 tests and `wrangler dev` run without it.
 
+`CLOUD_MODEL_KEY` is 32 random bytes in base64url
+(`openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`, then
+`npx wrangler secret put CLOUD_MODEL_KEY --env=""`). Without it a machine takes no API
+key (`503`) and the owner signs in inside it. Losing or changing it makes every
+stored key unreadable: the agents then say they are not signed in, and each owner
+sets the key again.
+
 ```sh
 # the account's machines; make one (it starts at once), wake it, put it to sleep, remove it
 curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/machines"
@@ -891,6 +933,11 @@ curl -fsS -X POST -H "Authorization: Bearer <session>" -H "Content-Type: applica
 curl -fsS -X POST -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/wake"
 curl -fsS -X POST -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/sleep"
 curl -fsS -X DELETE -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>"
+# the model credentials: which providers are set, set one, remove one
+curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/model"
+curl -fsS -X PUT -H "Authorization: Bearer <session>" -H "Content-Type: application/json" \
+  -d '{"api_key":"<key>"}' "https://<host>/cloud/machines/<label>/model/anthropic"
+curl -fsS -X DELETE -H "Authorization: Bearer <session>" "https://<host>/cloud/machines/<label>/model/anthropic"
 # this month's awake time and limits
 curl -fsS -H "Authorization: Bearer <session>" "https://<host>/cloud/usage"
 # the operator: every machine, and stopping one now
@@ -1230,6 +1277,9 @@ the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 | `GET /cloud/usage` | `200 {month, used_ms, allowance_ms, left_ms, task_cap_ms, stopped, message}`: this UTC month's awake time, and `stopped` (`allowance_used`, `held` or `stopped_all`) with the sentence to show, or null. |
 | `POST /cloud/machines/<label>/sleep` | Snapshots it and stops it: `204`. |
 | `DELETE /cloud/machines/<label>` | Stops it and forgets it, with its key, snapshot, registration and session: `204`. |
+| `GET /cloud/machines/<label>/model` | The providers the machine has credentials for, never the credentials: `200 [{provider, set_at}]`. |
+| `PUT /cloud/machines/<label>/model/<provider>` | Keeps the owner's credentials for `anthropic`, `bedrock`, `vertex` or `openai`: `200 {model: [{provider, set_at}], applied}`. `anthropic` and `openai` take `{"api_key"}`; `bedrock` takes `{"region", "api_key"}` or `{"region", "access_key_id", "secret_access_key", "session_token"?}`; `vertex` takes `{"region", "project_id", "credentials"}`, the JSON of a Google credentials file as an object or a string. One of `anthropic`, `bedrock` and `vertex` replaces the other two. `applied` is `false` when the machine runs and did not take them; its next start has them. `400` for a value that is missing or has spaces or line breaks, `404` for an unknown provider, `503` without `CLOUD_MODEL_KEY`. |
+| `DELETE /cloud/machines/<label>/model/<provider>` | Forgets them, on a running machine too: `200 {model, applied}`. |
 | `GET /admin/cloud/machines` with `ADMIN_SECRET` | `200 [{label, account_id, login, name, created_at, month_ms, running, snapshot, stopped}]`, newest first; `month_ms` is the owner's awake time this month. |
 | `POST /admin/cloud/machines/<label>/sleep` with `ADMIN_SECRET` | Snapshots it and stops it now: `204`, and a `cloud.machine.sleep` entry in the log. `404` for no such machine. |
 | `PUT /admin/cloud/stop`, `{"reason"?: "..."}`, with `ADMIN_SECRET` | Stops every cloud machine now and keeps them down: `200 {machines}`, how many stopped at once, and `cloud.stop_all` in the log. `DELETE` lifts it: `204`, `cloud.resume_all`. |

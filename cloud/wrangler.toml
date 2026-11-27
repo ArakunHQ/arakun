@@ -57,6 +57,12 @@ APNS_TEAM_ID = "V9JGU28UV7"
 APNS_TOPIC = "com.arakun.ios"
 # Where sign-in codes come from (src/email_auth.ts).
 EMAIL_FROM = "sign-in@arakun.dev"
+# The Arakun Cloud GitHub App, which gives cloud machines access to the
+# repositories it is installed on (src/cloud_github.ts; cloud/README.md, "Cloud
+# machines"). Its private key is `wrangler secret put GITHUB_APP_PRIVATE_KEY`.
+# Set both once the app exists; without them machines get no GitHub token.
+# GITHUB_APP_ID = ""
+# GITHUB_APP_SLUG = ""
 
 # Once a day, the Worker refreshes the Linear tokens of quiet workspaces
 # (src/linear_keep.ts). Set again under [env.production]: an environment

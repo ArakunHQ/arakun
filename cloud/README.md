@@ -933,6 +933,30 @@ access there.
     own environment, so the key is as safe as what the owner lets the agent do.
   Other agents (Droid, Cursor, Devin, Antigravity, OpenCode) are not in the image:
   the server does not install their CLIs, and each comes from its maker's installer.
+- **GitHub** (`src/cloud_github.ts`). The owner installs the Arakun Cloud GitHub
+  App, a GitHub App apart from the OAuth App used for sign-in, on chosen
+  repositories or a whole account. No GitHub token goes into the container.
+  Before each start the machine's object hands the container's HTTPS traffic to
+  `github.com` to the Worker (outbound interception, the `GitHubGit` entrypoint),
+  and Cloudflare ends that TLS with a CA made for that start, which the
+  entrypoint trusts. For git's smart HTTP (`info/refs`, `git-upload-pack`,
+  `git-receive-pack`) the Worker adds an installation token for the one
+  repository in the URL: read for a fetch, write for a push, good for an hour. The
+  object keeps it in memory to use again, never on disk, so no snapshot holds
+  one. Other `github.com` requests pass on as they came, with no token. git in the
+  image turns `git@github.com:` URLs into `https://github.com/`.
+  The app being installed is not enough, since anyone may install it anywhere:
+  the owner's own GitHub account must be able to read the repository, and write
+  to it for a push (GitHub's collaborator permission), or the request is refused.
+  A refusal is a `403` with a plain text body, which git prints as `remote:` lines;
+  where the app is not installed it links to
+  `https://github.com/apps/<slug>/installations/new`. A fetch with no token to
+  give goes on without one, so public repositories (dependencies, say) still
+  clone; git gets the refusal only when GitHub answers `401`, for a private one.
+  The Worker asks GitHub again for that repository after 2 minutes. An account that signs in by
+  email only has no GitHub account to act for and is refused. `api.github.com`
+  (the `gh` CLI) and Git LFS get no token yet, and Cloudflare refuses a request
+  body over 100 MiB, so a larger push fails with `413`.
 - **Lifecycle.** A device at the machine's door wakes it, from its snapshot when
   there is one. Every 5 minutes an alarm asks the server (`arakun-server status`)
   whether an agent turn runs or a device is connected; while one does, it renews
@@ -976,6 +1000,14 @@ added under `[env.production]`, with the migration tag `v3`, and the deploy toke
 may push container images. `wrangler deploy` of the test Worker builds the image
 with Docker, from the repository (`/.dockerignore` lets in what it needs); the
 tests and `wrangler dev` run without it.
+
+The GitHub App: on GitHub, make an app with the repository permissions Contents
+(read and write) and Metadata (read), no webhook, installable by any account. Put
+its ID and its name in the URL (`github.com/apps/<slug>`) in `wrangler.toml` as
+`GITHUB_APP_ID` and `GITHUB_APP_SLUG`, then generate a private key and
+`npx wrangler secret put GITHUB_APP_PRIVATE_KEY --env="" < key.pem` (the PEM as
+GitHub gives it). Without all three, machines reach `github.com` as any computer
+does, with no credentials.
 
 `CLOUD_MODEL_KEY` is 32 random bytes in base64url
 (`openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`, then

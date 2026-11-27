@@ -44,6 +44,15 @@ declare namespace Cloudflare {
     /// 32 bytes in base64url: the key the owners' model credentials are sealed
     /// with (cloud_model.ts). Unset = cloud machines take no API key.
     CLOUD_MODEL_KEY?: string;
+    /// The Arakun Cloud GitHub App, which gives cloud machines access to the
+    /// repositories its owners install it on (cloud_github.ts): its ID and its
+    /// name in github.com/apps/<slug> (public, in wrangler.toml), and its
+    /// private key as GitHub gives it, the PEM, from `wrangler secret put
+    /// GITHUB_APP_PRIVATE_KEY`. Without all three, machines reach github.com
+    /// with no credentials.
+    GITHUB_APP_ID?: string;
+    GITHUB_APP_SLUG?: string;
+    GITHUB_APP_PRIVATE_KEY?: string;
     /// One object per channel: its messages and live sockets.
     CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.
@@ -93,5 +102,10 @@ declare namespace Cloudflare {
     LINEAR_TOKEN_KEY?: string;
     /// Counts the /linear calls each user makes, since some ask Linear.
     LINEAR_LIMIT: RateLimit;
+  }
+  /// The main module's exports, for the type of `ctx.exports`.
+  interface GlobalProps {
+    mainModule: typeof import("./index");
+    durableNamespaces: "Channel" | "CloudMachine" | "Relay";
   }
 }

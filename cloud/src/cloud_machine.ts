@@ -30,6 +30,11 @@
 // kept with its record, never on the disk; the wake from it hands the key back.
 // So a snapshot alone gives no token.
 //
+// GitHub (cloud_github.ts). Before each start the object hands the
+// container's HTTPS traffic to github.com to the `GitHubGit` entrypoint, which
+// adds a one-hour token from the Arakun Cloud GitHub App to git's requests
+// from outside the container. The object keeps those tokens in memory only.
+//
 // Lifecycle. A device knocking at the machine's door wakes it (machines.ts).
 // An alarm checks every few minutes: while the server says an agent turn runs
 // or a device is connected, the container stays up and its inactivity timeout
@@ -45,6 +50,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { newCloudSession } from "./auth";
 import { CLOUD_FLAG } from "./cloud_access";
+import { appConfigured, githubUserOf, installUrl, mintToken, TokenCache, GITHUB_HOST, type Access, type GitRequest } from "./cloud_github";
 import { addAwake, budgetOf, limitOf, msLeft, noticeStop, type Budget, type Limit } from "./cloud_meter";
 import { modelVars, replacedBy, seal, PROVIDERS, type Model, type Provider, type Stored } from "./cloud_model";
 import { labelOf } from "./relay/label";
@@ -137,7 +143,13 @@ export interface ModelState {
 }
 
 /// The part of `ctx.container` the lifecycle uses, so tests can stand in for it.
-export type Box = Pick<Container, "running" | "images" | "start" | "monitor" | "destroy" | "snapshotContainer" | "setInactivityTimeout" | "exec">;
+export type Box = Pick<
+  Container,
+  "running" | "images" | "start" | "monitor" | "destroy" | "snapshotContainer" | "setInactivityTimeout" | "exec" | "interceptOutboundHttps"
+>;
+
+/// Makes the handler a machine's github.com traffic goes to (cloud_github.ts).
+export type GitHandler = (label: string) => Fetcher;
 
 /// The part of the object's storage the lifecycle uses.
 export type Store = Pick<DurableObjectStorage, "get" | "put" | "delete" | "deleteAll" | "setAlarm" | "deleteAlarm">;
@@ -258,11 +270,14 @@ export async function startEnv(env: Env, m: MachineRecord, withIdentity: boolean
 export class MachineLife {
   /// Wakes that arrive while one start runs wait for it.
   private starting: Promise<"running" | Refused> | null = null;
+  /// The GitHub tokens of this start, never on disk.
+  private readonly tokens = new TokenCache();
 
   constructor(
     private readonly storage: Store,
     private readonly box: Box | undefined,
     private readonly env: Env,
+    private readonly git?: GitHandler,
   ) {}
 
   async record(): Promise<MachineRecord | null> {
@@ -336,6 +351,7 @@ export class MachineLife {
       if (!vars) return "not_allowed";
       if (snap.signin) vars[SIGNIN_VAR] = snap.signin;
       try {
+        await this.intercept(box, m);
         const t0 = Date.now();
         box.start({ containerSnapshot: { id: snap.id }, instance: INSTANCE, enableInternet: true, env: vars });
         await this.started(box, image, t0, msLeft(budget, 0));
@@ -350,6 +366,7 @@ export class MachineLife {
     }
     const vars = await startEnv(this.env, m, true, stored);
     if (!vars) return "not_allowed";
+    await this.intercept(box, m);
     const t0 = Date.now();
     box.start({ image, instance: INSTANCE, enableInternet: true, env: vars });
     try {
@@ -361,6 +378,39 @@ export class MachineLife {
       throw e;
     }
     return "running";
+  }
+
+  /// Hands the container's github.com traffic to the GitHub handler. An
+  /// intercept lasts until the container stops, so each start needs its own,
+  /// and it comes before the start so the entrypoint finds the CA to trust.
+  /// Without a GitHub App, github.com is reached as from any computer.
+  private async intercept(box: Box, m: MachineRecord): Promise<void> {
+    this.tokens.clear();
+    if (!this.git || !appConfigured(this.env)) return;
+    await box.interceptOutboundHttps(GITHUB_HOST, this.git(m.label));
+  }
+
+  /// A token for git to reach one repository, from the cache while it has
+  /// time left, or why there is none. Only for a machine whose owner may run
+  /// one, and only with the owner's GitHub account's own access.
+  async gitAccess(req: GitRequest): Promise<Access> {
+    const m = await this.record();
+    if (!m) return { refused: "Arakun Cloud: this machine is gone.\n" };
+    if (!appConfigured(this.env)) return { refused: "Arakun Cloud has no GitHub App here.\n" };
+    if (!(await allowedOwner(this.env, m.githubId))) return { refused: "Arakun Cloud: this account may not run a cloud machine.\n" };
+    const cached = this.tokens.get(req);
+    if (cached) return cached;
+    const user = await githubUserOf(this.env, m.githubId);
+    const access: Access =
+      user === null
+        ? {
+            refused: `Arakun Cloud: sign in to Arakun with GitHub to give this machine access to ${req.owner}/${req.repo}, then install the app: ${installUrl(this.env)}\n`,
+            anonymous: !req.push,
+          }
+        : await mintToken(this.env, user, req);
+    if ("token" in access) this.tokens.put(req, access.token, access.expiresAt);
+    else if (access.anonymous) this.tokens.putAnonymous(req, access.refused);
+    return access;
   }
 
   /// After `start()`: `exec` waits for the container to be up, and throws if
@@ -519,6 +569,7 @@ export class MachineLife {
     const m = await this.record();
     if (!m) return;
     await endCloudSession(this.env, m.label);
+    this.tokens.clear();
     if (!box?.running) {
       await this.storage.delete("metered_at");
       return;
@@ -570,7 +621,7 @@ export class CloudMachine extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.life = new MachineLife(ctx.storage, ctx.container, env);
+    this.life = new MachineLife(ctx.storage, ctx.container, env, (label) => ctx.exports.GitHubGit({ props: { label } }));
     // The timeout does not outlive the object: after a deploy it restarts
     // without one, and the container would stop shortly after.
     const c = ctx.container;
@@ -599,6 +650,10 @@ export class CloudMachine extends DurableObject<Env> {
 
   remove(): Promise<void> {
     return this.life.remove();
+  }
+
+  gitAccess(req: GitRequest): Promise<Access> {
+    return this.life.gitAccess(req);
   }
 
   model(): Promise<ModelState[]> {

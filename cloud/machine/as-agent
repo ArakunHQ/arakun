@@ -19,6 +19,9 @@ if [ -r "$model" ]; then
     esac
   done <"$model"
 fi
+# Node (the adapters, Codex) keeps a CA list of its own: it must also trust the
+# system's, which has the CA github.com's traffic is ended with (entrypoint.sh).
+export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # The first argument names the program, one of these and nothing else.
 case ${1:-} in
   claude-acp) program=/opt/arakun/agent/node_modules/.bin/claude-agent-acp ;;

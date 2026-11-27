@@ -78,4 +78,9 @@ RUN chown root:root /opt/arakun/bin/* /etc/sudoers.d/arakun \
     && chmod 440 /etc/sudoers.d/arakun \
     && visudo -cf /etc/sudoers.d/arakun
 
+# git reaches GitHub over HTTPS only: that is where the Worker adds the token
+# (cloud/src/cloud_github.ts), and the machine has no SSH key for GitHub.
+RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
+    && git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+
 ENTRYPOINT ["/opt/arakun/bin/entrypoint.sh"]

@@ -136,6 +136,8 @@ cef = { version = "=156.3.0", default-features = false }
 uds_windows = "1.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    # Windows high contrast's colors: GetSysColor (core/src/ui/contrast.rs)
+    "Win32_Graphics_Gdi",
     # What listens on a TCP port, and its pid (src/running.rs)
     "Win32_NetworkManagement_IpHelper",
     "Win32_Security",

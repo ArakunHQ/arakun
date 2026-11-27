@@ -1049,7 +1049,7 @@ impl Shell {
     }
 
     fn onboarding_look(&self, o: &Onboarding, cx: &mut Context<Self>) -> AnyElement {
-        let light = theme::is_light();
+        let light = theme::mode() == theme::Mode::Light;
         let mode =
             |id: &'static str, label: &'static str, on: bool| {
                 ui::segment(id, None, label, on == light).on_click(cx.listener(

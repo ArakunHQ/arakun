@@ -2,7 +2,8 @@
 //! Windows high contrast and GNOME's high contrast theme. It is read at
 //! start and again when a window comes to the front, since the setting is
 //! usually changed in another app. What it does to the colors is
-//! `theme::high_contrast`'s.
+//! `theme::high_contrast`'s. On Windows the theme's own colors are read
+//! too, and drawn in place of the palette (`theme::system_colors`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,15 +20,21 @@ static READS: AtomicU64 = AtomicU64::new(0);
 pub fn follow_system(cx: &mut App) {
     let read = READS.fetch_add(1, Ordering::Relaxed) + 1;
     cx.spawn(async move |cx| {
-        let on = cx
+        let (on, colors) = cx
             .background_executor()
-            .spawn(async { system_high_contrast() })
+            .spawn(async {
+                let on = system_high_contrast();
+                (on, on.then(system_colors).flatten())
+            })
             .await;
-        if read != READS.load(Ordering::Relaxed) || on == theme::system_high_contrast() {
+        if read != READS.load(Ordering::Relaxed)
+            || (on, colors) == (theme::system_high_contrast(), theme::system_colors_read())
+        {
             return;
         }
         cx.update(|cx| {
             theme::set_system_high_contrast(on);
+            theme::set_system_colors(colors);
             apply(cx);
         });
     })
@@ -110,6 +117,35 @@ fn windows_high_contrast() -> bool {
     ok != 0 && hc.dwFlags & HCF_HIGHCONTRASTON != 0
 }
 
+/// The colors of the high contrast theme in force, on Windows only: macOS
+/// and GNOME raise contrast without handing apps a set of colors.
+fn system_colors() -> Option<theme::SystemColors> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Gdi::{
+            COLOR_HOTLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor,
+        };
+        // SAFETY: GetSysColor takes a color index and has no other inputs.
+        let get = |ix| colorref_to_rgb(unsafe { GetSysColor(ix) });
+        Some(theme::SystemColors::new(
+            get(COLOR_WINDOW),
+            get(COLOR_WINDOWTEXT),
+            get(COLOR_HOTLIGHT),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// A Windows COLORREF (`0x00BBGGRR`) as `0xRRGGBB`.
+#[cfg(any(windows, test))]
+fn colorref_to_rgb(c: u32) -> u32 {
+    let (r, g, b) = (c & 0xff, (c >> 8) & 0xff, (c >> 16) & 0xff);
+    r << 16 | g << 8 | b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +155,12 @@ mod tests {
         assert!(gtk_theme_is_high_contrast("'HighContrast'"));
         assert!(gtk_theme_is_high_contrast("'HighContrastInverse'"));
         assert!(!gtk_theme_is_high_contrast("'Adwaita-dark'"));
+    }
+
+    #[test]
+    fn colorrefs_turn_into_rgb() {
+        // Desert's hyperlink, #1C5E75, as GetSysColor returns it.
+        assert_eq!(colorref_to_rgb(0x00755e1c), 0x1c5e75);
+        assert_eq!(colorref_to_rgb(0x000000ff), 0xff0000);
     }
 }

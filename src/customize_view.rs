@@ -1241,6 +1241,7 @@ impl CustomizeView {
                 .child(hint_label(contrast_note(
                     now,
                     theme::system_high_contrast(),
+                    theme::system_colors().is_some(),
                 )))
                 .into_any_element()
         };
@@ -1773,7 +1774,12 @@ fn name_label(title: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// What the Contrast choice does, said under it.
-fn contrast_note(c: theme::Contrast, system: bool) -> &'static str {
+/// `colors`: Windows' high contrast colors are drawn in place of the
+/// palette and the mode.
+fn contrast_note(c: theme::Contrast, system: bool, colors: bool) -> &'static str {
+    if colors {
+        return "High now, in your Windows high contrast theme's colors. Palette and mode come back with Standard.";
+    }
     match (c, system) {
         (theme::Contrast::System, true) => {
             "High now: the system asks for more contrast, so text, borders and grays are stronger and glass is off."

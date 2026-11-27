@@ -12,9 +12,9 @@
 // lost one is not gone.
 //
 // Linear syncs the team's issues to the public GitHub repository, so the
-// issue gets only what the app scrubbed (`title`, `description`). The full
-// text (`request`) goes in the customer request, which stays in Linear, and
-// the email only names the customer.
+// issue gets only what the app scrubbed (`title`, `description`). The fuller
+// text (`request`, only its secrets taken out) goes in the customer request,
+// which stays in Linear, and the email only names the customer.
 
 import { error, isObject, jsonBody, type Env } from "./util";
 

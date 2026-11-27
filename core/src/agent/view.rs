@@ -439,6 +439,8 @@ pub struct ThreadView {
     active: bool,
     /// Entries and folds still on their way in.
     entrances: Arrivals,
+    /// The transcript easing down to a new entry, while it follows the end.
+    glide: Option<Glide>,
     /// Redraws the live turn's elapsed time while the agent works.
     tick: Option<Task<()>>,
     /// True once `render` has painted the last notification. While false,
@@ -511,6 +513,8 @@ impl ThreadView {
         list.set_scroll_handler(move |ev, _, cx| {
             let following = ev.is_following_tail;
             let _ = weak.update(cx, |this, cx| {
+                // The user scrolls: the glide gives way, and stops holding the end.
+                this.glide = None;
                 if this.following != following {
                     this.following = following;
                     cx.notify();
@@ -565,6 +569,7 @@ impl ThreadView {
             following: true,
             active: window.is_window_active(),
             entrances: Arrivals::new(seen),
+            glide: None,
             tick: None,
             rendered: true,
             pending_reset: false,
@@ -607,6 +612,7 @@ impl ThreadView {
 
     /// Scrolls to the newest content and follows it again.
     pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.glide = None;
         self.list.scroll_to_end();
         self.list.set_follow_mode(FollowMode::Tail);
         self.following = true;
@@ -734,7 +740,9 @@ impl ThreadView {
     fn apply_entries_changed(&mut self, from: usize, cx: &mut Context<Self>) {
         let t = self.thread.read(cx);
         let (len, at_work) = (t.entries().len(), t.is_busy());
-        self.entrances.entries_now(len, at_work, Instant::now());
+        if self.entrances.entries_now(len, at_work, Instant::now()) {
+            self.start_glide(cx);
+        }
         keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), from);
         self.sync_turns(from, cx);
     }
@@ -752,6 +760,7 @@ impl ThreadView {
         self.changes_open.clear();
         let t = self.thread.read(cx);
         self.entrances.reset(t.entries().len());
+        self.glide = None;
         self.turns = turns_of(t.entries());
         let (rows, long_turns) = build_rows(&self.turns, t, &self.folds);
         self.rows = rows;
@@ -2132,7 +2141,9 @@ impl ThreadView {
                             cx.listener(move |this, _, _, cx| this.toggle_fold(turn_start, cx)),
                         ),
                 );
-                if changes_shown {
+                if changes_shown
+                    || (!edits.files.is_empty() && self.shutting(Fold::Changes, turn_start, cx))
+                {
                     let changes = self.turn_changes(&edits, turn_start, base, &cwd, cx);
                     col = col.child(self.unfold(Fold::Changes, turn_start, changes, cx));
                 }
@@ -2734,7 +2745,7 @@ impl ThreadView {
                 ))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_phase(key, open, cx))),
         );
-        if !open {
+        if !open && !self.shutting(Fold::Phase, key, cx) {
             return col.into_any_element();
         }
         let n = phase.steps.len();
@@ -2829,7 +2840,11 @@ impl ThreadView {
                 .iter()
                 .any(|&c| matches!(&content[c], Entry::Tool(t) if t.id == p.tool_call_id))
         });
-        if !(running || asking || self.open.contains(&(base + i))) {
+        if !(running
+            || asking
+            || self.open.contains(&(base + i))
+            || self.shutting(Fold::Row, base + i, cx))
+        {
             return row;
         }
         let n = calls.len();
@@ -3186,6 +3201,7 @@ impl Render for ThreadView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.rendered = true;
         self.flush_pending(window, cx);
+        self.step_glide(window);
         let spacing = crate::ui::space_scale();
         if spacing != self.spacing {
             self.spacing = spacing;

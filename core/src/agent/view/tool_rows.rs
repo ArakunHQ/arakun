@@ -336,7 +336,7 @@ impl ThreadView {
                         })
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle_open(ix, cx))),
                 );
-                if open {
+                if open || self.shutting(Fold::Row, ix, cx) {
                     let st = if thought {
                         MdStyle::muted()
                     } else {
@@ -363,7 +363,7 @@ impl ThreadView {
                 ));
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
-                } else if open {
+                } else if open || self.shutting(Fold::Row, ix, cx) {
                     let details = match &tool.secret {
                         Some(file) if !self.revealed.contains(&tool.id) => {
                             self.secret_output(ix, tool.id.clone(), file, cx)

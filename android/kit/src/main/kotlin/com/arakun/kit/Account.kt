@@ -1,6 +1,6 @@
 // The account client, as core/src/cloud.rs is the desktop's: GitHub's device
-// flow, then the account host (cloud/) that turns a GitHub token into a
-// session, lists the account's computers and its signed-in devices. Every
+// flow or a code mailed to the address, then the account host (cloud/) that
+// turns either into a session, lists the account's computers and its signed-in devices. Every
 // call blocks, so callers run them off the main thread.
 package com.arakun.kit
 
@@ -52,6 +52,13 @@ object Account {
         return host.lowercase() in setOf("localhost", "127.0.0.1", "[::1]")
     }
 
+    /**
+     * Whether an account signs in by email: its login is then its address. A
+     * GitHub login never holds `@`, so it is no GitHub name to put `@` before
+     * or to fetch a picture for.
+     */
+    fun isEmailLogin(login: String): Boolean = '@' in login
+
     /** Whether a session may be sent to `base`. */
     fun safeBase(base: String): Boolean = base.startsWith("https://") || localHttp(base)
 
@@ -88,7 +95,7 @@ sealed class AccountError(message: String) : Exception(message) {
     class Unreachable(detail: String) : AccountError("Could not reach the server ($detail).")
 
     /** Any other answer than the one expected, with what the server said. */
-    class Refused(said: String) :
+    class Refused(val said: String) :
         AccountError(if (said.isEmpty()) "The server refused the request." else "The server answered: ${said.trimEnd('.')}.")
 }
 
@@ -104,7 +111,7 @@ enum class SessionCheck {
     UNKNOWN,
 }
 
-/** What `POST /auth/github` answers. */
+/** What `POST /auth/github` and `POST /auth/email/verify` answer. */
 class SignedIn(
     val session: String,
     val sessionId: String,
@@ -273,16 +280,44 @@ class AccountClient(
         val (status, body) = send("POST", "/auth/github", null, ask.toString().toRequestBody(JSON), SMALL)
         // No session yet, so a 401 is about the GitHub token, not a stale sign-in.
         if (status == 401) throw AccountError.Refused("GitHub did not accept the sign-in. Try again.")
-        val j = json(status, body)
-        return SignedIn(
-            session = j["session"].string?.takeIf { it.isNotEmpty() } ?: throw unreadable(),
-            sessionId = j["session_id"].str,
-            githubId = j["github_id"].double?.toLong() ?: throw unreadable(),
-            login = j["login"].string ?: throw unreadable(),
-            flags = j["flags"].array.mapNotNull { it.string },
-            plan = j["plan"].str,
-        )
+        return readSignedIn(json(status, body))
     }
+
+    /**
+     * Asks the account host to mail a six-digit sign-in code to `email`. It
+     * answers the same whether the address has an account or not.
+     */
+    fun sendEmailCode(email: String) {
+        val ask = buildJsonObject { put("email", email.trim()) }
+        val (status, body) = send("POST", "/auth/email", null, ask.toString().toRequestBody(JSON), SMALL)
+        if (status !in 200..299) throw emailRefusal(status, body)
+    }
+
+    /**
+     * Trades the code mailed to `email` for a session, as [signIn] does a
+     * GitHub token. The account is the address's, or a new one.
+     */
+    fun signInWithCode(email: String, code: String, name: String, kind: String = Account.KIND): SignedIn {
+        val ask = buildJsonObject {
+            put("email", email.trim())
+            // People copy the code with a space in the middle; the server drops it too.
+            put("code", code.filterNot { it.isWhitespace() })
+            put("name", name)
+            put("kind", kind)
+        }
+        val (status, body) = send("POST", "/auth/email/verify", null, ask.toString().toRequestBody(JSON), SMALL)
+        if (status !in 200..299) throw emailRefusal(status, body)
+        return readSignedIn(parseJson(body) ?: throw unreadable())
+    }
+
+    private fun readSignedIn(j: JsonElement) = SignedIn(
+        session = j["session"].string?.takeIf { it.isNotEmpty() } ?: throw unreadable(),
+        sessionId = j["session_id"].str,
+        githubId = j["github_id"].double?.toLong() ?: throw unreadable(),
+        login = j["login"].string ?: throw unreadable(),
+        flags = j["flags"].array.mapNotNull { it.string },
+        plan = j["plan"].str,
+    )
 
     fun me(session: String): Me = readMe(json(session, "/me", SMALL))
 
@@ -384,6 +419,23 @@ class AccountClient(
                 else -> AccountError.Refused(said)
             }
         }
+
+        /**
+         * What the account host said about an email sign-in, in its own words:
+         * its 401 is a wrong code, not a stale session, and its 429 says which
+         * limit was hit.
+         */
+        internal fun emailRefusal(status: Int, body: String): AccountError {
+            val said = parseJson(body)?.get("error")?.string ?: ""
+            return when {
+                said.isNotEmpty() && status in setOf(400, 401, 429, 502, 503) -> AccountError.Refused(said)
+                // A 401 without words is still no session to forget.
+                status == 401 -> AccountError.Refused(WRONG_CODE)
+                else -> refusal(status, body)
+            }
+        }
+
+        private const val WRONG_CODE = "the code is wrong or has run out; ask for a new one"
 
         /** GitHub's errors are `{"error": "...", "error_description": "..."}`. */
         private fun githubError(status: Int, body: String): String {

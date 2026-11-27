@@ -1,7 +1,7 @@
 # Arakun for iOS
 
-A native SwiftUI app for your sessions on the go: you sign in with GitHub, pick one
-of your account's computers and reach it through the relay the way the phone page
+A native SwiftUI app for your sessions on the go: you sign in with GitHub or a code
+sent by email, pick one of your account's computers and reach it through the relay the way the phone page
 (`../phone/`) does, end to end encrypted.
 
 ```
@@ -74,8 +74,10 @@ the steps are at the top of that workflow.
 ## Signing in
 
 Press **Sign in with GitHub**: the app shows a code, **Open GitHub** takes you to
-github.com/login/device to enter it. Use the GitHub account you signed in with in
-Arakun on your computers. The app then lists the account's computers; with one it
+github.com/login/device to enter it. Without GitHub, type your address and press
+**Email me a code**, then type the six-digit code from the mail. It works once, for
+10 minutes. Use the account you signed in with in Arakun on your computers: an
+account made by email is not the same as one made with GitHub. The app then lists the account's computers; with one it
 opens it straight away, and it opens the one you picked last at the next launch.
 Every computer signed in to the account is there, and the relay lets in only
 devices of the same account. The handshake is checked against the key the account

@@ -120,6 +120,50 @@ class AccountTest {
     }
 
     @Test
+    fun signsInWithACodeByEmail() {
+        answer(200, """{"sent": true, "expires_in": 600}""")
+        api.sendEmailCode("  rik@example.com ")
+        val asked = server.takeRequest()
+        assertEquals("POST", asked.method)
+        assertEquals("/auth/email", asked.target)
+        assertNull(asked.headers["Authorization"])
+        assertEquals("rik@example.com", parseJson(asked.body!!.utf8())!!["email"].str)
+
+        answer(200, """{"session": "s3cret", "session_id": "s1", "expires_at": 9, "account_id": 9, "github_id": 9, "login": "rik@example.com", "flags": [], "plan": "free"}""")
+        val signed = api.signInWithCode("rik@example.com", "123 456", "Pixel 9")
+        assertEquals("s3cret", signed.session)
+        assertEquals("rik@example.com", signed.login)
+        assertTrue(Account.isEmailLogin(signed.login))
+        assertFalse(Account.isEmailLogin("rik"))
+        val verify = server.takeRequest()
+        assertEquals("/auth/email/verify", verify.target)
+        val body = parseJson(verify.body!!.utf8())!!
+        assertEquals("rik@example.com", body["email"].str)
+        assertEquals("123456", body["code"].str)
+        assertEquals("Pixel 9", body["name"].str)
+        assertEquals("android", body["kind"].str)
+    }
+
+    @Test
+    fun anEmailSignInShowsTheServersWords() {
+        // A wrong code is no stale session: the server's sentence, not "signed out".
+        answer(401, """{"error": "the code is wrong or has run out; ask for a new one"}""")
+        val wrong = assertFailsWith<AccountError.Refused> { api.signInWithCode("rik@example.com", "000000", "Pixel 9") }
+        assertEquals("The server answered: the code is wrong or has run out; ask for a new one.", wrong.message)
+        answer(401, "")
+        assertFailsWith<AccountError.Refused> { api.signInWithCode("rik@example.com", "000000", "Pixel 9") }
+        answer(429, """{"error": "too many codes for this address, try again in an hour"}""")
+        assertEquals(
+            "The server answered: too many codes for this address, try again in an hour.",
+            assertFailsWith<AccountError.Refused> { api.sendEmailCode("rik@example.com") }.message,
+        )
+        answer(400, """{"error": "that address is from a throwaway mail service; use one you keep"}""")
+        assertFailsWith<AccountError.Refused> { api.sendEmailCode("x@burner.example") }
+        answer(403, """{"error": "blocked", "reason": "spam"}""")
+        assertEquals("spam", assertFailsWith<AccountError.Blocked> { api.signInWithCode("rik@example.com", "123456", "Pixel 9") }.reason)
+    }
+
+    @Test
     fun aRedirectIsNotFollowedWithATokenInTheRequest() {
         server.enqueue(MockResponse.Builder().code(307).addHeader("Location", "$base/elsewhere").build())
         assertFailsWith<AccountError.Refused> { api.signIn("gho_x", "Pixel 9") }

@@ -1,7 +1,7 @@
 # Arakun for Android
 
-A native Jetpack Compose app for your sessions on the go: you sign in with GitHub, pick
-one of your account's computers, and it speaks the phone page's (`../phone/`) protocol
+A native Jetpack Compose app for your sessions on the go: you sign in with GitHub or a
+code sent by email, pick one of your account's computers, and it speaks the phone page's (`../phone/`) protocol
 through the relay, end to end encrypted. It does what the iOS app does, screen for
 screen.
 
@@ -132,8 +132,10 @@ sent to Google until notifications are turned on.
 ## Signing in
 
 Tap "Sign in with GitHub". The app shows a code: copy it, open GitHub, and enter it
-there (GitHub's device flow, as `arakun-server login` does). Sign in with the account
-you use in Arakun on your computer. The app then lists the account's computers; with
+there (GitHub's device flow, as `arakun-server login` does). Without GitHub, type your
+address and tap "Email me a code", then type the six-digit code from the mail. It works
+once, for 10 minutes. Sign in with the account you use in Arakun on your computer: an
+account made by email is not the same as one made with GitHub. The app then lists the account's computers; with
 only one it opens it straight away, and it opens the one you picked last on the next
 launch. "All computers" in the inbox's menu goes back to the list, which is also where
 a computer signed in since shows up.

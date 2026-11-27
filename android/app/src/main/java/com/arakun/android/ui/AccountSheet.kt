@@ -53,6 +53,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.arakun.android.AppModel
 import com.arakun.android.Push
 import com.arakun.android.R
+import com.arakun.kit.Account
 import com.arakun.kit.Notice
 import com.arakun.kit.SignedInDevice
 import com.arakun.kit.WebPush
@@ -89,7 +90,10 @@ fun AccountSheet(model: AppModel, onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Account", style = geist(22f, FontWeight.SemiBold))
                 val login = model.me?.login ?: model.account?.login
-                if (login != null) Text("Signed in with GitHub as $login", style = Type.callout, color = c.textMuted)
+                if (login != null) {
+                    val via = if (Account.isEmailLogin(login)) "email" else "GitHub"
+                    Text("Signed in with $via as $login", style = Type.callout, color = c.textMuted)
+                }
             }
 
             val notices = model.me?.notices.orEmpty()
@@ -139,9 +143,9 @@ fun AccountSheet(model: AppModel, onDismiss: () -> Unit) {
         AlertDialog(
             onDismissRequest = { confirmSignOut = false },
             title = {
-                Text("Sign out of ${model.me?.login ?: "GitHub"} on this phone?", style = geist(18f, FontWeight.SemiBold))
+                Text("Sign out of ${model.me?.login ?: "your account"} on this phone?", style = geist(18f, FontWeight.SemiBold))
             },
-            text = { Text("To reach your computers again, sign in with GitHub.", style = Type.callout, color = c.textMuted) },
+            text = { Text("To reach your computers again, sign in.", style = Type.callout, color = c.textMuted) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmSignOut = false

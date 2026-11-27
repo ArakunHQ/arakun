@@ -17,7 +17,8 @@ struct AccountView: View {
                 VStack(alignment: .leading, spacing: 28) {
                     if let me = model.me {
                         section("Account") {
-                            row(icon: "globe", me.login, detail: me.plan.isEmpty ? "GitHub" : "GitHub · \(me.plan) plan")
+                            let via = Login.isEmail(me.login) ? "Email" : "GitHub"
+                            row(icon: "globe", me.login, detail: me.plan.isEmpty ? via : "\(via) · \(me.plan) plan")
                         }
                     }
                     if let m = model.machine {
@@ -93,7 +94,7 @@ struct AccountView: View {
             }
             .refreshable { await model.loadDevices() }
             .task { await model.loadDevices() }
-            .confirmationDialog("Sign out of \(model.me?.login ?? "GitHub") on this phone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+            .confirmationDialog("Sign out of \(model.me?.login ?? "your account") on this phone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) {
                     dismiss()
                     model.signOut()

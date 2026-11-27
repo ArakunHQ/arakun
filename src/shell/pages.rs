@@ -76,7 +76,12 @@ fn parse_action(args: &[String], cwd: &Path) -> Result<Option<Action>, String> {
             Action::Type(field.clone(), text.join(" "))
         }
         ("press", [key]) => Action::Press(key.clone()),
-        _ => return Err(format!("usage:\n{}", control::PAGE_USAGE)),
+        _ => {
+            return Err(format!(
+                "usage:\n{}",
+                crate::cli::help("page").unwrap_or_default()
+            ));
+        }
     };
     Ok(Some(action))
 }

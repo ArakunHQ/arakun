@@ -256,7 +256,7 @@ pub fn cli(args: &[String]) -> Option<i32> {
         Some("session") => Some(match from_args(&args[1..]) {
             Some(update) => super::send(ToIsland::Session { update }),
             None => {
-                eprintln!("usage: {}", crate::control::ISLAND_USAGE);
+                eprintln!("usage: {}", crate::control::island_usage());
                 2
             }
         }),

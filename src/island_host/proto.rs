@@ -140,10 +140,11 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
                 brand: SharedString::default(),
             },
         }),
-        ["ver"] => button(Button::Ver),
-        ["luego"] => button(Button::Luego),
-        ["aprobar"] => button(Button::Aprobar),
-        ["rechazar"] => button(Button::Rechazar),
+        // The Spanish words came first and still work.
+        ["open" | "ver"] => button(Button::Ver),
+        ["later" | "luego"] => button(Button::Luego),
+        ["approve" | "aprobar"] => button(Button::Aprobar),
+        ["deny" | "rechazar"] => button(Button::Rechazar),
         ["list"] => Some(ToIsland::Pin { on: None }),
         ["fps"] => Some(ToIsland::Fps),
         ["auto"] => Some(ToIsland::Hold { phase: None }),
@@ -319,6 +320,13 @@ mod tests {
             from_args(&s(&["rechazar"])),
             Some(ToIsland::Press {
                 button: Button::Rechazar
+            })
+        );
+        assert_eq!(from_args(&s(&["deny"])), from_args(&s(&["rechazar"])));
+        assert_eq!(
+            from_args(&s(&["open"])),
+            Some(ToIsland::Press {
+                button: Button::Ver
             })
         );
         assert_eq!(from_args(&s(&["fps"])), Some(ToIsland::Fps));

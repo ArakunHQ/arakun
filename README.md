@@ -1139,6 +1139,19 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   every color, type style and component, live, so a change can be judged on all of
   them at once.
 
+### Secrets in sessions
+
+Keys, tokens, passwords and private keys an agent prints show as stars in a session: in
+replies, your prompts, tool rows and command output, diffs, permission cards and
+questions. A key keeps its first four characters (`sk-a****`), which say what it is.
+Click a hidden secret to show it in that session's view until the view closes. Copying
+text that holds one asks first: the copy button asks "Copy the secret too?" and copies
+on a second click, and the selection menu offers "Copy as shown" or "Copy with secret".
+
+Settings › Privacy › Hide secrets in sessions turns this off. The choice is kept as a
+`show-secrets` file in Arakun's data folder while it is off. Redacted mode hides more
+(see below), and a click there shows nothing.
+
 ### Redacted mode
 
 For streams, demos and screen sharing. `Ctrl+Shift+H`, the palette or Settings › Privacy

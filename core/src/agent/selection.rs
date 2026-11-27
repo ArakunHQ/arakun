@@ -23,6 +23,9 @@ pub struct Seg {
     /// Offset of the first byte in the surface's numbering.
     pub start: usize,
     pub text: SharedString,
+    /// The text before secrets were hidden in it, as long in bytes, for a copy
+    /// the user agreed to. `None` when nothing was hidden.
+    pub plain: Option<SharedString>,
     /// Local byte ranges that exist only for layout (chip padding); copying skips them.
     pub pads: Vec<Range<usize>>,
     pub layout: TextLayout,
@@ -41,6 +44,8 @@ pub struct TextMap {
     segs: RefCell<Vec<Seg>>,
     /// Inline code that names a file, in the surface's numbering.
     files: RefCell<Vec<(Range<usize>, String)>>,
+    /// Secrets hidden on screen, in the surface's numbering, and their values.
+    secrets: RefCell<Vec<(Range<usize>, String)>>,
 }
 
 fn dist(v: Pixels, lo: Pixels, hi: Pixels) -> Pixels {
@@ -57,6 +62,28 @@ impl TextMap {
     pub fn clear(&self) {
         self.segs.borrow_mut().clear();
         self.files.borrow_mut().clear();
+        self.secrets.borrow_mut().clear();
+    }
+
+    pub fn secret(&self, range: Range<usize>, value: String) {
+        self.secrets.borrow_mut().push((range, value));
+    }
+
+    /// The hidden secret at `offset`, which a click shows.
+    pub fn secret_at(&self, offset: usize) -> Option<String> {
+        self.secrets
+            .borrow()
+            .iter()
+            .find(|(r, _)| r.start <= offset && offset < r.end)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Whether `range` takes in part of a hidden secret, so copying it asks.
+    pub fn hides_in(&self, range: Range<usize>) -> bool {
+        self.secrets
+            .borrow()
+            .iter()
+            .any(|(r, _)| r.start < range.end && range.start < r.end)
     }
 
     pub fn file(&self, range: Range<usize>, path: String) {
@@ -122,7 +149,8 @@ impl TextMap {
     }
 
     /// The selected text, pieces joined by newlines, chip padding left out.
-    pub fn text_in(&self, range: Range<usize>) -> String {
+    /// With `plain`, the hidden secrets in it are copied as they are.
+    pub fn text_in(&self, range: Range<usize>, plain: bool) -> String {
         let segs = self.segs.borrow();
         let mut out = String::new();
         let mut first = true;
@@ -136,6 +164,7 @@ impl TextMap {
                 out.push('\n');
             }
             first = false;
+            let text = s.plain.as_ref().filter(|_| plain).unwrap_or(&s.text);
             let (a, b) = (a - s.start, b - s.start);
             let mut ix = a;
             let mut pads: Vec<&Range<usize>> =
@@ -143,12 +172,12 @@ impl TextMap {
             pads.sort_by_key(|p| p.start);
             for p in pads {
                 if p.start > ix {
-                    out.push_str(slice(&s.text, ix, p.start));
+                    out.push_str(slice(text, ix, p.start));
                 }
                 ix = ix.max(p.end);
             }
             if ix < b {
-                out.push_str(slice(&s.text, ix, b));
+                out.push_str(slice(text, ix, b));
             }
         }
         out
@@ -546,6 +575,7 @@ mod tests {
         Seg {
             start,
             text: SharedString::from(text.to_string()),
+            plain: None,
             pads,
             layout: TextLayout::default(),
             bounds: Rc::new(Cell::new(None)),
@@ -560,9 +590,24 @@ mod tests {
         let chip = "see \u{2002}x\u{2002} here";
         let pad = "\u{2002}".len();
         map.push(seg(12, chip, vec![4..4 + pad, 5 + pad..5 + 2 * pad]));
-        assert_eq!(map.text_in(6..11), "world");
-        assert_eq!(map.text_in(6..12 + chip.len()), "world\nsee x here");
+        assert_eq!(map.text_in(6..11, false), "world");
+        assert_eq!(map.text_in(6..12 + chip.len(), false), "world\nsee x here");
         assert_eq!(map.word_at(2), 0..5);
         assert_eq!(map.piece_at(13), 12..12 + chip.len());
+    }
+
+    #[test]
+    fn copies_a_hidden_secret_only_when_asked() {
+        let map = TextMap::default();
+        let mut s = seg(0, "key=******", vec![]);
+        s.plain = Some("key=hunter".into());
+        map.push(s);
+        map.secret(4..10, "hunter".into());
+        assert_eq!(map.text_in(0..10, false), "key=******");
+        assert_eq!(map.text_in(0..10, true), "key=hunter");
+        assert!(map.hides_in(2..5));
+        assert!(!map.hides_in(0..4));
+        assert_eq!(map.secret_at(7).as_deref(), Some("hunter"));
+        assert_eq!(map.secret_at(3), None);
     }
 }

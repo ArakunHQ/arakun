@@ -7,7 +7,7 @@ impl ThreadView {
     /// what gets searched.
     pub fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let seed = self
-            .selected_text()
+            .selected_text(false)
             .filter(|t| !t.trim().is_empty() && !t.contains('\n') && t.len() <= 200);
         let input = match &self.search {
             Some(s) => s.input.clone(),

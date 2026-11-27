@@ -170,9 +170,68 @@ impl ThreadView {
                     )
                     .into_any_element()
             }
+            _ if t.remote_sign_in().is_some() => self.render_remote_sign_in(cx),
             // Room for the raccoon perched on the composer.
             _ => div().h(px(40.)).into_any_element(),
         }
+    }
+
+    /// A session on a server whose agent is not signed in there: the server
+    /// shows no error of its own here, so this says it and offers the sign-in,
+    /// in a terminal on that server.
+    fn render_remote_sign_in(&self, cx: &Context<Self>) -> AnyElement {
+        let t = self.thread.read(cx);
+        div()
+            .px(crate::ui::sp(16.))
+            .pt(crate::ui::sp(8.))
+            .pb(crate::ui::sp(40.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(8.))
+                    .p(crate::ui::sp(12.))
+                    .rounded(crate::ui::rad(crate::ui::RADIUS_LG))
+                    .border_1()
+                    .border_color(theme::stroke())
+                    .bg(theme::raised())
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(crate::ui::sp(8.))
+                            .child(div().pt(crate::ui::sp(3.)).child(
+                                icon("square-lock02", 14.).text_color(theme::text_subtle()),
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(crate::ui::TEXT_MD))
+                                    .line_height(px(20.))
+                                    .text_color(theme::text_muted())
+                                    .child(format!(
+                                        "{} is not signed in on the computer this session runs on. Sign in there, then send your message again.",
+                                        t.kind().label()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div().flex().pl(crate::ui::sp(22.)).child(
+                            crate::ui::button_with(
+                                "sign-in-on-server",
+                                Some("square-lock02"),
+                                "Sign in in a terminal",
+                                crate::ui::ButtonKind::Primary,
+                                true,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.thread.update(cx, |t, cx| t.request_login(cx))
+                            })),
+                        ),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// Asks before the first npm install of the agent's adapter: what, where and

@@ -1753,7 +1753,8 @@ impl Shell {
             ClientMsg::Market
             | ClientMsg::InstallPlugin { .. }
             | ClientMsg::InstallServer { .. }
-            | ClientMsg::Mirror(_) => {
+            | ClientMsg::Mirror(_)
+            | ClientMsg::ForgetSignIns => {
                 self.phone_send(
                     client,
                     wire::error("Install from the Marketplace tab of this computer."),

@@ -170,8 +170,9 @@ impl Snapshot {
 // On this computer.
 
 /// Blocking: what this computer has. Without `secrets`, for a server reached
-/// over plain http, it leaves out the MCP servers and the sign-ins.
-pub fn snapshot(secrets: bool) -> Snapshot {
+/// over plain http, it leaves out the MCP servers and the sign-ins; without
+/// `sign_ins`, for a server not let have them, the sign-ins.
+pub fn snapshot(secrets: bool, sign_ins: bool) -> Snapshot {
     let home = launch::home();
     let plugins_dir = home.join(".claude").join("plugins");
     let plugins = user_plugins(&read_json(&plugins_dir.join("installed_plugins.json")));
@@ -195,10 +196,14 @@ pub fn snapshot(secrets: bool) -> Snapshot {
             .as_object()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
-        let oauth = read_credentials()["mcpOAuth"]
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let oauth = if sign_ins {
+            read_credentials()["mcpOAuth"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Map::new()
+        };
         (servers, oauth)
     } else {
         Default::default()
@@ -629,8 +634,10 @@ static APPLYING: Mutex<()> = Mutex::new(());
 
 /// Blocking: adds what `s` has and this machine lacks, and says what it added
 /// and what failed (`mirror_done`). What is for one repository goes into
-/// each of `places` (the server's folders) that is a checkout of it.
-pub fn apply(s: Snapshot, places: &[PathBuf]) -> Value {
+/// each of `places` (the server's folders) that is a checkout of it. The
+/// sign-ins are kept as `device`'s copies, so they go when it does; without
+/// a device they are not written. The answer counts the copies it holds.
+pub fn apply(s: Snapshot, places: &[PathBuf], device: Option<&str>) -> Value {
     let _one = APPLYING.lock().unwrap_or_else(|e| e.into_inner());
     let home = launch::home();
     let mut added = Vec::new();
@@ -695,7 +702,11 @@ pub fn apply(s: Snapshot, places: &[PathBuf]) -> Value {
     }
 
     if !s.oauth.is_empty() {
-        match write_sign_ins(&s.oauth) {
+        let written = match device {
+            Some(device) => write_sign_ins(&s.oauth, device),
+            None => Err(anyhow!("the app that sent them is not a paired device")),
+        };
+        match written {
             Ok(names) => names
                 .into_iter()
                 .for_each(|n| note(format!("sign-in for {n}"), Ok(()))),
@@ -703,7 +714,102 @@ pub fn apply(s: Snapshot, places: &[PathBuf]) -> Value {
         }
     }
 
-    json!({ "type": "mirror_done", "added": added, "failed": failed })
+    let held = device.map_or(0, |d| {
+        copies_held(&read_json(&credentials_file()), &load_copies(), d)
+    });
+    json!({ "type": "mirror_done", "added": added, "failed": failed, "sign_ins": held })
+}
+
+/// Blocking: takes the MCP sign-ins `device` copied here out of Claude Code's
+/// credentials (`sign_ins_forgotten`). One another device copied too stays.
+pub fn forget_sign_ins(device: &str) -> Value {
+    let _one = APPLYING.lock().unwrap_or_else(|e| e.into_inner());
+    match forget_copies(|d| d == device) {
+        Ok(names) => json!({ "type": "sign_ins_forgotten", "removed": names }),
+        Err(e) => json!({ "type": "sign_ins_forgotten", "removed": [], "error": format!("{e:#}") }),
+    }
+}
+
+/// Blocking: takes out the sign-ins of every device that copied some here and
+/// is no longer paired (not in `paired`).
+pub fn forget_unpaired(paired: &[String]) {
+    let _one = APPLYING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = forget_copies(|d| !paired.iter().any(|p| p == d)) {
+        eprintln!("arakun: could not remove the MCP sign-ins of an unpaired device: {e:#}");
+    }
+}
+
+/// Takes the copies of the devices `gone` picks out of the credentials file,
+/// and them out of the list. Gives the servers they were for.
+fn forget_copies(gone: impl Fn(&str) -> bool) -> Result<Vec<String>> {
+    let mut copies = load_copies();
+    let leaving: Vec<String> = copies.keys().filter(|d| gone(d)).cloned().collect();
+    if leaving.is_empty() {
+        return Ok(Vec::new());
+    }
+    let path = credentials_file();
+    let mut creds = read_json(&path);
+    if !creds.is_object() && path.exists() {
+        bail!("cannot read {}", path.display());
+    }
+    let mut names = Vec::new();
+    for device in &leaving {
+        names.extend(drop_copies(&mut creds, &mut copies, device));
+    }
+    if !names.is_empty() {
+        crate::durable::write_private(&path, &serde_json::to_vec_pretty(&creds)?)?;
+    }
+    save_copies(&copies)?;
+    Ok(names)
+}
+
+/// The keys of the sign-ins in Claude Code's credentials that each device
+/// copied here. Not secret: a server's name and a hash of its address.
+type Copies = BTreeMap<String, BTreeSet<String>>;
+
+fn copies_file() -> PathBuf {
+    crate::paths::shared(crate::paths::SIGN_INS_COPIED)
+}
+
+fn load_copies() -> Copies {
+    crate::durable::load_json(copies_file()).unwrap_or_default()
+}
+
+fn save_copies(copies: &Copies) -> Result<()> {
+    crate::durable::save_json(&copies_file(), copies)?;
+    Ok(())
+}
+
+/// How many of `device`'s copies `creds` still holds.
+fn copies_held(creds: &Value, copies: &Copies, device: &str) -> usize {
+    copies.get(device).map_or(0, |keys| {
+        keys.iter()
+            .filter(|k| creds["mcpOAuth"][k.as_str()].is_object())
+            .count()
+    })
+}
+
+/// Takes `device`'s copies out of `creds`, but for those another device
+/// copied too, and `device` out of `copies`. Gives the servers they were for.
+fn drop_copies(creds: &mut Value, copies: &mut Copies, device: &str) -> Vec<String> {
+    let Some(keys) = copies.remove(device) else {
+        return Vec::new();
+    };
+    let Some(have) = creds["mcpOAuth"].as_object_mut() else {
+        return Vec::new();
+    };
+    keys.iter()
+        .filter(|k| !copies.values().any(|other| other.contains(*k)))
+        .filter_map(|k| have.remove(k).map(|token| sign_in_name(k, &token)))
+        .collect()
+}
+
+/// The MCP server a sign-in is for.
+fn sign_in_name(key: &str, token: &Value) -> String {
+    token["serverName"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| key.split('|').next().unwrap_or(key).to_string())
 }
 
 /// Adds the marketplaces the plugins `ids` come from, when Claude Code here
@@ -844,8 +950,9 @@ fn runs_here(config: &Value) -> Result<()> {
 }
 
 /// Adds the sign-ins this machine lacks, or holds an older copy of, to Claude
-/// Code's credentials file. Gives the names of the servers they are for.
-fn write_sign_ins(incoming: &Map<String, Value>) -> Result<Vec<String>> {
+/// Code's credentials file, and keeps them as `device`'s copies. Gives the
+/// names of the servers they are for.
+fn write_sign_ins(incoming: &Map<String, Value>, device: &str) -> Result<Vec<String>> {
     if cfg!(target_os = "macos") {
         bail!("Claude Code keeps them in the Keychain here, which arakun does not write");
     }
@@ -858,6 +965,12 @@ fn write_sign_ins(incoming: &Map<String, Value>) -> Result<Vec<String>> {
         creds = json!({});
     }
     let names = merge_sign_ins(&mut creds, incoming);
+    // Kept before the credentials are written: a copy left off the list
+    // would stay when the device goes.
+    let mut copies = load_copies();
+    if note_copies(&creds, incoming, &mut copies, device) {
+        save_copies(&copies)?;
+    }
     if !names.is_empty() {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -866,6 +979,30 @@ fn write_sign_ins(incoming: &Map<String, Value>) -> Result<Vec<String>> {
         crate::durable::write_private(&path, &bytes)?;
     }
     Ok(names)
+}
+
+/// Adds to `device`'s copies the incoming sign-ins `creds` now holds as they
+/// came: those just written, and those a mirror from before this list wrote.
+/// One Claude Code here renewed since stays on the list. Whether it grew.
+fn note_copies(
+    creds: &Value,
+    incoming: &Map<String, Value>,
+    copies: &mut Copies,
+    device: &str,
+) -> bool {
+    let held: Vec<&String> = incoming
+        .iter()
+        .filter(|(k, token)| token.is_object() && creds["mcpOAuth"][k.as_str()] == **token)
+        .map(|(k, _)| k)
+        .collect();
+    let mine = copies.entry(device.to_string()).or_default();
+    let before = mine.len();
+    mine.extend(held.into_iter().cloned());
+    let grew = mine.len() != before;
+    if mine.is_empty() {
+        copies.remove(device);
+    }
+    grew
 }
 
 /// Puts each incoming sign-in into `creds["mcpOAuth"]` when it is missing there
@@ -888,11 +1025,7 @@ fn merge_sign_ins(creds: &mut Value, incoming: &Map<String, Value>) -> Vec<Strin
             .is_none_or(|old| expires(token) > expires(old));
         if newer {
             have.insert(key.clone(), token.clone());
-            let name = token["serverName"]
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| key.split('|').next().unwrap_or(key).to_string());
-            names.push(name);
+            names.push(sign_in_name(key, token));
         }
     }
     names
@@ -972,6 +1105,58 @@ mod tests {
         assert_eq!(creds["claudeAiOauth"]["accessToken"], "keep");
         // Again: nothing is newer now.
         assert!(merge_sign_ins(&mut creds, incoming.as_object().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn copies_are_kept_by_device_and_go_with_it() {
+        let mut creds = json!({ "mcpOAuth": {
+            "own|1": { "serverName": "own", "accessToken": "theirs", "expiresAt": 900 },
+        }});
+        let incoming = json!({
+            "a|1": { "serverName": "a", "accessToken": "ta", "expiresAt": 100 },
+            "b|2": { "serverName": "b", "accessToken": "tb", "expiresAt": 100 },
+            // Older than the one there: not a copy.
+            "own|1": { "serverName": "own", "accessToken": "mine", "expiresAt": 100 },
+        });
+        let incoming = incoming.as_object().unwrap();
+        let mut copies = Copies::new();
+        merge_sign_ins(&mut creds, incoming);
+        assert!(note_copies(&creds, incoming, &mut copies, "laptop"));
+        assert_eq!(
+            copies["laptop"],
+            BTreeSet::from(["a|1".into(), "b|2".into()])
+        );
+        assert_eq!(copies_held(&creds, &copies, "laptop"), 2);
+        // Nothing new the second time.
+        assert!(!note_copies(&creds, incoming, &mut copies, "laptop"));
+
+        // Another device sent the same sign-in for `b`: it stays for that one.
+        let b = Map::from_iter([("b|2".to_string(), incoming["b|2"].clone())]);
+        assert!(note_copies(&creds, &b, &mut copies, "desktop"));
+
+        let removed = drop_copies(&mut creds, &mut copies, "laptop");
+        assert_eq!(removed, vec!["a"]);
+        assert!(creds["mcpOAuth"]["a|1"].is_null());
+        assert_eq!(creds["mcpOAuth"]["b|2"]["accessToken"], "tb");
+        assert_eq!(creds["mcpOAuth"]["own|1"]["accessToken"], "theirs");
+        assert!(!copies.contains_key("laptop"));
+        assert_eq!(copies_held(&creds, &copies, "laptop"), 0);
+
+        assert_eq!(drop_copies(&mut creds, &mut copies, "desktop"), vec!["b"]);
+        assert!(copies.is_empty());
+        assert_eq!(creds["mcpOAuth"]["own|1"]["accessToken"], "theirs");
+    }
+
+    #[test]
+    fn a_copy_from_before_the_list_is_kept_when_it_comes_again() {
+        // A mirror from before wrote it; this one finds it the same.
+        let token = json!({ "serverName": "a", "accessToken": "t", "expiresAt": 100 });
+        let mut creds = json!({ "mcpOAuth": { "a|1": token.clone() } });
+        let incoming = Map::from_iter([("a|1".to_string(), token)]);
+        assert!(merge_sign_ins(&mut creds, &incoming).is_empty());
+        let mut copies = Copies::new();
+        assert!(note_copies(&creds, &incoming, &mut copies, "laptop"));
+        assert_eq!(copies_held(&creds, &copies, "laptop"), 1);
     }
 
     #[test]

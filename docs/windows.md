@@ -195,6 +195,7 @@ These stay in `%LOCALAPPDATA%\arakun\` whatever `ARAKUN_STATE` says.
 | The proxy's accounts' last limits (Usage tab) | `%LOCALAPPDATA%\arakun\cliproxy-plan.json` |
 | The skills.sh skills installed | `%LOCALAPPDATA%\arakun\skills-installed.json` |
 | Skills and servers installed from repositories | `%LOCALAPPDATA%\arakun\repo-installs.json` |
+| On a server: which paired device copied each MCP sign-in there, so it goes when the device does | `%LOCALAPPDATA%\arakun\sign-ins-copied.json` |
 | An index of the secrets in the keyring (hashes of their handles only) | `%LOCALAPPDATA%\arakun\secret-refs.json` |
 | Secrets handed to agents as files, removed once unused | `%LOCALAPPDATA%\arakun\secret-files\` |
 | Arakun's own secrets, when there is no keyring | `%LOCALAPPDATA%\arakun\secrets.json` |

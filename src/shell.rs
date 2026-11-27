@@ -41,6 +41,7 @@ pub use github::open_terminal_link;
 mod doop;
 mod headless;
 mod home;
+mod hover;
 mod inbox;
 mod island;
 mod limits;

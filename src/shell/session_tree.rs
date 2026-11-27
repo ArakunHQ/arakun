@@ -1204,7 +1204,8 @@ impl Shell {
         // the title needs the room the end of the row gives up.
         let under_pointer = self.rail.tree_hover.as_ref().is_some_and(|h| h.2 == id);
         // Not on the open session: archiving it there is too easy by accident.
-        let archive_shown = can_archive && under_pointer && !selected;
+        // Nor while a session is dragged over the row.
+        let archive_shown = can_archive && under_pointer && !selected && !cx.has_active_drag();
         let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
@@ -1349,22 +1350,18 @@ impl Shell {
                     ),
                 )
             })
-            .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                if *over {
-                    this.rail.tree_hover = Some((pi, ei, hovered.clone()));
-                } else if this
-                    .rail
-                    .tree_hover
-                    .as_ref()
-                    .is_some_and(|h| h.2 == hovered)
-                {
-                    this.rail.tree_hover = None;
-                } else {
-                    return;
-                }
-                // The archive button comes and goes with the pointer.
-                cx.notify();
-            }))
+            // The archive button comes and goes with the pointer, as the
+            // row's hover background does.
+            .child(super::hover::probe(
+                under_pointer,
+                cx.listener(move |this, over: &bool, _, cx| {
+                    let row = (pi, ei, hovered.clone());
+                    if super::hover::track(&mut this.rail.tree_hover, row, *over, |a, b| a.2 == b.2)
+                    {
+                        cx.notify();
+                    }
+                }),
+            ))
             .when(picked, |d| d.bg(theme::selection_strong()))
             // Ctrl (Cmd) or Shift picks the session; a plain click opens it.
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {

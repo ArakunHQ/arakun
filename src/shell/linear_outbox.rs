@@ -9,6 +9,7 @@ use gpui::{AppContext as _, Context};
 use super::Shell;
 use super::linear_sync::Gate;
 use crate::cloud;
+use crate::linear::events::Action;
 use crate::linear::outbox::{Flushed, flush};
 use crate::linear::runs::{Report, ReportKind};
 use crate::model::unix_now;
@@ -53,6 +54,7 @@ impl Shell {
             link,
             options,
             started: false,
+            parameter: None,
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -73,6 +75,28 @@ impl Shell {
             link: None,
             options: Vec::new(),
             started: true,
+            parameter: None,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
+
+    /// The step a working session is on, which Linear shows until the next
+    /// activity.
+    pub(super) fn linear_report_step(
+        &mut self,
+        agent_session: &str,
+        step: Action,
+        cx: &mut Context<Self>,
+    ) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Progress,
+            body: step.action.into(),
+            link: None,
+            options: Vec::new(),
+            started: false,
+            parameter: Some(step.parameter),
             made_at: unix_now(),
         });
         self.linear_flush(cx);

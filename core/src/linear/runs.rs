@@ -172,8 +172,9 @@ pub enum ReportKind {
     Elicitation,
     Response,
     Error,
-    /// What a working session does right now. Linear replaces it with the
-    /// next activity, and a newer report makes an unsent one moot.
+    /// The step a working session is on: the body is what it does, the
+    /// parameter on what. Linear replaces it with the next activity, and a
+    /// newer report makes an unsent one moot.
     Progress,
     /// Only a link for the session, such as its pull request: no activity.
     Link,
@@ -195,6 +196,9 @@ pub struct Report {
     /// server then marks the issue as being worked on in Linear.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub started: bool,
+    /// What a progress step works on: a file, or `a command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter: Option<String>,
     pub made_at: u64,
 }
 
@@ -207,6 +211,7 @@ impl std::fmt::Debug for Report {
             .field("link", &self.link.is_some())
             .field("options", &self.options.len())
             .field("started", &self.started)
+            .field("parameter", &self.parameter.is_some())
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -630,6 +635,7 @@ mod tests {
             link: None,
             options: Vec::new(),
             started: false,
+            parameter: None,
             made_at,
         }
     }

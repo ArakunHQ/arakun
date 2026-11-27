@@ -1055,6 +1055,44 @@ describe("what the computer sends back", () => {
     expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: "Still working." });
   });
 
+  it("passes a step on as an action, with no body", async () => {
+    const { owner } = await delegatedIssue();
+    const step = { type: "action", action: "Editing", parameter: "src/main.rs", ephemeral: true };
+    expect((await activity(owner.session, step)).status).toBe(204);
+    expect(linearFake.actions()).toEqual([{ agentSessionId: SESSION, action: "Editing", parameter: "src/main.rs", ephemeral: true }]);
+    expect((await activity(owner.session, { ...step, ephemeral: false })).status).toBe(204);
+    expect(linearFake.actions().at(-1)).toEqual({ agentSessionId: SESSION, action: "Editing", parameter: "src/main.rs" });
+    // At the limits it goes through, counted as characters.
+    expect((await activity(owner.session, { ...step, action: "é".repeat(80), parameter: "é".repeat(200) })).status).toBe(204);
+    expect(linearFake.issueUpdates()).toEqual([]);
+  });
+
+  it("refuses a step that is empty, long, has a body, links or choices, or says it started", async () => {
+    const { owner } = await delegatedIssue();
+    const step = { type: "action", action: "Editing", parameter: "src/main.rs" };
+    for (const bad of [
+      { type: "action", action: "Editing" },
+      { type: "action", parameter: "src/main.rs" },
+      { ...step, action: "" },
+      { ...step, parameter: " " },
+      { ...step, action: "x".repeat(81) },
+      { ...step, parameter: "x".repeat(201) },
+      { ...step, parameter: "a\nb" },
+      { ...step, action: 7 },
+      { ...step, body: "Editing" },
+      { ...step, links: [{ label: "Pull request", url: "https://github.com/a/b/pull/1" }] },
+      { ...step, options: ["a", "b"] },
+      { ...step, started: true },
+      { ...step, ephemeral: "yes" },
+    ]) {
+      const res = await activity(owner.session, bad);
+      expect(res.status, JSON.stringify(bad)).toBe(400);
+      expect(await res.json()).toEqual({ error: "bad activity" });
+    }
+    expect((await activity((await stranger()).session, step)).status).toBe(404);
+    expect(linearFake.actions()).toEqual([]);
+  });
+
   it("refuses an activity for a session of another account, a bad type, an empty or oversized body, or a link that is not https", async () => {
     const { owner } = await delegatedIssue();
     const other = await stranger();

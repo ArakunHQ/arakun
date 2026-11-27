@@ -21,8 +21,8 @@ use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
-    Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of, pr_link,
-    progress_line, removed_line, to_report, turn_reply,
+    Action, Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of,
+    pr_link, progress_step, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line, kept_line,
@@ -900,13 +900,14 @@ impl Daemon {
             return;
         }
         let t = thread.read(cx);
-        let Some(line) = progress_line(t.entries(), t.cwd()) else {
+        let Some(step) = progress_step(t.entries(), t.cwd()) else {
             return;
         };
-        let Some(agent_session) = self.linear_run.runs.progress(id, &line, unix_now()) else {
+        let Some(agent_session) = self.linear_run.runs.progress(id, &step.line(), unix_now())
+        else {
             return;
         };
-        self.linear_report(&agent_session, ReportKind::Progress, line, None, cx);
+        self.linear_report_step(&agent_session, step, cx);
     }
 
     /// At start: no turn survives a restart, so a run that was at work was
@@ -991,6 +992,7 @@ impl Daemon {
             link,
             options,
             started: false,
+            parameter: None,
             made_at: unix_now(),
         });
         self.linear_flush(cx);
@@ -1006,6 +1008,23 @@ impl Daemon {
             link: None,
             options: Vec::new(),
             started: true,
+            parameter: None,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
+
+    /// The step a working session is on, which Linear shows until the next
+    /// activity.
+    fn linear_report_step(&mut self, agent_session: &str, step: Action, cx: &mut Context<Self>) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Progress,
+            body: step.action.into(),
+            link: None,
+            options: Vec::new(),
+            started: false,
+            parameter: Some(step.parameter),
             made_at: unix_now(),
         });
         self.linear_flush(cx);

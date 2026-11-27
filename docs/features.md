@@ -613,8 +613,8 @@ again after a week) in its [data folder](storage-and-env.md).
   is never answered from Linear); the result; the pull request's link, added to the
   session in Linear as soon as Arakun knows it, also after the result; `The session failed: {reason}` on a failure; and `Still working.`
   after 25 quiet minutes. While the session works, the issue also shows the step it
-  is on, such as Editing `src/main.rs`, Reading `README.md`, `Running a command` or
-  `Searching the code`: only the kind of step and, for a file, its path in the
+  is on, shown as Linear shows a tool call: Editing `src/main.rs`, Reading `README.md`,
+  Running a command or Searching the code. It holds only the kind of step and, for a file, its path in the
   project, never a command, a search or a web address. A step shows until the next
   activity replaces it, and at most one goes every 30 seconds. If you close Arakun
   while a session runs, the issue hears `Arakun was closed on {computer} while this ran. Reply here to continue.`

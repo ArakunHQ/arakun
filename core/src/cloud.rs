@@ -711,9 +711,6 @@ pub enum LinearActivity {
     Elicitation,
     Response,
     Error,
-    /// What the session does right now: a thought Linear replaces with the
-    /// next activity, so the steps do not pile up on the issue.
-    Progress,
     /// The thought that says the session started. With it the server moves
     /// an issue not begun to its team's first started state, and makes Arakun
     /// its delegate when it has none.
@@ -723,7 +720,7 @@ pub enum LinearActivity {
 impl LinearActivity {
     fn wire(self) -> &'static str {
         match self {
-            Self::Thought | Self::Progress | Self::Started => "thought",
+            Self::Thought | Self::Started => "thought",
             Self::Elicitation => "elicitation",
             Self::Response => "response",
             Self::Error => "error",
@@ -765,9 +762,6 @@ pub fn linear_activity_with(
 ) -> Result<(), Error> {
     let path = format!("/linear/sessions/{}/activity", path_id(agent_session)?);
     let mut payload = serde_json::json!({ "type": kind.wire(), "body": body });
-    if kind == LinearActivity::Progress {
-        payload["ephemeral"] = serde_json::json!(true);
-    }
     if kind == LinearActivity::Started {
         payload["started"] = serde_json::json!(true);
     }
@@ -777,6 +771,32 @@ pub fn linear_activity_with(
     if kind == LinearActivity::Elicitation && !options.is_empty() {
         payload["options"] = serde_json::json!(options);
     }
+    let (status, answer) = send(
+        base,
+        "POST",
+        &path,
+        Some(session),
+        Some(payload),
+        SMALL_LIMIT,
+    )?;
+    linear_done(status, &answer)
+}
+
+/// Reports the step a delegated session is on, which Linear shows as a tool
+/// call: `action` is what it does (`Editing`), `parameter` on what
+/// (`src/main.rs`). It is ephemeral: Linear replaces it with the next
+/// activity, so the steps do not pile up on the issue.
+pub fn linear_step(
+    base: &str,
+    session: &str,
+    agent_session: &str,
+    action: &str,
+    parameter: &str,
+) -> Result<(), Error> {
+    let path = format!("/linear/sessions/{}/activity", path_id(agent_session)?);
+    let payload = serde_json::json!({
+        "type": "action", "action": action, "parameter": parameter, "ephemeral": true,
+    });
     let (status, answer) = send(
         base,
         "POST",
@@ -2094,12 +2114,19 @@ mod tests {
     }
 
     #[test]
-    fn progress_is_an_ephemeral_thought() {
+    fn a_step_is_an_ephemeral_action() {
         let (base, rx) = serve(204, "");
-        linear_activity(&base, "s", "as-1", LinearActivity::Progress, "hi", &[]).unwrap();
+        linear_step(&base, "s", "as-1", "Editing", "src/main.rs").unwrap();
+        let got = rx.recv().unwrap();
+        assert!(
+            got.starts_with("POST /linear/sessions/as-1/activity "),
+            "{got}"
+        );
         assert_eq!(
-            body_of(&rx.recv().unwrap()),
-            serde_json::json!({ "type": "thought", "body": "hi", "ephemeral": true })
+            body_of(&got),
+            serde_json::json!({
+                "type": "action", "action": "Editing", "parameter": "src/main.rs", "ephemeral": true,
+            })
         );
     }
 

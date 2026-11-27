@@ -236,6 +236,8 @@ pub(super) struct ServersLink {
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
     starts: Starts,
+    /// Images sent ahead of prompts, to put back a prompt that did not go.
+    sent_images: servers::upload::Sent,
     /// That session, by server and id: its tab opens once the inbox has it.
     starting_id: Option<(String, String)>,
     /// Environments of folders a server no longer offers, kept for the
@@ -367,6 +369,35 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
 }
 
 impl ServersLink {
+    /// Sends the images on this computer that `text` mentions to `server`
+    /// ahead of a prompt for its session `session` (none yet for a start).
+    /// Gives the text without them and the upload ids that name them. While
+    /// the server is not connected nothing goes, and the text stays as it is.
+    fn upload_images(&mut self, server: &str, session: &str, text: &str) -> (String, Vec<String>) {
+        let unchanged = || (text.to_string(), Vec::new());
+        let Some(conn) = self.conns.get(server) else {
+            return unchanged();
+        };
+        if conn.reach != Reach::Connected {
+            return unchanged();
+        }
+        let (rest, images) = servers::upload::local_images(text);
+        if images.is_empty() {
+            return unchanged();
+        }
+        let ids = images
+            .into_iter()
+            .map(|image| {
+                let id = self.sent_images.id(image.path.clone());
+                for piece in servers::upload::pieces(session, &id, &image) {
+                    conn.client.send(&piece);
+                }
+                id
+            })
+            .collect();
+        (rest, ids)
+    }
+
     /// A folder `server` was asked for is not coming: said where it was asked.
     fn folder_failed(&mut self, server: &str, why: String) {
         if let Some(why) =
@@ -1144,6 +1175,7 @@ impl Shell {
             inboxes_saving: None,
             origins: HashMap::new(),
             starts: Starts::default(),
+            sent_images: Default::default(),
             starting_id: None,
             retired: HashSet::new(),
             adding: HashSet::new(),
@@ -1958,7 +1990,11 @@ impl Shell {
         };
         let msg = match action {
             RemoteAction::Send { text, now } => {
-                json!({ "type": "send", "text": text, "uploads": [], "now": now })
+                let (text, uploads) = match &mut self.servers {
+                    Some(link) => link.upload_images(&remote.server, id, text),
+                    None => (text.clone(), Vec::new()),
+                };
+                json!({ "type": "send", "text": text, "uploads": uploads, "now": now })
             }
             // Paused, not dropped: the queue stays on show, to resume or empty.
             RemoteAction::Cancel => json!({ "type": "cancel", "keep_queue": true }),
@@ -2130,9 +2166,15 @@ impl Shell {
         if !connected {
             self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
         }
+        // A photo the phone sent here is a file here: it goes on to the server.
+        let (text, uploads) = match &mut self.servers {
+            Some(link) => link.upload_images(server, id, text),
+            None => (text.to_string(), Vec::new()),
+        };
         // `phone` is this app's own: the server reads past it.
-        let msg =
-            json!({ "type": "send", "text": text, "uploads": [], "now": now, "phone": client });
+        let msg = json!({
+            "type": "send", "text": text, "uploads": uploads, "now": now, "phone": client,
+        });
         self.servers_send(server, id, msg, cx);
     }
 
@@ -2202,6 +2244,8 @@ impl Shell {
         }
         // A pick the server does not offer (one from this machine's
         // catalog) would only fail there: it starts on its own instead.
+        // No session yet: the server keeps them by id all the same.
+        let (text, uploads) = link.upload_images(&remote.server, "", text);
         let offered = link
             .options
             .get(&(remote.server.clone(), remote.place.clone(), agent));
@@ -2209,13 +2253,13 @@ impl Shell {
         let reference = link.starts.sent(&remote.server, by);
         let mut start = json!({
             "type": "start", "env": remote.place, "agent": agent.id(), "text": text,
-            "settings": settings, "ref": reference,
+            "settings": settings, "ref": reference, "uploads": uploads,
         });
         // Left out otherwise: a server from before it reads none the same.
         if let Some(from) = mentions_from {
             start["mentions_from"] = from.into();
         }
-        conn.client.send(&start);
+        link.conns[&remote.server].client.send(&start);
         Some(reference)
     }
 
@@ -2522,7 +2566,18 @@ impl Shell {
             _ => return,
         };
         let why = "The connection dropped first.";
-        self.servers_put_back(&env_path, text(msg, "text"), None, None, why, cx);
+        // Back as it was written: with the images sent ahead of it.
+        let ids: Vec<String> = msg["uploads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| id.as_str().map(String::from))
+            .collect();
+        let written = match &mut self.servers {
+            Some(link) => link.sent_images.put_back(&text(msg, "text"), &ids),
+            None => text(msg, "text"),
+        };
+        self.servers_put_back(&env_path, written, None, None, why, cx);
     }
 
     /// The environment `server`'s session `session` is in.

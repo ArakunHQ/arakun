@@ -1221,6 +1221,16 @@ impl Daemon {
             let line = STILL_WORKING.to_string();
             self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
         }
+        // A run that waits says so again, or Linear shows it as stale.
+        let waiting = if self.linear_gate().is_some() {
+            self.linear_run.runs.quiet_waiting(now)
+        } else {
+            Vec::new()
+        };
+        for (agent_session, running, ahead) in waiting {
+            let line = waiting_line(&computer(), running, ahead);
+            self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+        }
         let overdue = self.linear_run.runs.overdue(now);
         let freed = !overdue.is_empty();
         for (agent_session, held) in overdue {

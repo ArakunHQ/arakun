@@ -16,6 +16,7 @@ use super::Shell;
 use super::linear_run::computer;
 use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::linear::runs::{Held, ReportKind, RunState};
+use crate::linear::start::waiting_line;
 use crate::model::unix_now;
 
 pub(super) use crate::linear::events::*;
@@ -318,6 +319,16 @@ impl Shell {
         };
         for agent_session in quiet {
             let line = STILL_WORKING.to_string();
+            self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
+        }
+        // A run that waits says so again, or Linear shows it as stale.
+        let waiting = if self.linear_gate(cx).is_some() {
+            self.linear_runs.quiet_waiting(now)
+        } else {
+            Vec::new()
+        };
+        for (agent_session, running, ahead) in waiting {
+            let line = waiting_line(&computer(), running, ahead);
             self.linear_report(&agent_session, ReportKind::Thought, line, None, cx);
         }
         // Its slot is free now; the runs that wait take it when the next

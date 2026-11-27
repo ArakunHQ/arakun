@@ -875,20 +875,26 @@ impl Preset {
                             Piece::view(View::Teams),
                         ],
                     ),
-                    Section::new(
-                        "Views",
-                        Mode::Scroll,
-                        views(&[
-                            #[cfg(feature = "coderlabs")]
-                            View::Tasks,
-                            View::Runs,
-                            View::Branches,
-                            View::GitHub,
-                            View::Notes,
-                        ]),
-                    ),
                     active(),
                     projects,
+                    // Folded to icons these go to More views too, so the
+                    // strip is the projects.
+                    Section::new(
+                        "Views",
+                        Mode::Fixed,
+                        [
+                            views(&[
+                                #[cfg(feature = "coderlabs")]
+                                View::Tasks,
+                                View::Runs,
+                                View::Branches,
+                                View::GitHub,
+                                View::Notes,
+                            ]),
+                            vec![Piece::MoreViews],
+                        ]
+                        .concat(),
+                    ),
                     account(vec![Piece::User, Piece::Help, Piece::Settings]),
                 ]
             }
@@ -1192,6 +1198,29 @@ impl Sidebar {
             .copied()
             .filter(|v| !self.has(&Piece::view(*v)))
             .collect()
+    }
+
+    /// Whether `piece` leaves the rail folded to icons for More views, which
+    /// lists it then: every view but the Inbox, when More views is placed.
+    pub fn folds_away(&self, piece: &Piece) -> bool {
+        matches!(piece, Piece::View { view } if *view != View::Inbox) && self.has(&Piece::MoreViews)
+    }
+
+    /// What More views lists in the rail folded to icons: the views that
+    /// fold away, in the rail's order, then those without a row.
+    pub fn folded_views(&self) -> Vec<View> {
+        let mut views: Vec<View> = self
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|i| self.folds_away(&i.piece))
+            .filter_map(|i| match i.piece {
+                Piece::View { view } => Some(view),
+                _ => None,
+            })
+            .collect();
+        views.extend(self.hidden_views());
+        views
     }
 
     /// A view this layout has never offered.
@@ -2200,6 +2229,26 @@ mod tests {
             small().as_switcher().sections,
             Preset::Switcher.layout().sections
         );
+    }
+
+    #[test]
+    fn folded_to_icons_every_view_but_the_inbox_goes_to_more_views() {
+        let s = Preset::Switcher.layout();
+        assert!(!s.folds_away(&Piece::view(View::Inbox)));
+        assert!(s.folds_away(&Piece::view(View::Runs)));
+        assert!(!s.folds_away(&Piece::Search));
+        let folded = s.folded_views();
+        // The placed ones first, in the rail's order, then the rest.
+        let runs = folded.iter().position(|v| *v == View::Runs).unwrap();
+        let notes = folded.iter().position(|v| *v == View::Notes).unwrap();
+        assert!(runs < notes);
+        assert!(!folded.contains(&View::Inbox));
+        assert_eq!(folded.len(), View::ALL.len() - 1);
+        // Without More views there is nowhere to fold to: the views stay.
+        let mut bare = s.clone();
+        let at = bare.find(&Piece::MoreViews).unwrap();
+        bare.remove(at);
+        assert!(!bare.folds_away(&Piece::view(View::Runs)));
     }
 
     #[test]

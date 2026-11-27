@@ -3318,6 +3318,7 @@ impl Shell {
             return;
         }
         self.rail.open = !self.rail.open;
+        self.rail.flyout.close();
         self.save(cx);
         cx.notify();
     }
@@ -4617,6 +4618,7 @@ impl Render for Shell {
                         cx.stop_propagation();
                     } else if this.drop_menu.take().is_some()
                         || this.menu.take().is_some()
+                        || this.rail.flyout.close()
                         || this.drop_pick()
                     {
                         cx.stop_propagation();
@@ -4656,6 +4658,7 @@ impl Render for Shell {
                 d.child(self.render_dock(viewport_h, window, cx))
             })
             .when_some(self.render_session_drop_menu(cx), |d, m| d.child(m))
+            .when_some(self.render_project_flyout(cx), |d, f| d.child(f))
             .when_some(context_menu, |d, (at, above, menu)| {
                 d.child(
                     div()

@@ -133,6 +133,7 @@ files! {
     shared file CLIPROXY_PLAN = "cliproxy-plan.json", "The proxy's accounts' last limits (Usage tab)";
     shared file SKILLS_INSTALLED = "skills-installed.json", "The skills.sh skills installed";
     shared file REPO_INSTALLS = "repo-installs.json", "Skills and servers installed from repositories";
+    shared file SIGN_INS_COPIED = "sign-ins-copied.json", "On a server: which paired device copied each MCP sign-in there, so it goes when the device does";
     shared file SECRET_REFS = "secret-refs.json", "An index of the secrets in the keyring (hashes of their handles only)";
     shared folder SECRET_FILES = "secret-files", "Secrets handed to agents as files, removed once unused";
     shared file SECRETS = "secrets.json", "Arakun's own secrets, when there is no keyring";

@@ -768,7 +768,7 @@ fn forget_copies(gone: impl Fn(&str) -> bool) -> Result<Vec<String>> {
 type Copies = BTreeMap<String, BTreeSet<String>>;
 
 fn copies_file() -> PathBuf {
-    crate::platform::app_dir().join("sign-ins-copied.json")
+    crate::paths::shared(crate::paths::SIGN_INS_COPIED)
 }
 
 fn load_copies() -> Copies {

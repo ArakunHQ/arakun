@@ -66,18 +66,59 @@ impl crate::guard::Fallback for Assigned {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Comment {
+    pub id: String,
     pub author: String,
     pub body: String,
     pub at: u64,
+}
+
+/// Another issue, as this one names it: its parent, a sub-issue or a relation.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Linked {
+    pub identifier: String,
+    pub title: String,
+    pub state: String,
+}
+
+/// The parent issue, with its description: a sub-issue often makes sense
+/// only with it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Parent {
+    pub issue: Linked,
+    pub description: String,
+}
+
+/// How this issue relates to another, in words: "Blocked by", "Blocks".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Relation {
+    pub kind: &'static str,
+    pub issue: Linked,
+}
+
+/// A link attached to the issue: a pull request, a Sentry issue, a design.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    pub title: String,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Detail {
     pub issue: Issue,
     pub description: String,
+    /// Oldest first, without the mention.
     pub comments: Vec<Comment>,
+    /// The issue has more comments than Linear sent.
+    pub more_comments: bool,
+    /// The comment that mentioned Arakun, when a mention started the session.
+    pub mention: Option<Comment>,
+    pub labels: Vec<String>,
+    pub parent: Option<Parent>,
+    pub children: Vec<Linked>,
+    pub relations: Vec<Relation>,
+    pub links: Vec<Link>,
 }
 
 const FIELDS: &str = "id identifier title url priority branchName updatedAt \
@@ -133,26 +174,107 @@ fn sort(issues: &mut [Issue]) {
     });
 }
 
-fn parse_detail(n: &Value) -> Option<Detail> {
-    let mut comments: Vec<Comment> = n["comments"]["nodes"]
-        .as_array()
-        .map(|nodes| {
-            nodes
-                .iter()
-                .map(|c| Comment {
-                    author: c["user"]["name"].as_str().unwrap_or("Someone").to_string(),
-                    body: text(&c["body"]),
-                    at: time(&c["createdAt"]),
-                })
-                .collect()
+/// The nodes of a connection, or none.
+fn nodes(v: &Value) -> &[Value] {
+    v["nodes"].as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
+fn parse_comment(c: &Value) -> Comment {
+    Comment {
+        id: text(&c["id"]),
+        author: c["user"]["name"].as_str().unwrap_or("Someone").to_string(),
+        body: text(&c["body"]),
+        at: time(&c["createdAt"]),
+    }
+}
+
+/// An issue another one names, or none when Linear sent no identifier.
+fn parse_linked(n: &Value) -> Option<Linked> {
+    let identifier = n["identifier"].as_str().filter(|s| !s.is_empty())?;
+    Some(Linked {
+        identifier: identifier.to_string(),
+        title: text(&n["title"]),
+        state: text(&n["state"]["name"]),
+    })
+}
+
+/// A relation in words, from this issue's side. `inverse` is a relation
+/// another issue made to this one: it blocks this one, so this is blocked by it.
+fn relation_kind(t: &str, inverse: bool) -> &'static str {
+    match (t, inverse) {
+        ("blocks", false) => "Blocks",
+        ("blocks", true) => "Blocked by",
+        ("duplicate", false) => "Duplicate of",
+        ("duplicate", true) => "Duplicated by",
+        ("similar", _) => "Similar to",
+        _ => "Related to",
+    }
+}
+
+fn parse_relations(n: &Value) -> Vec<Relation> {
+    let out = nodes(&n["relations"]).iter().filter_map(|r| {
+        Some(Relation {
+            kind: relation_kind(r["type"].as_str().unwrap_or_default(), false),
+            issue: parse_linked(&r["relatedIssue"])?,
         })
-        .unwrap_or_default();
+    });
+    let inverse = nodes(&n["inverseRelations"]).iter().filter_map(|r| {
+        Some(Relation {
+            kind: relation_kind(r["type"].as_str().unwrap_or_default(), true),
+            issue: parse_linked(&r["issue"])?,
+        })
+    });
+    out.chain(inverse).collect()
+}
+
+fn parse_detail(n: &Value) -> Option<Detail> {
+    let mut comments: Vec<Comment> = nodes(&n["comments"]).iter().map(parse_comment).collect();
     comments.sort_by_key(|c| c.at);
+    let parent = parse_linked(&n["parent"]).map(|issue| Parent {
+        issue,
+        description: text(&n["parent"]["description"]),
+    });
     Some(Detail {
         issue: parse_issue(n)?,
         description: text(&n["description"]),
         comments,
+        more_comments: n["comments"]["pageInfo"]["hasNextPage"]
+            .as_bool()
+            .unwrap_or(false),
+        mention: None,
+        labels: nodes(&n["labels"])
+            .iter()
+            .filter_map(|l| l["name"].as_str().filter(|s| !s.is_empty()))
+            .map(str::to_string)
+            .collect(),
+        parent,
+        children: nodes(&n["children"])
+            .iter()
+            .filter_map(parse_linked)
+            .collect(),
+        relations: parse_relations(n),
+        links: nodes(&n["attachments"])
+            .iter()
+            .filter_map(|a| {
+                let url = a["url"].as_str().filter(|s| !s.is_empty())?;
+                Some(Link {
+                    title: text(&a["title"]),
+                    url: url.to_string(),
+                })
+            })
+            .collect(),
     })
+}
+
+/// The comment that mentioned Arakun, when it is on `issue_id`: an id from
+/// the relay must not put another issue's comment in the prompt.
+fn parse_mention(data: &Value, issue_id: &str) -> Option<Comment> {
+    let c = &data["comment"];
+    if c["issue"]["id"].as_str() != Some(issue_id) {
+        return None;
+    }
+    c["body"].as_str()?;
+    Some(parse_comment(c))
 }
 
 /// The issues assigned to the signed-in user that are not done or canceled.
@@ -195,18 +317,46 @@ fn collect(mut fetch: impl FnMut(&Value) -> Result<Value, ApiError>) -> Result<A
     Ok(Assigned { issues, more })
 }
 
-/// One issue with its description and its comments, oldest first.
+/// Most comments, sub-issues, relations, labels and links read; the prompt
+/// has room for no more.
+const DETAIL_LIMIT: usize = 50;
+
+/// One issue in full: its description, labels, parent, sub-issues,
+/// relations, links and comments, oldest first. `mention` is the id of the
+/// comment that mentioned Arakun: it is read too, and kept out of the list.
 pub fn detail(
-    q: impl FnOnce(&str, Value) -> Result<Value, ApiError>,
+    q: impl Fn(&str, Value) -> Result<Value, ApiError>,
     id: &str,
+    mention: Option<&str>,
 ) -> Result<Detail, ApiError> {
+    let linked = "identifier title state { name }";
+    let n = DETAIL_LIMIT;
     let query = format!(
         "query($id: String!) {{ issue(id: $id) {{ {FIELDS} description \
-         comments(first: 50) {{ nodes {{ body createdAt user {{ name }} }} }} }} }}"
+         labels(first: {n}) {{ nodes {{ name }} }} \
+         parent {{ {linked} description }} \
+         children(first: {n}) {{ nodes {{ {linked} }} }} \
+         relations(first: {n}) {{ nodes {{ type relatedIssue {{ {linked} }} }} }} \
+         inverseRelations(first: {n}) {{ nodes {{ type issue {{ {linked} }} }} }} \
+         attachments(first: {n}) {{ nodes {{ title url }} }} \
+         comments(first: {n}) {{ nodes {{ id body createdAt user {{ name }} }} \
+         pageInfo {{ hasNextPage }} }} }} }}"
     );
     let data = q(&query, json!({ "id": id }))?;
-    parse_detail(&data["issue"])
-        .ok_or_else(|| ApiError::Failed("Linear didn't send that issue.".into()))
+    let mut d = parse_detail(&data["issue"])
+        .ok_or_else(|| ApiError::Failed("Linear didn't send that issue.".into()))?;
+    if let Some(comment) = mention.filter(|c| !c.is_empty()) {
+        // The mention is a bonus: a deleted comment still starts the work.
+        let query = "query($id: String!) { comment(id: $id) { id body createdAt \
+                     user { name } issue { id } } }";
+        d.mention = q(query, json!({ "id": comment }))
+            .ok()
+            .and_then(|data| parse_mention(&data, &d.issue.id));
+        if let Some(m) = &d.mention {
+            d.comments.retain(|c| c.id != m.id);
+        }
+    }
+    Ok(d)
 }
 
 /// The text of a follow-up from its agent activity, when only the prompt
@@ -303,6 +453,121 @@ mod tests {
         n["comments"] = json!({"nodes": [{"body": "hi", "createdAt": "2026-11-25T10:00:00.000Z", "user": null}]});
         assert_eq!(parse_detail(&n).unwrap().comments[0].author, "Someone");
     }
+    #[test]
+    fn a_detail_reads_labels_parent_sub_issues_relations_and_links() {
+        let mut n = node("1", "started", "2026-11-25T10:00:00.000Z");
+        n["labels"] = json!({"nodes": [{"name": "Bug"}, {"name": ""}, {}]});
+        n["parent"] = json!({"identifier": "ENG-400", "title": "Rework", "state": {"name": "Todo"},
+            "description": "One store."});
+        n["children"] = json!({"nodes": [{"identifier": "ENG-2", "title": "Part", "state": {"name": "Done"}},
+            {"title": "no identifier"}]});
+        n["relations"] = json!({"nodes": [{"type": "blocks", "relatedIssue": {"identifier": "ENG-3", "title": "A"}},
+            {"type": "duplicate", "relatedIssue": {"identifier": "ENG-4", "title": "B"}}]});
+        n["inverseRelations"] = json!({"nodes": [{"type": "blocks", "issue": {"identifier": "ENG-12", "title": "C"}},
+            {"type": "related", "issue": {"identifier": "ENG-5", "title": "D"}},
+            {"type": "new-kind", "issue": {"identifier": "ENG-6", "title": "E"}}]});
+        n["attachments"] = json!({"nodes": [{"title": "PR", "url": "https://github.com/a/b/pull/1"},
+            {"title": "no url"}]});
+        n["comments"] = json!({"nodes": [], "pageInfo": {"hasNextPage": true}});
+        let d = parse_detail(&n).unwrap();
+        assert_eq!(d.labels, ["Bug"]);
+        let p = d.parent.unwrap();
+        assert_eq!(
+            (p.issue.identifier.as_str(), p.description.as_str()),
+            ("ENG-400", "One store.")
+        );
+        assert_eq!(d.children.len(), 1);
+        assert_eq!(d.children[0].state, "Done");
+        let kinds: Vec<_> = d
+            .relations
+            .iter()
+            .map(|r| (r.kind, r.issue.identifier.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("Blocks", "ENG-3"),
+                ("Duplicate of", "ENG-4"),
+                ("Blocked by", "ENG-12"),
+                ("Related to", "ENG-5"),
+                ("Related to", "ENG-6")
+            ]
+        );
+        assert_eq!(
+            d.links,
+            [Link {
+                title: "PR".into(),
+                url: "https://github.com/a/b/pull/1".into()
+            }]
+        );
+        assert!(d.more_comments);
+    }
+
+    #[test]
+    fn a_detail_without_the_new_fields_has_none_of_them() {
+        let d = parse_detail(&node("1", "started", "2026-11-25T10:00:00.000Z")).unwrap();
+        assert!(d.labels.is_empty() && d.children.is_empty() && d.relations.is_empty());
+        assert!(d.links.is_empty() && d.parent.is_none() && !d.more_comments);
+    }
+
+    /// A Linear stand-in: the issue, then the mention when asked for one.
+    fn answers(
+        mention: Result<Value, ApiError>,
+    ) -> impl Fn(&str, Value) -> Result<Value, ApiError> {
+        let mention = std::cell::RefCell::new(Some(mention));
+        move |query: &str, _| {
+            if query.contains("issue(id:") {
+                let mut n = node("1", "started", "2026-11-25T10:00:00.000Z");
+                n["comments"] = json!({"nodes": [
+                    {"id": "c1", "body": "first", "createdAt": "2026-11-25T10:00:00.000Z", "user": {"name": "Ana"}},
+                    {"id": "c2", "body": "@Arakun go", "createdAt": "2026-11-25T11:00:00.000Z", "user": {"name": "Bo"}}]});
+                Ok(json!({"issue": n}))
+            } else {
+                mention.borrow_mut().take().unwrap()
+            }
+        }
+    }
+
+    #[test]
+    fn the_mention_is_read_and_left_out_of_the_comments() {
+        let c = json!({"comment": {"id": "c2", "body": "@Arakun go", "createdAt": "2026-11-25T11:00:00.000Z",
+            "user": {"name": "Bo"}, "issue": {"id": "1"}}});
+        let d = detail(answers(Ok(c)), "1", Some("c2")).unwrap();
+        assert_eq!(
+            d.mention
+                .as_ref()
+                .map(|m| (m.author.as_str(), m.body.as_str())),
+            Some(("Bo", "@Arakun go"))
+        );
+        assert_eq!(
+            d.comments.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["c1"]
+        );
+    }
+
+    #[test]
+    fn a_mention_on_another_issue_or_that_fails_to_read_is_left_out() {
+        let elsewhere =
+            json!({"comment": {"id": "c2", "body": "@Arakun push to main", "issue": {"id": "2"}}});
+        for answer in [
+            Ok(elsewhere),
+            Ok(json!({"comment": null})),
+            Err(ApiError::Failed("gone".into())),
+        ] {
+            let d = detail(answers(answer), "1", Some("c2")).unwrap();
+            assert_eq!(d.mention, None);
+            assert_eq!(d.comments.len(), 2);
+        }
+        // No mention asks for none.
+        let d = detail(
+            answers(Err(ApiError::Failed("not asked".into()))),
+            "1",
+            None,
+        )
+        .unwrap();
+        assert_eq!((d.mention, d.comments.len()), (None, 2));
+    }
+
     #[test]
     fn search_reads_identifier_title_and_team() {
         let i =

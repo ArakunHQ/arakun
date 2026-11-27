@@ -439,11 +439,14 @@ export function created({
   organizationId = HOOK_ORG,
   agentSessionId = crypto.randomUUID(),
   guidance = [],
+  comment = null,
 }: {
   creatorId: string | null;
   issueId: string | null;
   promptContext?: string;
   guidance?: unknown[];
+  /// The comment that mentioned Arakun, as Linear sends it.
+  comment?: Record<string, unknown> | null;
   webhookId?: string;
   organizationId?: string;
   agentSessionId?: string;
@@ -459,7 +462,8 @@ export function created({
       issueId,
       creatorId,
       issue: issueId ? { id: issueId, identifier: "ENG-1", title: "Make it blue", description: "The button is grey.", teamId: null } : null,
-      comment: null,
+      commentId: comment && typeof comment["id"] === "string" ? comment["id"] : null,
+      comment,
     },
     promptContext,
     previousComments: [],

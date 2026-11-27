@@ -185,6 +185,9 @@ export interface Delivery {
   /// Why the Worker stopped a session itself; null for anything else. A
   /// delivery kept from before it was added has none.
   reason?: StopReason | null;
+  /// For `created`: the comment that mentioned Arakun, when a mention
+  /// started the session. A delivery kept from before has none.
+  comment?: string | null;
   /// Unix seconds.
   created: number;
 }

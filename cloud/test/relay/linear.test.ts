@@ -20,6 +20,7 @@ function delivery(kind: Delivery["kind"] = "created", ago = 0): Delivery {
     organization: crypto.randomUUID(),
     activity: kind === "created" ? null : crypto.randomUUID(),
     reason: null,
+    comment: null,
     created: Math.floor(Date.now() / 1000) - ago,
   };
 }
@@ -35,6 +36,7 @@ function frame(d: Delivery): Record<string, unknown> {
     organization: d.organization,
     activity: d.activity,
     reason: d.reason ?? null,
+    comment: d.comment ?? null,
     guidance: null,
   };
 }
@@ -299,6 +301,17 @@ describe("Linear deliveries in the relay", () => {
     expect(await runInDurableObject(stub(me.label), (_i, state) => state.storage.getAlarm())).toBeNull();
   });
 
+  it("passes the comment that mentioned Arakun, and none for a delivery kept from before", async () => {
+    const { me, pc } = await connectedComputer();
+    const comment = crypto.randomUUID();
+    const D1 = { ...delivery(), comment };
+    expect(await deliver(env, me.label, D1, null)).toEqual({ online: true });
+    expect(await pc.inbox.control()).toMatchObject({ id: D1.id, comment });
+    const D2 = delivery();
+    expect(await deliver(env, me.label, D2, null)).toEqual({ online: true });
+    expect(await pc.inbox.control()).toMatchObject({ id: D2.id, comment: null });
+  });
+
   it("refuses a malformed delivery and stores nothing", async () => {
     const { me } = await awayComputer();
     const good = delivery();
@@ -307,6 +320,7 @@ describe("Linear deliveries in the relay", () => {
       { ...good, kind: "update" },
       { ...good, issue: 7 },
       { ...good, activity: undefined },
+      { ...good, comment: "not-a-uuid" },
       { ...good, created: "now" },
     ];
     const sent: object[] = [

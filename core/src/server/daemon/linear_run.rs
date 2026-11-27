@@ -92,6 +92,8 @@ struct Start {
     /// The delivery to accept once handled. None for a run from the queue:
     /// its delivery was accepted when it began to wait.
     delivery: Option<String>,
+    /// The comment that mentioned Arakun, when a mention started the run.
+    comment: Option<String>,
     /// The guidance Linear sent with the delegation: from the live frame,
     /// or kept in memory with the run while it waited.
     guidance: Vec<GuidanceRule>,
@@ -177,6 +179,7 @@ impl Daemon {
                     organization: d.organization,
                     issue: d.issue,
                     delivery: Some(d.id),
+                    comment: d.comment,
                     guidance: d.guidance,
                 };
                 self.linear_read(start, key, cx);
@@ -187,11 +190,15 @@ impl Daemon {
     /// Reads the issue with the workspace's key, off the UI thread.
     fn linear_read(&mut self, start: Start, key: String, cx: &mut Context<Self>) {
         let issue = start.issue.clone();
+        let mention = start.comment.clone();
         cx.spawn(async move |this, cx| {
             let read = cx
                 // A panic's text could hold anything; Linear gets a fixed reason.
                 .background_spawn(crate::guard::task_or(
-                    async move { issues::detail(|q, v| crate::linear::call(&key, q, v), &issue) },
+                    async move {
+                        let q = |q: &str, v| crate::linear::call(&key, q, v);
+                        issues::detail(q, &issue, mention.as_deref())
+                    },
                     |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
                 ))
                 .await;
@@ -294,6 +301,7 @@ impl Daemon {
             progress: None,
             linked: None,
             kept: Vec::new(),
+            comment: start.comment.clone(),
             guidance: start.guidance.clone(),
         });
         self.linear_save_runs();
@@ -512,6 +520,7 @@ impl Daemon {
                 organization: run.organization.clone(),
                 issue: run.issue.clone(),
                 delivery: None,
+                comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
             };
             self.linear_save_runs();

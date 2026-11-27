@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The daily job that keeps a quiet Linear workspace's install working.
 // Linear's refresh token lasts 30 days from its last use, and the Worker
 // otherwise uses it only when someone delegates an issue or a computer

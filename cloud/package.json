@@ -1,6 +1,7 @@
 {
   "name": "arakun-cloud",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Arakun's cloud: the relay phones reach a computer through, and sign-in, feature flags and teams, in one Cloudflare Worker.",
   "type": "module",
   "scripts": {

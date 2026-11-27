@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Linear delegation: Linear hands an issue to Arakun and the Worker passes it
 // to the user's computer. Every path is under /linear.
 //

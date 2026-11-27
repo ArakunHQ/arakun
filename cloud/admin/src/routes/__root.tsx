@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import type { QueryClient } from "@tanstack/react-query";
 import {
   Link,

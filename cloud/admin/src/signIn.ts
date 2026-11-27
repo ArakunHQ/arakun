@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // How the Worker's GitHub callback ends when it does not reach the code step:
 // it sends the browser to /?sign_in=<outcome>, and the sign-in screen says why.
 

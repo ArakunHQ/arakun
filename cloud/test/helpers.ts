@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A fake GitHub and short ways to call the Worker under test.
 import { env, SELF } from "cloudflare:test";
 import { vi } from "vitest";

@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # One of the agents' programs as the user `agent`, by the name this file was
 # called with. The image links it under four names:
 #

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sign-in for the phone page, with GitHub's web flow: a redirect to GitHub,
 // and back with a one-time code. The code is traded for a user access token,
 // and from there it is the app's sign-in (`verifyAndRevoke`, `newSession`):

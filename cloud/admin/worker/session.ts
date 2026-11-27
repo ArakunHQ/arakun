@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { b64url, cookie, fromB64url } from "./util";
 
 // `__Host-` makes the browser refuse the cookie unless it is Secure, has

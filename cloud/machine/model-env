@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 # Writes the owner's model credentials where as-agent reads them, as root: the
 # entrypoint runs it on every start, and the machine's object runs it when the
 # owner sets or removes a key (cloud/src/cloud_model.ts). It gets:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { ADMIN, as, call, nowSeconds, signIn } from "./helpers";

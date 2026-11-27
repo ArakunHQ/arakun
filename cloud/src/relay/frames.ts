@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What goes over the sockets. Everything is binary with a type byte in front:
 // hello and data frames the relay never looks inside, control frames it speaks
 // itself (JSON). The computer's socket carries many phones, so its frames add a

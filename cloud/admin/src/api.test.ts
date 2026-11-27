@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, setOnSignedOut } from "./api";
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sign-ups for the phone app betas. The stores cap testers and each one is
 // invited by email, so they are admitted by hand: an account signs up here for
 // a platform, and the operator adds the email in App Store Connect (TestFlight)

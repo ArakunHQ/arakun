@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What the panel's page may ask of this Worker: /api/<rest> goes to the cloud
 // Worker's /admin/<rest>, as the signed-in operator. The browser never holds
 // ADMIN_SECRET; it is added here, with the operator's name for the audit log.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // One Worker for Arakun's cloud. A host `<label>.<BASE_DOMAIN>` is an old
 // relay host: an old app or page is told to update there. The account host
 // has the rest: sign-in, the account's machines and their sockets, the

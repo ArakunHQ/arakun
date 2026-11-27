@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The old relay hosts, `<label>.<BASE_DOMAIN>`. Computers and devices now
 // reach the relay on the account host with a session, so an old app or an old
 // page that still comes here is only told to update. The page is still served,

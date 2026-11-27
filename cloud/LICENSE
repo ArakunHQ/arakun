@@ -1,6 +1,9 @@
-The files in this folder (cloud/machine/) make up the Arakun cloud machine
-container image. They are licensed under the PolyForm Noncommercial License
-1.0.0 below, not under the AGPL-3.0 license of the rest of the repository.
+The files in this folder (cloud/) make up Arakun's cloud: the cloud Worker
+(the relay, sign-in, feature flags, teams and cloud machines), the operator
+admin panel (cloud/admin/), the database migrations, the scripts and the cloud
+machine container image (cloud/machine/). They are licensed under the PolyForm
+Noncommercial License 1.0.0 below, not under the AGPL-3.0 license of the rest
+of the repository.
 
 Licensor: Arakun
 
@@ -10,8 +13,10 @@ You may use, change and share these files for any noncommercial purpose.
 Only Arakun may sell them, offer them as a paid or hosted service, or use them
 for any other commercial purpose. For a commercial license, contact Arakun.
 
-Programs the image installs or copies in from elsewhere, such as arakun-server
-and files from other folders of this repository, keep their own licenses.
+Programs and files that come from elsewhere keep their own licenses: the
+packages the cloud depends on, arakun-server, which the cloud machine image
+installs, and files of other folders of this repository that the cloud serves
+or copies in, such as the phone page (phone/) and its fonts.
 
 ---
 

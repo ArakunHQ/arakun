@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { encode } from "uqr";
 
 /// A QR code as inline SVG: the page policy allows no image from a data: URL,

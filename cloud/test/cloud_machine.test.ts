@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Cloud machines: who may have one, the key and session a container starts
 // with, and the lifecycle (start, sleep with a snapshot, wake from it) driven
 // with a stand-in for `ctx.container`. The tests run without containers.

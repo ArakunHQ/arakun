@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The second step of an operator's sign-in: a six-digit code from an
 // authenticator app (TOTP, RFC 6238, with the defaults every app uses: SHA-1,
 // 30-second steps, six digits). Operators set up their own key, at their

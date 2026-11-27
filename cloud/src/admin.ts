@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The operator's door, with no accounts to log into: a bearer secret set with
 // `wrangler secret put ADMIN_SECRET`.
 //

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The shapes in PROTOCOL.md and the signature checks on them. The Worker and the
 // channel Durable Object both use these. Signatures are ECDSA P-256 with
 // SHA-256, raw r||s (64 bytes), which is what WebCrypto makes and checks.

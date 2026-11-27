@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The account's cloud machines (cloud_machine.ts): `arakun-server` in a
 // container we run. Only an account with the `cloud` flag may have one, and one
 // each for now. The app and the phone reach a running machine through the

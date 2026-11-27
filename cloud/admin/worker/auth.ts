@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sign-in for operators, with GitHub's web flow, after ../../src/web_auth.ts:
 // a redirect to GitHub, and back with a one-time code that is traded for a
 // user access token. The token is used for one thing, to learn who the

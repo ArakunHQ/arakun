@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Users, devices and team keys made of WebCrypto, so every signature and
 // envelope the Worker checks is a real one.
 import { SELF } from "cloudflare:test";

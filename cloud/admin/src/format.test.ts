@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { describe, expect, it } from "vitest";
 import { age, githubUrl, parseId, relative } from "./format";
 

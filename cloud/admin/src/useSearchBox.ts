@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { useEffect, useRef, useState } from "react";
 
 /// The text of a search box that keeps `q` in the URL. It waits for a pause

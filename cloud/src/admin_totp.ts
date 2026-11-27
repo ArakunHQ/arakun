@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The admin panel operators' authenticator keys (migrations/0014). The admin
 // Worker seals each key before it sends it, and these routes only keep it:
 // they never see a key or a code.

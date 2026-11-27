@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // A fake GitHub, after ../../test/helpers.ts. The Worker runs in the same
 // isolate as the tests, so replacing the global fetch reaches it.
 import { env } from "cloudflare:test";

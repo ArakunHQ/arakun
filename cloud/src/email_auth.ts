@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Sign-in with a six-digit code mailed to the address, for people without
 // GitHub. The code is typed where it was asked for: in the app, or on the
 // page. It is not a link: a mail scanner may open links, a link could sign in

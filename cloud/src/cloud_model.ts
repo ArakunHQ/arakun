@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // The model credentials of a cloud machine (cloud_machine.ts): the owner's own
 // API key for the agents that run there. An Anthropic API key, Amazon Bedrock
 // or Google Vertex AI for Claude Code, one of the three at a time, and an

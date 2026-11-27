@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What the operator reads about accounts. These routes only read, so they
 // write nothing to the admin log.
 //

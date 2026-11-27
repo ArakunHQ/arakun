@@ -232,10 +232,12 @@ request that also fixes the new lints.
   handshake. Pairing credentials stay sealed by the Android Keystore
   (`CredentialStore.kt`); never log keys, tokens or message contents.
 - Do not add or change code behind the private `team` or `coderlabs` features.
-- `cloud/machine/`, the cloud machine container image, is under the PolyForm
-  Noncommercial License (`cloud/machine/LICENSE`), not AGPL-3.0: only Arakun may sell
-  it. Keep its SPDX line on every file there, and don't copy code between it and the
-  rest of the repository.
+- `cloud/`, Arakun's cloud (the Worker, `cloud/admin/` and the cloud machine image
+  in `cloud/machine/`), is under the PolyForm Noncommercial License
+  (`cloud/LICENSE`), not AGPL-3.0: only Arakun may sell it. Keep its SPDX line on
+  every file there that can hold a comment (not JSON, Markdown, generated files or
+  applied migrations, which are never edited), and don't copy code between it and
+  the rest of the repository.
 - Comments say why, not what. Docs and comments use plain, short sentences.
 - If you change a command, flag, shortcut or storage path, update the docs: the README
   for the main commands and first steps, the page in `docs/` it belongs to (and

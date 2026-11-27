@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // Notices: a short message the operator writes for one account or for
 // everyone. /me carries the unread ones; a person dismisses one by reading it.
 //

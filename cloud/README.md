@@ -832,6 +832,9 @@ A cloud machine is `arakun-server` in a Cloudflare container that we run for an
 account with the `cloud` flag (`src/cloud_machine.ts`, the image in `machine/`).
 It registers on the relay like any computer of the account, so the app and the
 phone reach it at the usual `/machines/<label>` doors. One per account for now.
+The phone's Computers screen makes, wakes, stops and removes it, and shows the
+hours left this month and why it stopped; an account without the flag asks for
+access there.
 
 - **Identity.** The machine's object makes its relay key when the machine is
   made, so the label is known before the container first runs. The key goes in

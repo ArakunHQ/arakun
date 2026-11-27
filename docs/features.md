@@ -232,6 +232,13 @@ sees the project's skills.
   file instead: the card says the agent's commands can read it, and the value goes
   to a file only you can read in `secret-files` in the data folder. `secret_to_file` moves a secret you pasted in a message
   to such a file. Files are deleted after 24 hours.
+- **Saved secrets.** Turn on **Save for this project** on a card, and give it a name,
+  to keep the secret for the project's later sessions too. The project's entry in
+  Arakun's state keeps only the name; the value stays in the keyring. Agents call
+  `list_saved_secrets` for the names (never the values) and `use_saved_secret` for a
+  fresh `secret-ref:` handle, which works once like any other, or with
+  `deliver: "file"` for a private file. A card with several fields saves each as
+  "name (field)".
 
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that

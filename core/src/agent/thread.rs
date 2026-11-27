@@ -643,6 +643,9 @@ pub enum ThreadEvent {
     SubagentsChanged {
         spawned: Option<String>,
     },
+    /// The user saved the secrets of a card for the project as well: the
+    /// project's state lists them from now on. Names and ids only.
+    SecretsSaved(Vec<super::saved_secret::Saved>),
     /// What the user did in a session that runs on a server (see
     /// [`Thread::set_remote`]): it is for the server to carry out.
     Remote(RemoteAction),

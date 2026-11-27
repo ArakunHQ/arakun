@@ -296,6 +296,9 @@ struct SecretState {
     revealed: Vec<bool>,
     /// Why the last Save did not go through.
     error: Option<SharedString>,
+    /// Save for this project as well, under the name in `name`.
+    keep: bool,
+    name: Entity<TextInput>,
     _subs: Vec<Subscription>,
 }
 
@@ -1380,8 +1383,8 @@ impl ThreadView {
             .thread
             .read(cx)
             .pending_secret()
-            .map(|r| (r.id, r.fields.len()));
-        if self.secret.as_ref().map(|s| s.id) == pending.map(|(id, _)| id) {
+            .map(|r| (r.id, r.fields.len(), r.label.clone()));
+        if self.secret.as_ref().map(|s| s.id) == pending.as_ref().map(|(id, ..)| *id) {
             return;
         }
         if let Some(old) = self.secret.take() {
@@ -1389,12 +1392,18 @@ impl ThreadView {
                 input.update(cx, |i, cx| i.clear(cx));
             }
         }
-        if let Some((id, n)) = pending {
+        if let Some((id, n, label)) = pending {
             let inputs: Vec<Entity<TextInput>> = (0..n)
                 .map(|_| cx.new(|cx| TextInput::new("", cx).secret()))
                 .collect();
+            let name = cx.new(|cx| {
+                let mut input = TextInput::new("Name", cx);
+                input.set_text(label, cx);
+                input
+            });
             let subs = inputs
                 .iter()
+                .chain([&name])
                 .map(|input| {
                     cx.subscribe_in(input, window, |this, _, ev: &InputEvent, _, cx| match ev {
                         InputEvent::Submit => this.save_secret(cx),
@@ -1408,6 +1417,8 @@ impl ThreadView {
                 inputs,
                 revealed: vec![false; n],
                 error: None,
+                keep: false,
+                name,
                 _subs: subs,
             });
         }
@@ -1416,9 +1427,20 @@ impl ThreadView {
     }
 
     fn secret_ready(&self, cx: &App) -> bool {
-        self.secret
-            .as_ref()
-            .is_some_and(|s| s.inputs.iter().all(|i| !i.read(cx).text().is_empty()))
+        self.secret.as_ref().is_some_and(|s| {
+            s.inputs.iter().all(|i| !i.read(cx).text().is_empty())
+                && (!s.keep || !s.name.read(cx).text().trim().is_empty())
+        })
+    }
+
+    /// Turns "Save for this project" on or off.
+    fn toggle_keep_secret(&mut self, cx: &mut Context<Self>) {
+        if let Some(state) = self.secret.as_mut() {
+            state.keep = !state.keep;
+            state.error = None;
+        }
+        self.remeasure_last();
+        cx.notify();
     }
 
     /// Empties the inputs before the card can close, and puts the values back
@@ -1439,9 +1461,12 @@ impl ThreadView {
             input.update(cx, |i, cx| i.clear(cx));
         }
         let id = state.id;
-        let saved = self
-            .thread
-            .update(cx, |t, cx| t.save_secret(id, values.clone(), cx));
+        let keep_as = state
+            .keep
+            .then(|| state.name.read(cx).text().trim().to_string());
+        let saved = self.thread.update(cx, |t, cx| {
+            t.save_secret(id, values.clone(), keep_as.as_deref(), cx)
+        });
         if let Err(e) = saved
             && let Some(state) = self.secret.as_mut().filter(|s| s.id == id)
         {

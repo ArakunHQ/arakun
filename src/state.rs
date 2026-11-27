@@ -304,6 +304,10 @@ pub struct ProjectState {
     /// Variables its agents get even though they look like secrets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pass_env: Vec<String>,
+    /// Secrets saved for its agents: names and keyring ids. The values are
+    /// in the keyring (`agent::saved_secret`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<crate::agent::saved_secret::Saved>,
     /// The branch new environments start from; None for origin's default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
@@ -1035,6 +1039,7 @@ pub fn snapshot_with(
                 check_declined: p.check_declined,
                 sandbox: p.sandbox,
                 pass_env: p.pass_env.clone(),
+                secrets: p.secrets.clone(),
                 base: p.base.clone(),
                 notes: p.notes.clone(),
                 monos: p.monos.clone(),
@@ -1370,6 +1375,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) 
                 check_declined: p.check_declined,
                 sandbox: p.sandbox,
                 pass_env: p.pass_env,
+                secrets: p.secrets,
                 base: p.base,
                 notes: p.notes,
                 monos: p.monos,
@@ -1479,6 +1485,7 @@ pub fn new_project(path: &Path) -> Project {
         check_declined: false,
         sandbox: false,
         pass_env: Vec::new(),
+        secrets: Vec::new(),
         base: None,
         notes: Vec::new(),
         monos: Vec::new(),

@@ -1407,6 +1407,7 @@ impl Shell {
             MenuTarget::MoreTabs => return self.render_more_menu(cx),
             MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Help => return self.render_help_menu(cx),
+            MenuTarget::MoreViews => return self.render_more_views_menu(cx),
             MenuTarget::Change(i) => {
                 let change = self
                     .has_projects()

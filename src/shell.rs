@@ -262,6 +262,8 @@ enum MenuTarget {
     Help,
     /// The local servers that run, from the status bar or the rail.
     Running,
+    /// The views without a row of their own, from the rail's More views.
+    MoreViews,
 }
 
 /// An environment made with one click, shown while its worktree is made.
@@ -4392,7 +4394,9 @@ impl Render for Shell {
                 MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
                 // Help can be anywhere in the rail; low down it opens upward.
                 // So can Running, which the status bar opens too.
-                MenuTarget::Help | MenuTarget::Running => m.at.y.as_f32() > viewport_h / 2.,
+                MenuTarget::Help | MenuTarget::Running | MenuTarget::MoreViews => {
+                    m.at.y.as_f32() > viewport_h / 2.
+                }
                 _ => false,
             };
             // The room between the anchor and the window edge the menu opens toward.

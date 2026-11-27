@@ -799,7 +799,9 @@ again after a week) in its [data folder](storage-and-env.md).
   get what you install by the mirror (see [Server](server.md)). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Linear, Doop, Isometric, Phone, Computers and Automations. The
-  palette and Customize › Sidebar list only the tabs that are on. A new install starts
+  palette and Customize › Sidebar list only the tabs that are on. Every tab that is on
+  and has no row of its own in the sidebar is in **More views**, a row that opens them
+  in a menu by name, with their counts. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had.
@@ -1028,7 +1030,12 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
 - **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
-  Everything); it lays out the pieces and keeps the style you chose. Every preset holds
+  Everything); it lays out the pieces and keeps the style you chose. The Switcher, the
+  default, names three views (Runs, Branches and GitHub), then More views for the rest,
+  and puts plan usage on one line (5h, a bar, the percentage) above Settings. Which
+  views get a row is yours: add a view from the chips, or remove its row and it moves
+  to More views. Select Usage to switch between the card and the line. A sidebar saved
+  on the old Switcher, with its row of view icons, moves to this one once. Every preset holds
   the User row, where you sign in; a layout saved without it gets it once,
   next to Help. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole

@@ -734,6 +734,26 @@ impl Shell {
                     })),
                 );
         }
+        if let Piece::Usage { line } = item.piece {
+            out = out.child(
+                ui::switch_row(
+                    "sb-usage-line",
+                    "One line (5h, a bar, the percentage)",
+                    line,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.change_sidebar(cx, |s| {
+                        if let Some(Item {
+                            piece: Piece::Usage { line },
+                            ..
+                        }) = s.get_mut(p)
+                        {
+                            *line = !*line;
+                        }
+                    })
+                })),
+            );
+        }
         out.child(
             div().pt(crate::ui::sp(12.)).child(
                 ui::button_with(

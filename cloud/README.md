@@ -37,6 +37,9 @@ cloud/
   src/relay/label.ts    label = base32 of the first 80 bits of SHA-256(public key)
   src/teams-router.ts   the teams routes; every error is JSON: { "error": "..." }
   src/auth.ts           POST /auth/github, GET /me, POST /auth/logout, sessions
+  src/email_auth.ts     POST /auth/email, /auth/email/verify and /auth/email/web: sign-in
+                        with a code mailed to the address
+  src/disposable.ts     the throwaway mail domains that get no code
   src/admin.ts          PUT /admin/github/<github_id>,
                         PUT|DELETE /admin/users/<account_id>/flags/<flag>,
                         DELETE /admin/users/<account_id>/sessions,
@@ -158,6 +161,41 @@ one cloud session at a time, and a new one ends the one before. Cloud sessions d
 and a sign-in never ends one to make room. They expire and renew like any session,
 `GET /sessions` lists them with kind `cloud`, and `DELETE /sessions/<id>`, a block
 and signing out everywhere end them.
+
+### Sign-in with a code by email
+
+For people without GitHub, the app, the native apps and the page can sign in with a
+six-digit code mailed to the address. It is a code, not a link: a mail scanner may
+open links, a link would sign in whatever browser opened it, and the desktop app
+cannot receive one.
+
+1. `POST /auth/email` with `{"email": "..."}` mails a code from `EMAIL_FROM`
+   (`sign-in@arakun.dev`) through Email Sending, and answers
+   `{"sent": true, "expires_in": 600}`. The answer is the same whether the address has
+   an account or not. The database keeps the address in lower case and the SHA-256 of
+   the code, never the code.
+2. `POST /auth/email/verify` with `{"email", "code", "name"?, "kind"?}` answers as
+   `POST /auth/github` does. The page posts `{"email", "code"}` to
+   `POST /auth/email/web` instead, which must carry the Worker's own `Origin` and
+   answers `204` with the session cookie, so the page's script never sees the token.
+
+A code lasts 10 minutes, works once and takes 5 tries, right or wrong; a new code
+replaces the one before. Each address gets at most 5 codes an hour, which also caps the
+guesses at its codes, and each client IP 3 a minute (`EMAIL_CODE_LIMIT`). Trying a
+code counts against the sign-in limit. A wrong, used, run-out or never-sent code all get
+the same `401`. Addresses at throwaway mail services get a `400` and no mail: the
+built-in list is in `src/disposable.ts`, and the operator adds domains without a deploy
+as a JSON list in the `CONFIG` key `blocked_email_domains`:
+
+```sh
+npx wrangler kv key put --env production --binding CONFIG blocked_email_domains '["example-burner.com"]'
+```
+
+The address is an identity of the account, like GitHub. A code for an address no
+account has yet signs in to the one account whose verified GitHub address it is, if
+exactly one has it and has no other address linked; otherwise it makes an account whose
+login is the address. GitHub sign-in never joins an email account: someone who made
+an account by email and then signs in with GitHub gets a second one.
 
 An account has an ID of its own, a number. GitHub is one identity linked to it, by the
 numeric GitHub ID, which stays when the person renames their GitHub account: a sign-in
@@ -349,6 +387,14 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler secret put GITHUB_CLIENT_SECRET --env production
    ```
 
+   Email sign-in sends from `sign-in@arakun.dev` through Email Sending. Onboard the
+   domain once per Cloudflare account; it adds the DNS records. Without it, asking for
+   a code answers 502:
+
+   ```sh
+   npx wrangler email sending enable arakun.dev
+   ```
+
    Optionally, a Discord webhook URL that hears of each new request for cloud
    access (see Cloud access). Without it, nothing is posted:
 
@@ -400,13 +446,15 @@ npx wrangler d1 create arakun-cloud-dev
 npx wrangler d1 migrations apply arakun-cloud-dev --remote
 ```
 
-Three rate limits are set in `wrangler.toml` under `[[ratelimits]]`: sign-in, which is
+These rate limits are set in `wrangler.toml` under `[[ratelimits]]`: sign-in, which is
 `POST /auth/github` and the page's `GET /auth/github/callback` together
 (about 10 a minute per client IP, `namespace_id` 1001 in production, 1003 in the
 top-level Worker; `GET /auth/github/start` asks nothing of GitHub and is not counted), the messages each device sends on channel sockets (about 60
 every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker)
-and the invites each user makes, since each asks GitHub who has the login (about
-30 a minute, `namespace_id` 1006 in production, 1005 in the top-level Worker).
+the invites each user makes, since each asks GitHub who has the login (about
+30 a minute, `namespace_id` 1006 in production, 1005 in the top-level Worker), and the
+sign-in codes mailed for each client IP (3 a minute, `namespace_id` 1022 in
+production, 1021 in the top-level Worker). Trying a code counts as a sign-in.
 Rate limits with the same `namespace_id` in one account share their counters for
 the same key, so a device sending through the test Worker would use up its
 production allowance; give a new rate limit an id nothing else in the account uses.

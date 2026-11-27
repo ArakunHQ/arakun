@@ -1,4 +1,4 @@
-// The account host: sign-in with GitHub, sessions, per-user feature flags, the
+// The account host: sign-in with GitHub or an emailed code, sessions, per-user feature flags, the
 // account's machines and their relay sockets, and the teams of PROTOCOL.md.
 // There is no CORS: the app and the page on this same host call it. Every
 // error is JSON: { "error": "..." }. A GET outside the API is the phone page.
@@ -8,6 +8,7 @@ import { beta } from "./beta";
 import { cloudAccess } from "./cloud_access";
 import { cloudMachines } from "./cloud_machines";
 import { feedback } from "./feedback";
+import { emailAuth } from "./email_auth";
 import { authConfig, deleteSession, ForeignOrigin, listSessions, logout, me, signIn } from "./auth";
 import { linear } from "./linear";
 import { machines } from "./machines";
@@ -99,6 +100,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (linked) return linked;
     const answer = await teams(request, env, url);
     if (answer) return answer;
+    const emailed = await emailAuth(request, env, url);
+    if (emailed) return emailed;
     switch (`${request.method} ${pathname}`) {
       case "GET /healthz":
         return Response.json({ ok: true });

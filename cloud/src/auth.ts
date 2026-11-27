@@ -56,7 +56,7 @@ export interface GitHubUser {
 /// What a session can be for: the app, `arakun-server`, the phone page, and
 /// the native apps. Sign-in takes only these. `cloud` is not among them: only
 /// `newCloudSession` makes one.
-const KINDS = ["app", "server", "phone", "ios", "android"];
+export const KINDS = ["app", "server", "phone", "ios", "android"];
 /// A session for an `arakun-server` in a container we host. An agent there
 /// may be talked into reading the token, so it is good for one door only:
 /// `/machines/<label>/pc` of the label it was made for. Besides that it may
@@ -64,7 +64,7 @@ const KINDS = ["app", "server", "phone", "ios", "android"];
 export const CLOUD_KIND = "cloud";
 /// A machine label, as the relay derives it from the computer's key.
 const LABEL = /^[a-z2-7]{16}$/;
-const MAX_NAME = 100;
+export const MAX_NAME = 100;
 /// How many sessions an account keeps. Sign-in is limited per client IP, not
 /// per account, so without this the list has no end.
 export const MAX_SESSIONS = 100;
@@ -96,23 +96,7 @@ export async function signIn(request: Request, env: Env): Promise<Response> {
   const user = await verifyAndRevoke(body.token, env);
   if (user instanceof Response) return user;
 
-  const made = await newSession(env, user, body.name ?? user.login, body.kind);
-  const [flags, plan] = await env.DB.batch([
-    flagsQuery(env.DB, made.account_id),
-    env.DB.prepare("SELECT plan FROM accounts WHERE id = ?").bind(made.account_id),
-  ]);
-  return Response.json({
-    session: made.session,
-    session_id: made.session_id,
-    expires_at: made.expires_at,
-    account_id: made.account_id,
-    // The account ID under its old name, for clients from before accounts had
-    // their own. For accounts made before then it is their GitHub ID.
-    github_id: made.account_id,
-    login: user.login,
-    flags: flagList(flags!),
-    plan: (plan!.results[0] as { plan: string }).plan,
-  });
+  return signedIn(env, await newSession(env, githubIdentity(user), body.name ?? user.login, body.kind));
 }
 
 /// Sign-in of any kind counts against one limit per client IP. Before sign-in
@@ -143,7 +127,7 @@ export async function verifyAndRevoke(token: string, env: Env): Promise<GitHubUs
 
 /// The account linked to a GitHub user, as a subquery on `?1`, the GitHub
 /// user's numeric ID as text. Null when none is.
-export const GITHUB_ACCOUNT = "(SELECT account_id FROM identities WHERE provider = 'github' AND subject = ?1)";
+export const GITHUB_ACCOUNT = identityAccount("github");
 
 /// The lowest ID a new account gets. GitHub's user IDs are far below it, so a
 /// new account's ID is never also some GitHub user's, and an account made
@@ -187,11 +171,62 @@ export async function githubIdOf(env: Env, accountId: number): Promise<number | 
   return subject === null ? null : Number(subject);
 }
 
-/// Makes the account if the GitHub user has none and gives it a session.
+/// Who signs in, as one of the account's identities. `login` is the name the
+/// account shows: GitHub's login, kept current on each sign-in, or for an
+/// email identity the address, given only to an account that has no login
+/// yet. `email` is a verified address, kept on the account; undefined leaves
+/// the stored one.
+export interface Identity {
+  provider: "github" | "email";
+  subject: string;
+  login: string;
+  email?: string | null;
+}
+
+export function githubIdentity(user: GitHubUser): Identity {
+  return { provider: "github", subject: String(user.id), login: user.login, ...(user.email === undefined ? {} : { email: user.email }) };
+}
+
+/// The account linked to an identity of this provider, as a subquery on `?1`,
+/// the identity's subject. The provider is one of a fixed few, never input.
+export function identityAccount(provider: Identity["provider"]): string {
+  return `(SELECT account_id FROM identities WHERE provider = '${provider}' AND subject = ?1)`;
+}
+
+/// The one account an email sign-in for the address `?1` joins when no
+/// account has that email identity yet: the account whose verified GitHub
+/// address it is, if exactly one has it and none of them has an address
+/// linked already. Its count, and its ID.
+const EMAIL_MATCH = `FROM accounts a WHERE a.email = ?1 COLLATE NOCASE
+  AND NOT EXISTS (SELECT 1 FROM identities i WHERE i.account_id = a.id AND i.provider = 'email')`;
+
+/// Two statements that link an address to an account, as `accountFor` does
+/// for GitHub: to the account whose verified address it is (EMAIL_MATCH), or
+/// else to a new one. Both, or neither, in one batch.
+export function emailAccountFor(db: D1Database, address: string, t: number): D1PreparedStatement[] {
+  const linked = identityAccount("email");
+  const id = newAccountId();
+  return [
+    db
+      .prepare(`INSERT INTO accounts (id, login, created_at, last_seen_at) SELECT ?3, '', ?2, 0 WHERE ${linked} IS NULL AND (SELECT count(*) ${EMAIL_MATCH}) != 1`)
+      .bind(address, t, id),
+    // After the insert the count is what it was: the new account has no
+    // address yet, so it is never its own match.
+    db
+      .prepare(
+        `INSERT INTO identities (provider, subject, account_id, linked_at)
+         SELECT 'email', ?1, CASE WHEN (SELECT count(*) ${EMAIL_MATCH}) = 1 THEN (SELECT a.id ${EMAIL_MATCH}) ELSE ?3 END, ?2
+         WHERE ${linked} IS NULL`,
+      )
+      .bind(address, t, id),
+  ];
+}
+
+/// Makes the account if the identity has none and gives it a session.
 /// Callers have checked who the user is already, and `name` and `kind` too.
 export async function newSession(
   env: Env,
-  user: GitHubUser,
+  who: Identity,
   name: string,
   kind: string,
 ): Promise<{ session: string; session_id: string; expires_at: number; account_id: number }> {
@@ -201,23 +236,32 @@ export async function newSession(
   const expiresAt = t + SESSION_DAYS * DAY;
   const db = env.DB;
   const hash = hex(await sha256(session));
-  const subject = String(user.id);
+  const subject = who.subject;
+  const ACCOUNT = identityAccount(who.provider);
   // One batch is one transaction: no session without its account.
   const results = await db.batch([
-    ...accountFor(db, user.id, t),
-    // Fills in the login of an account an admin made before the first sign-in.
-    db
-      .prepare(
-        `UPDATE accounts SET login = ?2, email = CASE WHEN ?4 THEN ?3 ELSE email END, last_seen_at = ?5
-         WHERE id = ${GITHUB_ACCOUNT}`,
-      )
-      .bind(subject, user.login, user.email ?? null, user.email === undefined ? 0 : 1, t),
+    ...(who.provider === "github" ? accountFor(db, Number(subject), t) : emailAccountFor(db, subject, t)),
+    who.provider === "github"
+      ? // Fills in the login of an account an admin made before the first sign-in.
+        db
+          .prepare(
+            `UPDATE accounts SET login = ?2, email = CASE WHEN ?4 THEN ?3 ELSE email END, last_seen_at = ?5
+             WHERE id = ${ACCOUNT}`,
+          )
+          .bind(subject, who.login, who.email ?? null, who.email === undefined ? 0 : 1, t)
+      : // An account that has a GitHub login keeps it, and its GitHub address.
+        db
+          .prepare(
+            `UPDATE accounts SET login = CASE WHEN login = '' THEN ?2 ELSE login END, email = COALESCE(email, ?3), last_seen_at = ?4
+             WHERE id = ${ACCOUNT}`,
+          )
+          .bind(subject, who.login, who.email ?? null, t),
     // Each sign-in adds a session, so old ones are cleared here.
-    db.prepare(`DELETE FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND expires_at <= ?2`).bind(subject, t),
+    db.prepare(`DELETE FROM sessions WHERE account_id = ${ACCOUNT} AND expires_at <= ?2`).bind(subject, t),
     db
       .prepare(
         `INSERT INTO sessions (token_hash, id, name, kind, account_id, created_at, expires_at, last_used_at)
-         SELECT ?2, ?3, ?4, ?5, ${GITHUB_ACCOUNT}, ?6, ?7, ?6`,
+         SELECT ?2, ?3, ?4, ?5, ${ACCOUNT}, ?6, ?7, ?6`,
       )
       .bind(subject, hash, id, name, kind, t, expiresAt),
     // Past the cap, the sessions used longest ago make room for the new one.
@@ -225,17 +269,39 @@ export async function newSession(
     // signing in on a new phone must not cut off a machine we run.
     db
       .prepare(
-        `DELETE FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND token_hash IN (
-           SELECT token_hash FROM sessions WHERE account_id = ${GITHUB_ACCOUNT} AND token_hash != ?2 AND kind != 'cloud'
+        `DELETE FROM sessions WHERE account_id = ${ACCOUNT} AND token_hash IN (
+           SELECT token_hash FROM sessions WHERE account_id = ${ACCOUNT} AND token_hash != ?2 AND kind != 'cloud'
            ORDER BY last_used_at DESC, created_at DESC, token_hash LIMIT -1 OFFSET ?3)`,
       )
       .bind(subject, hash, MAX_SESSIONS - 1),
-    db.prepare(`SELECT ${GITHUB_ACCOUNT} AS id`).bind(subject),
+    db.prepare(`SELECT ${ACCOUNT} AS id`).bind(subject),
   ]);
   const accountId = (results[6]!.results[0] as { id: number }).id;
   // A session that made room may have sockets open: they close now.
   if (results[5]!.meta.changes > 0) await recheckAccount(env, accountId);
   return { session, session_id: id, expires_at: expiresAt, account_id: accountId };
+}
+
+/// The answer to a sign-in that gave a session to a bearer client: the token,
+/// and who the account is.
+export async function signedIn(env: Env, made: { session: string; session_id: string; expires_at: number; account_id: number }): Promise<Response> {
+  const [flags, account] = await env.DB.batch([
+    flagsQuery(env.DB, made.account_id),
+    env.DB.prepare("SELECT login, plan FROM accounts WHERE id = ?").bind(made.account_id),
+  ]);
+  const { login, plan } = account!.results[0] as { login: string; plan: string };
+  return Response.json({
+    session: made.session,
+    session_id: made.session_id,
+    expires_at: made.expires_at,
+    account_id: made.account_id,
+    // The account ID under its old name, for clients from before accounts had
+    // their own. For accounts made before then it is their GitHub ID.
+    github_id: made.account_id,
+    login,
+    flags: flagList(flags!),
+    plan,
+  });
 }
 
 /// A session for the machine with this label, for a user who has signed in

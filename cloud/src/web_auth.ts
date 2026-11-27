@@ -8,7 +8,7 @@
 // a foreign page could send a victim's browser to the callback with the
 // attacker's code and sign the victim in as the attacker.
 
-import { cookie, GITHUB_TIMEOUT_MS, MAX_ACCESS_TOKEN, MAX_SESSION_DAYS, newSession, SESSION_COOKIE, SESSION_TOKEN, signInAllowed, verifyAndRevoke } from "./auth";
+import { cookie, GITHUB_TIMEOUT_MS, githubIdentity, MAX_ACCESS_TOKEN, MAX_SESSION_DAYS, newSession, SESSION_COOKIE, SESSION_TOKEN, signInAllowed, verifyAndRevoke } from "./auth";
 import { recheckAccount } from "./machines";
 import { DAY, b64url, discard, hex, isObject, sha256, type Env } from "./util";
 
@@ -79,23 +79,27 @@ async function callback(request: Request, env: Env, done: (res: Response) => Res
     return failed();
   }
 
-  const made = await newSession(env, user, platform(request.headers.get("User-Agent") ?? ""), "phone");
+  const made = await newSession(env, githubIdentity(user), platform(request.headers.get("User-Agent") ?? ""), "phone");
   // After the new session, which is what tells us the account: a sign-in by a
   // GitHub user with no account yet has no old session of it to end.
   await endReplacedSession(request, env, made.account_id, made.session);
-  const res = redirect("/");
-  // The session's row says when it ends, and use renews it. The cookie lives
-  // as long as a session can at most, so the browser does not drop it first
-  // and leave a row behind that nobody can use.
-  res.headers.append("Set-Cookie", `${SESSION_COOKIE}=${made.session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${MAX_SESSION_DAYS * DAY}`);
-  return done(res);
+  return done(withSessionCookie(redirect("/"), made.session));
+}
+
+/// The answer with the session's cookie. The session's row says when it ends,
+/// and use renews it. The cookie lives as long as a session can at most, so
+/// the browser does not drop it first and leave a row behind that nobody can
+/// use.
+export function withSessionCookie(res: Response, session: string): Response {
+  res.headers.append("Set-Cookie", `${SESSION_COOKIE}=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${MAX_SESSION_DAYS * DAY}`);
+  return res;
 }
 
 /// A browser that signs in again over a session cookie it still holds: that
 /// session's row goes, or it would stay listed as a signed-in device no
 /// browser can use. Only a session of the account signing in: one of
 /// another account is not this sign-in's to end.
-async function endReplacedSession(request: Request, env: Env, accountId: number, current: string): Promise<void> {
+export async function endReplacedSession(request: Request, env: Env, accountId: number, current: string): Promise<void> {
   const old = cookie(request, SESSION_COOKIE);
   if (!old || old === current || !SESSION_TOKEN.test(old)) return;
   const result = await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ? AND account_id = ?").bind(hex(await sha256(old)), accountId).run();
@@ -140,7 +144,7 @@ async function exchangeCode(code: string, redirectUri: string, clientId: string,
 
 /// A name for the signed-in device from the browser's User-Agent. The mobile
 /// systems are asked first: their agents also say "Mac OS X" or "Linux".
-function platform(userAgent: string): string {
+export function platform(userAgent: string): string {
   for (const [pattern, name] of [
     [/iPhone/, "iPhone"],
     [/iPad/, "iPad"],

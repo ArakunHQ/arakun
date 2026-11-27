@@ -2249,6 +2249,14 @@ impl Shell {
             && self.has_projects()
             && self.env().path == env_path
             && self.active_session_id().as_ref() == Some(id);
+        // Screen readers hear it for the session on screen too: there the
+        // status only changes a dot's color.
+        let place = (!visible).then(|| self.place_of(env_path)).flatten();
+        let agent = thread.read(cx).kind().label().to_string();
+        self.announce(
+            super::island::session_spoken(kind, &agent, place.as_deref()),
+            cx,
+        );
         if visible {
             return;
         }
@@ -2274,6 +2282,13 @@ impl Shell {
             }
         }))
         .detach();
+    }
+
+    /// Where an environment is, as people say it: "arakun/bold-valley".
+    pub(super) fn place_of(&self, env_path: &Path) -> Option<String> {
+        let project = self.project_of_env(env_path)?;
+        let env = project.environments.iter().find(|e| e.path == env_path)?;
+        Some(format!("{}/{}", project.name, env.name))
     }
 
     pub(super) fn find_env(&self, path: &Path) -> Option<&model::Environment> {

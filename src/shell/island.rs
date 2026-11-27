@@ -528,9 +528,22 @@ impl Shell {
                 .into(),
             brand: brand.to_string().into(),
         };
+        self.announce(spoken(title, &brief(body)), cx);
         if !self.show_alert_full(alert, full, cx) {
             super::sessions::send_notification(&key, title, body, kind == AlertKind::Failure, cx);
         }
+    }
+
+    /// Says `text` to screen readers, politely: after what they say now,
+    /// without moving focus. The shell's live region (`ui::announcer`) speaks it.
+    pub(super) fn announce(&self, text: String, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        let mut announced = self.announced.borrow_mut();
+        announced.0 += 1;
+        announced.1 = text.into();
+        cx.notify();
     }
 
     /// A card already made, when the island is connected; `false` and the
@@ -686,6 +699,35 @@ impl Shell {
     }
 }
 
+/// A notice as one sentence to say: "Checks failed. Fix the login form".
+fn spoken(title: &str, body: &str) -> String {
+    let title = title.trim().trim_end_matches('.');
+    let body = body.trim();
+    match (title.is_empty(), body.is_empty()) {
+        (_, true) => title.to_string(),
+        (true, false) => body.to_string(),
+        (false, false) => format!("{title}. {body}"),
+    }
+}
+
+/// What screen readers hear when a session ends its turn, needs the user or
+/// fails. `place` is where it runs ("arakun/bold-valley"), left out for the
+/// session on screen: there it is plain which one.
+pub(super) fn session_spoken(kind: Kind, agent: &str, place: Option<&str>) -> String {
+    match place {
+        None => match kind {
+            Kind::Done => "Turn finished".to_string(),
+            Kind::Input => format!("{agent} needs you"),
+            Kind::Error => format!("{agent} failed"),
+        },
+        Some(place) => match kind {
+            Kind::Done => format!("{agent} in {place} finished its turn"),
+            Kind::Input => format!("{agent} in {place} needs you"),
+            Kind::Error => format!("{agent} in {place} failed"),
+        },
+    }
+}
+
 fn log_once(message: &str) {
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -811,6 +853,26 @@ fn error_line(t: &Thread, shape: fn(&str) -> String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_changes_are_said_with_where_they_happened() {
+        let place = Some("arakun/bold-valley");
+        assert_eq!(
+            session_spoken(Kind::Input, "Claude Code", place),
+            "Claude Code in arakun/bold-valley needs you"
+        );
+        assert_eq!(
+            session_spoken(Kind::Error, "Codex", place),
+            "Codex in arakun/bold-valley failed"
+        );
+        // The session on screen: no need to say which one.
+        assert_eq!(session_spoken(Kind::Done, "Codex", None), "Turn finished");
+        assert_eq!(
+            spoken("Checks failed.", "Fix the login"),
+            "Checks failed. Fix the login"
+        );
+        assert_eq!(spoken("Checks failed", " "), "Checks failed");
+    }
 
     fn entry(v: serde_json::Value) -> Entry {
         serde_json::from_value(v).unwrap()

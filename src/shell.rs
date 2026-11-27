@@ -557,6 +557,9 @@ pub struct Shell {
     team: Option<team::TeamLink>,
     /// Every notice shown, for the Inbox. A cell: notices go out from `&self`.
     notices: RefCell<crate::notices::History>,
+    /// The last status change said to screen readers, and how many came
+    /// before it (`announce`).
+    announced: RefCell<(u64, SharedString)>,
     /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
     inbox_open: bool,
     /// The view shown in the welcome's place: one that needs no project,
@@ -1003,6 +1006,7 @@ impl Shell {
             #[cfg(feature = "team")]
             team: None,
             notices: RefCell::new(crate::notices::load()),
+            announced: RefCell::default(),
             inbox_open: false,
             onboarding: None,
             setup_tips: false,
@@ -4808,6 +4812,10 @@ impl Render for Shell {
             .when_some(self.render_survey_card(cx), |d, card| d.child(card))
             .when_some(crate::agent::markdown::preview(), |d, image| {
                 d.child(crate::agent::markdown::render_preview(image, window, cx))
+            })
+            .child({
+                let (n, text) = self.announced.borrow().clone();
+                ui::announcer(n, text)
             })
     }
 }

@@ -103,6 +103,23 @@ describe("reduce", () => {
     expect(s.session!.entries).toEqual([{ n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }]);
   });
 
+  it("an append keeps the first words and adds the rest", () => {
+    const s = run(opened(4, [{ type: "user", text: "q" }, { type: "agent", text: "Hello wor" }]), {
+      type: "append",
+      id: "s1",
+      n: 5,
+      at: 6,
+      text: "world!",
+    });
+    expect(s.session!.entries).toEqual([{ type: "user", text: "q" }, { type: "agent", text: "Hello world!" }]);
+  });
+
+  it("an append for an entry not loaded here changes nothing", () => {
+    const s = opened(4, [{ type: "agent", text: "Hi" }]);
+    expect(run(s, { type: "append", id: "s1", n: 9, at: 0, text: "x" })).toBe(s);
+    expect(run(s, { type: "append", id: "s1", n: 4, at: 5, text: "x" })).toBe(s);
+  });
+
   it("entries for another session are ignored", () => {
     const s = opened(0, []);
     expect(run(s, { type: "entries", id: "x", from: 0, count: 1, entries: [{}] })).toBe(s);

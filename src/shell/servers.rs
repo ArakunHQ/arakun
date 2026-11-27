@@ -1944,7 +1944,7 @@ impl Shell {
             && conn.reach == Reach::Connected
         {
             conn.client
-                .send(&json!({ "type": "open", "session": id, "keep": true }));
+                .send(&json!({ "type": "open", "session": id, "keep": true, "append": true }));
             conn.client
                 .send(&json!({ "type": "transcript", "session": id, "from": 0 }));
         }
@@ -3272,7 +3272,7 @@ impl Shell {
                     for f in back_to {
                         f.read_again();
                         conn.client
-                            .send(&json!({ "type": "open", "session": f.session, "keep": true }));
+                            .send(&json!({ "type": "open", "session": f.session, "keep": true, "append": true }));
                         conn.client.send(
                             &json!({ "type": "transcript", "session": f.session, "from": 0 }),
                         );
@@ -3675,7 +3675,8 @@ impl Shell {
             .following
             .iter_mut()
             .find(|f| f.server == id && msg["id"] == f.session.as_str());
-        match msg["type"].as_str().unwrap_or("") {
+        let kind = msg["type"].as_str().unwrap_or("");
+        match kind {
             // A session's model and reasoning, asked for or just changed.
             "settings" => {
                 let Some(f) = following else { return };
@@ -3748,13 +3749,15 @@ impl Shell {
                     t.set_remote_sign_in(sign_in, cx);
                 });
             }
-            // Entries changed, cut down for a phone: the whole ones are asked for.
-            "entries" => {
+            // Entries changed, cut down for a phone: the whole ones are asked
+            // for. An `append` is entry `n` alone changing.
+            "entries" | "append" => {
                 let Some(f) = following else { return };
                 if msg["older"] == true || f.broken.is_some() {
                     return;
                 }
-                let from = msg["from"].as_u64().unwrap_or(0) as usize;
+                let at = if kind == "append" { "n" } else { "from" };
+                let from = msg[at].as_u64().unwrap_or(0) as usize;
                 if f.asking {
                     f.again = Some(f.again.map_or(from, |a| a.min(from)));
                 } else {

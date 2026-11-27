@@ -86,7 +86,12 @@ export function createLink(opts: LinkOptions): Link {
   const emit = (e: LinkEvent) => {
     for (const fn of eventListeners) fn(e);
   };
-  const raw = (msg: unknown) => channel?.send(msg);
+  // Every open asks for `append`: a streaming reply then comes as its new
+  // words, not whole each time. A computer without it sends `entries`.
+  const raw = (msg: unknown) => {
+    const m = msg as ClientMessage;
+    channel?.send(m && m.type === "open" ? { ...m, append: true } : msg);
+  };
 
   function handle(msg: ServerMessage) {
     if (noticeOpen) {

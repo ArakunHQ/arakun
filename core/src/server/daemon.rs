@@ -186,6 +186,9 @@ pub struct Daemon {
     /// Apps that read whole transcripts, as one following a server does.
     /// Only they are sent `subagents`; a phone does not show them.
     readers: HashSet<ClientId>,
+    /// What each watched session's entries were last sent as, to send a
+    /// streaming reply's new words only.
+    entry_stream: wire::EntryStream,
     inbox_dirty: bool,
     flush: Option<Task<()>>,
     last_inbox: String,
@@ -1243,6 +1246,7 @@ impl Daemon {
             state_dirty: Vec::new(),
             subagents_dirty: HashSet::new(),
             readers: HashSet::new(),
+            entry_stream: wire::EntryStream::default(),
             inbox_dirty: false,
             flush: None,
             last_inbox: String::new(),
@@ -2266,6 +2270,9 @@ impl Daemon {
 
     /// Stops the agent of a session nobody is looking at once it has nothing to do.
     fn retire_if_unwatched(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.watched(id) {
+            self.entry_stream.forget_session(id);
+        }
         let Some(live) = self.live.get(id) else {
             return;
         };
@@ -2803,8 +2810,15 @@ impl Daemon {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::entries_message(&id, t.entries(), from, &self.scope(t.cwd()));
-            self.send_watchers(&id, msg);
+            let scope = self.scope(t.cwd());
+            let flush = self.entry_stream.flush(&id, t.entries(), from, &scope);
+            for (client, watched) in &self.watching {
+                if watched.contains(&id)
+                    && let Some(msg) = self.entry_stream.message_for(*client, &flush)
+                {
+                    self.transport.send(*client, msg);
+                }
+            }
         }
         for id in states {
             let Some(thread) = self.thread(&id) else {
@@ -2926,6 +2940,7 @@ impl Daemon {
         self.heard_idle.forget(id);
         self.desktops.forget(id);
         self.readers.remove(&id);
+        self.entry_stream.forget_client(id);
         self.asked.retain(|_, c| *c != id);
         self.rewinds.retain(|_, r| r.client != id);
         // Its terminals keep running, for when it comes back.
@@ -2940,7 +2955,11 @@ impl Daemon {
         let gone = |session: &str| session_error(session, "that session is gone");
         self.desktops.heard(client, &msg);
         match msg {
-            ClientMsg::Open { session, keep } => {
+            ClientMsg::Open {
+                session,
+                keep,
+                append,
+            } => {
                 let Some(record) = self.store.session(&session) else {
                     self.transport.send(client, gone(&session));
                     return;
@@ -2981,6 +3000,7 @@ impl Daemon {
                         self.retire_if_unwatched(b, cx);
                     }
                 }
+                self.entry_stream.opened(client, &session, append);
                 self.transport.send(client, reply);
                 match commands {
                     Some(commands) => self.transport.send(client, commands),

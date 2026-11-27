@@ -272,7 +272,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     user(
         "island",
-        "island open | later | approve | deny",
+        "island view | later | approve | deny",
         "press the card's button (approve and deny answer a headless agent's request)",
     ),
     user(

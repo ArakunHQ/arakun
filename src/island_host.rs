@@ -894,10 +894,10 @@ mod host {
                 }
                 ToIsland::Press { button } => {
                     match button {
-                        Button::Ver => island.see(cx),
-                        Button::Luego => island.later(cx),
-                        Button::Aprobar => island.answer(true, cx),
-                        Button::Rechazar => island.answer(false, cx),
+                        Button::View => island.see(cx),
+                        Button::Later => island.later(cx),
+                        Button::Approve => island.answer(true, cx),
+                        Button::Deny => island.answer(false, cx),
                     }
                     Reply::ok("")
                 }
@@ -1001,11 +1001,11 @@ mod host {
                 #[cfg(windows)]
                 IslandEvent::Open(key) | IslandEvent::OpenRow(key)
                     if key.starts_with(super::external::PREFIX) => {}
-                IslandEvent::Open(key) => self.show_in_app(FromIsland::Ver { key: key.clone() }),
+                IslandEvent::Open(key) => self.show_in_app(FromIsland::View { key: key.clone() }),
                 IslandEvent::OpenRow(key) => self.show_in_app(FromIsland::Row { key: key.clone() }),
                 IslandEvent::Later(key) => {
                     if let Some(app) = &self.app {
-                        let _ = app.out.send(FromIsland::Luego { key: key.clone() });
+                        let _ = app.out.send(FromIsland::Later { key: key.clone() });
                     }
                 }
                 IslandEvent::Answer { key, req, approve } => match answer(key, req, *approve) {
@@ -1196,7 +1196,9 @@ mod host {
                 call::Out::Captions { user, assistant } => self
                     .island
                     .update(cx, |island, cx| island.captions(&user, &assistant, cx)),
-                call::Out::Open(Some(key)) => self.show_in_app(FromIsland::Ver { key: key.into() }),
+                call::Out::Open(Some(key)) => {
+                    self.show_in_app(FromIsland::View { key: key.into() })
+                }
                 call::Out::Open(None) => match &self.app {
                     Some(app) => focus(app.pid),
                     None => self.launch(),

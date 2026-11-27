@@ -166,7 +166,7 @@ Usage:
   arakun agent rm <id>         delete a finished headless session
   arakun island alert <title> [subtitle]
                                show a card on the Dynamic Island
-  arakun island open | later | approve | deny
+  arakun island view | later | approve | deny
                                press the card's button (approve and deny answer
                                a headless agent's request)
   arakun usage tools [--days N] [--json]

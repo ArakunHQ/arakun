@@ -797,7 +797,10 @@ pub(crate) fn island_usage() -> String {
 }
 
 /// The island card's buttons, by the word that presses each.
-pub(crate) const ISLAND_BUTTONS: &[&str] = &["open", "later", "approve", "deny"];
+pub(crate) const ISLAND_BUTTONS: &[&str] = &["view", "later", "approve", "deny"];
+
+/// Other words that still press them: "open" was "view" for a while.
+pub(crate) const ISLAND_BUTTONS_OLD: &[&str] = &["open"];
 
 /// The Spanish words the buttons had first, which still press them.
 pub(crate) const ISLAND_BUTTONS_ES: &[&str] = &["ver", "luego", "aprobar", "rechazar"];
@@ -819,7 +822,8 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
             ]
             .contains(&state.as_str())
                 || ISLAND_BUTTONS.contains(&state.as_str())
-                || ISLAND_BUTTONS_ES.contains(&state.as_str()) =>
+                || ISLAND_BUTTONS_ES.contains(&state.as_str())
+                || ISLAND_BUTTONS_OLD.contains(&state.as_str()) =>
         {
             Some(vec![state.clone()])
         }
@@ -1993,7 +1997,8 @@ mod tests {
         let a = |v: &[&str]| island_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(a(&[]), Some(vec![]));
         assert_eq!(a(&["working"]), Some(vec!["working".to_string()]));
-        assert_eq!(a(&["ver"]), Some(vec!["ver".to_string()]));
+        assert_eq!(a(&["view"]), Some(vec!["view".to_string()]));
+        assert_eq!(a(&["open"]), Some(vec!["open".to_string()]));
         assert_eq!(a(&["rechazar"]), Some(vec!["rechazar".to_string()]));
         for button in ISLAND_BUTTONS {
             assert_eq!(a(&[button]), Some(vec![button.to_string()]));

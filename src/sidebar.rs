@@ -646,6 +646,9 @@ pub type Path = (usize, usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
+    /// Sessions that need the user on top, then every project with its
+    /// sessions, three views by name and the rest in More views. The default.
+    NeedsYou,
     /// The open project and its environments; three views by name, the
     /// rest in More views.
     Switcher,
@@ -664,7 +667,8 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 7] = [
+    pub const ALL: [Preset; 8] = [
+        Preset::NeedsYou,
         Preset::Switcher,
         Preset::Focused,
         Preset::Developer,
@@ -676,6 +680,7 @@ impl Preset {
 
     pub fn label(self) -> &'static str {
         match self {
+            Preset::NeedsYou => "Needs you first",
             Preset::Switcher => "Switcher",
             Preset::Focused => "Focused",
             Preset::Developer => "Developer",
@@ -688,6 +693,7 @@ impl Preset {
 
     pub fn blurb(self) -> &'static str {
         match self {
+            Preset::NeedsYou => "Sessions that need you on top, then every project, views by name",
             Preset::Switcher => "One project at a time, its environments, views by name",
             Preset::Focused => "Inbox and projects; the rest folded away",
             Preset::Developer => "Projects, then runs and branches in a segment of their own",
@@ -739,6 +745,42 @@ impl Preset {
         let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
         let mut style = Style::default();
         let sections = match self {
+            // Needs you is the Active piece in the session tree: what waits
+            // or failed goes up there and leaves its project meanwhile.
+            Preset::NeedsYou => vec![
+                Section::new(
+                    "Top",
+                    Mode::Fixed,
+                    vec![
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
+                    ],
+                ),
+                active(),
+                projects,
+                Section::new(
+                    "Views",
+                    Mode::Fixed,
+                    [
+                        views(&[
+                            #[cfg(feature = "coderlabs")]
+                            View::Tasks,
+                            View::Runs,
+                            View::Branches,
+                            View::GitHub,
+                        ]),
+                        vec![Piece::MoreViews],
+                    ]
+                    .concat(),
+                ),
+                account(vec![
+                    Piece::User,
+                    Piece::usage_line(),
+                    Piece::Help,
+                    Piece::Settings,
+                ]),
+            ],
             Preset::Switcher => vec![
                 Section::new(
                     "Top",
@@ -985,6 +1027,7 @@ impl Preset {
             offered_help: true,
             offered_user: true,
             switcher_offered: true,
+            left_switcher: true,
             trial_of: None,
         }
     }
@@ -1090,6 +1133,10 @@ pub struct Sidebar {
     /// before the Switcher was the default lacks it, so the rail offers it once.
     #[serde(default)]
     pub switcher_offered: bool,
+    /// Has met Needs you first as the default. A layout saved as the Switcher
+    /// before that moves to it once; one who picks the Switcher later keeps it.
+    #[serde(default)]
+    pub left_switcher: bool,
     /// The layout from before "Try it" on the Switcher offer, until the user
     /// keeps the Switcher or goes back. Saved with the Switcher so a restart
     /// in between still offers the way back.
@@ -1101,7 +1148,7 @@ impl Default for Sidebar {
     /// Before anyone arranged it. A layout someone arranged is saved and
     /// keeps its look.
     fn default() -> Self {
-        Preset::Switcher.layout()
+        Preset::NeedsYou.layout()
     }
 }
 
@@ -1173,6 +1220,7 @@ impl Sidebar {
         s.trial_of = trial_of;
         s.tidy();
         s.leave_icon_grid();
+        s.leave_switcher();
         s.offer_active();
         s.offer_help();
         s.offer_user();
@@ -1493,6 +1541,20 @@ impl Sidebar {
         }
     }
 
+    /// The Switcher as saved before Needs you first was the default moves to
+    /// it, keeping the style and what was folded: nobody arranged it. A
+    /// Switcher on trial was picked from the offer, so it stays.
+    fn leave_switcher(&mut self) {
+        if std::mem::replace(&mut self.left_switcher, true) || self.trial_of.is_some() {
+            return;
+        }
+        if self.preset() == Some(Preset::Switcher) {
+            self.sections = Preset::NeedsYou.layout().sections;
+            // It had the Switcher, so the rail has nothing to offer it.
+            self.switcher_offered = true;
+        }
+    }
+
     /// Puts Help just before Settings, once per layout. A layout without
     /// Settings was arranged by hand: Help waits in Customize there.
     fn offer_help(&mut self) {
@@ -1685,6 +1747,7 @@ mod tests {
             offered_help: true,
             offered_user: true,
             switcher_offered: false,
+            left_switcher: true,
             trial_of: None,
         }
     }
@@ -1716,6 +1779,69 @@ mod tests {
         let at = s.find(&Piece::usage()).unwrap();
         assert_eq!(s.get(at).unwrap().piece, Piece::usage_line());
         assert_eq!(s.find(&Piece::Settings).unwrap().0, at.0);
+    }
+
+    #[test]
+    fn a_fresh_sidebar_starts_with_needs_you_first() {
+        let s = Sidebar::default();
+        assert_eq!(s.preset(), Some(Preset::NeedsYou));
+        assert_eq!(
+            Sidebar::load_from(std::path::Path::new("/nonexistent/sidebar.json")),
+            s
+        );
+        // Needs you sits above the projects, which list every project.
+        let active = s.find(&Piece::active()).unwrap().0;
+        let projects = s.find(&Piece::projects()).unwrap();
+        assert!(active < projects.0);
+        assert_eq!(s.get(projects).unwrap().piece, Piece::projects());
+        assert_eq!(Preset::ALL[0], Preset::NeedsYou, "listed first");
+    }
+
+    /// A layout as saved before `left_switcher` existed.
+    fn saved_before_needs_you(mut s: Sidebar) -> Vec<u8> {
+        let mut v = serde_json::to_value(&s).unwrap();
+        v.as_object_mut().unwrap().remove("left_switcher");
+        s.left_switcher = false;
+        serde_json::to_vec(&v).unwrap()
+    }
+
+    #[test]
+    fn the_old_default_becomes_needs_you_first() {
+        let mut old = Preset::Switcher.layout();
+        old.style.side = Side::Right;
+        old.sections[1].collapsed = true;
+        let s = Sidebar::parse(&saved_before_needs_you(old)).unwrap();
+        assert_eq!(s.preset(), Some(Preset::NeedsYou));
+        assert_eq!(s.style.side, Side::Right, "the look stays");
+        assert!(s.left_switcher);
+        assert!(!s.offers_switcher());
+        // The icon grid of before it went the same way.
+        let mut grid = Preset::Switcher.layout();
+        grid.sections = icon_grid_switcher();
+        let s = Sidebar::parse(&saved_before_needs_you(grid)).unwrap();
+        assert_eq!(s.preset(), Some(Preset::NeedsYou));
+    }
+
+    #[test]
+    fn a_layout_of_ones_own_stays_as_it_is() {
+        // Arranged by hand from the Switcher.
+        let mut mine = Preset::Switcher.layout();
+        mine.sections[0].items.pop();
+        let s = Sidebar::parse(&saved_before_needs_you(mine.clone())).unwrap();
+        assert_eq!(s.sections, mine.sections);
+        // Another preset.
+        let focused = Preset::Focused.layout();
+        let s = Sidebar::parse(&saved_before_needs_you(focused.clone())).unwrap();
+        assert_eq!(s.sections, focused.sections);
+        // The Switcher picked once Needs you first was the default.
+        let picked = Preset::Switcher.layout();
+        let s = Sidebar::parse(picked.to_json().as_bytes()).unwrap();
+        assert_eq!(s.preset(), Some(Preset::Switcher));
+        // The Switcher on trial from the offer: "Go back" still leads home.
+        let trial = small().as_switcher();
+        let s = Sidebar::parse(&saved_before_needs_you(trial)).unwrap();
+        assert_eq!(s.preset(), Some(Preset::Switcher));
+        assert!(s.trial_of.is_some());
     }
 
     #[test]
@@ -2115,6 +2241,7 @@ mod tests {
             offered_help: true,
             offered_user: true,
             switcher_offered: false,
+            left_switcher: true,
             trial_of: None,
         };
         assert!(bare.place(View::Notes));
@@ -2127,6 +2254,7 @@ mod tests {
             offered_help: true,
             offered_user: true,
             switcher_offered: false,
+            left_switcher: true,
             trial_of: None,
         };
         assert!(!none.place(View::Notes));
@@ -2236,7 +2364,7 @@ mod tests {
         // A file saved before the flag existed.
         let old = Sidebar::parse(br#"{"sections":[{"items":[{"type":"projects"}]}]}"#).unwrap();
         assert!(old.offers_switcher());
-        // A fresh install starts on the Switcher; a template was a choice.
+        // A fresh install starts on Needs you first; a template was a choice.
         assert!(!Sidebar::default().offers_switcher());
         assert!(!Preset::Everything.layout().offers_switcher());
         // Saved on the Switcher before the flag existed.

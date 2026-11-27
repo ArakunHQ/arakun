@@ -229,7 +229,8 @@ arakun server service install   # keep it running; see Keep it running
   work), `linked/` (the conversation of a session handed to another agent, as
   markdown that the new agent reads), `uploads/` (photos sent with prompts),
   `linear.json` (the Linear settings the app sent it: the switch, the mappings to its
-  projects and the Linear key of each mapped workspace) and `linear-runs.json` (the
+  projects, the Linear key of each mapped workspace, and how many of its sessions
+  work at once) and `linear-runs.json` (the
   issues from Linear it runs). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.

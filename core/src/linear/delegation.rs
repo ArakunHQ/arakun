@@ -3,6 +3,7 @@
 //! `app_dir/linear/delegation.json` holds ids, names and paths, never a token.
 //! The switch is off until the person turns it on.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,13 @@ pub struct Delegation {
     /// on the server stays.
     #[serde(default)]
     pub consented: Vec<String>,
+    /// How many delegated sessions work at once on this computer, when the
+    /// person chose (`runs::slots`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<usize>,
+    /// The same, for each paired server that has its own number.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub server_slots: BTreeMap<String, usize>,
 }
 
 fn file() -> PathBuf {
@@ -102,8 +110,31 @@ impl Delegation {
             .retain(|m| !(m.workspace == workspace && m.kind == kind && m.target == target));
     }
 
-    /// The settings as one machine sees them: only its own mappings, with no
-    /// server named. `server` None is this computer.
+    /// The slots of `server`, or of this computer when None.
+    pub fn slots_on(&self, server: Option<&str>) -> usize {
+        super::runs::slots(self.chosen_slots(server))
+    }
+
+    fn chosen_slots(&self, server: Option<&str>) -> Option<usize> {
+        match server {
+            None => self.slots,
+            Some(s) => self.server_slots.get(s).copied(),
+        }
+    }
+
+    /// Sets the slots of `server`, or of this computer when None.
+    pub fn set_slots(&mut self, server: Option<&str>, n: usize) {
+        let n = super::runs::slots(Some(n));
+        match server {
+            None => self.slots = Some(n),
+            Some(s) => {
+                self.server_slots.insert(s.to_string(), n);
+            }
+        }
+    }
+
+    /// The settings as one machine sees them: only its own mappings and
+    /// slots, with no server named. `server` None is this computer.
     pub fn on(&self, server: Option<&str>) -> Delegation {
         Delegation {
             enabled: self.enabled,
@@ -117,6 +148,8 @@ impl Delegation {
                 })
                 .collect(),
             consented: self.consented.clone(),
+            slots: self.chosen_slots(server),
+            server_slots: BTreeMap::new(),
         }
     }
 
@@ -243,6 +276,7 @@ mod tests {
             enabled: true,
             mappings,
             consented: vec![],
+            ..Default::default()
         }
     }
     fn p(path: &str) -> PathBuf {
@@ -255,6 +289,7 @@ mod tests {
             enabled: false,
             mappings: vec![team("w1", "t1", "/p/a")],
             consented: vec![],
+            ..Default::default()
         };
         assert_eq!(routes(&d, "w1", &[p("/p/a")]), Routes::default());
     }
@@ -301,6 +336,25 @@ mod tests {
         );
         assert!(project_for(&d, "w2", "t1", Some("x1")).is_none());
     }
+    #[test]
+    fn each_machine_keeps_its_own_slots() {
+        let mut d = Delegation::default();
+        assert_eq!(d.slots_on(None), crate::linear::runs::DEFAULT_SLOTS);
+        d.set_slots(None, 5);
+        d.set_slots(Some("s1"), 1);
+        d.set_slots(Some("s2"), 99);
+        assert_eq!(d.slots_on(None), 5);
+        assert_eq!(d.slots_on(Some("s1")), 1);
+        assert_eq!(d.slots_on(Some("s2")), crate::linear::runs::MOST_SLOTS);
+        assert_eq!(d.slots_on(Some("s3")), crate::linear::runs::DEFAULT_SLOTS);
+        // A server is sent its own number, as if it were this computer.
+        let s1 = d.on(Some("s1"));
+        assert_eq!((s1.slots, s1.server_slots.len()), (Some(1), 0));
+        assert_eq!(s1.slots_on(None), 1);
+        assert_eq!(d.on(None).slots, Some(5));
+        assert_eq!(d.on(Some("s3")).slots, None);
+    }
+
     #[test]
     fn consent_is_kept_once_per_workspace() {
         let mut d = Delegation::default();

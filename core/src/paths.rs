@@ -133,7 +133,7 @@ files! {
     shared folder SANDBOXES = "sandboxes", "Each sandboxed agent's folder while it runs";
     shared file SANDBOX_SOCKET = "sandbox/control.sock", "The socket sandboxed agents reach Arakun through";
     shared file LINEAR_SESSIONS = "linear/sessions.json", "Linear sign-ins (who signed in; the API keys are in the keyring)";
-    shared file LINEAR_DELEGATION = "linear/delegation.json", "Linear: the switch for starting sessions and its mappings (no keys)";
+    shared file LINEAR_DELEGATION = "linear/delegation.json", "Linear: the switch for starting sessions, its mappings and how many run at once on each machine (no keys)";
     shared file LINEAR_SERVERS = "linear/servers.json", "Linear: the servers that hold Linear settings";
     shared file LINEAR_RUNS = "linear/runs.json", "Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent)";
     shared folder DOOP = "doop", "Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`)";

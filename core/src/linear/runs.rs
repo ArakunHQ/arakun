@@ -11,9 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::phone::linear::GuidanceRule;
 
-/// Delegated sessions running at once. A computer back after days must not
-/// start dozens of agents; the rest wait their turn.
-pub const MAX_RUNNING: usize = 3;
+/// Delegated sessions at work at once, unless the person chose another
+/// number for the machine. A computer back after days must not start dozens
+/// of agents; the rest wait their turn.
+pub const DEFAULT_SLOTS: usize = 3;
+/// The most a person may choose: each slot is an agent at work.
+pub const MOST_SLOTS: usize = 10;
 /// The most replies kept for a run that waits for a slot.
 pub const KEPT_REPLIES: usize = 8;
 /// Delivery ids remembered, so a delivery sent again is not run twice.
@@ -52,7 +55,8 @@ pub enum RunState {
     /// All slots were taken; it starts when one frees up.
     Waiting,
     Running,
-    /// The session waits on a person. It still takes a slot.
+    /// The session waits on a person. It takes no slot: a reply may take
+    /// days, and new work must not wait for it.
     Asked,
     Done,
     /// Arakun closed while it ran.
@@ -282,8 +286,10 @@ impl std::fmt::Debug for Report {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Added {
     Start,
-    /// `ahead` runs start before this one.
+    /// `running` runs take the slots, and `ahead` waiting runs start before
+    /// this one.
     Wait {
+        running: usize,
         ahead: usize,
     },
     /// Linear sent this agent session before.
@@ -358,15 +364,15 @@ impl Runs {
         })
     }
 
-    /// Stores `run` as `Running` when a slot is free and nobody waits, else
-    /// as `Waiting`.
-    pub fn add(&mut self, run: Run) -> Added {
-        self.add_at(run, crate::model::unix_now())
+    /// Stores `run` as `Running` when one of the machine's `slots` is free
+    /// and nobody waits, else as `Waiting`.
+    pub fn add(&mut self, run: Run, slots: usize) -> Added {
+        self.add_at(run, crate::model::unix_now(), slots)
     }
 
     /// [`Runs::add`] at a given time. The run counts as heard from at `now`,
     /// so "still working" cannot come before its first report.
-    pub fn add_at(&mut self, mut run: Run, now: u64) -> Added {
+    pub fn add_at(&mut self, mut run: Run, now: u64, slots: usize) -> Added {
         run.reported_at = now;
         if self
             .runs
@@ -379,13 +385,14 @@ impl Runs {
         let waiting = self.count(RunState::Waiting);
         // Slots free up before the shell calls `next_waiting` (a run ends, or
         // a restart interrupts them all); a new run must not jump the queue.
-        let added = if busy < MAX_RUNNING && waiting == 0 {
+        let added = if busy < slots && waiting == 0 {
             run.state = RunState::Running;
             Added::Start
         } else {
             run.state = RunState::Waiting;
             Added::Wait {
-                ahead: busy + waiting,
+                running: busy,
+                ahead: waiting,
             }
         };
         self.runs.push(run);
@@ -393,14 +400,15 @@ impl Runs {
         added
     }
 
-    pub fn next_waiting(&mut self) -> Option<&mut Run> {
-        self.next_waiting_at(crate::model::unix_now())
+    /// The oldest waiting run, now `Running`, when one of `slots` is free.
+    pub fn next_waiting(&mut self, slots: usize) -> Option<&mut Run> {
+        self.next_waiting_at(crate::model::unix_now(), slots)
     }
 
     /// [`Runs::next_waiting`] at a given time. Its wait may have been long:
     /// the quiet clock starts again, so "started" comes before "still working".
-    pub fn next_waiting_at(&mut self, now: u64) -> Option<&mut Run> {
-        if self.busy() >= MAX_RUNNING {
+    pub fn next_waiting_at(&mut self, now: u64, slots: usize) -> Option<&mut Run> {
+        if self.busy() >= slots {
             return None;
         }
         let run = self
@@ -422,9 +430,14 @@ impl Runs {
             .find(|r| r.session.as_deref() == Some(arakun_session))
     }
 
-    /// Runs that take a slot.
+    /// Runs that take a slot: those at work. A run that asked waits on a
+    /// person, and a held one only on work its turn left in the background,
+    /// which can be a server that never ends. Neither keeps new work waiting.
     fn busy(&self) -> usize {
-        self.count(RunState::Running) + self.count(RunState::Asked)
+        self.runs
+            .iter()
+            .filter(|r| r.state == RunState::Running && r.held.is_none())
+            .count()
     }
 
     fn count(&self, state: RunState) -> usize {
@@ -703,6 +716,11 @@ impl Runs {
     }
 }
 
+/// The slots of a machine: the number the person chose, within reason.
+pub fn slots(chosen: Option<usize>) -> usize {
+    chosen.unwrap_or(DEFAULT_SLOTS).clamp(1, MOST_SLOTS)
+}
+
 /// A reply short enough for Linear; the whole of it stays in Arakun.
 pub fn cut(reply: &str) -> String {
     match reply.char_indices().nth(REPLY_LIMIT) {
@@ -714,6 +732,8 @@ pub fn cut(reply: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SLOTS: usize = DEFAULT_SLOTS;
 
     fn run(agent_session: &str) -> Run {
         Run {
@@ -760,17 +780,23 @@ mod tests {
     #[test]
     fn a_pull_request_link_goes_once_and_only_as_a_web_address() {
         let mut r = Runs::default();
-        r.add(Run {
-            session: Some("s1".into()),
-            branch: "rik/eng-412".into(),
-            state: RunState::Running,
-            ..run("a")
-        });
-        r.add(Run {
-            agent_session: "b".into(),
-            issue: "i2".into(),
-            ..run("b")
-        });
+        r.add(
+            Run {
+                session: Some("s1".into()),
+                branch: "rik/eng-412".into(),
+                state: RunState::Running,
+                ..run("a")
+            },
+            SLOTS,
+        );
+        r.add(
+            Run {
+                agent_session: "b".into(),
+                issue: "i2".into(),
+                ..run("b")
+            },
+            SLOTS,
+        );
         // Only a run with a session and a branch can have a pull request.
         let unlinked: Vec<String> = r.unlinked().into_iter().map(|(s, _, _)| s).collect();
         assert_eq!(unlinked, ["s1"]);
@@ -793,7 +819,7 @@ mod tests {
     #[test]
     fn replies_are_kept_only_for_a_waiting_run_of_the_same_workspace() {
         let mut r = Runs::default();
-        r.add(run("a"));
+        r.add(run("a"), SLOTS);
         // With a free slot it would start at once; here it waits for one.
         r.by_agent_session("a").unwrap().state = RunState::Waiting;
         assert!(!r.keep_reply("other", "w1", "act-1"));
@@ -819,11 +845,14 @@ mod tests {
     #[test]
     fn progress_goes_only_while_running_and_not_too_often() {
         let mut r = Runs::default();
-        r.add(Run {
-            session: Some("s1".into()),
-            state: RunState::Running,
-            ..run("a")
-        });
+        r.add(
+            Run {
+                session: Some("s1".into()),
+                state: RunState::Running,
+                ..run("a")
+            },
+            SLOTS,
+        );
         let none = |from: usize| (None, from);
         let step = |r: &mut Runs, line: &str, now: u64| {
             r.progress("s1", now, none, Some(line))
@@ -852,11 +881,14 @@ mod tests {
     #[test]
     fn a_digest_goes_with_the_step_and_moves_on_from_where_it_ended() {
         let mut r = Runs::default();
-        r.add(Run {
-            session: Some("s1".into()),
-            state: RunState::Running,
-            ..run("a")
-        });
+        r.add(
+            Run {
+                session: Some("s1".into()),
+                state: RunState::Running,
+                ..run("a")
+            },
+            SLOTS,
+        );
         let p = r
             .progress("s1", 100, |from| (Some(format!("from {from}")), 4), None)
             .unwrap();
@@ -898,11 +930,14 @@ mod tests {
     #[test]
     fn a_plan_goes_when_it_changes_and_not_too_often_unless_the_turn_ends() {
         let mut r = Runs::default();
-        r.add(Run {
-            session: Some("s1".into()),
-            state: RunState::Running,
-            ..run("a")
-        });
+        r.add(
+            Run {
+                session: Some("s1".into()),
+                state: RunState::Running,
+                ..run("a")
+            },
+            SLOTS,
+        );
         let (one, two, three) = (items("one"), items("two"), items("three"));
         assert_eq!(r.plan("s1", &one, 100, false).as_deref(), Some("a"));
         assert_eq!(r.plan("s1", &one, 200, false), None, "the same plan");
@@ -1018,7 +1053,7 @@ mod tests {
         assert!(!Runs::load_from(&file).was_seen("d1"));
         // The outcome and the id go in one save.
         r.mark_seen("d1");
-        assert_eq!(r.add(run("a")), Added::Start);
+        assert_eq!(r.add(run("a"), SLOTS), Added::Start);
         r.save_to(&file).unwrap();
         let mut back = Runs::load_from(&file);
         assert!(back.was_seen("d1"));
@@ -1031,13 +1066,16 @@ mod tests {
         let dir = crate::stored::tests::scratch("runs-guidance");
         let file = dir.join("runs.json");
         let mut r = Runs::default();
-        r.add(Run {
-            guidance: vec![GuidanceRule {
-                team: Some("Secret team".into()),
-                body: "Secret rule".into(),
-            }],
-            ..run("a")
-        });
+        r.add(
+            Run {
+                guidance: vec![GuidanceRule {
+                    team: Some("Secret team".into()),
+                    body: "Secret rule".into(),
+                }],
+                ..run("a")
+            },
+            SLOTS,
+        );
         assert_eq!(r.by_agent_session("a").unwrap().guidance.len(), 1);
         r.save_to(&file).unwrap();
         let saved = std::fs::read_to_string(&file).unwrap();
@@ -1054,7 +1092,7 @@ mod tests {
     fn an_issue_in_work_blocks_a_second_run_until_it_is_over() {
         let mut r = Runs::default();
         assert!(!r.active_for_issue("w1", "i1"));
-        r.add(run("a"));
+        r.add(run("a"), SLOTS);
         assert!(r.active_for_issue("w1", "i1"));
         assert!(!r.active_for_issue("w1", "i2") && !r.active_for_issue("w2", "i1"));
         for (state, active) in [
@@ -1072,41 +1110,109 @@ mod tests {
     fn three_run_at_once_and_the_rest_wait() {
         let mut r = Runs::default();
         for id in ["a", "b", "c"] {
-            assert_eq!(r.add(run(id)), Added::Start);
+            assert_eq!(r.add(run(id), SLOTS), Added::Start);
             assert_eq!(state(&mut r, id), RunState::Running);
         }
-        assert_eq!(r.add(run("d")), Added::Wait { ahead: 3 });
-        assert_eq!(r.add(run("e")), Added::Wait { ahead: 4 });
+        assert_eq!(
+            r.add(run("d"), SLOTS),
+            Added::Wait {
+                running: 3,
+                ahead: 0
+            }
+        );
+        // Three run and one waits before it, not "four running".
+        assert_eq!(
+            r.add(run("e"), SLOTS),
+            Added::Wait {
+                running: 3,
+                ahead: 1
+            }
+        );
         assert_eq!(state(&mut r, "d"), RunState::Waiting);
-        assert_eq!(r.add(run("a")), Added::Already);
-        assert_eq!(r.add(run("d")), Added::Already);
+        assert_eq!(r.add(run("a"), SLOTS), Added::Already);
+        assert_eq!(r.add(run("d"), SLOTS), Added::Already);
     }
 
     #[test]
-    fn a_session_waiting_on_a_person_keeps_its_slot() {
+    fn a_session_waiting_on_a_person_frees_its_slot() {
         let mut r = Runs::default();
-        for id in ["a", "b", "c"] {
-            r.add(run(id));
+        for id in ["a", "b", "c", "d"] {
+            r.add(run(id), SLOTS);
         }
         r.by_agent_session("a").unwrap().state = RunState::Asked;
-        assert_eq!(r.add(run("d")), Added::Wait { ahead: 3 });
-        assert!(r.next_waiting().is_none());
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "d");
+        // The reply brings it back to work even with every slot taken: the
+        // person must not wait.
+        r.by_agent_session("a").unwrap().state = RunState::Running;
+        assert_eq!(
+            r.add(run("e"), SLOTS),
+            Added::Wait {
+                running: 4,
+                ahead: 0
+            }
+        );
+        assert!(r.next_waiting(SLOTS).is_none());
+    }
+
+    #[test]
+    fn a_held_run_frees_its_slot() {
+        // As on trashpanda: two of three turns ended, their background work
+        // went on, and new work waited behind them.
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            r.add(run(id), SLOTS);
+        }
+        for id in ["a", "b"] {
+            r.by_agent_session(id).unwrap().held = Some(Held {
+                since: 0,
+                body: "Done.".into(),
+                link: None,
+            });
+        }
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "d");
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "e");
+        assert!(r.next_waiting(SLOTS).is_none());
+        assert_eq!(state(&mut r, "a"), RunState::Running, "still its issue's");
+    }
+
+    #[test]
+    fn each_machine_has_its_own_number_of_slots() {
+        let mut r = Runs::default();
+        assert_eq!(r.add(run("a"), 1), Added::Start);
+        assert_eq!(
+            r.add(run("b"), 1),
+            Added::Wait {
+                running: 1,
+                ahead: 0
+            }
+        );
+        // More slots chosen later: the next waiting run starts at once.
+        assert_eq!(r.next_waiting(2).unwrap().agent_session, "b");
+        assert!(r.next_waiting(2).is_none());
+    }
+
+    #[test]
+    fn the_chosen_slots_stay_within_reason() {
+        assert_eq!(slots(None), DEFAULT_SLOTS);
+        assert_eq!(slots(Some(5)), 5);
+        assert_eq!(slots(Some(0)), 1, "nothing would ever start");
+        assert_eq!(slots(Some(1000)), MOST_SLOTS);
     }
 
     #[test]
     fn a_free_slot_starts_the_oldest_waiting_run() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d", "e"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
-        assert!(r.next_waiting().is_none());
+        assert!(r.next_waiting(SLOTS).is_none());
         r.by_agent_session("b").unwrap().state = RunState::Done;
-        let next = r.next_waiting().unwrap();
+        let next = r.next_waiting(SLOTS).unwrap();
         assert_eq!(
             (next.agent_session.as_str(), next.state),
             ("d", RunState::Running)
         );
-        assert!(r.next_waiting().is_none(), "the slot is taken again");
+        assert!(r.next_waiting(SLOTS).is_none(), "the slot is taken again");
         assert_eq!(state(&mut r, "e"), RunState::Waiting);
     }
 
@@ -1114,31 +1220,43 @@ mod tests {
     fn a_new_run_waits_behind_one_already_waiting() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         for id in ["a", "b", "c"] {
             r.by_agent_session(id).unwrap().state = RunState::Done;
         }
-        assert_eq!(r.add(run("e")), Added::Wait { ahead: 1 });
-        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
+        assert_eq!(
+            r.add(run("e"), SLOTS),
+            Added::Wait {
+                running: 0,
+                ahead: 1
+            }
+        );
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "d");
     }
 
     #[test]
     fn a_stopped_waiting_run_leaves_the_queue_in_order() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d", "e", "f"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         // A stop from Linear ends a run that never started.
         r.by_agent_session("e").unwrap().state = RunState::Done;
-        assert!(r.next_waiting().is_none(), "it freed no slot");
-        assert_eq!(r.add(run("g")), Added::Wait { ahead: 5 });
+        assert!(r.next_waiting(SLOTS).is_none(), "it freed no slot");
+        assert_eq!(
+            r.add(run("g"), SLOTS),
+            Added::Wait {
+                running: 3,
+                ahead: 2
+            }
+        );
         r.by_agent_session("a").unwrap().state = RunState::Done;
-        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "d");
         r.by_agent_session("b").unwrap().state = RunState::Done;
-        assert_eq!(r.next_waiting().unwrap().agent_session, "f");
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "f");
         r.by_agent_session("c").unwrap().state = RunState::Done;
-        assert_eq!(r.next_waiting().unwrap().agent_session, "g");
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "g");
         assert_eq!(state(&mut r, "e"), RunState::Done);
     }
 
@@ -1146,20 +1264,26 @@ mod tests {
     fn after_a_restart_the_queue_keeps_its_order() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d", "e"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         for id in ["a", "b", "c"] {
             r.by_agent_session(id).unwrap().session = Some(format!("s-{id}"));
         }
         assert_eq!(r.interrupted(&|_| false), ["a", "b", "c"]);
-        assert_eq!(r.add(run("f")), Added::Wait { ahead: 2 });
-        assert_eq!(r.next_waiting().unwrap().agent_session, "d");
+        assert_eq!(
+            r.add(run("f"), SLOTS),
+            Added::Wait {
+                running: 0,
+                ahead: 2
+            }
+        );
+        assert_eq!(r.next_waiting(SLOTS).unwrap().agent_session, "d");
     }
 
     #[test]
     fn runs_are_found_by_either_session() {
         let mut r = Runs::default();
-        r.add(run("a"));
+        r.add(run("a"), SLOTS);
         r.by_agent_session("a").unwrap().session = Some("s1".into());
         assert_eq!(r.by_session("s1").unwrap().agent_session, "a");
         assert!(r.by_session("s2").is_none() && r.by_agent_session("b").is_none());
@@ -1169,7 +1293,7 @@ mod tests {
     fn only_runs_whose_session_is_gone_are_interrupted() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         r.by_agent_session("a").unwrap().session = Some("live".into());
         r.by_agent_session("b").unwrap().session = Some("gone".into());
@@ -1188,7 +1312,7 @@ mod tests {
     fn a_run_still_being_made_at_a_restart_waits_again() {
         let mut r = Runs::default();
         for id in ["a", "b", "c", "d"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         r.by_agent_session("b").unwrap().session = Some("s-b".into());
         // "a" and "c" had no session yet: nothing to continue, and nothing
@@ -1198,7 +1322,8 @@ mod tests {
         assert_eq!(state(&mut r, "b"), RunState::Interrupted);
         assert_eq!(state(&mut r, "c"), RunState::Waiting);
         let order: Vec<String> =
-            std::iter::from_fn(|| r.next_waiting().map(|run| run.agent_session.clone())).collect();
+            std::iter::from_fn(|| r.next_waiting(SLOTS).map(|run| run.agent_session.clone()))
+                .collect();
         assert_eq!(order, ["a", "c", "d"]);
     }
 
@@ -1206,7 +1331,7 @@ mod tests {
     fn a_restart_clears_every_stop_in_progress() {
         let mut r = Runs::default();
         for id in ["a", "b"] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
         }
         assert!(!r.clear_stopped(), "nothing to clear");
         r.by_agent_session("a").unwrap().stopped = true;
@@ -1220,8 +1345,8 @@ mod tests {
     #[test]
     fn a_run_follows_its_session_to_another_agent() {
         let mut r = Runs::default();
-        r.add(run("a"));
-        r.add(run("b"));
+        r.add(run("a"), SLOTS);
+        r.add(run("b"), SLOTS);
         r.by_agent_session("a").unwrap().session = Some("s1".into());
         assert!(r.repoint("s1", "s2"));
         assert!(r.by_session("s1").is_none());
@@ -1240,18 +1365,18 @@ mod tests {
     fn a_new_run_is_not_quiet_before_its_first_report() {
         let mut r = Runs::default();
         let now = 50_000;
-        assert_eq!(r.add_at(run("a"), now), Added::Start);
+        assert_eq!(r.add_at(run("a"), now, SLOTS), Added::Start);
         assert_eq!(r.by_agent_session("a").unwrap().reported_at, now);
         assert!(r.quiet(now).is_empty());
         assert!(r.quiet(now + QUIET_SECS - 1).is_empty());
         assert_eq!(r.quiet(now + QUIET_SECS), ["a"]);
         // One that waited a long time starts its clock again when it starts.
         for id in ["b", "c", "d"] {
-            r.add_at(run(id), now);
+            r.add_at(run(id), now, SLOTS);
         }
         r.by_agent_session("a").unwrap().state = RunState::Done;
         let later = now + 10 * QUIET_SECS;
-        assert_eq!(r.next_waiting_at(later).unwrap().agent_session, "d");
+        assert_eq!(r.next_waiting_at(later, SLOTS).unwrap().agent_session, "d");
         assert!(!r.quiet(later).contains(&"d".to_string()));
     }
 
@@ -1259,7 +1384,7 @@ mod tests {
     fn a_held_reply_goes_once_the_background_work_took_too_long() {
         let mut r = Runs::default();
         for id in ["a", "b"] {
-            r.add_at(run(id), 0);
+            r.add_at(run(id), 0, SLOTS);
             let run = r.by_agent_session(id).unwrap();
             run.state = RunState::Running;
         }
@@ -1297,8 +1422,8 @@ mod tests {
     #[test]
     fn a_run_is_quiet_after_25_minutes() {
         let mut r = Runs::default();
-        r.add(run("a"));
-        r.add(run("b"));
+        r.add(run("a"), SLOTS);
+        r.add(run("b"), SLOTS);
         r.by_agent_session("a").unwrap().reported_at = 1_000;
         r.by_agent_session("b").unwrap().reported_at = 1_000;
         r.by_agent_session("b").unwrap().state = RunState::Asked;
@@ -1316,19 +1441,20 @@ mod tests {
             ("d", RunState::Done),
             ("e", RunState::Running),
         ] {
-            r.add(run(id));
+            r.add(run(id), SLOTS);
             let x = r.by_agent_session(id).unwrap();
             x.session = Some(format!("s-{id}"));
             x.state = state;
         }
-        r.add(run("f"));
+        r.add(run("f"), SLOTS);
+        let f = state(&mut r, "f");
         let gone: Vec<String> = ["s-a", "s-b", "s-c", "s-d", "s-x"].map(String::from).into();
         assert_eq!(r.forget_sessions(&gone), ["a", "b", "c"]);
         for id in ["a", "b", "c", "d"] {
             assert_eq!(state(&mut r, id), RunState::Done, "{id}");
         }
         assert_eq!(state(&mut r, "e"), RunState::Running);
-        assert_eq!(state(&mut r, "f"), RunState::Waiting);
+        assert_eq!(state(&mut r, "f"), f, "not its session");
         assert!(r.forget_sessions(&gone).is_empty(), "told once");
         assert_eq!(r.session_ids(), ["s-a", "s-b", "s-c", "s-d", "s-e"]);
     }
@@ -1337,7 +1463,7 @@ mod tests {
     fn the_timer_is_needed_while_a_run_works_or_reports_wait() {
         let mut r = Runs::default();
         assert!(!r.any_running() && !r.unsent());
-        r.add(run("a"));
+        r.add(run("a"), SLOTS);
         assert!(r.any_running());
         r.by_agent_session("a").unwrap().state = RunState::Asked;
         assert!(!r.any_running(), "an asked run waits on a person");
@@ -1393,10 +1519,10 @@ mod tests {
     fn finished_runs_are_kept_up_to_a_limit() {
         let mut r = Runs::default();
         for i in 0..DONE_KEPT + 5 {
-            r.add(run(&format!("r{i}")));
+            r.add(run(&format!("r{i}")), SLOTS);
             r.by_agent_session(&format!("r{i}")).unwrap().state = RunState::Done;
         }
-        r.add(run("last"));
+        r.add(run("last"), SLOTS);
         assert_eq!(r.runs.len(), DONE_KEPT + 1);
         assert!(r.by_agent_session("r4").is_none() && r.by_agent_session("r5").is_some());
     }
@@ -1409,7 +1535,7 @@ mod tests {
 
         let mut r = Runs::default();
         r.mark_seen("d1");
-        r.add(run("a"));
+        r.add(run("a"), SLOTS);
         r.by_agent_session("a").unwrap().environment = Some(PathBuf::from("/e/a"));
         r.by_agent_session("a").unwrap().asked = Some("00ff".into());
         r.by_agent_session("a").unwrap().stopped = true;

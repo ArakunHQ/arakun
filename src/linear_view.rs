@@ -64,6 +64,8 @@ pub struct Host {
     /// The projects an issue can go to: this computer's, then the main
     /// folders on paired servers.
     pub projects: Vec<Target>,
+    /// The paired servers those projects are on, as `(id, name)`.
+    pub servers: Vec<(String, String)>,
     pub install_url: String,
 }
 
@@ -76,6 +78,7 @@ impl Host {
             flagged: true,
             relay_on: true,
             projects: vec![],
+            servers: vec![],
             install_url: "https://app.arakun.dev/linear/install".into(),
         }
     }

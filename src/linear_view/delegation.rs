@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use super::*;
 use crate::linear::delegation::{Kind, Mapping};
 use crate::linear::places::Place;
+use crate::linear::runs;
 
 /// Why the switch cannot do its job yet, in the order they are shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,7 @@ fn help_text(workspace: &str) -> String {
 }
 
 /// Under the switch while it is on: how to reach a session from Linear.
+const SLOTS_TEXT: &str = "How many sessions from Linear work at once on each machine. More wait their turn. A session waiting on your answer, or on work it left running, does not count.";
 const TALK_TEXT: &str = "Reply in the issue to send its session a message. It waits for the current turn, unless it starts with ! (or /interrupt): then the turn stops and the session works on your message at once. Stop in Linear ends the session's work.";
 
 fn connect_text(workspace: &str) -> String {
@@ -431,6 +433,84 @@ impl LinearView {
             )
             .child(card)
             .child(list)
+            .when(on, |d| d.child(self.render_slots(cx)))
+            .into_any_element()
+    }
+
+    /// How many delegated sessions work at once on each machine: this
+    /// computer, then each paired server.
+    fn render_slots(&self, cx: &mut Context<Self>) -> AnyElement {
+        let machines = std::iter::once((None, "This computer".to_string())).chain(
+            self.host
+                .servers
+                .iter()
+                .map(|(id, name)| (Some(id.clone()), name.clone())),
+        );
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .max_w(px(720.))
+            .child(ui::heading("Sessions at once"))
+            .child(ui::text(Type::Body, theme::text_muted(), SLOTS_TEXT));
+        for (i, (server, name)) in machines.enumerate() {
+            list = list.child(self.render_slot(i, server, name, cx));
+        }
+        list.into_any_element()
+    }
+
+    fn render_slot(
+        &self,
+        i: usize,
+        server: Option<String>,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let n = self.delegation.slots_on(server.as_deref());
+        let step = |id: &'static str, icon: &'static str, verb: &str, to: usize| {
+            let able = to != n && (1..=runs::MOST_SLOTS).contains(&to);
+            let server = server.clone();
+            ui::icon_button((id, i), icon, 13., format!("{verb} on {name}"))
+                .when(able, |b| {
+                    b.on_click(cx.listener(move |this, _, _, cx| {
+                        let server = server.clone();
+                        this.change_delegation(|d| d.set_slots(server.as_deref(), to), cx);
+                    }))
+                })
+                .when(!able, |b| b.opacity(0.4))
+        };
+        let fewer = step(
+            "lin-slots-fewer",
+            "minus-sign",
+            "Fewer sessions",
+            n.wrapping_sub(1),
+        );
+        let more = step("lin-slots-more", "add01", "More sessions", n + 1);
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(12.))
+            .child(
+                ui::text(Type::Body, theme::text(), name.clone())
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .child(fewer)
+                    .child(
+                        div()
+                            .w(px(32.))
+                            .text_center()
+                            .text_size(px(ui::TEXT_SM))
+                            .child(n.to_string()),
+                    )
+                    .child(more),
+            )
             .into_any_element()
     }
 
@@ -701,6 +781,7 @@ mod tests {
             relay_on: true,
             projects: vec![],
             install_url: String::new(),
+            ..Default::default()
         }
     }
 

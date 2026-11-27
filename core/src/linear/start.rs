@@ -145,11 +145,18 @@ pub fn started_line(project: &str, computer: &str, branch: &str) -> String {
     format!("Started in {project} on {computer}, on the branch {branch}.")
 }
 
-pub fn waiting_line(computer: &str, n: usize) -> String {
-    format!(
-        "Waiting on {computer}: {n} other sessions from Linear are running. This one starts \
-         when one finishes."
-    )
+/// `running` sessions take every slot, and `ahead` wait before this one.
+pub fn waiting_line(computer: &str, running: usize, ahead: usize) -> String {
+    let running = match running {
+        1 => "1 session from Linear is running".to_string(),
+        n => format!("{n} sessions from Linear are running"),
+    };
+    let ahead = match ahead {
+        0 => String::new(),
+        1 => " and 1 is waiting before this one".to_string(),
+        n => format!(" and {n} are waiting before this one"),
+    };
+    format!("Waiting on {computer}: {running}{ahead}. This one starts when a slot frees up.")
 }
 
 pub fn no_sign_in_line(computer: &str) -> String {
@@ -276,9 +283,19 @@ mod tests {
     #[test]
     fn the_other_lines_read_as_in_the_plan() {
         assert_eq!(
-            waiting_line("rik-mac", 3),
-            "Waiting on rik-mac: 3 other sessions from Linear are running. This one starts \
-             when one finishes."
+            waiting_line("rik-mac", 3, 0),
+            "Waiting on rik-mac: 3 sessions from Linear are running. This one starts when a \
+             slot frees up."
+        );
+        assert_eq!(
+            waiting_line("rik-mac", 3, 1),
+            "Waiting on rik-mac: 3 sessions from Linear are running and 1 is waiting before \
+             this one. This one starts when a slot frees up."
+        );
+        assert_eq!(
+            waiting_line("rik-mac", 1, 2),
+            "Waiting on rik-mac: 1 session from Linear is running and 2 are waiting before \
+             this one. This one starts when a slot frees up."
         );
         assert_eq!(
             no_sign_in_line("rik-mac"),

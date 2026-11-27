@@ -80,6 +80,7 @@ pub fn message(d: &Delegation, server: &str, keys: Vec<WorkspaceKey>) -> Value {
         enabled: mine.enabled,
         mappings: mine.mappings,
         keys,
+        slots: mine.slots,
     };
     let mut msg = serde_json::to_value(settings).unwrap_or_default();
     msg["type"] = "linear_settings".into();
@@ -176,6 +177,7 @@ mod tests {
             enabled,
             mappings,
             consented: consented.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 

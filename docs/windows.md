@@ -194,7 +194,7 @@ These stay in `%LOCALAPPDATA%\arakun\` whatever `ARAKUN_STATE` says.
 | Each sandboxed agent's folder while it runs | `%LOCALAPPDATA%\arakun\sandboxes\` |
 | The socket sandboxed agents reach Arakun through | `%LOCALAPPDATA%\arakun\sandbox\control.sock` |
 | Linear sign-ins (who signed in; the API keys are in the keyring) | `%LOCALAPPDATA%\arakun\linear\sessions.json` |
-| Linear: the switch for starting sessions and its mappings (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
+| Linear: the switch for starting sessions, its mappings and how many run at once on each machine (no keys) | `%LOCALAPPDATA%\arakun\linear\delegation.json` |
 | Linear: the servers that hold Linear settings | `%LOCALAPPDATA%\arakun\linear\servers.json` |
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `%LOCALAPPDATA%\arakun\linear\runs.json` |
 | Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`) | `%LOCALAPPDATA%\arakun\doop\` |

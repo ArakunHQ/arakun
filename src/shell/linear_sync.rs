@@ -244,11 +244,21 @@ impl Shell {
                     })
                 })
         });
-        let projects = here.chain(servers).collect();
+        let projects: Vec<Target> = here.chain(servers).collect();
+        let mut servers: Vec<(String, String)> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .filter_map(|e| e.remote.as_ref())
+            .map(|r| (r.server.clone(), r.machine.to_string()))
+            .collect();
+        servers.sort();
+        servers.dedup_by(|a, b| a.0 == b.0);
         // A test Arakun with a Linear fixture cannot sign in to an account.
         if linear::fixture::active() {
             return Host {
                 projects,
+                servers,
                 ..Host::for_fixture()
             };
         }
@@ -260,6 +270,7 @@ impl Shell {
             flagged: account.is_some() && teams.linear_enabled(),
             relay_on: self.relay_on(),
             projects,
+            servers,
             install_url: format!("{}/linear/install", base.trim_end_matches('/')),
         }
     }
@@ -553,6 +564,7 @@ pub(super) mod tests {
             enabled: true,
             mappings,
             consented: consented.iter().map(|w| w.to_string()).collect(),
+            ..Default::default()
         }
     }
     fn off(mappings: Vec<Mapping>) -> Delegation {
@@ -560,6 +572,7 @@ pub(super) mod tests {
             enabled: false,
             mappings,
             consented: vec![],
+            ..Default::default()
         }
     }
     fn p(path: &str) -> PathBuf {

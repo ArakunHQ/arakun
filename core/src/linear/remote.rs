@@ -34,6 +34,10 @@ pub struct ServerSettings {
     pub mappings: Vec<Mapping>,
     #[serde(default)]
     pub keys: Vec<WorkspaceKey>,
+    /// How many delegated sessions work at once on the server, when the
+    /// person chose. An older app sends none: the default holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<usize>,
 }
 
 impl ServerSettings {
@@ -43,6 +47,8 @@ impl ServerSettings {
             enabled: self.enabled,
             mappings: self.mappings.clone(),
             consented: Vec::new(),
+            slots: self.slots,
+            server_slots: Default::default(),
         }
     }
 
@@ -80,6 +86,7 @@ impl ServerSettings {
             enabled: self.enabled,
             mappings,
             keys,
+            slots: self.slots.map(|n| super::runs::slots(Some(n))),
         }
     }
 }
@@ -137,6 +144,7 @@ mod tests {
                 mapping("w1", Kind::Project, "t1", "/srv/b"),
             ],
             keys: vec![key("w1", "lin_1"), key("w1", "lin_2"), key("w2", "lin_3")],
+            ..Default::default()
         }
         .tidy();
         assert_eq!(s.mappings.len(), 2);
@@ -147,11 +155,26 @@ mod tests {
     }
 
     #[test]
+    fn the_server_keeps_the_slots_it_was_sent() {
+        let sent = |slots| ServerSettings {
+            slots,
+            ..Default::default()
+        };
+        assert_eq!(sent(None).tidy().delegation().slots_on(None), 3);
+        assert_eq!(sent(Some(6)).tidy().delegation().slots_on(None), 6);
+        assert_eq!(sent(Some(0)).tidy().slots, Some(1));
+        // An older app sends no slots; a newer one's message still reads.
+        let old: ServerSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert_eq!(old.slots, None);
+    }
+
+    #[test]
     fn an_empty_key_is_no_key() {
         let s = ServerSettings {
             enabled: true,
             mappings: vec![mapping("w1", Kind::Team, "t1", "/srv/a")],
             keys: vec![key("w1", "")],
+            ..Default::default()
         }
         .tidy();
         assert!(s.keys.is_empty());
@@ -166,6 +189,7 @@ mod tests {
                 .map(|i| mapping("w1", Kind::Team, &format!("t{i}"), "/srv/a"))
                 .collect(),
             keys: Vec::new(),
+            ..Default::default()
         }
         .tidy();
         assert_eq!(s.mappings.len(), MAX_MAPPINGS);
@@ -180,6 +204,7 @@ mod tests {
                 mapping("w1", Kind::Project, "p1", "/srv/gone"),
             ],
             keys: Vec::new(),
+            ..Default::default()
         };
         let places = [PathBuf::from("/srv/a")];
         let plan = route_plan(&s, &["w0".into(), "w1".into()], &places);
@@ -204,6 +229,7 @@ mod tests {
             enabled: false,
             mappings: vec![mapping("w1", Kind::Team, "t1", "/srv/a")],
             keys: Vec::new(),
+            ..Default::default()
         };
         let plan = route_plan(&s, &[], &[PathBuf::from("/srv/a")]);
         assert_eq!(plan, vec![("w1".to_string(), Routes::default())]);
@@ -215,6 +241,7 @@ mod tests {
             enabled: true,
             mappings: Vec::new(),
             keys: vec![key("w1", "lin_api_secret")],
+            ..Default::default()
         };
         assert!(!format!("{s:?}").contains("lin_api_secret"));
     }

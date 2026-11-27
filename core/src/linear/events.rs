@@ -554,9 +554,11 @@ pub fn apply(state: RunState, step: Step) -> Option<Move> {
     let at_work = matches!(state, Running | Asked);
     let to = |to, report, frees| Some(Move { to, report, frees });
     match step {
-        Step::Ask if at_work => to(Asked, true, false),
+        // Waiting on a person or on background work is not work: the slot
+        // goes to the next run (`Runs::busy`).
+        Step::Ask if at_work => to(Asked, true, true),
         Step::Finished | Step::Failed if at_work => to(Done, true, true),
-        Step::Background if at_work => to(Running, false, false),
+        Step::Background if at_work => to(Running, false, true),
         Step::Cancelled if at_work => to(Done, false, true),
         Step::Working if matches!(state, Asked | Done | Interrupted) => to(Running, false, false),
         _ => None,
@@ -1282,7 +1284,8 @@ mod tests {
         use RunState::*;
         let to = |state, s| apply(state, s).map(|m| (m.to, m.report, m.frees));
         for at in [Running, Asked] {
-            assert_eq!(to(at, Step::Ask), Some((Asked, true, false)));
+            assert_eq!(to(at, Step::Ask), Some((Asked, true, true)));
+            assert_eq!(to(at, Step::Background), Some((Running, false, true)));
             assert_eq!(to(at, Step::Finished), Some((Done, true, true)));
             assert_eq!(to(at, Step::Failed), Some((Done, true, true)));
             // Cancelled in Arakun: over, and nothing said.
@@ -1465,7 +1468,8 @@ mod tests {
                 (Event::Status, working(), None),
             ],
         );
-        assert_eq!(seen, [(Step::Background, false, false)]);
+        // Its slot goes to the next run: waiting on work is not work.
+        assert_eq!(seen, [(Step::Background, false, true)]);
         assert_eq!(r.state, RunState::Running);
         assert!(r.held.is_some(), "kept until the work is done");
         let seen = feed(
@@ -1516,7 +1520,7 @@ mod tests {
         );
         assert_eq!(
             seen,
-            [(Step::Ask, true, false)],
+            [(Step::Ask, true, true)],
             "the second changes nothing"
         );
         assert_eq!(r.state, RunState::Asked);

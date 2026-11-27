@@ -455,6 +455,129 @@ pub fn join_beta(
     json(status, &answer)
 }
 
+/// Where the account stands with access to cloud environments, as
+/// `GET /cloud/access` answers. `status` is "none", "pending", "granted" or
+/// "declined"; a declined account may ask again from `retry_at`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CloudAccess {
+    pub status: String,
+    #[serde(default)]
+    pub requested_at: Option<u64>,
+    #[serde(default)]
+    pub decided_at: Option<u64>,
+    #[serde(default)]
+    pub retry_at: Option<u64>,
+}
+
+/// One of the account's cloud environments, as `GET /cloud/machines` lists
+/// it. `stopped` is why it sleeps and does not wake by itself:
+/// "stopped_all", "held", "allowance_used" or "task_cap".
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CloudMachine {
+    pub label: String,
+    pub name: String,
+    pub running: bool,
+    /// A snapshot to wake from.
+    #[serde(default)]
+    pub snapshot: bool,
+    #[serde(default)]
+    pub stopped: Option<String>,
+}
+
+/// This UTC month's awake time of the account's cloud environments, as
+/// `GET /cloud/usage` answers, in milliseconds. `message` says why they are
+/// stopped when an account-wide limit stops them.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct CloudUsage {
+    pub allowance_ms: u64,
+    pub left_ms: u64,
+    pub task_cap_ms: u64,
+    #[serde(default)]
+    pub stopped: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// What can be done to a cloud environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloudAct {
+    Wake,
+    Sleep,
+    Remove,
+}
+
+pub fn cloud_access(base: &str, session: &str) -> Result<CloudAccess, Error> {
+    get(base, session, "/cloud/access", SMALL_LIMIT)
+}
+
+/// Asks the operator for access, with what the account would use it for
+/// (left out when empty). The operator grants the `cloud` flag by hand.
+pub fn ask_cloud_access(base: &str, session: &str, reason: &str) -> Result<CloudAccess, Error> {
+    let reason = reason.trim();
+    let body = (!reason.is_empty()).then(|| serde_json::json!({ "reason": reason }));
+    let (status, answer) = send(
+        base,
+        "POST",
+        "/cloud/access",
+        Some(session),
+        body,
+        SMALL_LIMIT,
+    )?;
+    json(status, &answer)
+}
+
+/// The account's cloud environments, or `None` where the service has none
+/// set up (503) or the account has no access (403 other than a block).
+pub fn cloud_machines(base: &str, session: &str) -> Result<Option<Vec<CloudMachine>>, Error> {
+    let (status, body) = send(
+        base,
+        "GET",
+        "/cloud/machines",
+        Some(session),
+        None,
+        LIST_LIMIT,
+    )?;
+    match status {
+        503 => Ok(None),
+        403 if !matches!(refusal(status, &body), Error::Blocked(_)) => Ok(None),
+        _ => json(status, &body).map(Some),
+    }
+}
+
+pub fn cloud_usage(base: &str, session: &str) -> Result<CloudUsage, Error> {
+    get(base, session, "/cloud/usage", SMALL_LIMIT)
+}
+
+/// Makes the account's cloud environment, which starts in the background:
+/// the first start takes a few minutes.
+pub fn make_cloud_machine(base: &str, session: &str) -> Result<CloudMachine, Error> {
+    let (status, body) = send(
+        base,
+        "POST",
+        "/cloud/machines",
+        Some(session),
+        None,
+        SMALL_LIMIT,
+    )?;
+    json(status, &body)
+}
+
+/// Wakes, stops or removes one cloud environment. A wake past a limit is
+/// refused with the sentence to show.
+pub fn cloud_machine_act(
+    base: &str,
+    session: &str,
+    label: &str,
+    act_on: CloudAct,
+) -> Result<(), Error> {
+    let path = format!("/cloud/machines/{}", path_part(label)?);
+    match act_on {
+        CloudAct::Wake => act(base, session, "POST", &format!("{path}/wake")),
+        CloudAct::Sleep => act(base, session, "POST", &format!("{path}/sleep")),
+        CloudAct::Remove => act(base, session, "DELETE", &path),
+    }
+}
+
 /// A Linear account linked to this Arakun account, as `/linear/link` answers.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct LinearLink {
@@ -1235,6 +1358,81 @@ mod tests {
             body,
             serde_json::json!({ "access_token": "gho_x", "name": "studio", "kind": "app" })
         );
+    }
+
+    #[test]
+    fn asking_for_cloud_access_sends_the_reason_only_when_given() {
+        let answer =
+            r#"{"status": "pending", "requested_at": 5, "decided_at": null, "retry_at": null}"#;
+        let (base, rx) = serve(201, answer);
+        let access = ask_cloud_access(&base, "s", " long refactors ").unwrap();
+        assert_eq!(access.status, "pending");
+        assert_eq!(access.requested_at, Some(5));
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /cloud/access HTTP/1.1\r\n"), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "reason": "long refactors" }));
+
+        let (base, rx) = serve(201, answer);
+        ask_cloud_access(&base, "s", "").unwrap();
+        assert!(rx.recv().unwrap().contains("content-length: 0\r\n"));
+    }
+
+    #[test]
+    fn cloud_machines_are_none_where_not_set_up_or_not_allowed() {
+        let (base, rx) = serve(
+            200,
+            r#"[{"label": "abcdefghijklmnop", "name": "Cloud", "running": false, "snapshot": true,
+                 "last_active": null, "task_ms": 7200000, "stopped": "task_cap"}]"#,
+        );
+        let list = cloud_machines(&base, "s").unwrap().unwrap();
+        assert_eq!(list[0].stopped.as_deref(), Some("task_cap"));
+        assert!(
+            rx.recv()
+                .unwrap()
+                .starts_with("GET /cloud/machines HTTP/1.1\r\n")
+        );
+
+        let (base, _rx) = serve(503, r#"{"error": "cloud machines are not set up here"}"#);
+        assert_eq!(cloud_machines(&base, "s"), Ok(None));
+        let (base, _rx) = serve(403, r#"{"error": "this account has no access"}"#);
+        assert_eq!(cloud_machines(&base, "s"), Ok(None));
+        let (base, _rx) = serve(403, r#"{"error": "blocked", "reason": "spam"}"#);
+        assert_eq!(
+            cloud_machines(&base, "s"),
+            Err(Error::Blocked("spam".into()))
+        );
+    }
+
+    #[test]
+    fn a_cloud_machine_is_woken_stopped_and_removed_at_its_own_path() {
+        for (act_on, line) in [
+            (
+                CloudAct::Wake,
+                "POST /cloud/machines/abcdefghijklmnop/wake ",
+            ),
+            (
+                CloudAct::Sleep,
+                "POST /cloud/machines/abcdefghijklmnop/sleep ",
+            ),
+            (CloudAct::Remove, "DELETE /cloud/machines/abcdefghijklmnop "),
+        ] {
+            let (base, rx) = serve(204, "");
+            cloud_machine_act(&base, "s", "abcdefghijklmnop", act_on).unwrap();
+            assert!(rx.recv().unwrap().starts_with(line));
+        }
+        let (base, _rx) = serve(
+            403,
+            r#"{"error": "This account used its 20 hours of cloud time for this month.", "limit": "allowance_used"}"#,
+        );
+        assert_eq!(
+            cloud_machine_act(&base, "s", "abcdefghijklmnop", CloudAct::Wake),
+            Err(Error::Refused(
+                "This account used its 20 hours of cloud time for this month.".into()
+            ))
+        );
+        assert!(cloud_machine_act(&base, "s", "../admin", CloudAct::Remove).is_err());
     }
 
     #[test]

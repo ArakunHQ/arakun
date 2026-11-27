@@ -40,6 +40,7 @@ use crate::servers_view::{
 
 mod account;
 pub(super) use account::fixture_machines;
+mod cloud;
 mod files;
 mod idle;
 mod mirror;
@@ -286,6 +287,8 @@ pub(super) struct ServersLink {
     git_asks: servers::git::Asks,
     /// The account's machines, for its servers.
     machines: account::Machines,
+    /// The account's cloud environment, or its request for one.
+    cloud: cloud::Cloud,
     _listen: Task<()>,
     /// Tells the connected servers the idle time here (`idle`).
     _idle: Task<()>,
@@ -1047,6 +1050,7 @@ impl Shell {
         self.servers_connect(window, cx);
         // A server signed in since shows up.
         self.servers_list_machines(window, cx);
+        self.servers_ask_cloud(window, cx);
         self.sync_servers_view(cx);
         self.views.servers.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -1161,6 +1165,7 @@ impl Shell {
             balance: balance::load(),
             git_asks: Default::default(),
             machines: Default::default(),
+            cloud: Default::default(),
             _listen: listen,
             _idle: Self::servers_time_idle(window, cx),
         });
@@ -1234,6 +1239,7 @@ impl Shell {
         let state = ServersState {
             servers,
             yours,
+            cloud: self.servers_cloud_row(),
             pairing: link.pairing.is_some(),
             adding: link.adding.clone(),
             error: link.error.clone(),
@@ -1450,6 +1456,10 @@ impl Shell {
                 self.server_set_sign_ins(server, *on, cx);
                 return;
             }
+            ServersEvent::CloudAsk(_) | ServersEvent::CloudMake | ServersEvent::Cloud { .. } => {
+                self.servers_cloud_event(ev, window, cx);
+                return;
+            }
             ServersEvent::Remove(id) => {
                 // Taken off the account after the pairing is forgotten: the
                 // list asked again then no longer brings it back.
@@ -1522,6 +1532,9 @@ impl Shell {
                 }
             }
             ServersEvent::Remove(_)
+            | ServersEvent::CloudAsk(_)
+            | ServersEvent::CloudMake
+            | ServersEvent::Cloud { .. }
             | ServersEvent::OpenHere { .. }
             | ServersEvent::SignIn
             | ServersEvent::SignIns { .. } => {}

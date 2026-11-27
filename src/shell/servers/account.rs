@@ -278,6 +278,7 @@ impl Shell {
             link.machines.error = None;
             self.servers_list_machines(window, cx);
         }
+        self.servers_ask_cloud(window, cx);
         // The connections made with the old sign-in stop, and wait for the
         // new one's list. With the same sign-in, none is touched.
         self.servers_reach_accounts(window, cx);

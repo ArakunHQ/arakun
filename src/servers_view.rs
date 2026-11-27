@@ -26,6 +26,15 @@ use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 
 pub enum ServersEvent {
+    /// Ask the operator for access to cloud environments, with what for.
+    CloudAsk(String),
+    /// Make the account's cloud environment.
+    CloudMake,
+    /// Wake, stop or remove a cloud environment, by its label.
+    Cloud {
+        label: String,
+        act: crate::cloud::CloudAct,
+    },
     /// Pair with the server this link is for, copying the MCP sign-ins
     /// there or not.
     Pair { link: String, sign_ins: bool },
@@ -205,6 +214,114 @@ pub enum YourServers {
     Failed(String),
 }
 
+/// The account's cloud environment, as far as the account has said.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum CloudState {
+    /// Signed out, not asked yet, or not set up on this service.
+    #[default]
+    Hidden,
+    /// No access yet: where the request stands.
+    Ask(crate::cloud::CloudAccess),
+    /// Access: the environment once made, and this month's hours.
+    Ready {
+        machine: Option<crate::cloud::CloudMachine>,
+        usage: Option<crate::cloud::CloudUsage>,
+    },
+}
+
+/// The Cloud section: the state, a call under way, and what went wrong last.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CloudRow {
+    pub state: CloudState,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+/// A length of time as the service says it: whole minutes under an hour,
+/// else hours to a tenth.
+pub fn hours(ms: u64) -> String {
+    if ms < 3_600_000 {
+        let m = (ms as f64 / 60_000.).round() as u64;
+        return if m == 1 {
+            "1 minute".into()
+        } else {
+            format!("{m} minutes")
+        };
+    }
+    let h = (ms as f64 / 3_600_000. * 10.).round() / 10.;
+    if h == 1. {
+        "1 hour".into()
+    } else {
+        format!("{h} hours")
+    }
+}
+
+/// What is left of this month's hours.
+pub fn usage_line(u: &crate::cloud::CloudUsage) -> String {
+    format!(
+        "{} of {} left this month",
+        hours(u.left_ms),
+        hours(u.allowance_ms)
+    )
+}
+
+/// Whether the account may ask for access now: never did, or was declined
+/// long enough ago.
+pub fn can_ask(a: &crate::cloud::CloudAccess, now: u64) -> bool {
+    match a.status.as_str() {
+        "none" => true,
+        "declined" => a.retry_at.is_none_or(|t| t <= now),
+        _ => false,
+    }
+}
+
+/// Where the account's request for access stands.
+pub fn access_line(a: &crate::cloud::CloudAccess, now: u64) -> String {
+    match a.status.as_str() {
+        "pending" => "You asked for access. We look at each request by hand and send a notice when it is decided.".into(),
+        "granted" => "You have access.".into(),
+        "declined" => match a.retry_at.filter(|t| *t > now) {
+            Some(t) => {
+                let days = (t - now).div_ceil(86_400);
+                format!("Not this time. You can ask again in {}.", plural(days as usize, "day", "days"))
+            }
+            None => "Not last time, but you can ask again.".into(),
+        },
+        _ => "A cloud environment keeps your sessions working with your computer off. We give access by hand.".into(),
+    }
+}
+
+/// What the environment's row says: awake, asleep, or why it stopped.
+pub fn machine_line(
+    m: &crate::cloud::CloudMachine,
+    usage: Option<&crate::cloud::CloudUsage>,
+) -> String {
+    if m.running {
+        return "Awake".into();
+    }
+    match m.stopped.as_deref() {
+        None if m.snapshot => "Asleep. Opening it wakes it.".into(),
+        None => "Starting. The first start takes a few minutes.".into(),
+        Some("task_cap") => format!(
+            "Stopped after {}, the most one task may run. Wake it to go on.",
+            usage.map_or_else(
+                || "the longest a task may run".into(),
+                |u| hours(u.task_cap_ms)
+            )
+        ),
+        Some(limit) => match usage.and_then(|u| u.message.clone()) {
+            Some(message) => message,
+            None if limit == "allowance_used" => "Stopped: this month's hours are used.".into(),
+            None => "Stopped by Arakun for now.".into(),
+        },
+    }
+}
+
+/// Whether a wake can lift the stop: not one the operator or the month made.
+pub fn can_wake(m: &crate::cloud::CloudMachine) -> bool {
+    !m.running && matches!(m.stopped.as_deref(), None | Some("task_cap"))
+}
+
 /// An environment and its sessions, on any computer.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct EnvRow {
@@ -234,6 +351,8 @@ pub struct ServersState {
     pub servers: Vec<ServerRow>,
     /// The servers of the account this app is signed in to.
     pub yours: YourServers,
+    /// The account's cloud environment, or the request for one.
+    pub cloud: CloudRow,
     /// A pairing is under way.
     pub pairing: bool,
     /// Servers a folder is being added to or cloned on, until they are done.
@@ -475,6 +594,10 @@ pub struct ServersView {
     draft_for: Option<String>,
     /// Remove was pressed once on this server; the next press counts.
     confirm_remove: Option<String>,
+    /// What the account would use a cloud environment for, in its request.
+    cloud_reason: Entity<TextInput>,
+    /// Remove was pressed once on the cloud environment.
+    confirm_cloud_remove: bool,
     /// The ⋯ menu is open on this server.
     menu: Option<String>,
     /// The pairing by link copies the MCP sign-ins.
@@ -491,6 +614,7 @@ impl ServersView {
         let clone_url =
             cx.new(|cx| TextInput::new("https://github.com/owner/repo or owner/repo", cx));
         let folder = cx.new(|cx| TextInput::new("~/code/app", cx).mono());
+        let cloud_reason = cx.new(|cx| TextInput::new("What would you use it for? (optional)", cx));
         let on_submit = |cx: &mut Context<Self>,
                          input: &Entity<TextInput>,
                          act: fn(&mut Self, &mut Context<Self>)| {
@@ -504,6 +628,7 @@ impl ServersView {
             on_submit(cx, &link, Self::pair),
             on_submit(cx, &clone_url, Self::clone_repo),
             on_submit(cx, &folder, Self::add_folder),
+            on_submit(cx, &cloud_reason, Self::ask_cloud),
         ];
         Self {
             state: ServersState::default(),
@@ -516,6 +641,8 @@ impl ServersView {
             folder,
             draft_for: None,
             confirm_remove: None,
+            cloud_reason,
+            confirm_cloud_remove: false,
             menu: None,
             pair_sign_ins: false,
             focus: cx.focus_handle(),
@@ -616,6 +743,14 @@ impl ServersView {
         if let Some(server) = self.adding_to().filter(|_| !path.is_empty()) {
             cx.emit(ServersEvent::AddPlace { server, path });
         }
+    }
+
+    fn ask_cloud(&mut self, cx: &mut Context<Self>) {
+        if self.state.cloud.busy {
+            return;
+        }
+        let reason = self.cloud_reason.read(cx).text().trim().to_string();
+        cx.emit(ServersEvent::CloudAsk(reason));
     }
 
     fn pair(&mut self, cx: &mut Context<Self>) {
@@ -889,7 +1024,8 @@ impl ServersView {
                     .child(Self::section("Your servers"))
                     .children(rows)
                     .children(empty)
-                    .children(account),
+                    .children(account)
+                    .children(self.render_cloud(cx)),
             )
             .child(foot)
             .into_any_element()
@@ -939,6 +1075,204 @@ impl ServersView {
             ))),
             YourServers::Loading | YourServers::Listed(_) => None,
         }
+    }
+
+    /// Under the servers: the account's cloud environment and its hours, or
+    /// the request for access to one.
+    fn render_cloud(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let row = &self.state.cloud;
+        let busy = row.busy;
+        let text = |t: String, color| ui::text(Type::Caption, color, t);
+        let buttons = || div().flex().flex_wrap().gap(ui::sp(6.));
+        let body: Vec<AnyElement> = match &row.state {
+            CloudState::Hidden => return None,
+            CloudState::Ask(access) => {
+                let now = crate::model::unix_now();
+                let mut body =
+                    vec![text(access_line(access, now), theme::text_subtle()).into_any_element()];
+                if can_ask(access, now) {
+                    body.push(
+                        ui::field()
+                            .child(self.cloud_reason.clone())
+                            .into_any_element(),
+                    );
+                    body.push(
+                        buttons()
+                            .child(
+                                ui::button(
+                                    "computers-cloud-ask",
+                                    if busy { "Asking…" } else { "Ask for access" },
+                                    ButtonKind::Outline,
+                                    !busy,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.ask_cloud(cx))),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                body
+            }
+            CloudState::Ready {
+                machine: None,
+                usage,
+            } => {
+                let mut body = vec![
+                    text(
+                        "Runs Arakun in the cloud, so sessions keep working with your computer off."
+                            .into(),
+                        theme::text_subtle(),
+                    )
+                    .into_any_element(),
+                    buttons()
+                        .child(
+                            ui::button(
+                                "computers-cloud-make",
+                                if busy { "Making…" } else { "New cloud environment" },
+                                ButtonKind::Outline,
+                                !busy,
+                            )
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(ServersEvent::CloudMake))),
+                        )
+                        .into_any_element(),
+                ];
+                body.extend(
+                    usage
+                        .as_ref()
+                        .map(|u| text(usage_line(u), theme::text_faint()).into_any_element()),
+                );
+                body
+            }
+            CloudState::Ready {
+                machine: Some(m),
+                usage,
+            } => {
+                let label = m.label.clone();
+                let act = |id: &'static str, name: &'static str, act: crate::cloud::CloudAct| {
+                    let label = label.clone();
+                    ui::button(id, name, ButtonKind::Outline, !busy).on_click(cx.listener(
+                        move |_, _, _, cx| {
+                            cx.emit(ServersEvent::Cloud {
+                                label: label.clone(),
+                                act,
+                            })
+                        },
+                    ))
+                };
+                let remove = if self.confirm_cloud_remove {
+                    let label = label.clone();
+                    div()
+                        .flex()
+                        .gap(ui::sp(6.))
+                        .child(
+                            ui::button("computers-cloud-keep", "Keep", ButtonKind::Ghost, true)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.confirm_cloud_remove = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            ui::button(
+                                "computers-cloud-remove-yes",
+                                "Remove",
+                                ButtonKind::Danger,
+                                !busy,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.confirm_cloud_remove = false;
+                                    cx.emit(ServersEvent::Cloud {
+                                        label: label.clone(),
+                                        act: crate::cloud::CloudAct::Remove,
+                                    });
+                                },
+                            )),
+                        )
+                        .into_any_element()
+                } else {
+                    ui::button("computers-cloud-remove", "Remove", ButtonKind::Ghost, !busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_cloud_remove = true;
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                };
+                let mut body = vec![
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Body)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::content())
+                                .child(crate::redact::text(&m.name).into_owned()),
+                        )
+                        .into_any_element(),
+                    text(machine_line(m, usage.as_ref()), theme::text_subtle()).into_any_element(),
+                ];
+                if self.confirm_cloud_remove {
+                    body.push(
+                        text(
+                            "Its files and sessions go with it.".into(),
+                            theme::text_subtle(),
+                        )
+                        .into_any_element(),
+                    );
+                }
+                body.push(
+                    buttons()
+                        .when(m.running, |d| {
+                            d.child(act(
+                                "computers-cloud-sleep",
+                                "Stop",
+                                crate::cloud::CloudAct::Sleep,
+                            ))
+                        })
+                        .when(can_wake(m), |d| {
+                            d.child(act(
+                                "computers-cloud-wake",
+                                "Wake",
+                                crate::cloud::CloudAct::Wake,
+                            ))
+                        })
+                        .child(remove)
+                        .into_any_element(),
+                );
+                body.extend(
+                    usage
+                        .as_ref()
+                        .map(|u| text(usage_line(u), theme::text_faint()).into_any_element()),
+                );
+                body
+            }
+        };
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .child(Self::section("Cloud"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui::sp(8.))
+                        .mx(ui::sp(8.))
+                        .p(ui::sp(12.))
+                        .rounded(ui::rad(ui::RADIUS))
+                        .border_1()
+                        .border_color(theme::border())
+                        .children(body)
+                        .when_some(row.error.clone(), |d, e| {
+                            d.child(text(
+                                crate::redact::text(&e).into_owned(),
+                                theme::attention().into(),
+                            ))
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     // ---- the detail ------------------------------------------------------------
@@ -2286,7 +2620,83 @@ impl Render for ServersView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud::{CloudAccess, CloudMachine, CloudUsage};
     use serde_json::json;
+
+    fn cloud(running: bool, snapshot: bool, stopped: Option<&str>) -> CloudMachine {
+        CloudMachine {
+            label: "abcdefghijklmnop".into(),
+            name: "Cloud".into(),
+            running,
+            snapshot,
+            stopped: stopped.map(str::to_string),
+        }
+    }
+
+    fn usage(message: Option<&str>) -> CloudUsage {
+        CloudUsage {
+            allowance_ms: 20 * 3_600_000,
+            left_ms: 14 * 3_600_000 + 1_800_000,
+            task_cap_ms: 2 * 3_600_000,
+            stopped: None,
+            message: message.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn cloud_hours_read_as_the_service_says_them() {
+        assert_eq!(hours(60_000), "1 minute");
+        assert_eq!(hours(45 * 60_000), "45 minutes");
+        assert_eq!(hours(3_600_000), "1 hour");
+        assert_eq!(hours(20 * 3_600_000), "20 hours");
+        assert_eq!(
+            usage_line(&usage(None)),
+            "14.5 hours of 20 hours left this month"
+        );
+    }
+
+    #[test]
+    fn a_cloud_environment_says_why_it_stopped_and_offers_wake_only_when_it_helps() {
+        assert_eq!(machine_line(&cloud(true, true, None), None), "Awake");
+        assert!(machine_line(&cloud(false, false, None), None).starts_with("Starting"));
+        assert!(machine_line(&cloud(false, true, None), None).starts_with("Asleep"));
+        assert_eq!(
+            machine_line(&cloud(false, true, Some("task_cap")), Some(&usage(None))),
+            "Stopped after 2 hours, the most one task may run. Wake it to go on."
+        );
+        let said = "This account used its 20 hours of cloud time for this month.";
+        assert_eq!(
+            machine_line(
+                &cloud(false, true, Some("allowance_used")),
+                Some(&usage(Some(said)))
+            ),
+            said
+        );
+        assert!(can_wake(&cloud(false, true, Some("task_cap"))));
+        assert!(can_wake(&cloud(false, false, None)));
+        assert!(!can_wake(&cloud(true, true, None)));
+        assert!(!can_wake(&cloud(false, true, Some("allowance_used"))));
+        assert!(!can_wake(&cloud(false, true, Some("held"))));
+    }
+
+    #[test]
+    fn the_cloud_request_says_where_it_stands() {
+        let access = |status: &str, retry_at| CloudAccess {
+            status: status.into(),
+            requested_at: Some(1),
+            decided_at: None,
+            retry_at,
+        };
+        assert!(can_ask(&access("none", None), 100));
+        assert!(!can_ask(&access("pending", None), 100));
+        assert!(!can_ask(&access("declined", Some(200)), 100));
+        assert!(can_ask(&access("declined", Some(100)), 100));
+        assert_eq!(
+            access_line(&access("declined", Some(100 + 2 * 86_400 - 5)), 100),
+            "Not this time. You can ask again in 2 days."
+        );
+        assert!(access_line(&access("pending", None), 100).contains("by hand"));
+    }
 
     fn session(id: &str, status: Status, updated: u64, place: &str) -> SessionRow {
         SessionRow {

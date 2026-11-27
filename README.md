@@ -1775,7 +1775,13 @@ lists for that server. Signed out, the list says your account's servers show up 
 you sign in. A server reached directly (`--reach lan` or `--reach tailscale`) is paired
 with a link instead: **Add a computer** shows both ways. **Remove**, in a server's
 settings or its ⋯ menu, asks once, then has the server forget the app and, for a
-server on your account, takes it off the account too. Where the app is installed, `arakun server` is the command; `arakun-server` is
+server on your account, takes it off the account too. Under the servers, **Cloud**
+offers a cloud environment: a server Arakun runs for you, so sessions keep working with
+your computer off. Access is given by hand: ask for it there, with what you would use it
+for. With access, **New cloud environment** makes one (the first start takes a few
+minutes), and the section shows whether it is awake, why it stopped, and the hours left
+this month, with **Wake**, **Stop** and **Remove**. The phone's Computers screen has the
+same. Where the app is installed, `arakun server` is the command; `arakun-server` is
 the same command for a machine with no display (see
 [The server alone](#the-server-alone-no-display)).
 

@@ -2,14 +2,14 @@
 //! permission it waits for, the step it works on, the result, a failure,
 //! that it still works, and that Arakun was closed while it ran.
 //!
-//! Only the last reply, a question's text, a short name of what a permission
-//! is for and of the current step (with the file it works on) go to Linear:
-//! never a tool's arguments, which can hold file contents, commands with
-//! secrets or whole diffs.
+//! Only the last reply, what the agent said before a step, a question's text,
+//! a short name of what a permission is for and of each step (with the file
+//! it works on) go to Linear: never a tool's arguments, which can hold file
+//! contents, commands with secrets or whole diffs, nor the agent's thinking.
 
 use std::path::Path;
 
-use super::runs::{PlanItem, PlanItemStatus, ReportKind, Run, RunState, cut};
+use super::runs::{PlanItem, PlanItemStatus, ReportKind, Run, RunState, Runs, cut};
 use super::start::failed_line;
 use crate::agent::{AskUserRequest, Entry, PlanStatus, Question, Thread, ThreadStatus, ToolStatus};
 use crate::phone::notify;
@@ -176,6 +176,144 @@ pub fn progress_step(entries: &[Entry], cwd: &Path) -> Option<Action> {
         "think" => fixed("Thinking", "it through"),
         _ => None,
     }
+}
+
+/// The most characters of what the agent said that one digest carries.
+pub const SAID_LIMIT: usize = 1_500;
+/// The most steps one digest names; the rest are only counted.
+pub const STEPS_LIMIT: usize = 8;
+
+/// What a delegated session said and did since entry `from`, for Linear to
+/// keep as a thought, and the entry the next digest starts at. Without it a
+/// Linear session shows only "Thinking" until the reply, as the current step
+/// is ephemeral and seldom caught. Only what settled goes: text the agent
+/// wrote before a step it took (the text that ends a turn is its reply, which
+/// goes on its own) and steps that finished, named like progress lines. None
+/// when nothing new settled.
+pub fn progress_digest(entries: &[Entry], cwd: &Path, from: usize) -> (Option<String>, usize) {
+    let turn = entries
+        .iter()
+        .rposition(|e| matches!(e, Entry::User { .. }))
+        .map_or(0, |at| at + 1);
+    // A cursor past the end is from a thread that was cut short since.
+    let from = if from > entries.len() {
+        turn
+    } else {
+        from.max(turn)
+    };
+    let mut said: Vec<&str> = Vec::new();
+    let mut waiting: Vec<&str> = Vec::new();
+    let mut steps = Steps::default();
+    let mut settled = from;
+    for (i, e) in entries.iter().enumerate().skip(from) {
+        match e {
+            Entry::Tool(tc) => {
+                said.append(&mut waiting);
+                if matches!(tc.status, ToolStatus::Pending | ToolStatus::InProgress) {
+                    settled = i;
+                    break;
+                }
+                if tc.status == ToolStatus::Completed {
+                    steps.add(tc, cwd);
+                }
+                settled = i + 1;
+            }
+            Entry::Agent { text } => waiting.push(text),
+            _ if waiting.is_empty() => settled = i + 1,
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    let said = crate::secrets::scrub(said.join("\n\n").trim()).into_owned();
+    if !said.is_empty() {
+        parts.push(match said.char_indices().nth(SAID_LIMIT) {
+            Some((end, _)) => format!("{}…", &said[..end]),
+            None => said,
+        });
+    }
+    if let Some(list) = steps.list() {
+        parts.push(list);
+    }
+    let digest = (!parts.is_empty()).then(|| parts.join("\n\n"));
+    (digest, settled)
+}
+
+/// The finished steps of a digest, in the order first taken. A step on the
+/// same file is named once; others are counted.
+#[derive(Default)]
+struct Steps(Vec<(String, usize)>);
+
+impl Steps {
+    fn add(&mut self, tc: &crate::agent::ToolCall, cwd: &Path) {
+        let path = tc
+            .locations
+            .first()
+            .map(|p| shown_path(p, cwd))
+            .filter(|p| !p.is_empty());
+        let on_file = |verb: &str| match &path {
+            Some(path) => format!("{verb} `{path}`"),
+            None => format!("{verb} a file"),
+        };
+        let name = match tc.kind.as_str() {
+            "read" => on_file("Read"),
+            "edit" => on_file("Edited"),
+            "delete" => on_file("Deleted"),
+            "move" => on_file("Moved"),
+            "search" => "search".into(),
+            "execute" => "execute".into(),
+            "fetch" => "fetch".into(),
+            _ => return,
+        };
+        match self.0.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => self.0.push((name, 1)),
+        }
+    }
+
+    fn list(&self) -> Option<String> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let mut lines: Vec<String> = self
+            .0
+            .iter()
+            .take(STEPS_LIMIT)
+            .map(|(name, n)| {
+                let line = match (name.as_str(), n) {
+                    ("search", 1) => "Searched the code".into(),
+                    ("search", n) => format!("Searched the code {n} times"),
+                    ("execute", 1) => "Ran a command".into(),
+                    ("execute", n) => format!("Ran {n} commands"),
+                    ("fetch", 1) => "Read a web page".into(),
+                    ("fetch", n) => format!("Read {n} web pages"),
+                    _ => name.clone(),
+                };
+                format!("- {line}")
+            })
+            .collect();
+        let more: usize = self.0.iter().skip(STEPS_LIMIT).map(|(_, n)| n).sum();
+        if more > 0 {
+            lines.push(format!("- and {more} more"));
+        }
+        Some(lines.join("\n"))
+    }
+}
+
+/// What the issue of the delegated session `arakun_session` hears of its
+/// progress now: its agent session, a lasting digest, and the current step.
+/// None when it hears nothing.
+pub fn progress_reports(
+    runs: &mut Runs,
+    arakun_session: &str,
+    entries: &[Entry],
+    cwd: &Path,
+    now: u64,
+) -> Option<(String, Option<String>, Option<Action>)> {
+    let step = progress_step(entries, cwd);
+    let line = step.as_ref().map(Action::line);
+    let digest = |from| progress_digest(entries, cwd, from);
+    let p = runs.progress(arakun_session, now, digest, line.as_deref())?;
+    Some((p.agent_session, p.digest, step.filter(|_| p.step)))
 }
 
 /// A path as a step shows it: inside `cwd` relative to it, else only its
@@ -908,6 +1046,63 @@ mod tests {
             progress_step(&[user(), running, text], cwd),
             act("Running", "a command")
         );
+    }
+
+    #[test]
+    fn a_digest_says_what_settled_and_never_the_reply_or_arguments() {
+        let cwd = Path::new("/a");
+        let said = |t: &str| Entry::Agent { text: t.into() };
+        // `tool` gives every call a title and arguments with a secret.
+        let cmd = tool("execute", "completed", &[]);
+        let entries = [
+            said("Old turn."),
+            user(),
+            said("Looking at the parser."),
+            tool("read", "completed", &["/a/src/p.rs"]),
+            tool("read", "completed", &["/a/src/p.rs"]),
+            cmd.clone(),
+            cmd,
+            tool("think", "completed", &[]),
+            tool("edit", "failed", &["/a/src/q.rs"]),
+            said("Now the fix."),
+            tool("edit", "in_progress", &["/a/src/p.rs"]),
+            said("Done, the parser is fixed."),
+        ];
+        let (digest, next) = progress_digest(&entries, cwd, 0);
+        assert_eq!(
+            digest.as_deref(),
+            Some("Looking at the parser.\n\nNow the fix.\n\n- Read `src/p.rs`\n- Ran 2 commands")
+        );
+        assert_eq!(next, 10, "it stops at the step that still runs");
+        assert_eq!(progress_digest(&entries, cwd, next), (None, next));
+        // Once that step ends, the text after it is the reply: it stays out.
+        let mut done = entries.to_vec();
+        done[10] = tool("edit", "completed", &["/a/src/p.rs"]);
+        let (digest, next) = progress_digest(&done, cwd, 10);
+        assert_eq!(digest.as_deref(), Some("- Edited `src/p.rs`"));
+        assert_eq!(next, 11);
+        // A cursor from a longer thread starts over at the turn.
+        assert_eq!(progress_digest(&done[..4], cwd, 10).1, 4);
+    }
+
+    #[test]
+    fn a_digest_names_a_few_steps_and_counts_the_rest() {
+        let cwd = Path::new("/a");
+        let paths: Vec<String> = (0..12).map(|i| format!("/a/f{i}.rs")).collect();
+        let entries: Vec<Entry> = paths
+            .iter()
+            .map(|p| tool("edit", "completed", &[p.as_str()]))
+            .collect();
+        let digest = progress_digest(&entries, cwd, 0).0.unwrap();
+        assert_eq!(digest.lines().count(), STEPS_LIMIT + 1);
+        assert!(digest.ends_with("- and 4 more"), "{digest}");
+        let long = Entry::Agent {
+            text: "x".repeat(SAID_LIMIT * 2),
+        };
+        let digest = progress_digest(&[long, tool("search", "completed", &[])], cwd, 0)
+            .0
+            .unwrap();
+        assert!(digest.ends_with("…\n\n- Searched the code"), "{digest}");
     }
 
     #[test]

@@ -97,10 +97,10 @@ pub struct Run {
     /// reply, sent once that work is done or `HOLD_SECS` passed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<Held>,
-    /// The last progress line queued, and when. Not saved: no turn survives
-    /// a restart.
+    /// The last progress queued for Linear. Not saved: no turn survives a
+    /// restart.
     #[serde(skip)]
-    pub progress: Option<(u64, String)>,
+    pub progress: Option<Progressed>,
     /// The last plan queued, and when. Not saved, like `progress`.
     #[serde(skip)]
     pub plan: Option<(u64, Vec<PlanItem>)>,
@@ -123,6 +123,27 @@ pub struct Run {
     /// restart starts without it.
     #[serde(skip)]
     pub guidance: Vec<GuidanceRule>,
+}
+
+/// The progress of a run that Linear last heard.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Progressed {
+    /// When it was queued, in unix seconds.
+    pub at: u64,
+    /// The step as one line, so the same step is not sent again.
+    pub step: String,
+    /// The entry of the session the next digest starts at.
+    pub digested: usize,
+}
+
+/// What Linear hears of a working run at one time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub agent_session: String,
+    /// What the session said and did since the last digest: a lasting thought.
+    pub digest: Option<String>,
+    /// Whether the step it is on now goes, as an ephemeral action.
+    pub step: bool,
 }
 
 /// A reply kept back while the session's background work runs. Debug leaves
@@ -162,7 +183,7 @@ impl std::fmt::Debug for Run {
             .field("asked", &self.asked.is_some())
             .field("stopped", &self.stopped)
             .field("held", &self.held)
-            .field("progress", &self.progress.as_ref().map(|(at, _)| at))
+            .field("progress", &self.progress.as_ref().map(|p| p.at))
             .field("plan", &self.plan.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
             .field("kept", &self.kept.len())
@@ -577,21 +598,41 @@ impl Runs {
             .collect()
     }
 
-    /// The agent session to report `line` to as the progress of the run of
-    /// `arakun_session`, when Linear should hear it: the run works, the line
-    /// is new, and the last one is `PROGRESS_SECS` old.
-    pub fn progress(&mut self, arakun_session: &str, line: &str, now: u64) -> Option<String> {
+    /// What Linear should hear of the run of `arakun_session` now, at most
+    /// every `PROGRESS_SECS` and only while it works. `digest` gets the entry
+    /// the last digest ended at and gives the new digest, if any, and where it
+    /// ended. `step` is the current step as one line; the same step is not
+    /// sent twice.
+    pub fn progress(
+        &mut self,
+        arakun_session: &str,
+        now: u64,
+        digest: impl FnOnce(usize) -> (Option<String>, usize),
+        step: Option<&str>,
+    ) -> Option<Progress> {
         let run = self.by_session(arakun_session)?;
         if run.state != RunState::Running || run.stopped {
             return None;
         }
-        if let Some((at, last)) = &run.progress
-            && (last == line || now.saturating_sub(*at) < PROGRESS_SECS)
-        {
+        let last = run.progress.clone().unwrap_or_default();
+        if run.progress.is_some() && now.saturating_sub(last.at) < PROGRESS_SECS {
             return None;
         }
-        run.progress = Some((now, line.to_string()));
-        Some(run.agent_session.clone())
+        let (digest, digested) = digest(last.digested);
+        let step = step.filter(|s| *s != last.step);
+        if digest.is_none() && step.is_none() {
+            return None;
+        }
+        run.progress = Some(Progressed {
+            at: now,
+            step: step.map_or(last.step, str::to_string),
+            digested,
+        });
+        Some(Progress {
+            agent_session: run.agent_session.clone(),
+            digest,
+            step: step.is_some(),
+        })
     }
 
     /// The agent session to send `plan` to as the plan of the run of
@@ -783,24 +824,68 @@ mod tests {
             state: RunState::Running,
             ..run("a")
         });
-        assert_eq!(r.progress("s1", "Editing", 100).as_deref(), Some("a"));
-        assert_eq!(r.progress("s1", "Reading", 100 + PROGRESS_SECS - 1), None);
+        let none = |from: usize| (None, from);
+        let step = |r: &mut Runs, line: &str, now: u64| {
+            r.progress("s1", now, none, Some(line))
+                .map(|p| p.agent_session)
+        };
+        assert_eq!(step(&mut r, "Editing", 100).as_deref(), Some("a"));
+        assert_eq!(step(&mut r, "Reading", 100 + PROGRESS_SECS - 1), None);
         assert_eq!(
-            r.progress("s1", "Editing", 100 + PROGRESS_SECS),
+            step(&mut r, "Editing", 100 + PROGRESS_SECS),
             None,
             "the same line"
         );
         assert_eq!(
-            r.progress("s1", "Reading", 100 + PROGRESS_SECS).as_deref(),
+            step(&mut r, "Reading", 100 + PROGRESS_SECS).as_deref(),
             Some("a")
         );
-        assert_eq!(r.progress("other", "Reading", 1_000), None);
+        assert_eq!(r.progress("other", 1_000, none, Some("x")), None);
         r.by_session("s1").unwrap().state = RunState::Asked;
-        assert_eq!(r.progress("s1", "Running", 1_000), None);
+        assert_eq!(step(&mut r, "Running", 1_000), None);
         let run = r.by_session("s1").unwrap();
         run.state = RunState::Running;
         run.stopped = true;
-        assert_eq!(r.progress("s1", "Running", 1_000), None);
+        assert_eq!(step(&mut r, "Running", 1_000), None);
+    }
+
+    #[test]
+    fn a_digest_goes_with_the_step_and_moves_on_from_where_it_ended() {
+        let mut r = Runs::default();
+        r.add(Run {
+            session: Some("s1".into()),
+            state: RunState::Running,
+            ..run("a")
+        });
+        let p = r
+            .progress("s1", 100, |from| (Some(format!("from {from}")), 4), None)
+            .unwrap();
+        assert_eq!(p.digest.as_deref(), Some("from 0"));
+        assert!(!p.step);
+        let p = r
+            .progress(
+                "s1",
+                100 + PROGRESS_SECS,
+                |from| (Some(format!("from {from}")), 9),
+                Some("Editing"),
+            )
+            .unwrap();
+        assert_eq!(p.digest.as_deref(), Some("from 4"));
+        assert!(p.step);
+        // Nothing new: nothing goes, and the step is not sent again.
+        let at = 100 + 2 * PROGRESS_SECS;
+        let same = r.progress("s1", at, |from| (None, from), Some("Editing"));
+        assert_eq!(same, None);
+        let p = r
+            .progress(
+                "s1",
+                at,
+                |from| (Some(format!("from {from}")), from),
+                Some("Editing"),
+            )
+            .unwrap();
+        assert_eq!(p.digest.as_deref(), Some("from 9"));
+        assert!(!p.step);
     }
 
     fn items(content: &str) -> Vec<PlanItem> {

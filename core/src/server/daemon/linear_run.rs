@@ -22,7 +22,7 @@ use crate::cloud;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
     Action, Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of,
-    plan_items, pr_link, progress_step, removed_line, to_report, turn_reply,
+    plan_items, pr_link, progress_reports, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
     FollowUp, SKIPS, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line, kept_line,
@@ -921,22 +921,26 @@ impl Daemon {
         self.linear_report_plan(&agent_session, plan, cx);
     }
 
-    /// The step a working delegated session is on, for its issue to show
-    /// while it runs. Most entry changes are text streaming in: they cost one
-    /// lookup, and Linear hears a step at most every `PROGRESS_SECS`.
+    /// What a working delegated session said and did, and the step it is
+    /// on, for its issue to show while it runs. Most entry changes are text
+    /// streaming in: Linear hears progress at most every `PROGRESS_SECS`.
     fn linear_progress(&mut self, id: &str, thread: &Entity<Thread>, cx: &mut Context<Self>) {
         if self.linear_run.runs.by_session(id).is_none() {
             return;
         }
         let t = thread.read(cx);
-        let Some(step) = progress_step(t.entries(), t.cwd()) else {
+        let now = unix_now();
+        let progress = progress_reports(&mut self.linear_run.runs, id, t.entries(), t.cwd(), now);
+        let Some((agent_session, digest, step)) = progress else {
             return;
         };
-        let Some(agent_session) = self.linear_run.runs.progress(id, &step.line(), unix_now())
-        else {
-            return;
-        };
-        self.linear_report_step(&agent_session, step, cx);
+        // The digest first: a newer report makes an unsent step moot.
+        if let Some(digest) = digest {
+            self.linear_report(&agent_session, ReportKind::Thought, digest, None, cx);
+        }
+        if let Some(step) = step {
+            self.linear_report_step(&agent_session, step, cx);
+        }
     }
 
     /// At start: no turn survives a restart, so a run that was at work was

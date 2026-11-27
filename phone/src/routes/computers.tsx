@@ -4,7 +4,7 @@ import { CloudGroup } from "../components/CloudGroup";
 import { NoticeBanners } from "../components/NoticeBanners";
 import { TopBar } from "../components/shell/TopBar";
 import { meQuery, pick, pickedMachine, useMachines, useRemoveMachine, useSaid, useSignOut } from "../lib/account";
-import { CLOUD_FLAG, useCloudMachines } from "../lib/cloud";
+import { CLOUD_FLAG, cloudRemoveQuestion, useCloudMachines, useMachineAction } from "../lib/cloud";
 import { ago } from "../lib/format";
 import { type Machine, RELAY } from "../lib/globals";
 import { Icon } from "../lib/icons";
@@ -32,7 +32,9 @@ export function Computers() {
   const flags = boot?.me?.flags;
   const flagged = Array.isArray(flags) && flags.includes(CLOUD_FLAG);
   // The cloud environment is in the list like a server; its row says what it is.
-  const cloud = new Set((useCloudMachines(flagged).data ?? []).map((m) => m.label));
+  const clouds = useCloudMachines(flagged).data ?? [];
+  const cloud = new Set(clouds.map((m) => m.label));
+  const cloudAct = useMachineAction();
 
   const got = machines.data;
   const blockedBy = got && "blocked" in got ? got : boot?.screen === "blocked" ? { reason: boot.reason ?? null } : null;
@@ -49,6 +51,13 @@ export function Computers() {
     void navigate({ to: "/s/$session", params: { session: id } });
   };
   const askRemove = (m: Machine) => {
+    // Off the account alone, a cloud environment's container would stay and
+    // come back to the list at its next start: it is deleted instead.
+    const env = clouds.find((c) => c.label === m.label);
+    if (env) {
+      if (confirm(cloudRemoveQuestion(env.name))) cloudAct.mutate({ m: env, action: "remove" });
+      return;
+    }
     if (confirm(RELAY.removeQuestion(m.name))) remove.mutate(m);
   };
   const askSignOut = () => {

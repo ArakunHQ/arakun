@@ -8,6 +8,7 @@ import {
   accessLine,
   canAsk,
   type CloudMachine,
+  cloudRemoveQuestion,
   machineLine,
   MAX_REASON,
   type Usage,
@@ -58,7 +59,7 @@ function MachineRow({ m, usage }: { m: CloudMachine; usage: Usage | null }) {
   const act = useMachineAction();
   const busy = act.isPending;
   const remove = () => {
-    if (confirm(`Remove ${m.name}? Its files and sessions go with it.`)) act.mutate({ m, action: "remove" });
+    if (confirm(cloudRemoveQuestion(m.name))) act.mutate({ m, action: "remove" });
   };
   // A stop the operator or the allowance made is lifted only there: waking would be refused.
   const canWake = !m.running && (m.stopped === null || m.stopped === "task_cap");

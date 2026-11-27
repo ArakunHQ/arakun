@@ -100,6 +100,11 @@ export function machineLine(m: CloudMachine, u: Usage | null): string {
   }
 }
 
+/** What Remove asks before it deletes an environment. */
+export function cloudRemoveQuestion(name: string): string {
+  return `Remove ${name}? Its files and sessions go with it.`;
+}
+
 /** The service's reason when it gives one. */
 async function why(res: Response, fallback: string): Promise<string> {
   try {

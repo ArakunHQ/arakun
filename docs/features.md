@@ -615,7 +615,7 @@ again after a week) in its [data folder](storage-and-env.md).
   as data.
 
   *How many.* At most three such sessions work at once on a computer, unless you
-  choose another number (1 to 10) under **Sessions at once** in the Linear tab. Each
+  choose another number (1 to 20) under **Sessions at once** in the Linear tab. Each
   paired server has its own number there. A session waiting on your answer, or on
   work it left running in the background, does not count. More wait in a
   saved queue and start, in the order they came, as others finish. The issue hears

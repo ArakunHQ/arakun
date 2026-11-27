@@ -16,7 +16,7 @@ use crate::phone::linear::GuidanceRule;
 /// of agents; the rest wait their turn.
 pub const DEFAULT_SLOTS: usize = 3;
 /// The most a person may choose: each slot is an agent at work.
-pub const MOST_SLOTS: usize = 10;
+pub const MOST_SLOTS: usize = 20;
 /// The most replies kept for a run that waits for a slot.
 pub const KEPT_REPLIES: usize = 8;
 /// Delivery ids remembered, so a delivery sent again is not run twice.

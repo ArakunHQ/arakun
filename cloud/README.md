@@ -842,12 +842,12 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   environment variable. Sleep removes the server's sign-in file and ends the
   session before the snapshot, so no snapshot holds a live token.
 - **Model credentials.** The agents run on the owner's own account with the model
-  provider, in one of two ways. Arakun never collects, stores or routes a plan's
-  sign-in.
+  provider, in one of two ways. A plan's sign-in never passes through the Worker,
+  and no snapshot holds one that can be read.
   - *A sign-in* to a plan, made inside the machine with the agent's own flow: a
     Claude plan (Pro, Max, Team) for Claude Code, a ChatGPT plan for Codex. Open a
     terminal on the machine and run `claude`, then `/login`, or run
-    `codex login --device-auth`; open the link it prints and enter the code.
+    `codex login` (which asks for a device code here); open the link it prints and enter the code.
     `claude` and `codex` there are `machine/run`, which runs the CLI as `agent`,
     so the sign-in lands in that user's home folder, where the sessions find it.
     The token goes from the provider to the machine's disk: the Worker never sees

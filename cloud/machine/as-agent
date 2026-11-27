@@ -38,6 +38,11 @@ if [ "$1" = codex-acp ] && [ -n "${OPENAI_API_KEY:-}" ] && [ -z "${DEFAULT_AUTH_
   export DEFAULT_AUTH_REQUEST='{"methodId":"api-key"}'
 fi
 shift
+# `codex login` waits for a browser on this machine. None can reach it here,
+# so the sign-in asks for a code instead, as `codex login --device-auth` does.
+if [ "$program" = /opt/arakun/codex/node_modules/.bin/codex ] && [ "$*" = login ]; then
+  set -- login --device-auth
+fi
 exec /usr/bin/setpriv --reuid=agent --regid=agent --init-groups \
   --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
   -- "$program" "$@"

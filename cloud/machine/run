@@ -10,7 +10,7 @@
 #   /usr/local/bin/codex         machine, for the owner's sign-in
 #
 # The owner signs in to their plan here (`claude`, then /login; or
-# `codex login --device-auth`), and the sign-in lands in the home folder of
+# `codex login`), and the sign-in lands in the home folder of
 # `agent`, where the sessions find it. Run as the server's user it would land
 # where no session looks. The token goes from the provider to this disk and
 # nowhere else.

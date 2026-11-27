@@ -358,9 +358,9 @@ impl Section {
         .to_lowercase();
         query.split_whitespace().all(|w| text.contains(w))
             || (self == Section::Shortcuts
-                && SHORTCUTS
+                && crate::keymap::sheet()
                     .iter()
-                    .any(|sc| SettingsDialog::shortcut_matches(query, sc)))
+                    .any(|line| SettingsDialog::shortcut_matches(query, line)))
     }
 }
 
@@ -381,78 +381,6 @@ fn start_on(section: Section) {
     let ix = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
 }
-
-/// (group, keys, description)
-type Shortcut = (&'static str, &'static str, &'static str);
-
-const SHORTCUTS: &[Shortcut] = &[
-    (
-        "Navigate",
-        "Ctrl+K / Ctrl+P",
-        "Jump to a session, environment or command",
-    ),
-    ("Navigate", "Alt+↑ / Alt+↓", "Previous / next environment"),
-    ("Navigate", "Ctrl+B", "Hide or show the sidebar"),
-    ("Navigate", "Ctrl+,", "Settings"),
-    (
-        "Navigate",
-        "Ctrl+= / Ctrl+- / Ctrl+0",
-        "Zoom the interface in / out / back to 100%",
-    ),
-    (
-        "Navigate",
-        "Ctrl+Shift+H",
-        "Redacted mode: hide emails, keys and codes on screen",
-    ),
-    ("Sessions", "Ctrl+T", "New session"),
-    ("Sessions", "Esc", "Stop the running agent turn"),
-    ("Sessions", "Ctrl+S", "Save the draft as a ! prompt"),
-    ("Projects", "Ctrl+O", "Add project"),
-    ("Projects", "Ctrl+Shift+N", "New environment"),
-    ("Tabs and panes", "Ctrl+W", "Close tab"),
-    (
-        "Tabs and panes",
-        "Alt+P",
-        "Pin or unpin a session in the title bar (with sessions in the sidebar)",
-    ),
-    (
-        "Tabs and panes",
-        "Alt+← / Alt+→",
-        "Back / forward through tabs",
-    ),
-    (
-        "Tabs and panes",
-        "Ctrl+Tab / Ctrl+Shift+Tab",
-        "Next / previous tab (also Ctrl+PgDn / PgUp)",
-    ),
-    (
-        "Tabs and panes",
-        "Ctrl+1 … Ctrl+9",
-        "Go to tab 1–8, or the last tab",
-    ),
-    (
-        "Tabs and panes",
-        "Ctrl+D / Ctrl+Shift+D",
-        "Split right / down (again to unsplit)",
-    ),
-    (
-        "Tabs and panes",
-        "Ctrl+Alt+Arrows",
-        "Move focus to the other pane",
-    ),
-    (
-        "Terminal and browser",
-        "Ctrl+J / Ctrl+`",
-        "Toggle terminal dock",
-    ),
-    ("Terminal and browser", "Ctrl+Shift+T", "New terminal"),
-    (
-        "Terminal and browser",
-        "Ctrl+Shift+F",
-        "Find in the terminal (Enter older, ↓ newer)",
-    ),
-    ("Terminal and browser", "Ctrl+Shift+B", "New browser tab"),
-];
 
 /// The queue key of the "Test voice" sample.
 const TEST_KEY: &str = "settings-test";
@@ -934,14 +862,20 @@ impl SettingsDialog {
         self.input.read(cx).text().trim().to_lowercase()
     }
 
-    fn shortcut_matches(query: &str, (group, keys, what): &Shortcut) -> bool {
+    fn shortcut_matches(query: &str, line: &crate::keymap::Line) -> bool {
+        let keys = Self::shortcut_keys(line);
         query.is_empty()
-            || what.to_lowercase().contains(query)
+            || line.label.to_lowercase().contains(query)
             || keys.to_lowercase().contains(query)
-            || crate::platform::shortcut_label(keys)
+            || crate::platform::shortcut_label(&keys)
                 .to_lowercase()
                 .contains(query)
-            || group.to_lowercase().contains(query)
+            || line.group.to_lowercase().contains(query)
+    }
+
+    /// A line's keys as `keycaps` reads them: "Ctrl+K / Ctrl+P".
+    fn shortcut_keys(line: &crate::keymap::Line) -> String {
+        crate::keymap::key_labels(&line.keys, true).join(" / ")
     }
 
     /// The sections the search leaves, in order.
@@ -2429,11 +2363,14 @@ impl SettingsDialog {
 
     fn render_shortcuts(&self, cx: &App) -> AnyElement {
         let q = self.query(cx);
-        let mut groups: Vec<(&str, Vec<&Shortcut>)> = Vec::new();
-        for sc in SHORTCUTS.iter().filter(|sc| Self::shortcut_matches(&q, sc)) {
-            match groups.iter_mut().find(|(g, _)| *g == sc.0) {
-                Some((_, v)) => v.push(sc),
-                None => groups.push((sc.0, vec![sc])),
+        let mut groups: Vec<(&str, Vec<crate::keymap::Line>)> = Vec::new();
+        for line in crate::keymap::sheet()
+            .into_iter()
+            .filter(|line| Self::shortcut_matches(&q, line))
+        {
+            match groups.iter_mut().find(|(g, _)| *g == line.group) {
+                Some((_, v)) => v.push(line),
+                None => groups.push((line.group, vec![line])),
             }
         }
         if groups.is_empty() {
@@ -2453,7 +2390,7 @@ impl SettingsDialog {
                         name,
                         items
                             .into_iter()
-                            .map(|(_, keys, what)| {
+                            .map(|line| {
                                 div()
                                     .flex()
                                     .items_center()
@@ -2467,9 +2404,9 @@ impl SettingsDialog {
                                             .min_w_0()
                                             .text_size(px(ui::TEXT_MD))
                                             .text_color(theme::text_muted())
-                                            .child(*what),
+                                            .child(line.label),
                                     )
-                                    .child(keycaps(keys))
+                                    .child(keycaps(&Self::shortcut_keys(&line)))
                                     .into_any_element()
                             })
                             .collect(),
@@ -2967,7 +2904,11 @@ mod tests {
 
     #[test]
     fn shortcut_search_reads_keys_and_words() {
-        let sc = &("Tabs and panes", "Ctrl+W", "Close tab");
+        let sc = &crate::keymap::Line {
+            group: "Tabs and panes",
+            label: "Close the tab",
+            keys: vec!["ctrl-w"],
+        };
         assert!(SettingsDialog::shortcut_matches("ctrl+w", sc));
         assert!(SettingsDialog::shortcut_matches("close", sc));
         assert!(SettingsDialog::shortcut_matches("panes", sc));

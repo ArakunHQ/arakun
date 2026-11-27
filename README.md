@@ -2080,37 +2080,129 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
-- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` switch the workspace panel to its Session tab (the session's pull request and subagents) and back
-- `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
-- `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
-  switch environments
-- `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
-  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right, `Alt+P` pins
-  or unpins a session (see Pinned tabs). A middle click
-  closes a tab, dragging it left or right moves it there (a line marks where it lands,
-  and the order stays after a restart), and its right-click menu also
+<!-- shortcuts: begin; written from src/keymap.rs -->
+
+**Navigate**
+
+| Keys | What they do |
+| -- | -- |
+| `Ctrl+K` / `Ctrl+P` | Open the palette: jump to a session, environment or command |
+| `Alt+Up` / `Alt+Down` | Previous / next environment |
+| `Alt+Left` / `Alt+Right` | Back / forward through tabs |
+| `Ctrl+B` | Hide or show the sidebar |
+| `Ctrl+Alt+B` | Hide or show the Workspace panel |
+| `Ctrl+Alt+S` | Switch the Workspace panel to its Session tab and back |
+| `Ctrl+F` | Search the session |
+| `Ctrl+Alt+1` … `Ctrl+Alt+9` | Open pin 1–9, from anywhere |
+| `Ctrl+,` | Settings |
+
+**Projects and sessions**
+
+| Keys | What they do |
+| -- | -- |
+| `Ctrl+T` | New session |
+| `Ctrl+Shift+N` | New environment, at once on a random branch |
+| `Ctrl+Alt+N` | New environment, asking for the branch and options first |
+| `Ctrl+O` | Add project |
+
+**Tabs and panes**
+
+| Keys | What they do |
+| -- | -- |
+| `Ctrl+W` | Close the tab |
+| `Ctrl+Alt+T` | Reopen the last closed tab where it was |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+PgDn` / `Ctrl+PgUp` | Next / previous tab, across environments |
+| `Ctrl+1` … `Ctrl+9` | Go to tab 1–8, or the last tab |
+| `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDn` | Move the tab left / right |
+| `Alt+P` | Pin or unpin the session's tab in the title bar |
+| `Ctrl+D` / `Ctrl+Shift+D` | Split right / down (again to unsplit) |
+| `Ctrl+Alt+Arrows` | Move the focus to the other pane |
+| `Ctrl+Alt+Shift+Arrows` | Swap the panes |
+
+**Terminal and browser**
+
+| Keys | What they do |
+| -- | -- |
+| `Ctrl+J` / `` Ctrl+` `` | Show or hide the terminal dock |
+| `Ctrl+Shift+T` / `` Ctrl+Shift+` `` | New terminal |
+| `Ctrl+Shift+F` | Find in the terminal (Enter older, ↓ newer) |
+| `Ctrl+Shift+B` | New browser tab |
+
+**Zoom and screen**
+
+| Keys | What they do |
+| -- | -- |
+| `Ctrl+=` / `Ctrl++` / `Ctrl+-` / `Ctrl+0` | Zoom the interface in / out / back to 100% |
+| `Ctrl+Shift+H` | Redacted mode: hide emails, keys and codes on screen |
+
+**In the palette**
+
+| Keys | What they do |
+| -- | -- |
+| `Right` | Open a row's actions, or go into it |
+| `Left` | Go back |
+| `Space` | Mark rows, after the arrows, for the bar at the bottom |
+| `Alt+P` | Pin or unpin the selected row |
+| `Alt+Shift+Up` / `Alt+Shift+Down` | Move the selected pin up / down |
+| `Tab` | Switch the filter |
+| `Ctrl+Enter` | Ask an agent |
+
+**In the composer**
+
+| Keys | What they do |
+| -- | -- |
+| `Enter` | Send, or queue while the agent works |
+| `Shift+Enter` | New line |
+| `Ctrl+Enter` | Stop the turn and send now |
+| `Esc` | Stop the running agent turn |
+| `Up` | Earlier prompts, on an empty composer |
+| `Ctrl+S` | Save the draft as a ! prompt |
+
+**In the GitHub tab**
+
+| Keys | What they do |
+| -- | -- |
+| `J` / `K` / `Down` / `Up` | Next / previous item |
+| `Enter` / `Esc` | Open the item's sheet / close it |
+| `A` | Approve |
+| `C` | Comment |
+| `R` | Review with an agent |
+| `U` | Catch me up |
+| `S` | Summarize |
+| `D` | All or fewer details |
+| `O` | Open on GitHub |
+| `1` / `2` / `3` / `4` | On a pilot card: send ready answer 1–4 |
+| `E` | On a pilot card: Other answer… |
+| `Y` | On a pilot card: mark it dealt with |
+
+<!-- shortcuts: end -->
+
+More about some of them:
+
+- `Ctrl+T` makes its new session in a new worktree, made when you send the first
+  prompt, unless the open one is a worktree without one.
+- A middle click closes a tab, dragging it left or right moves it there (a line marks
+  where it lands, and the order stays after a restart), and its right-click menu also
   opens a new session or closes the other tabs of its environment or those to its
-  right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
-  and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen
-  closed tab in the File menu or a tab's right-click menu
-- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
-  `Ctrl+Alt+N` asks for the branch and options first
-- `Ctrl+F` search the session
+  right. The tab on screen stays open when its environment has no other. `Alt+P` pins
+  or unpins a session (see Pinned tabs). GNOME, Ubuntu and some KDE setups keep
+  `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the File
+  menu or a tab's right-click menu
 - `Tab` / `Shift+Tab` move between buttons, switches and menu rows, and `Enter` or
   `Space` presses the one with the ring. Terminals, web pages, fields and the composer
   keep `Tab` for themselves
-- `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
+- The palette (`Ctrl+K` or `Ctrl+P`): sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
   `#` lists every open pull request of your projects' repositories, not only yours;
   `#86` finds that one even when it is closed or merged, and a first word that names a
   repository or project narrows to it (`#arakun 86`, `#frameshi`).
   In it: `→` opens a row's actions or goes into it (a project, a person, Branches), `←`
-  goes back; `Space` after the arrows marks rows for the bar at the bottom; `Ctrl+P` pins
-  a row to the top of the palette and the sidebar, and `Ctrl+1...9` opens a pin
-  (`Ctrl+Alt+1...9` anywhere, `Alt+Up` / `Alt+Down` reorder them); `Ctrl+Enter` asks an
-  agent. On a cloud task card (`cloud: <task>`), `Enter` sends it, `Tab` switches
+  goes back; `Space` after the arrows marks rows for the bar at the bottom; `Alt+P` pins
+  a row to the top of the palette and the sidebar, `Ctrl+Alt+1...9` opens a pin (in the
+  palette too), and `Alt+Shift+Up` / `Alt+Shift+Down` reorder them; `Ctrl+Enter` asks an
+  agent. A key the window uses means the same in the palette: `Ctrl+1...9` still
+  switches tabs and `Alt+Up` / `Alt+Down` environments. On a cloud task card (`cloud: <task>`), `Enter` sends it, `Tab` switches
   between the open pull request and a new branch (only when there is a pull request),
   and `Esc` cancels. A question offers a short answer from Claude Haiku through Claude Code, on
   your Claude account or the key or endpoint Claude Code is set up with: `Enter` on the offer asks, and nothing is sent

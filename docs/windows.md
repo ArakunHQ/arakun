@@ -149,7 +149,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Notice history | `%LOCALAPPDATA%\arakun\notices.json` |
 | Saved palettes | `%LOCALAPPDATA%\arakun\palettes.json` |
 | `Ctrl+K` rules | `%LOCALAPPDATA%\arakun\rules.json` |
-| What you pinned from the palette (`Ctrl+P`) | `%LOCALAPPDATA%\arakun\pins.json` |
+| What you pinned from the palette (`Alt+P`) | `%LOCALAPPDATA%\arakun\pins.json` |
 | Your to-dos, added from the palette | `%LOCALAPPDATA%\arakun\todos.json` |
 | What the palette ranks first | `%LOCALAPPDATA%\arakun\palette-frecency.json` |
 | Voice settings | `%LOCALAPPDATA%\arakun\voice.json` |

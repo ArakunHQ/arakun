@@ -126,8 +126,12 @@ impl Render for ProfileDialog {
             .map(|p| p.to_path_buf());
         let name = self.shown_name(login.as_deref());
         let subtitle = match &login {
-            Some(l) => format!("@{} · Signed in with GitHub", crate::redact::value(l)),
-            None if signed_in => "Signed in with GitHub".to_string(),
+            Some(l) => format!(
+                "{} · {}",
+                crate::arakun_teams::account_name(l),
+                crate::arakun_teams::signed_in_with(l)
+            ),
+            None if signed_in => "Signed in".to_string(),
             None if !self.git.1.is_empty() => crate::redact::value(&self.git.1).to_string(),
             None => "Not signed in".to_string(),
         };

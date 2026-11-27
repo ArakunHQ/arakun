@@ -299,7 +299,7 @@ pub struct PhoneView {
 
 /// Under the sign-in button: phones paired by link before accounts stopped
 /// working through the relay, and the ways in that need no account.
-const SIGN_IN_OR_TAILSCALE: &str = "Since 0.19 phones paired by link must sign in with the same GitHub account. To use no account, pick Tailscale or Same Wi-Fi above.";
+const SIGN_IN_OR_TAILSCALE: &str = "Since 0.19 phones paired by link must sign in to the same account. To use no account, pick Tailscale or Same Wi-Fi above.";
 /// Said next to the way in when the page comes from this computer.
 const AWAKE_NOTE: &str = "In this mode the page comes from this computer, so it only opens while the computer is on and awake. Relay works from anywhere and says when the computer is offline.";
 
@@ -487,16 +487,13 @@ impl PhoneView {
             ));
         match &self.beta {
             BetaState::SignedOut => section
-                .child(note(
-                    "Sign in with GitHub to sign up.".into(),
-                    theme::text_faint(),
-                ))
+                .child(note("Sign in to sign up.".into(), theme::text_faint()))
                 .child(
                     div().flex().child(
                         ui::button_with(
                             "phone-beta-sign-in",
-                            Some("github"),
-                            "Sign in with GitHub",
+                            Some("user"),
+                            "Sign in",
                             ButtonKind::Outline,
                             true,
                         )
@@ -707,8 +704,8 @@ impl PhoneView {
                     div().flex().child(
                         ui::button_with(
                             "phone-sign-in",
-                            Some("github"),
-                            "Sign in with GitHub",
+                            Some("user"),
+                            "Sign in",
                             ButtonKind::Primary,
                             true,
                         )
@@ -731,7 +728,10 @@ impl PhoneView {
                     div()
                         .text_size(px(ui::TEXT_SM))
                         .text_color(theme::text_muted())
-                        .child(format!("Signed in as @{}", crate::redact::value(login))),
+                        .child(format!(
+                            "Signed in as {}",
+                            crate::arakun_teams::account_name(login)
+                        )),
                 )
                 .child(self.render_page(&relay.url, cx))
                 .child(Self::render_signed_in(devices, cx))

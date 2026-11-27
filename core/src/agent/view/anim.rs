@@ -7,6 +7,8 @@
 //! and holds them still when the system reduces motion.
 //! Arrivals are keyed by entry, not by element: the list drops an element's
 //! state when it scrolls away, and an old reply must not replay its entrance.
+//! Every arrival lasts `motion::FAST` and only the newest entries make one,
+//! so a busy turn costs a few frames per block, not a frame per display tick.
 
 use super::*;
 use crate::ui::motion;
@@ -200,13 +202,23 @@ pub(super) enum Fold {
     Row,
 }
 
+/// A fold on its way open or shut: when it started, and which way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Toggle {
+    start: Instant,
+    open: bool,
+}
+
 /// When entries arrived and folds opened, for the motion they get.
 #[derive(Default)]
 pub(super) struct Arrivals {
     /// Entries the view has seen; ones past this are new.
     seen: usize,
     entries: HashMap<usize, Instant>,
-    folds: HashMap<(Fold, usize), Instant>,
+    folds: HashMap<(Fold, usize), Toggle>,
+    /// The full height of each moving fold's contents, as last laid out,
+    /// for the height it grows to or shrinks from.
+    heights: Rc<RefCell<HashMap<(Fold, usize), Pixels>>>,
 }
 
 impl Arrivals {
@@ -219,54 +231,101 @@ impl Arrivals {
 
     /// The thread now has `len` entries. New ones get an entrance when the
     /// agent is at work and they came a few at a time; a load or a replay
-    /// of history just shows up.
-    pub(super) fn entries_now(&mut self, len: usize, at_work: bool, now: Instant) {
+    /// of history just shows up. True when one does.
+    pub(super) fn entries_now(&mut self, len: usize, at_work: bool, now: Instant) -> bool {
+        let mut arrived = false;
         if len < self.seen {
             self.entries.retain(|&ix, _| ix < len);
-        } else if at_work && len - self.seen <= MAX_ARRIVALS {
+        } else if at_work && len > self.seen && len - self.seen <= MAX_ARRIVALS {
             for ix in self.seen..len {
                 self.entries.insert(ix, now);
             }
+            arrived = true;
         }
         self.seen = len;
+        arrived
     }
 
     pub(super) fn reset(&mut self, len: usize) {
         *self = Arrivals::new(len);
     }
 
-    pub(super) fn opened(&mut self, fold: Fold, key: usize, now: Instant) {
-        self.folds.insert((fold, key), now);
+    /// Fold `key` starts to open, or to shut. Turned back midway, it starts
+    /// from the height it shows, so it doesn't jump.
+    pub(super) fn toggled(&mut self, fold: Fold, key: usize, open: bool, now: Instant) {
+        let start = match self.folds.get(&(fold, key)) {
+            Some(t) if t.open != open && since(t.start, now) < 1. => {
+                let shown = fold_share(since(t.start, now), t.open);
+                now - motion::FAST.mul_f32(fold_t_at(shown, open))
+            }
+            _ => now,
+        };
+        self.folds.insert((fold, key), Toggle { start, open });
     }
 
-    pub(super) fn closed(&mut self, fold: Fold, key: usize) {
-        self.folds.remove(&(fold, key));
+    /// Whether fold `key` is still shutting, so its contents stay drawn.
+    pub(super) fn shutting(&self, fold: Fold, key: usize, now: Instant) -> bool {
+        self.folds
+            .get(&(fold, key))
+            .is_some_and(|t| !t.open && now.saturating_duration_since(t.start) < motion::FAST)
     }
 
     /// How far entry `ix` is into its entrance, if it is still making one.
     fn entry_t(&mut self, ix: usize, now: Instant) -> Option<f32> {
-        progress(&mut self.entries, ix, motion::BASE, now)
+        let start = *self.entries.get(&ix)?;
+        let t = since(start, now);
+        if t >= 1. {
+            self.entries.remove(&ix);
+            return None;
+        }
+        Some(t)
     }
 
-    fn fold_t(&mut self, fold: Fold, key: usize, now: Instant) -> Option<f32> {
-        progress(&mut self.folds, (fold, key), motion::BASE, now)
+    /// How far fold `key` is into opening or shutting, and which.
+    fn fold_t(&mut self, fold: Fold, key: usize, now: Instant) -> Option<(f32, bool)> {
+        let toggle = *self.folds.get(&(fold, key))?;
+        let t = since(toggle.start, now);
+        if t >= 1. {
+            self.folds.remove(&(fold, key));
+            self.heights.borrow_mut().remove(&(fold, key));
+            return None;
+        }
+        Some((t, toggle.open))
     }
 }
 
-/// `start`'s progress through `duration`, forgetting it once done.
-fn progress<K: std::hash::Hash + Eq>(
-    map: &mut HashMap<K, Instant>,
-    key: K,
-    duration: Duration,
-    now: Instant,
-) -> Option<f32> {
-    let start = *map.get(&key)?;
-    let t = now.saturating_duration_since(start).as_secs_f32() / duration.as_secs_f32();
-    if t >= 1. {
-        map.remove(&key);
-        return None;
-    }
-    Some(t)
+/// How far `FAST` has run since `start`, from 0.
+fn since(start: Instant, now: Instant) -> f32 {
+    now.saturating_duration_since(start).as_secs_f32() / motion::FAST.as_secs_f32()
+}
+
+/// How much of a fold's full height shows `t` into its toggle, 0 to 1.
+pub(super) fn fold_share(t: f32, open: bool) -> f32 {
+    let e = motion::ease_out(t.clamp(0., 1.));
+    if open { e } else { 1. - e }
+}
+
+/// The point in a toggle where `shown` of the fold's height shows: the
+/// inverse of `fold_share`.
+fn fold_t_at(shown: f32, open: bool) -> f32 {
+    let shown = shown.clamp(0., 1.);
+    let eased = if open { shown } else { 1. - shown };
+    // `ease_out` is 1 - (1 - t)^4.
+    1. - (1. - eased).powf(0.25)
+}
+
+/// Where the transcript is `t` into a glide from `from` to `to`, in pixels
+/// scrolled. It eases out, so it moves off quickly and settles at the end.
+pub(super) fn glide_at(from: f32, to: f32, t: f32) -> f32 {
+    from + (to - from) * motion::ease_out(t.clamp(0., 1.))
+}
+
+/// The transcript easing down to its new end after an entry arrived.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Glide {
+    start: Instant,
+    /// Pixels scrolled when it began.
+    from: f32,
 }
 
 impl ThreadView {
@@ -277,7 +336,9 @@ impl ThreadView {
         self.moving(t, motion::From::Below, RISE, el, cx)
     }
 
-    /// `el`, the contents of a fold, dropping into place if it just opened.
+    /// `el`, the contents of a fold. While it opens it grows from nothing
+    /// to its full height and drops into place; while it shuts it shrinks
+    /// away and fades. The rows under it follow the height, not jump.
     pub(super) fn unfold(
         &mut self,
         fold: Fold,
@@ -285,15 +346,102 @@ impl ThreadView {
         el: AnyElement,
         cx: &App,
     ) -> AnyElement {
-        let t = self.entrances.fold_t(fold, key, Instant::now());
-        self.moving(t, motion::From::Above, DROP, el, cx)
+        let Some((t, open)) = self
+            .entrances
+            .fold_t(fold, key, Instant::now())
+            .filter(|_| !cx.reduce_motion())
+        else {
+            return el;
+        };
+        self.fading = true;
+        let el = if open {
+            self.moving(Some(t), motion::From::Above, DROP, el, cx)
+        } else {
+            div()
+                .min_w_0()
+                .opacity(1. - motion::ease_out(t))
+                .child(el)
+                .into_any_element()
+        };
+        let heights = self.entrances.heights.clone();
+        let full = heights.borrow().get(&(fold, key)).copied();
+        // The contents keep their own height inside a clip; the first frame
+        // only measures it. Opening shows none of it yet, shutting all of it.
+        let shown = match full {
+            Some(full) => Some(full * fold_share(t, open)),
+            None if open => Some(px(0.)),
+            None => None,
+        };
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .overflow_hidden()
+            .when_some(shown, |d, h| d.h(h))
+            .on_children_prepainted(move |bounds, _, _| {
+                if let Some(b) = bounds.first() {
+                    heights.borrow_mut().insert((fold, key), b.size.height);
+                }
+            })
+            .child(div().flex_none().min_w_0().child(el))
+            .into_any_element()
     }
 
     pub(super) fn opened(&mut self, fold: Fold, key: usize, open: bool) {
-        if open {
-            self.entrances.opened(fold, key, Instant::now());
-        } else {
-            self.entrances.closed(fold, key);
+        // A turn's work shuts by rebuilding the list's rows around it, so it
+        // can't draw on its way out: it snaps shut, with nothing to turn back from.
+        if fold == Fold::Work && !open {
+            self.entrances.folds.remove(&(fold, key));
+            return;
+        }
+        self.entrances.toggled(fold, key, open, Instant::now());
+    }
+
+    /// Whether a fold just closed and still draws its contents on the way.
+    pub(super) fn shutting(&self, fold: Fold, key: usize, cx: &App) -> bool {
+        !cx.reduce_motion() && self.entrances.shutting(fold, key, Instant::now())
+    }
+
+    /// Starts easing the transcript down to its new end, if it follows the
+    /// end and motion is on. Streamed text still follows at once; this is
+    /// for a new block.
+    pub(super) fn start_glide(&mut self, cx: &App) {
+        if cx.reduce_motion() || !(self.following && self.list.is_following_tail()) {
+            return;
+        }
+        let from = f32::from(-self.list.scroll_px_offset_for_scrollbar().y);
+        // Hold the list where it is; `step_glide` moves it from here.
+        self.list.pause_following_tail();
+        self.glide = Some(Glide {
+            start: Instant::now(),
+            from,
+        });
+    }
+
+    /// One frame of the glide: scroll toward the end as it stands now, which
+    /// moves while text streams, then follow the end again.
+    pub(super) fn step_glide(&mut self, window: &Window) {
+        let Some(g) = self.glide else {
+            return;
+        };
+        let t = since(g.start, Instant::now());
+        let to = f32::from(self.list.max_offset_for_scrollbar().y);
+        let at = f32::from(-self.list.scroll_px_offset_for_scrollbar().y);
+        if t >= 1. || !self.following || to <= g.from {
+            self.end_glide();
+            return;
+        }
+        let want = glide_at(g.from, to, t);
+        if want > at {
+            self.list.scroll_by(px(want - at));
+        }
+        motion::redraw_on_tick(window);
+    }
+
+    /// Stops the glide and follows the end again.
+    pub(super) fn end_glide(&mut self) {
+        if self.glide.take().is_some() && self.following {
+            self.list.set_follow_mode(FollowMode::Tail);
         }
     }
 
@@ -355,13 +503,13 @@ mod tests {
     fn entries_arriving_while_at_work_make_an_entrance() {
         let t0 = Instant::now();
         let mut a = Arrivals::new(3);
-        a.entries_now(5, true, t0);
+        assert!(a.entries_now(5, true, t0));
         assert_eq!(a.entry_t(2, t0), None);
         assert_eq!(a.entry_t(3, t0), Some(0.));
-        let half = t0 + motion::BASE / 2;
+        let half = t0 + motion::FAST / 2;
         assert!((a.entry_t(4, half).unwrap() - 0.5).abs() < 1e-3);
         // Done is forgotten.
-        assert_eq!(a.entry_t(4, t0 + motion::BASE), None);
+        assert_eq!(a.entry_t(4, t0 + motion::FAST), None);
         assert!(!a.entries.contains_key(&4));
     }
 
@@ -369,10 +517,12 @@ mod tests {
     fn a_load_or_a_replay_just_shows_up() {
         let t0 = Instant::now();
         let mut a = Arrivals::new(0);
-        a.entries_now(40, true, t0);
+        assert!(!a.entries_now(40, true, t0));
         assert!(a.entries.is_empty());
-        a.entries_now(41, false, t0);
+        assert!(!a.entries_now(41, false, t0));
         assert!(a.entries.is_empty());
+        // Nothing new, nothing to glide to.
+        assert!(!a.entries_now(41, true, t0));
         // A rewind drops what it cut; what comes after it arrives again.
         a.entries_now(42, true, t0);
         a.entries_now(30, true, t0);
@@ -385,10 +535,54 @@ mod tests {
     fn folds_of_different_kinds_keep_apart() {
         let t0 = Instant::now();
         let mut a = Arrivals::default();
-        a.opened(Fold::Phase, 7, t0);
+        a.toggled(Fold::Phase, 7, true, t0);
         assert_eq!(a.fold_t(Fold::Row, 7, t0), None);
-        assert_eq!(a.fold_t(Fold::Phase, 7, t0), Some(0.));
-        a.closed(Fold::Phase, 7);
-        assert_eq!(a.fold_t(Fold::Phase, 7, t0), None);
+        assert_eq!(a.fold_t(Fold::Phase, 7, t0), Some((0., true)));
+        assert!(!a.shutting(Fold::Phase, 7, t0));
+    }
+
+    #[test]
+    fn a_shutting_fold_draws_until_it_is_shut() {
+        let t0 = Instant::now();
+        let mut a = Arrivals::default();
+        a.toggled(Fold::Row, 3, false, t0);
+        assert!(a.shutting(Fold::Row, 3, t0));
+        assert_eq!(a.fold_t(Fold::Row, 3, t0), Some((0., false)));
+        let end = t0 + motion::FAST;
+        assert!(!a.shutting(Fold::Row, 3, end));
+        assert_eq!(a.fold_t(Fold::Row, 3, end), None);
+        assert!(a.folds.is_empty());
+    }
+
+    #[test]
+    fn a_fold_turned_back_midway_starts_from_where_it_shows() {
+        let t0 = Instant::now();
+        let mut a = Arrivals::default();
+        a.toggled(Fold::Row, 3, true, t0);
+        let quarter = t0 + motion::FAST / 4;
+        a.toggled(Fold::Row, 3, false, quarter);
+        let (t, open) = a.fold_t(Fold::Row, 3, quarter).unwrap();
+        assert!(!open);
+        let before = fold_share(0.25, true);
+        assert!((fold_share(t, false) - before).abs() < 1e-3, "{t}");
+    }
+
+    #[test]
+    fn a_fold_grows_to_its_height_and_shrinks_away() {
+        assert_eq!(fold_share(0., true), 0.);
+        assert_eq!(fold_share(1., true), 1.);
+        assert_eq!(fold_share(0., false), 1.);
+        assert_eq!(fold_share(1., false), 0.);
+        let opening: Vec<_> = (0..=10).map(|i| fold_share(i as f32 / 10., true)).collect();
+        assert!(opening.windows(2).all(|w| w[1] >= w[0]));
+    }
+
+    #[test]
+    fn the_glide_eases_to_the_end_and_stops_there() {
+        assert_eq!(glide_at(100., 300., 0.), 100.);
+        assert_eq!(glide_at(100., 300., 1.), 300.);
+        assert_eq!(glide_at(100., 300., 2.), 300.);
+        // Eased out: past halfway by half time.
+        assert!(glide_at(100., 300., 0.5) > 200.);
     }
 }

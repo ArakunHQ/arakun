@@ -85,12 +85,15 @@ impl Secrets {
 
     /// [`Secrets::save`], and the values saved for the project too, under
     /// `name` ([`saved_secret::names_for`]); `taken` are the secrets the
-    /// project has already. Returns what to list in the project's state. On
-    /// an error nothing is kept and the request stays open.
+    /// project has already. With `references`, the values were read from a
+    /// password manager, and the project keeps the references instead.
+    /// Returns what to list in the project's state. On an error nothing is
+    /// kept and the request stays open.
     fn save_kept(
         &mut self,
         id: u64,
         values: Vec<String>,
+        references: Option<&[String]>,
         name: &str,
         taken: &[saved_secret::Saved],
         cwd: &Path,
@@ -104,6 +107,9 @@ impl Secrets {
         if values.len() != request.fields.len() || values.iter().any(|v| v.is_empty()) {
             return Err("Fill in every field.".into());
         }
+        if references.is_some_and(|r| r.len() != values.len()) {
+            return Err("Fill in every field.".into());
+        }
         let labels: Vec<String> = request.fields.iter().map(|f| f.label.clone()).collect();
         let mut taken = taken.to_vec();
         let mut names = Vec::with_capacity(labels.len());
@@ -113,13 +119,18 @@ impl Secrets {
                 id: String::new(),
                 name: n.clone(),
                 env: None,
+                reference: None,
             });
             names.push(n);
         }
         let undo = |stored: &[saved_secret::Saved]| stored.iter().for_each(saved_secret::remove);
         let mut stored: Vec<saved_secret::Saved> = Vec::with_capacity(names.len());
-        for (n, v) in names.iter().zip(&values) {
-            match saved_secret::store(n, v) {
+        for (i, (n, v)) in names.iter().zip(&values).enumerate() {
+            let kept = match references {
+                Some(r) => saved_secret::store_reference(n, &r[i]),
+                None => saved_secret::store(n, v),
+            };
+            match kept {
                 Ok(s) => stored.push(s),
                 Err(e) => {
                     undo(&stored);
@@ -321,12 +332,15 @@ impl Thread {
     /// Saves what the user typed, one value per field, and hands the agent
     /// a handle for each. With `keep_as`, the values are saved for the
     /// project too, under that name ([`saved_secret::names_for`]), and
-    /// [`ThreadEvent::SecretsSaved`] asks the shell to list them. On an
-    /// error the card stays, so nothing is lost.
+    /// [`ThreadEvent::SecretsSaved`] asks the shell to list them. With
+    /// `references`, the card read the values from a password manager, and
+    /// the project keeps the references, not the values. On an error the
+    /// card stays, so nothing is lost.
     pub fn save_secret(
         &mut self,
         id: u64,
         values: Vec<String>,
+        references: Option<&[String]>,
         keep_as: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -336,7 +350,7 @@ impl Thread {
         let taken = super::super::sandbox::saved(&self.cwd);
         let saved = self
             .secrets
-            .save_kept(id, values, name, &taken, &self.cwd)?;
+            .save_kept(id, values, references, name, &taken, &self.cwd)?;
         self.secret_ended(cx);
         cx.emit(ThreadEvent::SecretsSaved(saved));
         Ok(())
@@ -516,12 +530,13 @@ mod tests {
             id: "old".into(),
             name: "staging db (user)".into(),
             env: None,
+            reference: None,
         }];
         let values = || vec!["admin".to_string(), "pw-kept".to_string()];
         // A name the project has already: nothing is kept, the card stays.
         assert!(
             t.secrets
-                .save_kept(id, values(), "Staging DB", &taken, &t.cwd)
+                .save_kept(id, values(), None, "Staging DB", &taken, &t.cwd)
                 .is_err()
         );
         assert!(t.pending_secret().is_some());
@@ -532,7 +547,7 @@ mod tests {
 
         let saved = t
             .secrets
-            .save_kept(id, values(), " Staging DB ", &[], &t.cwd)
+            .save_kept(id, values(), None, " Staging DB ", &[], &t.cwd)
             .unwrap();
         let names: Vec<&str> = saved.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["Staging DB (User)", "Staging DB (Password)"]);
@@ -540,6 +555,41 @@ mod tests {
         // The agent got its one-use handles as before.
         assert!(matches!(answer.try_recv(), Ok(Some(Outcome::Saved(h))) if h.len() == 2));
         saved.iter().for_each(saved_secret::remove);
+    }
+
+    #[test]
+    fn a_card_answered_from_a_password_manager_keeps_the_reference() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        let (_route, mut answer, asked) =
+            ask(&json!({"label": "Stripe key", "reason": "To test."}));
+        let id = asked.request.id;
+        t.secrets.push(asked, None);
+        let reference = "op://Dev/card-stripe/credential".to_string();
+        let value = crate::password_manager::read_text(&reference).unwrap();
+        let saved = t
+            .secrets
+            .save_kept(
+                id,
+                vec![value.expose().into()],
+                Some(std::slice::from_ref(&reference)),
+                "Stripe key",
+                &[],
+                &t.cwd,
+            )
+            .unwrap();
+        assert_eq!(saved[0].reference.as_deref(), Some(reference.as_str()));
+        assert_eq!(
+            saved_secret::value(&saved[0]).unwrap().expose(),
+            "value-of-card-stripe"
+        );
+        // The agent got a handle for the value that was read.
+        let Ok(Some(Outcome::Saved(h))) = answer.try_recv() else {
+            panic!("no handle");
+        };
+        assert_eq!(
+            secret::take(&h[0].1, Path::new("/p")).unwrap().expose(),
+            "value-of-card-stripe"
+        );
     }
 
     #[test]

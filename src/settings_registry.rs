@@ -656,10 +656,10 @@ pub static ALL: &[Entry] = &[
         id: Id::SavedSecrets,
         key: "set-project-secrets",
         label: "Saved secrets",
-        hint: "Secrets an agent asked for and you saved for this project, by name, with Rename, Replace and Remove.",
+        hint: "Secrets an agent asked for and you saved for this project, by name, with Rename, Replace and Remove, or read from a password manager such as 1Password.",
         section: S::Project,
         card: "Saved secrets",
-        keywords: "api key password keyring rename replace remove variable",
+        keywords: "api key password keyring rename replace remove variable 1password op password manager reference",
         switch: None,
     },
     // Branches

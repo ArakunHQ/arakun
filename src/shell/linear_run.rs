@@ -21,6 +21,7 @@ use crate::cloud;
 use crate::linear::delegation::{Delegation, Refusal, target_for};
 use crate::linear::issues::{self, Detail};
 use crate::linear::runs::{Added, ReportKind, Run, RunState};
+use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, Session, prompt};
 use crate::phone::linear::{Delivery, DeliveryKind, GuidanceRule};
 
@@ -401,7 +402,7 @@ impl Shell {
                 }
             };
             if !this.linear_is_checkout(&project, &path) {
-                return this.linear_begin(start, detail, project, path, branch, window, cx);
+                return this.linear_fetch(start, detail, project, path, branch, window, cx);
             }
             // The branch is the one the main checkout is on: a session there
             // would commit under the person's feet.
@@ -425,11 +426,53 @@ impl Shell {
         same(project, path) || self.find_env(path).is_some_and(|e| e.is_checkout)
     }
 
+    /// Downloads the issue's uploads into the environment, off the UI
+    /// thread, then starts the session.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_fetch(
+        &mut self,
+        start: Start,
+        detail: Detail,
+        project: PathBuf,
+        env_path: PathBuf,
+        branch: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let sessions = crate::linear::sessions();
+        let sign_in = crate::linear::session_for(&sessions, &start.organization).cloned();
+        let env = env_path.clone();
+        let mut with_files = detail.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let (detail, files) = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        let files = match &sign_in {
+                            Some(s) => issues::fetch_uploads(s, &env, &mut with_files),
+                            None => uploads::unfetched(&with_files),
+                        };
+                        (with_files, files)
+                    },
+                    // The issue as read, with Linear's links.
+                    move |_| {
+                        let files = uploads::unfetched(&detail);
+                        (detail, files)
+                    },
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.linear_begin(start, detail, files, project, env_path, branch, window, cx)
+            });
+        })
+        .detach();
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn linear_begin(
         &mut self,
         start: Start,
         detail: Detail,
+        files: Fetched,
         project: PathBuf,
         env_path: PathBuf,
         branch: String,
@@ -469,7 +512,7 @@ impl Shell {
             settings.settle_in(env);
         }
         let title = prompt::title(&detail).into();
-        let text = prompt::delegated(&detail, &start.guidance);
+        let text = prompt::delegated(&detail, &start.guidance, &files);
         let started =
             self.start_session_with(&env_path, agent, title, text, false, Vec::new(), window, cx);
         let Some(session) = started else {

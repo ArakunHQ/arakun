@@ -16,6 +16,7 @@ pub mod prompt;
 pub mod remote;
 pub mod runs;
 pub mod start;
+pub mod uploads;
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -81,6 +82,8 @@ const ENDPOINT: &str = "https://api.linear.app/graphql";
 /// The most bytes of an answer read: a long issue with its comments fits.
 const ANSWER_LIMIT: u64 = 16 * 1024 * 1024;
 
+/// Never sends a key on to where a redirect points: ureq's default, which
+/// `uploads::download` counts on.
 fn http() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {

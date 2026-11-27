@@ -357,9 +357,16 @@ impl Shell {
     /// folded segment or the narrowed rail. Only then does the project list
     /// leave what waits or runs to it.
     pub(super) fn active_list_shown(&self) -> bool {
-        if crate::tab_layout::current().tree() {
-            return false;
-        }
+        !crate::tab_layout::current().tree() && self.active_piece_listed()
+    }
+
+    /// Whether the tree's sessions that need the user go up to Needs you,
+    /// the Active piece in the tree's layout: as for `active_list_shown`.
+    pub(super) fn needs_list_shown(&self) -> bool {
+        crate::tab_layout::current().tree() && self.active_piece_listed()
+    }
+
+    fn active_piece_listed(&self) -> bool {
         let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
             return false;
         };
@@ -1134,11 +1141,19 @@ impl Shell {
                 }
             }
             Piece::Active => {
-                // The tree lists every session already, with its state.
-                if narrow || crate::tab_layout::current().tree() {
+                if narrow {
                     return None;
                 }
-                self.render_active_block(cx)?
+                // With the tree, what runs stays in its project: only what
+                // needs the user goes up.
+                if crate::tab_layout::current().tree() {
+                    if !self.needs_list_shown() {
+                        return None;
+                    }
+                    self.render_needs_you(cx)?
+                } else {
+                    self.render_active_block(cx)?
+                }
             }
             Piece::Mascot => div()
                 .flex()

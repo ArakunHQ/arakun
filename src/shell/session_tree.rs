@@ -223,6 +223,8 @@ struct Row {
     /// Not working, not archived yet and not on a server: the same rule as
     /// the context menu's Archive.
     can_archive: bool,
+    /// Archived: it never goes up to Needs you.
+    settled: bool,
     /// It has a tab open. Without one the row is drawn dimmed.
     tab: bool,
     /// Its tab is pinned to the title bar: the row goes first in its
@@ -328,6 +330,27 @@ fn tree_rule(grouped: bool) -> gpui::Div {
         .bg(theme::border_subtle())
 }
 
+/// The order of the Needs you list, as indices into `rows`, given as
+/// `(id, state, last activity)`: what waits on the user, then what failed,
+/// then failed checks, the newest first in each. While the pointer is over
+/// the sidebar (`held`), the sessions listed when it came stay in their
+/// places whatever their state now, and none joins: no row moves from under
+/// the pointer.
+pub(super) fn needs_order(
+    rows: &[(SharedString, RowState, u64)],
+    held: Option<&[SharedString]>,
+) -> Vec<usize> {
+    if let Some(held) = held {
+        return held
+            .iter()
+            .filter_map(|id| rows.iter().position(|r| r.0 == *id))
+            .collect();
+    }
+    let mut ix: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].1.wants()).collect();
+    ix.sort_by_key(|&i| (rows[i].1.rank(), std::cmp::Reverse(rows[i].2)));
+    ix
+}
+
 impl Shell {
     /// The sessions of project `pi` the tree lists, in the projects list's
     /// order: archived ones only while archived sessions are shown.
@@ -360,6 +383,7 @@ impl Shell {
                     pr,
                     updated: s.updated,
                     can_archive: !s.settled && s.status != Status::Working && env.remote.is_none(),
+                    settled: s.settled,
                     tab: self.strip.session_tab(&s.id).is_some(),
                     pinned: self.is_pinned(&s.id),
                     band: Band::Rest,
@@ -377,8 +401,16 @@ impl Shell {
     fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
         let layout = crate::tab_layout::current();
         let held = self.rail.tree_held.as_ref();
+        // Listed in Needs you instead, so each session shows once. The
+        // Sessions menu, which searches, has them all.
+        let above: Vec<SharedString> = if query.is_none() {
+            self.needs_rows(cx).into_iter().map(|r| r.id).collect()
+        } else {
+            Vec::new()
+        };
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
+            rows.retain(|r| !above.contains(&r.id));
             if let Some(q) = query {
                 // The issue too: the agent may have retitled the session.
                 rows.retain(|r| {
@@ -445,6 +477,41 @@ impl Shell {
                     .map(|(place, r)| (r.id, (place, r.band)))
             })
             .collect()
+    }
+
+    /// The sessions in Needs you, in its order. None while the sidebar
+    /// doesn't show the list: the tree keeps them then.
+    fn needs_rows(&self, cx: &App) -> Vec<Row> {
+        if !self.needs_list_shown() {
+            return Vec::new();
+        }
+        let mut rows: Vec<Row> = (0..self.projects.len())
+            .flat_map(|pi| self.tree_rows(pi, cx))
+            .filter(|r| !r.settled)
+            .collect();
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|r| (r.id.clone(), r.state, r.updated))
+            .collect();
+        let order = needs_order(&keys, self.rail.needs_held.as_deref());
+        let mut picked: Vec<Option<Row>> = rows.drain(..).map(Some).collect();
+        order.into_iter().filter_map(|i| picked[i].take()).collect()
+    }
+
+    /// The pointer came over the sidebar (`over`) or left it: hold Needs you
+    /// and the tree as they are until it leaves, so no row moves from under
+    /// it, or let them go.
+    pub(super) fn hold_rail_rows(&mut self, over: bool, cx: &App) {
+        if !crate::tab_layout::current().tree() {
+            return;
+        }
+        // Needs you first: what it lists is what the tree leaves out.
+        self.rail.needs_held = None;
+        self.rail.tree_held = None;
+        if over {
+            self.rail.needs_held = Some(self.needs_rows(cx).into_iter().map(|r| r.id).collect());
+            self.rail.tree_held = Some(self.tree_places(cx));
+        }
     }
 
     /// The projects with an order of their own, ticked in the tree menu's
@@ -520,11 +587,13 @@ impl Shell {
     /// The sessions the tree shows, top to bottom: what Shift+click picks
     /// a range of.
     fn tree_order(&self, cx: &App) -> Vec<SharedString> {
-        self.tree_listing(None, cx)
+        let needs = self.needs_rows(cx).into_iter().map(|r| r.id);
+        let tree = self
+            .tree_listing(None, cx)
             .into_iter()
             .filter(|p| p.open)
-            .flat_map(|p| p.rows.into_iter().map(|r| r.id))
-            .collect()
+            .flat_map(|p| p.rows.into_iter().map(|r| r.id));
+        needs.chain(tree).collect()
     }
 
     /// Session `d` dropped on the tree's row of session `target`, in the
@@ -928,11 +997,14 @@ impl Shell {
                 this.unpin_tab(d.id, cx)
             }))
             // The rows hold their places while the pointer is over the
-            // tree, and take the order's again once it leaves.
-            .on_hover(cx.listener(|this, over: &bool, _, cx| {
-                this.rail.tree_held = over.then(|| this.tree_places(cx));
-                cx.notify();
-            }));
+            // tree, and take the order's again once it leaves. In the
+            // sidebar the whole rail holds them (`hold_rail_rows`).
+            .when(menu, |d| {
+                d.on_hover(cx.listener(|this, over: &bool, _, cx| {
+                    this.rail.tree_held = over.then(|| this.tree_places(cx));
+                    cx.notify();
+                }))
+            });
         if heading {
             list = list.child(self.render_tree_heading(cx));
         }
@@ -961,7 +1033,7 @@ impl Shell {
                     }
                     band = Some(row.band);
                     let selected = open_id.as_ref() == Some(&row.id);
-                    list = list.child(self.render_tree_row(row, selected, &layout, cx));
+                    list = list.child(self.render_tree_row(row, selected, false, &layout, cx));
                 }
             }
         }
@@ -987,6 +1059,51 @@ impl Shell {
         // not in the Sessions menu, which closes on the first click.
         list.when(!menu, |d| d.children(self.render_tree_pick_bar(cx)))
             .into_any_element()
+    }
+
+    /// Needs you: the sessions of every project that wait on the user or
+    /// failed, the worst first, with their count. Nothing while none does.
+    pub(super) fn render_needs_you(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let rows = self.needs_rows(cx);
+        if rows.is_empty() {
+            return None;
+        }
+        let layout = crate::tab_layout::current();
+        let open_id = self.active_session_id();
+        let n = rows.len();
+        let mut list = div()
+            .id("needs-you")
+            .role(gpui::Role::Tree)
+            .aria_label(format!(
+                "Needs you, {n} session{}",
+                if n == 1 { "" } else { "s" }
+            ))
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(1.))
+            .pb(crate::ui::sp(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(28.))
+                    .px(crate::ui::sp(8.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child(div().flex_1().min_w_0().child("Needs you"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::needs_you())
+                            .child(n.to_string()),
+                    ),
+            );
+        for row in rows {
+            let selected = open_id.as_ref() == Some(&row.id);
+            list = list.child(self.render_tree_row(row, selected, true, &layout, cx));
+        }
+        Some(list.into_any_element())
     }
 
     /// Starts a session in project `pi`, which comes on screen first, and
@@ -1171,10 +1288,14 @@ impl Shell {
             )
     }
 
+    /// A session's row: in the tree, or in Needs you (`needs`), where it
+    /// says its project with the project's icon instead of a state mark,
+    /// and how long it has waited or why it failed instead of the state.
     fn render_tree_row(
         &self,
         row: Row,
         selected: bool,
+        needs: bool,
         layout: &TabLayout,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -1190,6 +1311,7 @@ impl Shell {
             pr,
             updated,
             can_archive,
+            settled: _,
             tab,
             pinned,
             band: _,
@@ -1216,7 +1338,21 @@ impl Shell {
         // The age shows only under the pointer, so the title has the row's
         // whole width the rest of the time.
         let age = under_pointer.then(|| model::age(updated));
-        let end = state.end(layout.state, pr, age.as_deref());
+        let end = if needs {
+            match state {
+                RowState::NeedsYou => Some(model::age(updated).to_string()),
+                _ => state.word().map(str::to_string),
+            }
+        } else {
+            state.end(layout.state, pr, age.as_deref())
+        };
+        // In Needs you the project's icon leads instead of a mark.
+        let mark = if needs {
+            None
+        } else {
+            state.mark(layout.state)
+        };
+        let project_icon = needs || !layout.group;
         // A session with no tab open is a click away, not in use: its row
         // steps back, unless something runs in it or it wants the user. It
         // comes back under the pointer, to be read before it is opened.
@@ -1226,11 +1362,14 @@ impl Shell {
             Some(issue) => format!("{issue} {title}"),
             None => title.clone(),
         };
-        let label = match state.word() {
+        let project = &self.projects[pi];
+        let mut label = match state.word() {
             Some(word) => format!("{named}, {word}"),
             None => named,
         };
-        let project = &self.projects[pi];
+        if project_icon {
+            label = format!("{label}, {}", project.name);
+        }
         let logo: Hsla = gpui::rgb(project.logo).into();
         let opens = id.clone();
         let picks = id.clone();
@@ -1238,7 +1377,11 @@ impl Shell {
         let onto = id.clone();
         let lifted = self.lifted_session(cx) == Some(&id);
         div()
-            .id(SharedString::from(format!("tree-session-{id}")))
+            .id(SharedString::from(if needs {
+                format!("needs-session-{id}")
+            } else {
+                format!("tree-session-{id}")
+            }))
             .relative()
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
             .aria_selected(selected || picked)
@@ -1247,7 +1390,7 @@ impl Shell {
             .gap(crate::ui::sp(8.))
             .min_h(px(ROW_H))
             .when(two_lines, |d| d.py(crate::ui::sp(4.)))
-            .when(layout.group, |d| d.ml(px(14.)))
+            .when(layout.group && !needs, |d| d.ml(px(14.)))
             .px(crate::ui::sp(8.))
             .rounded(crate::ui::rad(8.))
             .cursor_pointer()
@@ -1263,7 +1406,7 @@ impl Shell {
             .when(!selected, |d| {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
-            .children(state.mark(layout.state).map(|mark| {
+            .children(mark.map(|mark| {
                 div()
                     .flex()
                     .flex_none()
@@ -1271,7 +1414,7 @@ impl Shell {
                     .child(mark)
             }))
             // Without project headings, each row says its project.
-            .when(!layout.group, |d| {
+            .when(project_icon, |d| {
                 d.child(
                     div()
                         .flex()
@@ -1379,13 +1522,16 @@ impl Shell {
             .on_drag(dragged, move |d, offset, _, cx| {
                 shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
             })
-            .drag_over::<super::drag::DraggedSession>(|s, _, _, _| s.bg(theme::hover()))
-            .on_drop(
-                cx.listener(move |this, d: &super::drag::DraggedSession, _, cx| {
-                    cx.stop_propagation();
-                    this.drop_session_on_tree_row(d, onto.clone(), cx)
-                }),
-            )
+            // Needs you keeps its own order: nothing is put down in it.
+            .when(!needs, |d| {
+                d.drag_over::<super::drag::DraggedSession>(|s, _, _, _| s.bg(theme::hover()))
+                    .on_drop(
+                        cx.listener(move |this, d: &super::drag::DraggedSession, _, cx| {
+                            cx.stop_propagation();
+                            this.drop_session_on_tree_row(d, onto.clone(), cx)
+                        }),
+                    )
+            })
             .when(lifted, |d| d.opacity(0.5))
             .on_mouse_down(
                 MouseButton::Right,
@@ -1554,6 +1700,7 @@ mod tests {
             pr: None,
             updated,
             can_archive: true,
+            settled: false,
             tab,
             pinned: false,
             band: Band::Rest,
@@ -1617,6 +1764,49 @@ mod tests {
         let (ids, top) = sorted(Sort::Manual);
         assert_eq!(ids, ["a", "b", "c", "d"]);
         assert_eq!(top, vec![Band::Rest; 4]);
+    }
+
+    #[test]
+    fn needs_you_lists_the_worst_first_and_the_newest_first_within() {
+        use RowState::*;
+        let rows: Vec<(SharedString, RowState, u64)> = [
+            ("idle", Idle, 90),
+            ("ci", CiFailed, 80),
+            ("old", NeedsYou, 10),
+            ("runs", Working, 70),
+            ("failed", Failed, 5),
+            ("new", NeedsYou, 40),
+            ("passed", Passed, 60),
+        ]
+        .into_iter()
+        .map(|(id, state, at)| (SharedString::from(id), state, at))
+        .collect();
+        let ids = |ix: Vec<usize>| {
+            ix.into_iter()
+                .map(|i| rows[i].0.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(needs_order(&rows, None)),
+            ["new", "old", "failed", "ci"]
+        );
+        assert!(needs_order(&[], None).is_empty());
+    }
+
+    #[test]
+    fn needs_you_holds_its_rows_while_the_pointer_is_over_the_sidebar() {
+        use RowState::*;
+        let held: Vec<SharedString> = ["b", "a"].into_iter().map(SharedString::from).collect();
+        // Under the pointer: "a" was answered and works, "c" starts to wait,
+        // "b" is gone.
+        let rows: Vec<(SharedString, RowState, u64)> = [("a", Working, 9), ("c", NeedsYou, 8)]
+            .into_iter()
+            .map(|(id, state, at)| (SharedString::from(id), state, at))
+            .collect();
+        // "a" stays where it was and "c" waits in its project for the
+        // pointer to leave.
+        assert_eq!(needs_order(&rows, Some(&held)), [0]);
+        assert_eq!(needs_order(&rows, None), [1]);
     }
 
     #[test]

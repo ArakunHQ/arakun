@@ -8,14 +8,17 @@ const MODEL_MENU_W: f32 = 340.;
 const MODEL_LIST_MAX_H: f32 = 280.;
 
 impl Shell {
+    /// The environment menu, opened from `at` (see `env_menu_at`). `leaving`
+    /// as for `render_menu_layer`.
     pub(super) fn render_env_menu(
         &self,
+        at: Option<gpui::Point<Pixels>>,
         viewport_h: f32,
+        leaving: Option<f32>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let project = self.project();
         let pi = self.active_project;
-        let at = self.env_menu_at;
         let from = if at.is_some() {
             ui::motion::From::Below
         } else {
@@ -132,18 +135,26 @@ impl Shell {
                 );
         // Placed by its bottom when it opens above the anchor, where a top
         // margin would not move it.
-        menu.with_animation(
-            "env-menu-in",
-            gpui::Animation::new(ui::motion::FAST),
-            move |d, t| {
-                let (opacity, offset) = ui::motion::enter_at(t, from, 4.);
-                let d = d.opacity(opacity);
-                match from {
-                    ui::motion::From::Below => d.mb(px(-offset)),
-                    ui::motion::From::Above => d.mt(px(offset)),
-                }
-            },
-        )
+        let shift = move |d: gpui::Stateful<gpui::Div>, offset: f32| match from {
+            ui::motion::From::Below => d.mb(px(-offset)),
+            ui::motion::From::Above => d.mt(px(offset)),
+        };
+        match leaving {
+            Some(t) => {
+                let (opacity, offset) = ui::motion::leave_at(t, from, 3.);
+                ui::motion::inert(shift(menu.opacity(opacity), offset))
+            }
+            None => menu
+                .with_animation(
+                    "env-menu-in",
+                    gpui::Animation::new(ui::motion::FAST),
+                    move |d, t| {
+                        let (opacity, offset) = ui::motion::enter_at(t, from, 4.);
+                        shift(d.opacity(opacity), offset)
+                    },
+                )
+                .into_any_element(),
+        }
     }
 
     // ---- composer menus: agent, model and permissions -------------------------
@@ -1201,6 +1212,58 @@ impl Shell {
                 .into_any_element()
             })
             .collect()
+    }
+
+    /// A context menu as the shell places it: where it opens, whether above
+    /// its anchor, and the menu sliding out of the anchor. `leaving` is how far
+    /// (0 to 1) it is on its way out after it closed; then it fades back into
+    /// the anchor and takes no clicks.
+    pub(super) fn render_menu_layer(
+        &self,
+        m: &ContextMenu,
+        viewport_h: f32,
+        leaving: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> (gpui::Point<Pixels>, bool, AnyElement) {
+        let above = match m.target {
+            MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
+            // Help can be anywhere in the rail; low down it opens upward.
+            // So can Running, which the status bar opens too.
+            MenuTarget::Help | MenuTarget::Running | MenuTarget::MoreViews => {
+                m.at.y.as_f32() > viewport_h / 2.
+            }
+            _ => false,
+        };
+        // The room between the anchor and the window edge the menu opens toward.
+        let room = if above {
+            m.at.y.as_f32() - 24.
+        } else {
+            viewport_h - m.at.y.as_f32() - 8.
+        };
+        let menu = div()
+            .flex()
+            .flex_col()
+            .max_h(px(room.max(120.)))
+            .child(self.render_context_menu(m, cx));
+        let from = if above {
+            ui::motion::From::Below
+        } else {
+            ui::motion::From::Above
+        };
+        let menu = match leaving {
+            Some(t) => {
+                let (opacity, offset) = ui::motion::leave_at(t, from, 3.);
+                ui::motion::inert(menu.opacity(opacity).mt(px(offset)))
+            }
+            None => {
+                // Keyed by where it opened, so a menu opened at another spot
+                // arrives again; it slides out of its anchor.
+                let key = ((m.at.x.as_f32() as usize) << 16) ^ m.at.y.as_f32() as usize;
+                ui::motion::enter(menu, ("menu-in", key), from, 4., ui::motion::FAST)
+                    .into_any_element()
+            }
+        };
+        (m.at, above, menu)
     }
 
     pub(super) fn render_context_menu(

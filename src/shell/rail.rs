@@ -44,6 +44,8 @@ pub(super) struct Rail {
     pub active_hover: Option<SharedString>,
     /// The folded sidebar's project whose sessions show beside its tile.
     pub flyout: session_tree::folded::Flyout,
+    /// The row Alt+1 to Alt+9 put the keys on, in the flyout or the tree.
+    pub keys: Option<session_tree::keys::KeyCursor>,
     /// The search of the Sessions menu.
     pub tree_filter: Entity<TextInput>,
     _tree_filter: Subscription,
@@ -74,6 +76,7 @@ impl Rail {
             tree_sort_select: false,
             active_hover: None,
             flyout: Default::default(),
+            keys: None,
             tree_filter,
             _tree_filter: sub,
         }

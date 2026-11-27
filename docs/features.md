@@ -1043,6 +1043,11 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   a dot for its worst state (amber needs you, red failed, blue working) and a marker on
   the open one. Point at a tile to see that project's sessions and New session beside
   it; a click on a session opens it, and Esc or moving the pointer away closes the list.
+  Alt+1 to Alt+9 open that list for the first nine projects, in the sidebar's order,
+  from the keyboard: Up and Down move through it, Enter opens a session or starts
+  one, and Esc closes it. With the sidebar open, the same keys go to the project in
+  the tree of sessions; Left and Right fold and open it there. A hidden sidebar
+  opens first. Screen readers hear the list and each row as you reach it.
   Search, the Inbox, Add project, More views, Settings and the account stay; the other
   views wait in More views. While this tab is open the sidebar is being arranged: it shows in full,
   every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of

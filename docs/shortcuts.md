@@ -28,6 +28,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 | `Ctrl+T` | New session |
 | `Ctrl+Shift+N` | New environment, at once on a random branch |
 | `Ctrl+Alt+N` | New environment, asking for the branch and options first |
+| `Alt+1` … `Alt+9` | Go to the sessions of project 1–9, then ↑ ↓ and Enter |
 | `Ctrl+O` | Add project |
 
 **Tabs and panes**

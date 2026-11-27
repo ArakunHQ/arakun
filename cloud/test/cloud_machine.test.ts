@@ -10,7 +10,6 @@ import {
   IDLE_MS,
   IMAGE,
   INSTANCE,
-  MODEL_DIR,
   MODEL_ENV,
   MachineLife,
   SERVER_DIR,
@@ -98,7 +97,7 @@ class FakeBox implements Box {
     }
     const isStatus = cmd.join(" ") === "/usr/local/bin/arakun-server status";
     const text = isStatus ? (this.status ?? "") : "";
-    const exitCode = isStatus && this.status === null ? 1 : cmd.join(" ") === `rm -rf ${MODEL_DIR}` ? this.modelRemoval : 0;
+    const exitCode = isStatus && this.status === null ? 1 : cmd.join(" ") === `${MODEL_ENV} forget` ? this.modelRemoval : 0;
     return {
       stdin: null,
       stdout: null,
@@ -680,7 +679,7 @@ describe("a machine's model credentials", () => {
         return exec(cmd, options);
       };
       await life.sleep("idle");
-      expect(order.slice(-2)).toEqual([`rm -rf ${MODEL_DIR}`, "snapshot"]);
+      expect(order.slice(-2)).toEqual([`${MODEL_ENV} forget`, "snapshot"]);
     });
   });
 

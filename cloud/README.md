@@ -839,29 +839,33 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
 - **Model credentials.** The agents run on the owner's own account with the model
   provider, in one of two ways. Arakun never collects, stores or routes a plan's
   sign-in.
-  - *A sign-in* to a Claude plan (Pro, Max, Team), made inside the machine with
-    Claude Code's own flow: open a terminal on the machine, run `claude`, then
-    `/login`, open the link it prints and paste the code back. `claude` there is
-    `machine/claude`, which runs Claude Code as `agent`, so the sign-in lands in
-    that user's home folder, where the sessions find it. The token goes from
-    Anthropic to the machine's disk: the Worker never sees it, and no route takes
-    one. It stays on the disk, and so in the machine's snapshot, like the rest of
-    the home folder; else every wake would ask for a new sign-in. `/logout` there,
-    or removing the machine, ends it. While the machine also has an API key, Claude
-    Code uses the key: remove the key to run on the plan.
+  - *A sign-in* to a plan, made inside the machine with the agent's own flow: a
+    Claude plan (Pro, Max, Team) for Claude Code, a ChatGPT plan for Codex. Open a
+    terminal on the machine and run `claude`, then `/login`, or run
+    `codex login --device-auth`; open the link it prints and enter the code.
+    `claude` and `codex` there are `machine/run`, which runs the CLI as `agent`,
+    so the sign-in lands in that user's home folder, where the sessions find it.
+    The token goes from the provider to the machine's disk: the Worker never sees
+    it, and no route takes one. It stays on the disk, and so in the machine's
+    snapshot, like the rest of the home folder; else every wake would ask for a
+    new sign-in. `/logout` or `codex logout` there, or removing the machine, ends
+    it. With both an API key and a sign-in, Claude Code uses the key and Codex
+    uses the sign-in.
   - *An API key*, given to `PUT /cloud/machines/<label>/model/<provider>`
     (`src/cloud_model.ts`): an Anthropic API key, Amazon Bedrock or Google Vertex AI
-    for Claude Code, one of the three at a time, and an OpenAI API key next to it
-    (kept for Codex, which the image does not have yet). The machine's object keeps
-    it sealed with AES-GCM under `CLOUD_MODEL_KEY`, with the label and the provider
-    as additional data, and no route gives it back. It goes into the container on
-    every start and when it changes: `machine/model-env` writes it under
-    `/run/arakun` for root alone, and `machine/as-agent` puts it in the environment
-    of each agent it starts, so the server never holds it. A session that runs
-    keeps the key it started with. Sleep removes `/run/arakun` before the snapshot
-    and takes no snapshot when that fails, so no snapshot holds a key. An agent can
-    read its own environment, so the key is as safe as what the owner lets the
-    agent do.
+    for Claude Code, one of the three at a time, and an OpenAI API key for Codex.
+    The machine's object keeps it sealed with AES-GCM under `CLOUD_MODEL_KEY`, with
+    the label and the provider as additional data, and no route gives it back. It
+    goes into the container on every start and when it changes:
+    `machine/model-env` writes it under `/run/arakun` for root alone, and
+    `machine/as-agent` puts it in the environment of each agent it starts, so the
+    server never holds it. A session that runs keeps the key it started with.
+    Before a snapshot, sleep runs `model-env forget`, which removes `/run/arakun`
+    and the copy Codex makes of an API key in its sign-in file, and it takes no
+    snapshot when that fails, so no snapshot holds a key. An agent can read its
+    own environment, so the key is as safe as what the owner lets the agent do.
+  Other agents (Droid, Cursor, Devin, Antigravity, OpenCode) are not in the image:
+  the server does not install their CLIs, and each comes from its maker's installer.
 - **Lifecycle.** A device at the machine's door wakes it, from its snapshot when
   there is one. Every 5 minutes an alarm asks the server (`arakun-server status`)
   whether an agent turn runs or a device is connected; while one does, it renews
@@ -870,7 +874,7 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
   stops the container. Taking the `cloud` flag or blocking the account stops the
   machine at the next check and refuses the next wake.
 - **Users.** `arakun` runs the server; `agent` runs the agents, without
-  capabilities, through `machine/claude-acp`. Tried on a Cloudflare container:
+  capabilities, through `machine/run`. Tried on a Cloudflare container:
   the server runs without capabilities, and a process started the way
   `machine/as-agent` starts the adapter has none, cannot get them back and cannot
   read the server's sign-in or key. Only what the object starts with `exec` has

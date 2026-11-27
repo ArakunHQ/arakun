@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
 # A cloud machine (cloud/src/cloud_machine.ts): `arakun-server` from the latest
-# release, the Claude Code ACP adapter it runs sessions with, and git. The build
+# release, the Claude Code and Codex ACP adapters it runs sessions with, and git. The build
 # context is the repository; /.dockerignore lets in only what this file copies.
 #
 # Two users. `arakun` runs the server and holds its sign-in and relay key.
-# `agent` runs the agents: the server starts the adapter through
-# /opt/arakun/bin/claude-acp, which may only become `agent`, with no
-# capabilities, and only to run the adapter or Claude Code. Both are in the group `work`,
+# `agent` runs the agents: the server starts an adapter through
+# /opt/arakun/bin/claude-acp or codex-acp, which may only become `agent`, with
+# no capabilities, and only to run an adapter or an agent's CLI. Both are in the group `work`,
 # which owns /work, where sessions start.
 #
 # The release binary, not a build from source: deploys happen on a release
@@ -43,8 +43,9 @@ RUN HOME=/tmp/install sh /tmp/install-release.sh --server --no-tools ${ARAKUN_VE
     && rm -rf /tmp/install /tmp/install.log /tmp/install-release.sh \
     && arakun-server --version
 
-# The adapter at the version the server pins (CLAUDE_ACP_PACKAGE), with the
-# Claude Code binary its SDK brings. Root owns it, so an agent cannot change
+# The adapters at the versions the server pins (CLAUDE_ACP_PACKAGE,
+# CODEX_ACP_PACKAGE), with the Claude Code binary and the `codex` they bring,
+# each in a folder of its own as the server installs them. Root owns it, so an agent cannot change
 # what the next session runs. /opt/arakun/agent/claude is that binary, the one
 # of the two (glibc, musl) that runs here: `claude` on the PATH starts it as
 # `agent`, for the owner's sign-in.
@@ -57,13 +58,23 @@ RUN package=$(sed -n 's/^pub const CLAUDE_ACP_PACKAGE: &str = "\(.*\)";$/\1/p' /
          if "$bin" --version >/dev/null 2>&1; then ln -s "$bin" /opt/arakun/agent/claude; break; fi; \
        done \
     && /opt/arakun/agent/claude --version \
+    && codex=$(sed -n 's/^pub const CODEX_ACP_PACKAGE: &str = "\(.*\)";$/\1/p' /tmp/launch.rs) \
+    && test -n "$codex" \
+    && npm install --prefix /opt/arakun/codex --include=optional --no-audit --no-fund --loglevel=error "$codex" \
+    && test -x /opt/arakun/codex/node_modules/.bin/codex-acp \
+    && /opt/arakun/codex/node_modules/.bin/codex --version \
     && rm /tmp/launch.rs
 
-COPY cloud/machine/entrypoint.sh cloud/machine/claude-acp cloud/machine/as-agent cloud/machine/model-env /opt/arakun/bin/
-COPY cloud/machine/claude /usr/local/bin/claude
+# machine/run under the four names it answers to: the adapters for the server,
+# the CLIs on the PATH for the owner's sign-in.
+COPY cloud/machine/entrypoint.sh cloud/machine/run cloud/machine/as-agent cloud/machine/model-env /opt/arakun/bin/
 COPY cloud/machine/sudoers /etc/sudoers.d/arakun
-RUN chown root:root /opt/arakun/bin/* /usr/local/bin/claude /etc/sudoers.d/arakun \
-    && chmod 755 /opt/arakun/bin/* /usr/local/bin/claude \
+RUN chown root:root /opt/arakun/bin/* /etc/sudoers.d/arakun \
+    && chmod 755 /opt/arakun/bin/* \
+    && ln -s run /opt/arakun/bin/claude-acp \
+    && ln -s run /opt/arakun/bin/codex-acp \
+    && ln -s /opt/arakun/bin/run /usr/local/bin/claude \
+    && ln -s /opt/arakun/bin/run /usr/local/bin/codex \
     && chmod 440 /etc/sudoers.d/arakun \
     && visudo -cf /etc/sudoers.d/arakun
 

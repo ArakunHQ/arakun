@@ -13,7 +13,8 @@
 // on every start and when it changes, as variables for machine/model-env,
 // which writes them under /run/arakun for root alone. machine/as-agent gives
 // them to each agent it starts. Sleep removes /run/arakun before the snapshot,
-// and takes no snapshot when that fails, so no snapshot holds a key.
+// with the copy Codex makes of an API key in its own sign-in file, and takes
+// no snapshot when that fails, so no snapshot holds a key.
 //
 // Format: v1.<base64url iv>.<base64url ciphertext>, of the JSON of a `Model`.
 

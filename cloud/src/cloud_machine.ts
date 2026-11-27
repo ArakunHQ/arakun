@@ -20,7 +20,7 @@
 //
 // Model credentials. The owner's API key for the agents (cloud_model.ts) is
 // kept here sealed and goes in on every start, to a file under /run/arakun
-// that sleep removes before the snapshot. No removal, no snapshot.
+// that sleep removes before the snapshot, with the copy Codex makes of a key. No removal, no snapshot.
 //
 // Lifecycle. A device knocking at the machine's door wakes it (machines.ts).
 // An alarm checks every few minutes: while the server says an agent turn runs
@@ -54,10 +54,8 @@ export const IMAGE = "server";
 /// Where the image keeps the server's files, and who runs it (machine/).
 export const SERVER_DIR = "/home/arakun/.local/share/arakun/server";
 export const SERVER_USER = "arakun";
-/// Where the image keeps the owner's model credentials while it runs
-/// (machine/model-env). Never in a snapshot.
-export const MODEL_DIR = "/run/arakun";
-/// What writes them there.
+/// What writes the owner's model credentials into the container, under
+/// /run/arakun, and with `forget` removes them (machine/model-env).
 export const MODEL_ENV = "/opt/arakun/bin/model-env";
 /// How long one `arakun-server status` may take.
 const STATUS_TIMEOUT_MS = 10_000;
@@ -410,8 +408,8 @@ export class MachineLife {
     try {
       if (!image) throw new Error("the image it runs is unknown");
       // The owner's key is worth more than the work since the last snapshot.
-      const gone = await (await box.exec(["rm", "-rf", MODEL_DIR], { stdout: "ignore", stderr: "ignore" })).exitCode;
-      if (gone !== 0) throw new Error(`the model credentials could not be removed (rm exited ${gone})`);
+      const gone = await (await box.exec([MODEL_ENV, "forget"], { stdout: "ignore", stderr: "ignore" })).exitCode;
+      if (gone !== 0) throw new Error(`the model credentials could not be removed (model-env exited ${gone})`);
       const s = await box.snapshotContainer({ name: `${m.label}-${Date.now()}` });
       await this.storage.put("snap", { id: s.id, size: s.size, image, at: Date.now() } satisfies Snap);
     } catch (e) {

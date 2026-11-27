@@ -1,8 +1,0 @@
-#!/bin/sh
-# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
-# `claude` in a terminal on the machine: Claude Code as the user `agent`, the
-# one the sessions run as. The owner signs in to their Claude plan here
-# (`claude`, then /login), and the sign-in lands in the home folder of `agent`,
-# where the sessions find it. Run as the server's user it would land where no
-# session looks. The token goes from Anthropic to this disk and nowhere else.
-exec sudo -n -E /opt/arakun/bin/as-agent --claude "$@"

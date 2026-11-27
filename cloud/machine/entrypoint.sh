@@ -82,7 +82,7 @@ as_arakun() {
   setpriv --reuid=arakun --regid=arakun --init-groups -- env -i \
     PATH=/usr/local/bin:/usr/bin:/bin HOME="$home" USER=arakun LOGNAME=arakun LANG=C.UTF-8 \
     HOSTNAME="$name" ARAKUN_TEAMS_URL="$base" ARAKUN_SERVER_DIR="$dir" \
-    ARAKUN_CLAUDE_ACP=/opt/arakun/bin/claude-acp \
+    ARAKUN_CLAUDE_ACP=/opt/arakun/bin/claude-acp ARAKUN_CODEX_ACP=/opt/arakun/bin/codex-acp \
     sh -c 'umask 002 && exec "$@"' sh "$@"
 }
 

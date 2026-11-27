@@ -8,12 +8,26 @@
 #   ARAKUN_CLOUD_VERTEX  the JSON of a Google credentials file, on one line
 #
 # An empty one removes its file, so a key the owner took away is gone from the
-# disk too. /run/arakun is not for the snapshot: the object removes it before
-# it takes one.
+# disk too. /run/arakun is not for the snapshot: before it takes one, the
+# object runs `model-env forget`, which removes every key from the disk.
 set -eu
 umask 077
 
 dir=/run/arakun
+
+# Codex copies an API key it was started with into its own sign-in file. That
+# copy goes whenever the key changes and before a snapshot; the adapter makes
+# it again from the key as-agent gives it. A ChatGPT sign-in stays.
+codex=/home/agent/.codex/auth.json
+if [ -f "$codex" ] && grep -Eqi '"auth_mode"[[:space:]]*:[[:space:]]*"api' "$codex"; then
+  rm -f "$codex"
+fi
+
+if [ "${1:-}" = forget ]; then
+  rm -rf "$dir"
+  exit
+fi
+
 install -d -o root -g root -m 755 "$dir"
 
 # Writes $1 to $2 for the user $3 alone, in one rename; removes $2 when $1 is empty.

@@ -36,7 +36,11 @@ copy of it, rename it back, and start a version that can read it.
   the sessions of every project that wait on you, failed or whose checks failed, the
   worst first, each with its project's icon and how long it has waited or why it
   failed. Its title shows the count, and it is gone when nothing needs you. A session
-  in it leaves its project's list until it works again or passes. While the pointer is
+  in it leaves its project's list until it works again or passes. A project's sessions
+  whose checks passed fold into one quiet line after the others, a check and "2 done";
+  click it, or press `Enter` on it, to open them in place or fold them again. Each
+  project remembers that in `state.json`. A search, the session on screen and a pinned
+  session never fold. While the pointer is
   over the sidebar, no row moves: the order holds until the pointer leaves. A state
   file from before it keeps the projects and worktrees described next (the Classic
   layout).

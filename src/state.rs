@@ -324,6 +324,9 @@ pub struct ProjectState {
     /// Its own order in the sidebar tree (`Project::sort`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort: Option<crate::tab_layout::Sort>,
+    /// Its done sessions open in the sidebar tree (`Project::done_open`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done_open: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg(feature = "coderlabs")]
     pub coderspace: Option<String>,
@@ -1046,6 +1049,7 @@ pub fn snapshot_with(
                 automations: p.automations.clone(),
                 session_order: session_order(p),
                 sort: p.sort,
+                done_open: p.done_open,
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace.clone(),
                 active_env: p
@@ -1382,6 +1386,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) 
                 automations: p.automations,
                 session_order: p.session_order.into_iter().map(Into::into).collect(),
                 sort: p.sort,
+                done_open: p.done_open,
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace,
             }
@@ -1492,6 +1497,7 @@ pub fn new_project(path: &Path) -> Project {
         automations: Vec::new(),
         session_order: Vec::new(),
         sort: None,
+        done_open: false,
         #[cfg(feature = "coderlabs")]
         coderspace: None,
     }
@@ -2156,6 +2162,7 @@ mod tests {
         // "gone" was deleted after it was dragged.
         project.session_order = vec!["s2".into(), "gone".into(), "s1".into()];
         project.sort = Some(crate::tab_layout::Sort::Name);
+        project.done_open = true;
         let layout = Layout {
             dock_open: false,
             dock_height: DOCK_HEIGHT,
@@ -2185,16 +2192,21 @@ mod tests {
         assert_eq!(projects[0].sort, Some(crate::tab_layout::Sort::Name));
         let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(saved["projects"][0]["sort"], "title");
+        // Its done sessions stay open.
+        assert!(projects[0].done_open);
         // A project never dragged writes nothing, so older builds read the
         // file as before; and a file without the field reads as no order.
         project.session_order.clear();
         project.sort = None;
+        project.done_open = false;
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
         let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(saved["projects"][0].get("session_order").is_none());
         assert!(saved["projects"][0].get("sort").is_none());
+        assert!(saved["projects"][0].get("done_open").is_none());
         let (projects, _, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         assert!(projects[0].session_order.is_empty());
+        assert!(!projects[0].done_open);
     }
 
     #[test]

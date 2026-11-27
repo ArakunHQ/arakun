@@ -167,6 +167,12 @@ pub(super) fn project_open(
     }
 }
 
+/// Whether a session's row goes under its project's "N done" line: its
+/// checks passed, and it is neither pinned nor the one on screen.
+fn folds_as_done(state: RowState, pinned: bool, on_screen: bool) -> bool {
+    state == RowState::Passed && !pinned && !on_screen
+}
+
 /// A project in the tree, as `Shell::tree_listing` lays it out. Without
 /// project headings, one of these with no project holds every row.
 struct TreeProject {
@@ -256,6 +262,9 @@ struct Row {
     /// Its place in the order the user dragged its project's sessions into;
     /// `None` for a session that came since.
     manual: Option<usize>,
+    /// Finished: it goes under its project's "N done" line
+    /// (`tree_listing` sets it).
+    done: bool,
 }
 
 /// The parts of a project's sessions in the tree, top to bottom, with a rule
@@ -268,6 +277,8 @@ pub(super) enum Band {
     Open,
     #[default]
     Rest,
+    /// Finished, folded into the "N done" line at the end of its project.
+    Done,
 }
 
 /// Where each session sat when the pointer came over the tree: its place in
@@ -277,9 +288,10 @@ pub(super) type HeldRows = std::collections::HashMap<SharedString, (usize, Band)
 /// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
 /// that tie keep the environments' order. Pinned sessions go first in every
 /// order; an order that moves sessions puts the ones with an open tab next,
-/// each part in that order. With the pointer over the tree (`held`), every
-/// row stays where it was instead: a row never leaves from under the
-/// pointer. A session that came since goes first.
+/// each part in that order. Finished sessions (`Row::done`) go last. With
+/// the pointer over the tree (`held`), every row stays where it was
+/// instead: a row never leaves from under the pointer. A session that came
+/// since goes first.
 fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     match sort {
         Sort::Recent => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
@@ -290,7 +302,9 @@ fn sort_rows(rows: &mut [Row], sort: Sort, held: Option<&HeldRows>) {
     }
     let split = sort.open_tabs_first();
     for r in rows.iter_mut() {
-        r.band = if r.pinned {
+        r.band = if r.done {
+            Band::Done
+        } else if r.pinned {
             Band::Pinned
         } else if split && r.tab {
             Band::Open
@@ -408,6 +422,7 @@ impl Shell {
                     pinned: self.is_pinned(&s.id),
                     band: Band::Rest,
                     manual: project.session_order.iter().position(|id| *id == s.id),
+                    done: false,
                 });
             }
         }
@@ -428,9 +443,19 @@ impl Shell {
         } else {
             Vec::new()
         };
+        // Finished sessions fold into one line per project, but not in a
+        // search, nor the one on screen, which would vanish from under the
+        // user, nor a pinned one, which says why it is first.
+        let fold_done = layout.group && query.is_none();
+        let active = self.active_session_id();
         let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             rows.retain(|r| !above.contains(&r.id));
+            if fold_done {
+                for r in &mut rows {
+                    r.done = folds_as_done(r.state, r.pinned, active.as_ref() == Some(&r.id));
+                }
+            }
             if let Some(q) = query {
                 // The issue too: the agent may have retitled the session.
                 rows.retain(|r| {
@@ -608,11 +633,21 @@ impl Shell {
     /// a range of.
     fn tree_order(&self, cx: &App) -> Vec<SharedString> {
         let needs = self.needs_rows(cx).into_iter().map(|r| r.id);
+        let done_open = |pi: Option<usize>| {
+            pi.and_then(|pi| self.projects.get(pi))
+                .is_some_and(|p| p.done_open)
+        };
         let tree = self
             .tree_listing(None, cx)
             .into_iter()
             .filter(|p| p.open)
-            .flat_map(|p| p.rows.into_iter().map(|r| r.id));
+            .flat_map(|p| {
+                let shown = done_open(p.pi);
+                p.rows
+                    .into_iter()
+                    .filter(move |r| shown || r.band != Band::Done)
+                    .map(|r| r.id)
+            });
         needs.chain(tree).collect()
     }
 
@@ -1046,14 +1081,27 @@ impl Shell {
                 ));
             }
             if open {
+                let (done, live): (Vec<Row>, Vec<Row>) =
+                    rows.into_iter().partition(|r| r.band == Band::Done);
                 let mut band = None;
-                for row in rows {
+                for row in live {
                     if band.is_some_and(|b| b != row.band) {
                         list = list.child(tree_rule(layout.group));
                     }
                     band = Some(row.band);
                     let selected = open_id.as_ref() == Some(&row.id);
                     list = list.child(self.render_tree_row(row, selected, false, &layout, cx));
+                }
+                if let (Some(pi), false) = (pi, done.is_empty()) {
+                    let shown = self.projects[pi].done_open;
+                    list = list.child(self.render_tree_done(pi, done.len(), shown, cx));
+                    if shown {
+                        for row in done {
+                            let selected = open_id.as_ref() == Some(&row.id);
+                            list =
+                                list.child(self.render_tree_row(row, selected, false, &layout, cx));
+                        }
+                    }
                 }
             }
         }
@@ -1311,6 +1359,70 @@ impl Shell {
             )
     }
 
+    /// The quiet line after project `pi`'s live sessions: a check and
+    /// "N done". It opens the finished sessions under it, or folds them.
+    fn render_tree_done(
+        &self,
+        pi: usize,
+        n: usize,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = format!(
+            "{n} done session{} in {}",
+            if n == 1 { "" } else { "s" },
+            self.projects[pi].name
+        );
+        div()
+            .id(("tree-done", pi))
+            .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
+            .map(ui::focusable)
+            .aria_expanded(shown)
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .h(px(ROW_H))
+            .ml(px(14.))
+            .px(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(8.))
+            .cursor_pointer()
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_faint())
+            .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .opacity(DIMMED)
+                    .child(ci_mark(ci::State::Passed)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(format!("{n} done")),
+            )
+            .child(
+                icon(
+                    if shown {
+                        "arrow-down01"
+                    } else {
+                        "arrow-right01"
+                    },
+                    12.,
+                )
+                .flex_none(),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(p) = this.projects.get_mut(pi) {
+                    p.done_open = !p.done_open;
+                    this.save(cx);
+                    cx.notify();
+                }
+            }))
+    }
+
     /// A session's row: in the tree, or in Needs you (`needs`), where it
     /// says its project with the project's icon instead of a state mark,
     /// and how long it has waited or why it failed instead of the state.
@@ -1339,6 +1451,7 @@ impl Shell {
             pinned,
             band: _,
             manual: _,
+            done: _,
         } = row;
         let env_path = self.projects[pi].environments[ei].path.clone();
         let picked = self.rail.tree_pick.contains(&id);
@@ -1725,6 +1838,7 @@ mod tests {
             pinned: false,
             band: Band::Rest,
             manual: None,
+            done: false,
         }
     }
 
@@ -1827,6 +1941,57 @@ mod tests {
         // pointer to leave.
         assert_eq!(needs_order(&rows, Some(&held)), [0]);
         assert_eq!(needs_order(&rows, None), [1]);
+    }
+
+    #[test]
+    fn only_passed_sessions_fold_and_never_the_pinned_or_the_one_on_screen() {
+        use RowState::*;
+        assert!(folds_as_done(Passed, false, false));
+        assert!(!folds_as_done(Passed, true, false));
+        assert!(!folds_as_done(Passed, false, true));
+        for state in [Idle, Working, NeedsYou, Failed, CiFailed] {
+            assert!(!folds_as_done(state, false, false), "{state:?}");
+        }
+    }
+
+    #[test]
+    fn done_sessions_go_after_the_live_ones_in_the_chosen_order() {
+        let done = |id: &str, title: &str, at: u64, tab: bool| Row {
+            done: true,
+            ..row(id, title, at, tab)
+        };
+        let rows = || {
+            vec![
+                done("a", "zebra", 50, true),
+                row("b", "mango", 30, false),
+                done("c", "Apple", 40, false),
+                row("d", "kiwi", 20, true),
+            ]
+        };
+        let sorted = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort, None);
+            placed(&r)
+        };
+        let (ids, bands) = sorted(Sort::Recent);
+        assert_eq!(ids, ["d", "b", "a", "c"]);
+        assert_eq!(bands, [Band::Open, Band::Rest, Band::Done, Band::Done]);
+        assert_eq!(sorted(Sort::Name).0, ["d", "b", "c", "a"]);
+        // While the pointer is over the tree, a session that passes keeps
+        // its place instead of folding away from under it.
+        let mut r = vec![row("b", "mango", 30, false), row("d", "kiwi", 20, false)];
+        sort_rows(&mut r, Sort::Recent, None);
+        let held: HeldRows = r
+            .iter()
+            .enumerate()
+            .map(|(place, r)| (r.id.clone(), (place, r.band)))
+            .collect();
+        let mut r = vec![done("b", "mango", 30, false), row("d", "kiwi", 20, false)];
+        sort_rows(&mut r, Sort::Recent, Some(&held));
+        assert_eq!(
+            placed(&r),
+            (vec!["b".into(), "d".into()], vec![Band::Rest; 2])
+        );
     }
 
     #[test]

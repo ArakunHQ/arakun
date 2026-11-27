@@ -710,7 +710,10 @@ after a week).
   *How many.* At most three such sessions run at once on a computer. More wait in a
   saved queue and start, in the order they came, as others finish. A queued issue
   is read again when it starts, so its text may have changed since you delegated
-  it.
+  it. A reply you send in Linear while it waits is kept (up to eight) and the
+  issue hears `Kept your message. The session on {computer} gets it when it
+  starts.`; Arakun keeps only which message it was, and reads its text from
+  Linear when the session starts.
 
   *What the issue hears.* Arakun writes to the issue as the work goes:
   `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
@@ -1946,7 +1949,8 @@ arakun-server service install   # keep it running; see Keep it running
   the app does: it reads the issue with the workspace's Linear key the app gave it,
   checks the mapping, makes a worktree on the issue's branch under
   `~/arakun-workspaces/`, and starts a session there with the project's agent that
-  ends in a draft pull request. At most three run at once; the rest wait. Replies
+  ends in a draft pull request. At most three run at once; the rest wait, and a
+  reply to one that waits is kept for when it starts. Replies
   and stops from Linear reach the session (a reply that starts with `!` interrupts
   the turn), and the issue hears what it does. It needs the
   sign-in (`login`) and the relay. `linear-runs.json` in its folder holds the

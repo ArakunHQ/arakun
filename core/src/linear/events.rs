@@ -478,6 +478,7 @@ mod tests {
             held: None,
             progress: None,
             linked: None,
+            kept: Vec::new(),
         }
     }
 

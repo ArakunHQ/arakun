@@ -76,7 +76,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         data class Limited(val which: String, val until: Long) : Connection
     }
 
-    /** How far signing in with GitHub has come. */
+    /** How far signing in with GitHub or a code by email has come. */
     sealed interface SignIn {
         /** Asking GitHub for a code. */
         data object Asking : SignIn
@@ -86,6 +86,21 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
         /** GitHub said yes; the account host makes the session. */
         data object Finishing : SignIn
+
+        /** Asking the account host to mail a code to [email]. */
+        data class Mailing(val email: String) : SignIn
+
+        /** The code went to [email], and the box for it is on screen. */
+        data class Mailed(val email: String, val busy: EmailBusy? = null) : SignIn
+    }
+
+    /** What the box for a mailed code waits on. */
+    enum class EmailBusy {
+        /** A new code for the same address. */
+        RESENDING,
+
+        /** The code typed, which the account host trades for a session. */
+        CHECKING,
     }
 
     private val keeper = AccountKeeper(CredentialStore(app))
@@ -284,15 +299,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
                 val signed = made
                 if (!isActive || signed == null) return@launch
-                val s = AccountSession(api.base, signed.session, signed.sessionId, signed.login)
-                if (!keeper.save(s)) {
-                    notice = "Could not keep the sign-in on this phone. You may need to sign in again after the app restarts."
-                }
-                signingIn = null
-                account = s
-                keeper.pairedByLink = false
-                pairedByLink = false
-                loadAccount(reopen = true)
+                tookSignIn(api, signed)
             } catch (e: AccountError) {
                 // Cancelled meanwhile: the person no longer waits for an answer.
                 if (!isActive) return@launch
@@ -339,6 +346,95 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    /** Keeps the session the account host made, and lists the account's computers. */
+    private fun tookSignIn(api: AccountClient, signed: SignedIn) {
+        val s = AccountSession(api.base, signed.session, signed.sessionId, signed.login)
+        if (!keeper.save(s)) {
+            notice = "Could not keep the sign-in on this phone. You may need to sign in again after the app restarts."
+        }
+        signingIn = null
+        account = s
+        keeper.pairedByLink = false
+        pairedByLink = false
+        loadAccount(reopen = true)
+    }
+
+    /**
+     * Mails a six-digit code to `email`, then shows the box for it. From that
+     * box, it mails a new code to the same address.
+     */
+    fun emailCode(email: String) {
+        val address = email.trim()
+        if (address.isEmpty() || signInJob?.isActive == true) return
+        val step = signingIn
+        signingIn = when {
+            step == null -> SignIn.Mailing(address)
+            step is SignIn.Mailed && step.busy == null && step.email == address -> step.copy(busy = EmailBusy.RESENDING)
+            else -> return
+        }
+        accountSaid = null
+        if (demo != null) {
+            signingIn = SignIn.Mailed(address)
+            return
+        }
+        signInJob = viewModelScope.launch {
+            val api = AccountClient(Account.HOST)
+            try {
+                io { api.sendEmailCode(address) }
+                signingIn = SignIn.Mailed(address)
+            } catch (e: AccountError) {
+                if (!isActive) return@launch
+                emailFailed(e, address)
+            }
+        }
+    }
+
+    /** Trades the code typed in the box for the account's session. */
+    fun checkCode(code: String) {
+        val step = signingIn as? SignIn.Mailed ?: return
+        if (step.busy != null || demo != null || signInJob?.isActive == true) return
+        accountSaid = null
+        signingIn = step.copy(busy = EmailBusy.CHECKING)
+        signInJob = viewModelScope.launch {
+            val api = AccountClient(Account.HOST)
+            try {
+                // Not cut off by Cancel, as for GitHub: a session made on the
+                // account host must either be kept here or be signed out there.
+                var made: SignedIn? = null
+                try {
+                    withContext(NonCancellable + Dispatchers.IO) { made = api.signInWithCode(step.email, code, sessionName) }
+                } finally {
+                    if (!isActive) made?.let { forgetSession(api.base, it.session) }
+                }
+                val signed = made
+                if (!isActive || signed == null) return@launch
+                tookSignIn(api, signed)
+            } catch (e: AccountError) {
+                if (!isActive) return@launch
+                emailFailed(e, step.email)
+            }
+        }
+    }
+
+    /**
+     * A wrong code, or a new one that did not go, leaves the box on screen to
+     * try again; a first code that did not go goes back to the address.
+     */
+    private fun emailFailed(e: AccountError, email: String) {
+        signingIn = if (signingIn is SignIn.Mailed) SignIn.Mailed(email) else null
+        accountSaid = emailSentence(e)
+    }
+
+    /**
+     * The account host's own words about an email sign-in, as a sentence:
+     * "the code is wrong or has run out" says more than "the server answered".
+     */
+    private fun emailSentence(e: AccountError): String {
+        val said = (e as? AccountError.Refused)?.said?.trimEnd('.')
+        if (said.isNullOrEmpty() || said.startsWith("HTTP ")) return sentence(e)
+        return said.replaceFirstChar { it.uppercase() } + "."
     }
 
     fun cancelSignIn() {

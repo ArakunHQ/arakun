@@ -40,7 +40,7 @@ struct MachinesView: View {
                 }
             }
             .sheet(isPresented: $settings) { AccountView() }
-            .confirmationDialog("Sign out of \(model.me?.login ?? "GitHub") on this phone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+            .confirmationDialog("Sign out of \(model.me?.login ?? "your account") on this phone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
                 Button("Sign out", role: .destructive) { model.signOut() }
             }
             .alert("Arakun", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {

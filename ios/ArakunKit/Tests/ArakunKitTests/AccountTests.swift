@@ -141,6 +141,55 @@ struct AccountTests {
         }
     }
 
+    @Test func emailsACode() async throws {
+        let host = FakeHost(200, #"{"sent": true, "expires_in": 600}"#)
+        try await host.client.sendEmailCode(email: "  rik@example.com ")
+        let r = try #require(host.requests.first)
+        #expect(r.httpMethod == "POST")
+        #expect(r.url?.absoluteString == "https://app.arakun.dev/auth/email")
+        #expect(r.value(forHTTPHeaderField: "Authorization") == nil)
+        let sent = try JSONSerialization.jsonObject(with: try #require(r.httpBody)) as? [String: String]
+        #expect(sent == ["email": "rik@example.com"])
+    }
+
+    @Test func signsInWithTheMailedCode() async throws {
+        let host = FakeHost(200, #"""
+        {"session": "\#(token.value)", "session_id": "a1", "expires_at": 1, "account_id": 9, "github_id": 9, "login": "rik@example.com", "flags": [], "plan": "free"}
+        """#)
+        let signed = try await host.client.signIn(email: "rik@example.com", code: "123 456", name: "Rik's iPhone", kind: "ios")
+        #expect(signed.session == token)
+        #expect(signed.login == "rik@example.com")
+        #expect(Login.isEmail(signed.login))
+        #expect(!Login.isEmail("octocat"))
+        let r = try #require(host.requests.first)
+        #expect(r.url?.absoluteString == "https://app.arakun.dev/auth/email/verify")
+        let sent = try JSONSerialization.jsonObject(with: try #require(r.httpBody)) as? [String: String]
+        #expect(sent == ["email": "rik@example.com", "code": "123456", "name": "Rik's iPhone", "kind": "ios"])
+    }
+
+    @Test func anEmailSignInShowsTheServersWords() async {
+        // A wrong code is no stale session: the server's sentence, not "signed out".
+        await #expect(throws: AccountError.refused("the code is wrong or has run out; ask for a new one")) {
+            try await FakeHost(401, #"{"error": "the code is wrong or has run out; ask for a new one"}"#)
+                .client.signIn(email: "rik@example.com", code: "000000", name: "n")
+        }
+        await #expect(throws: AccountError.refused("too many codes for this address, try again in an hour")) {
+            try await FakeHost(429, #"{"error": "too many codes for this address, try again in an hour"}"#)
+                .client.sendEmailCode(email: "rik@example.com")
+        }
+        await #expect(throws: AccountError.refused("that address is from a throwaway mail service; use one you keep")) {
+            try await FakeHost(400, #"{"error": "that address is from a throwaway mail service; use one you keep"}"#)
+                .client.sendEmailCode(email: "x@burner.example")
+        }
+        await #expect(throws: AccountError.refused("the code is wrong or has run out; ask for a new one")) {
+            try await FakeHost(401, "").client.signIn(email: "rik@example.com", code: "000000", name: "n")
+        }
+        await #expect(throws: AccountError.blocked("spam")) {
+            try await FakeHost(403, #"{"error": "blocked", "reason": "spam"}"#)
+                .client.signIn(email: "rik@example.com", code: "123456", name: "n")
+        }
+    }
+
     @Test func theRoutesThatAnswerNothing() async throws {
         let host = FakeHost(204, "")
         try await host.client.signOutSession(session: token, id: "a1")

@@ -1,6 +1,6 @@
 // The account client, as core/src/cloud.rs is the desktop's: GitHub's device
-// flow, then the Arakun service (`cloud/`) that turns a GitHub token into a
-// session, and the account's routes (`/me`, `/machines`, `/sessions`). The
+// flow or a code mailed to the address, then the Arakun service (`cloud/`)
+// that turns either into a session, and the account's routes (`/me`, `/machines`, `/sessions`). The
 // session goes in a header, never in a URL, and lives in the Keychain only:
 // every request that carries it goes through `AccountNetwork.session`, which
 // keeps nothing on disk.
@@ -194,8 +194,17 @@ public struct SignedInDevice: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// What `POST /auth/github` answers. `expires_at` is left out: the server
-/// extends a session that is used, and a 401 says when one has ended.
+/// What an account's login says about how it signs in.
+public enum Login {
+    /// An account made by email has its address as its login. A GitHub login
+    /// never holds `@`, so it is no GitHub name to put `@` before or to fetch
+    /// a picture for.
+    public static func isEmail(_ login: String) -> Bool { login.contains("@") }
+}
+
+/// What `POST /auth/github` and `POST /auth/email/verify` answer. `expires_at`
+/// is left out: the server extends a session that is used, and a 401 says when
+/// one has ended.
 public struct SignedIn: Decodable, Equatable, Sendable {
     public let session: SessionToken
     public let sessionID: String
@@ -422,9 +431,7 @@ public struct AccountClient: Sendable {
     /// session is on, for the list of signed-in devices.
     public func signIn(githubToken: String, name: String, kind: String = "ios") async throws -> SignedIn {
         var fields = ["access_token": githubToken, "kind": kind]
-        // The server takes 1 to 100 characters, and the login when there is none.
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { fields["name"] = String(trimmed.prefix(100)) }
+        Self.addName(name, to: &fields)
         let body = try JSONSerialization.data(withJSONObject: fields)
         let (status, answer) = try await call("POST", "/auth/github", body: body)
         do {
@@ -433,6 +440,36 @@ public struct AccountClient: Sendable {
             // No session yet, so a 401 is about the GitHub token, not a stale sign-in.
             throw AccountError.refused("GitHub did not accept the sign-in. Try again.")
         }
+    }
+
+    /// Asks the server to mail a six-digit sign-in code to `email`. It answers
+    /// the same whether the address has an account or not.
+    public func sendEmailCode(email: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["email": email.trimmingCharacters(in: .whitespacesAndNewlines)])
+        let (status, answer) = try await call("POST", "/auth/email", body: body)
+        guard (200...299).contains(status) else { throw Self.emailRefusal(status, answer) }
+    }
+
+    /// Trades the code mailed to `email` for a session, as `signIn(githubToken:)`
+    /// does a GitHub token. The account is the address's, or a new one.
+    public func signIn(email: String, code: String, name: String, kind: String = "ios") async throws -> SignedIn {
+        var fields = [
+            "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+            // People copy the code with a space in the middle; the server drops it too.
+            "code": code.filter { !$0.isWhitespace },
+            "kind": kind,
+        ]
+        Self.addName(name, to: &fields)
+        let body = try JSONSerialization.data(withJSONObject: fields)
+        let (status, answer) = try await call("POST", "/auth/email/verify", body: body)
+        guard (200...299).contains(status) else { throw Self.emailRefusal(status, answer) }
+        return try Self.decode(status, answer)
+    }
+
+    /// The server takes 1 to 100 characters, and its own name when there is none.
+    private static func addName(_ name: String, to fields: inout [String: String]) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { fields["name"] = String(trimmed.prefix(100)) }
     }
 
     public func me(session: SessionToken) async throws -> Me {
@@ -555,6 +592,18 @@ public struct AccountClient: Sendable {
         }
     }
 
+    /// What the server said about an email sign-in, in its own words: its 401
+    /// is a wrong code, not a stale session, and its 429 says which limit was hit.
+    static func emailRefusal(_ status: Int, _ body: Data) -> AccountError {
+        let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+        if let said = obj?["error"] as? String, !said.isEmpty, [400, 401, 429, 502, 503].contains(status) {
+            return .refused(said)
+        }
+        // A 401 without words is still no session to forget.
+        if status == 401 { return .refused("the code is wrong or has run out; ask for a new one") }
+        return refusal(status, body)
+    }
+
     /// GitHub's errors are `{"error": "...", "error_description": "..."}`.
     static func githubError(_ status: Int, _ body: Data) -> String {
         let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
@@ -581,7 +630,17 @@ public final class AccountSession {
     /// cannot be kept is ended on the server, since nobody would hold it.
     @discardableResult
     public func signIn(githubToken: String, name: String, kind: String = "ios") async throws -> SignedIn {
-        let signed = try await client.signIn(githubToken: githubToken, name: name, kind: kind)
+        try await keep(client.signIn(githubToken: githubToken, name: name, kind: kind))
+    }
+
+    /// Trades the code mailed to `email` for a session and keeps it, as
+    /// `signIn(githubToken:)` does.
+    @discardableResult
+    public func signIn(email: String, code: String, name: String, kind: String = "ios") async throws -> SignedIn {
+        try await keep(client.signIn(email: email, code: code, name: name, kind: kind))
+    }
+
+    private func keep(_ signed: SignedIn) async throws -> SignedIn {
         guard store.save(signed.session) else {
             try? await client.logout(session: signed.session)
             throw AccountError.refused("could not keep the sign-in in the Keychain")

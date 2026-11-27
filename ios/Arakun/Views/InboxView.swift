@@ -351,7 +351,7 @@ struct ConnectionBanner: View {
             EmptyView()
         case .connecting:
             line(icon: "loading03", "Reaching \(model.host.isEmpty ? "your computer" : model.host) through the relay…",
-                 detail: "Arakun must be running on the computer, signed in to the same GitHub account.", tone: .textMuted)
+                 detail: "Arakun must be running on the computer, signed in to the same account.", tone: .textMuted)
         case .computerAway(let since):
             line(icon: "computer", "Your computer is offline.",
                  detail: since.map { "Last seen \($0.shortAgo) ago. The app reconnects when it is back." }, tone: .textMuted)

@@ -29,6 +29,18 @@ final class AppModel {
         case code(DeviceCode)
         /// GitHub said yes; the account host makes the session.
         case finishing
+        /// Asking the account host to mail a code to the address.
+        case mailing(String)
+        /// The code went to the address, and the box for it is on screen.
+        case mailed(String, busy: EmailBusy?)
+    }
+
+    /// What the box for a mailed code waits on.
+    enum EmailBusy: Equatable {
+        /// A new code for the same address.
+        case resending
+        /// The code typed, which the account host trades for a session.
+        case checking
     }
 
     /// The session, and the only way it is written: the Keychain, through it.
@@ -217,6 +229,86 @@ final class AppModel {
         signInTask?.cancel()
         signInTask = nil
         signIn = nil
+    }
+
+    // ---- signing in by email ----------------------------------------------------
+
+    /// Mails a six-digit code to `address`, then shows the box for it. From
+    /// that box, it mails a new code to the same address.
+    func emailCode(to address: String) {
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return }
+        switch signIn {
+        case nil: signIn = .mailing(address)
+        case .mailed(let shown, busy: nil)? where shown == address: signIn = .mailed(address, busy: .resending)
+        default: return
+        }
+        signInError = nil
+        pairSaid = nil
+        #if DEBUG
+        if Self.isDemo {
+            signIn = .mailed(address, busy: nil)
+            return
+        }
+        #endif
+        signInAttempt += 1
+        let attempt = signInAttempt
+        let client = keeper.client
+        signInTask = Task { [weak self] in
+            do {
+                try await client.sendEmailCode(email: address)
+                guard let self, self.isCurrent(attempt) else { return }
+                self.signInTask = nil
+                self.signIn = .mailed(address, busy: nil)
+            } catch {
+                guard let self, self.isCurrent(attempt), !(error is CancellationError) else { return }
+                self.emailFailed(error, address: address)
+            }
+        }
+    }
+
+    /// Trades the code typed in the box for the account's session.
+    func checkCode(_ code: String) {
+        guard case .mailed(let address, busy: nil)? = signIn else { return }
+        signInError = nil
+        #if DEBUG
+        if Self.isDemo { return }
+        #endif
+        signIn = .mailed(address, busy: .checking)
+        signInAttempt += 1
+        let attempt = signInAttempt
+        let keeper = self.keeper
+        let name = deviceName
+        signInTask = Task { [weak self] in
+            do {
+                // In a task of its own, which Cancel does not reach, as for GitHub.
+                let signed = try await Task { try await keeper.signIn(email: address, code: code, name: name, kind: "ios") }.value
+                guard let self, self.isCurrent(attempt) else {
+                    if keeper.token == signed.session { keeper.signOut() }
+                    return
+                }
+                self.tookSignIn(signed)
+            } catch {
+                guard let self, self.isCurrent(attempt), !(error is CancellationError) else { return }
+                self.emailFailed(error, address: address)
+            }
+        }
+    }
+
+    /// A wrong code, or a new one that did not go, leaves the box on screen to
+    /// try again; a first code that did not go goes back to the address.
+    private func emailFailed(_ error: Error, address: String) {
+        signInTask = nil
+        if case .mailed(_, _)? = signIn { signIn = .mailed(address, busy: nil) } else { signIn = nil }
+        signInError = (error as? AccountError).map(Self.emailSentence) ?? "Sign-in did not work. Try again."
+    }
+
+    /// The account host's own words about an email sign-in, as a sentence:
+    /// "the code is wrong or has run out" says more than "Sign-in did not work".
+    private nonisolated static func emailSentence(_ e: AccountError) -> String {
+        guard case .refused(let why) = e, !why.isEmpty, !why.hasPrefix("HTTP ") else { return sentence(e) }
+        let said = why.hasSuffix(".") ? String(why.dropLast()) : why
+        return said.prefix(1).uppercased() + said.dropFirst() + "."
     }
 
     /// GitHub's and the host's refusals, as a sentence for the sign-in screen.

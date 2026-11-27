@@ -2,20 +2,26 @@ import ArakunKit
 import SwiftUI
 import UIKit
 
-/// The first screen: sign in with GitHub to reach the account's computers
-/// through the relay, or pair on this network with the code Arakun shows.
+/// The first screen: sign in with GitHub or a code mailed to the address to
+/// reach the account's computers through the relay, or pair on this network
+/// with the code Arakun shows.
 struct SignInView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var scanning = false
     @State private var pasted = ""
     @FocusState private var pasting: Bool
+    @State private var email = ""
+    @State private var code = ""
+    @FocusState private var typing: Field?
+
+    private enum Field { case email, code }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 32) {
                 VStack(spacing: 16) {
-                    Mascot(mood: model.signIn != nil ? .thinking : model.signInError != nil ? .error : .idle, width: 132)
+                    Mascot(mood: model.signInError != nil ? .error : model.signIn != nil ? .thinking : .idle, width: 132)
                         .padding(.top, 24)
                     Text("Arakun")
                         .font(.geist(40, .semibold, relativeTo: .largeTitle))
@@ -57,7 +63,7 @@ struct SignInView: View {
     private var signInCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Eyebrow("Sign in to reach your computers")
-            Text("Sign in with the GitHub account you use in Arakun on your computer.")
+            Text("Use the account you use in Arakun on your computer: GitHub, or a code we email you.")
                 .font(.callout)
                 .foregroundStyle(Color.textMuted)
             if model.pairedByLink {
@@ -72,12 +78,17 @@ struct SignInView: View {
                     Text("Sign in with GitHub").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.primary)
+                emailEntry
             case .asking?:
                 waiting("Asking GitHub for a code…")
             case .code(let code)?:
                 codeView(code)
             case .finishing?:
                 waiting("Signing in…")
+            case .mailing(let address)?:
+                waiting("Sending a code to \(address)…")
+            case .mailed(let address, let busy)?:
+                mailedCode(address, busy: busy)
             }
             if let e = model.signInError { Problem(text: e) }
         }
@@ -116,6 +127,96 @@ struct SignInView: View {
             }
             .font(.callout)
         }
+    }
+
+    // ---- a code by email ----------------------------------------------------------
+
+    private var emailEntry: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Rectangle().fill(Color.line).frame(height: 1)
+                Text("or with your email").font(.small).foregroundStyle(Color.textFaint).fixedSize()
+                Rectangle().fill(Color.line).frame(height: 1)
+            }
+            .accessibilityElement(children: .combine)
+            entryField("Your email address", text: $email, field: .email)
+                .keyboardType(.emailAddress)
+                .textContentType(.emailAddress)
+                .submitLabel(.send)
+                .onSubmit(sendCode)
+            Button(action: sendCode) {
+                Text("Email me a code").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.outline)
+            .disabled(!email.contains("@"))
+            Text("No account yet? Either way makes one.")
+                .font(.small)
+                .foregroundStyle(Color.textMuted)
+        }
+    }
+
+    private func mailedCode(_ address: String, busy: AppModel.EmailBusy?) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("We sent a six-digit code to \(address). Type it here.").font(.callout)
+            HStack(spacing: 8) {
+                entryField("123456", text: $code, field: .code)
+                    .font(.mono(18, .medium))
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .accessibilityLabel("Code")
+                Button { model.checkCode(code) } label: {
+                    Text(busy == .checking ? "Signing in…" : "Sign in")
+                }
+                .buttonStyle(.primaryCompact)
+                .fixedSize()
+                .disabled(busy != nil || code.filter(\.isNumber).count != 6)
+            }
+            HStack(spacing: 10) {
+                if busy != nil { ProgressView().tint(Color.textMuted) }
+                Text(busy == .checking ? "Checking the code…"
+                     : busy == .resending ? "Sending a new code…"
+                     : "It works once, for 10 minutes. Not there? Look in spam.")
+                    .foregroundStyle(Color.textMuted)
+            }
+            .font(.small)
+            HStack(spacing: 8) {
+                Button("Use another address") {
+                    code = ""
+                    model.cancelSignIn()
+                    typing = .email
+                }
+                .buttonStyle(.outline)
+                .disabled(busy == .checking)
+                Button("Send a new code") {
+                    code = ""
+                    model.emailCode(to: address)
+                }
+                .buttonStyle(.outline)
+                .disabled(busy != nil)
+            }
+        }
+        .onAppear {
+            code = ""
+            typing = .code
+        }
+    }
+
+    private func entryField(_ prompt: String, text: Binding<String>, field: Field) -> some View {
+        TextField("", text: text, prompt: Text(prompt).foregroundStyle(Color.textFaint))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .focused($typing, equals: field)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 44)
+            .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.deep))
+            .overlay(RoundedRectangle(cornerRadius: Radius.control)
+                .strokeBorder(typing == field ? Color.amberInk : Color.lineStrong))
+    }
+
+    private func sendCode() {
+        guard email.contains("@") else { return }
+        typing = nil
+        model.emailCode(to: email)
     }
 
     private func waiting(_ text: String) -> some View {

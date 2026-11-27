@@ -244,6 +244,8 @@ pub(in crate::shell) fn fixture_machines() -> Vec<cloud::Machine> {
         "server",
         true,
     ));
+    // The fixture's cloud environment (`servers::cloud`), on the list as a server.
+    list.push(machine("cloudcloudcloud2".into(), "Cloud", "server", false));
     list
 }
 

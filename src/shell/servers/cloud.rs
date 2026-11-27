@@ -83,6 +83,16 @@ impl Shell {
             .unwrap_or_default()
     }
 
+    /// The label of the account's cloud environment, once it is known.
+    pub(in crate::shell) fn servers_cloud_label(&self) -> Option<String> {
+        match &self.servers.as_ref()?.cloud.row.state {
+            CloudState::Ready {
+                machine: Some(m), ..
+            } => Some(m.label.clone()),
+            _ => None,
+        }
+    }
+
     /// Asks the account about its cloud environment, when signed in.
     pub(in crate::shell) fn servers_ask_cloud(
         &mut self,

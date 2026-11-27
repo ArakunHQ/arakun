@@ -191,6 +191,8 @@ pub struct ServerRow {
     pub sign_ins: bool,
     /// The server last said it holds some this app copied.
     pub holds_sign_ins: bool,
+    /// The account's cloud environment: Remove deletes it, files and all.
+    pub cloud: bool,
 }
 
 /// A server signed in to the same account, as the account lists it.
@@ -1704,7 +1706,9 @@ impl ServersView {
     fn remove_row(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
         let name = crate::redact::text(&server.name).into_owned();
         let asking = self.confirm_remove.as_deref() == Some(server.id.as_str());
-        let what = if server.via == Via::Account {
+        let what = if server.cloud {
+            "The cloud environment is deleted, with its files and sessions."
+        } else if server.via == Via::Account {
             "It leaves this app and your account. Its sessions stay on it."
         } else {
             "It leaves this app. Its sessions stay on it."
@@ -2725,6 +2729,7 @@ mod tests {
             agents: Vec::new(),
             sign_ins: false,
             holds_sign_ins: false,
+            cloud: false,
         }
     }
 

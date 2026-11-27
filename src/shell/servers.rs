@@ -1195,6 +1195,7 @@ impl Shell {
             .extensions
             .update(cx, |v, cx| v.set_servers(targets, cx));
         let yours = self.servers_yours();
+        let cloud_label = self.servers_cloud_label();
         let Some(link) = &self.servers else {
             return;
         };
@@ -1233,6 +1234,7 @@ impl Shell {
                     agents: conn.agents.clone(),
                     sign_ins: s.sign_ins,
                     holds_sign_ins: s.holds_sign_ins,
+                    cloud: s.label().is_some_and(|l| cloud_label.as_deref() == Some(l)),
                 })
             })
             .collect();
@@ -1471,8 +1473,18 @@ impl Shell {
                         .map(str::to_string)
                 });
                 self.servers_forget(id, window, cx);
-                if let Some(label) = leave {
-                    self.servers_remove_machine(label, window, cx);
+                match leave {
+                    // Off the account alone, the container would stay, and
+                    // come back to the list at its next start.
+                    Some(label) if self.servers_cloud_label().as_deref() == Some(&label) => {
+                        let ev = ServersEvent::Cloud {
+                            label,
+                            act: crate::cloud::CloudAct::Remove,
+                        };
+                        self.servers_cloud_event(&ev, window, cx);
+                    }
+                    Some(label) => self.servers_remove_machine(label, window, cx),
+                    None => {}
                 }
                 self.sync_servers_view(cx);
                 return;

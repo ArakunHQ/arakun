@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
+import { generateKeyPairSync } from "node:crypto";
 import { configDefaults, defineConfig } from "vitest/config";
 
 /// Keys of our own in place of Apple's and Google's, made per run: the Worker
@@ -32,6 +33,18 @@ async function pushKeys() {
   };
 }
 
+/// A key of our own for the Arakun Cloud GitHub App, in the PKCS#1 PEM GitHub
+/// hands out; the tests check its JWTs with the public half (a JWK).
+function githubAppKey() {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  return {
+    GITHUB_APP_ID: "4242",
+    GITHUB_APP_SLUG: "arakun-cloud-test",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs1", format: "pem" }) as string,
+    TEST_GITHUB_APP_PUBLIC: JSON.stringify(publicKey.export({ format: "jwk" })),
+  };
+}
+
 // Tests run inside workerd with a real D1, KV, Durable Objects and rate limiter, as the Worker will.
 // The migrations are read here, in Node, and applied by test/setup.ts.
 export default defineConfig(async () => {
@@ -40,7 +53,7 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.toml" },
-        miniflare: { bindings: { ADMIN_SECRET: "test-secret", GITHUB_CLIENT_ID: "Iv-test", GITHUB_CLIENT_SECRET: "client-secret", LINEAR_API_KEY: "lin_api_test", LINEAR_TEAM_ID: "team-arakun", LINEAR_CLIENT_ID: "lin-test", LINEAR_CLIENT_SECRET: "lin-secret", LINEAR_WEBHOOK_SECRET: "lin-hook", LINEAR_TOKEN_KEY: "A".repeat(43), CLOUD_MODEL_KEY: "B".repeat(42) + "A", TEST_MIGRATIONS: migrations, ...(await pushKeys()) } },
+        miniflare: { bindings: { ADMIN_SECRET: "test-secret", GITHUB_CLIENT_ID: "Iv-test", GITHUB_CLIENT_SECRET: "client-secret", LINEAR_API_KEY: "lin_api_test", LINEAR_TEAM_ID: "team-arakun", LINEAR_CLIENT_ID: "lin-test", LINEAR_CLIENT_SECRET: "lin-secret", LINEAR_WEBHOOK_SECRET: "lin-hook", LINEAR_TOKEN_KEY: "A".repeat(43), CLOUD_MODEL_KEY: "B".repeat(42) + "A", TEST_MIGRATIONS: migrations, ...(await pushKeys()), ...githubAppKey() } },
       }),
     ],
     // Durable Object WebSockets do not work with per-file storage isolation

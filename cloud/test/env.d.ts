@@ -6,5 +6,7 @@ declare namespace Cloudflare {
     /// The public halves of the push keys vitest.config.ts made, as JWKs.
     TEST_APNS_PUBLIC: string;
     TEST_FCM_PUBLIC: string;
+    /// The public half of the GitHub App key vitest.config.ts made, as a JWK.
+    TEST_GITHUB_APP_PUBLIC: string;
   }
 }

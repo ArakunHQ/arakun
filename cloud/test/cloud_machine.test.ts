@@ -20,6 +20,7 @@ import {
   parseStatus,
   startEnv,
   type Box,
+  type GitHandler,
   type MachineRecord,
 } from "../src/cloud_machine";
 import { MODEL_VAR, VERTEX_FILE, VERTEX_VAR, open, parseModel, seal } from "../src/cloud_model";
@@ -72,6 +73,12 @@ class FakeBox implements Box {
   failNextStart = false;
   /// What removing the model credentials exits with.
   modelRemoval = 0;
+  /// The hosts handed to a handler, with how many starts came before each.
+  intercepts: { host: string; binding: Fetcher; startsBefore: number }[] = [];
+
+  async interceptOutboundHttps(addr: string, binding: Fetcher): Promise<void> {
+    this.intercepts.push({ host: addr, binding, startsBefore: this.starts.length });
+  }
 
   start(options?: ContainerStartupOptions): void {
     if (this.running) throw new Error("already running");
@@ -128,11 +135,16 @@ function statusText(working: number, busy: number, connected: number): string {
 
 /// Runs `body` with the lifecycle of a fresh machine object, over its real
 /// storage and a stand-in container.
-async function withLife<T>(m: MachineRecord, box: FakeBox, body: (life: MachineLife, storage: DurableObjectStorage) => Promise<T>): Promise<T> {
+async function withLife<T>(
+  m: MachineRecord,
+  box: FakeBox,
+  body: (life: MachineLife, storage: DurableObjectStorage) => Promise<T>,
+  git?: GitHandler,
+): Promise<T> {
   const ns = env.CLOUD_MACHINE!;
   const stub = ns.get(ns.idFromName(m.label));
   return runInDurableObject(stub, async (_instance, state) => {
-    const life = new MachineLife(state.storage, box, env);
+    const life = new MachineLife(state.storage, box, env, git);
     if (!(await life.record())) await life.create(m);
     return body(life, state.storage);
   });
@@ -406,6 +418,43 @@ describe("a machine's lifecycle", () => {
       await life.wake();
       expect(box.starts[3]!.image).toBe("registry.test/server@sha256:two");
     });
+  });
+
+  it("hands github.com to the GitHub handler before every start, a failed restore's too", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    const labels: string[] = [];
+    const git: GitHandler = (label) => {
+      labels.push(label);
+      return { label } as unknown as Fetcher;
+    };
+    await withLife(
+      m,
+      box,
+      async (life) => {
+        await life.wake();
+        await life.sleep("idle");
+        box.failNextStart = true;
+        await life.wake();
+      },
+      git,
+    );
+    // The first start, the restore that failed, and the start from the image after it.
+    expect(box.intercepts.map((i) => [i.host, i.startsBefore])).toEqual([
+      ["github.com", 0],
+      ["github.com", 1],
+      ["github.com", 2],
+    ]);
+    expect(labels).toEqual([m.label, m.label, m.label]);
+  });
+
+  it("leaves github.com alone without a handler", async () => {
+    const me = await owner();
+    const box = new FakeBox();
+    await withLife(await machineOf(me), box, (life) => life.wake());
+    expect(box.starts).toHaveLength(1);
+    expect(box.intercepts).toEqual([]);
   });
 
   it("starts once for wakes that come together", async () => {

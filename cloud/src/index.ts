@@ -16,6 +16,7 @@ import { teamsFetch } from "./teams-router";
 import { error, type Env } from "./util";
 
 export { Channel } from "./channel";
+export { GitHubGit } from "./cloud_github";
 export { CloudMachine } from "./cloud_machine";
 export { Relay } from "./relay/relay";
 

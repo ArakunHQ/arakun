@@ -73,6 +73,20 @@ EOF
 # Every start: with none given, this removes what an older disk may hold.
 /opt/arakun/bin/model-env
 
+# GitHub (cloud/src/cloud_github.ts). The object hands this start's HTTPS to
+# github.com to the Worker, which adds the token git needs from outside the
+# container. Cloudflare ends that TLS with a CA it makes for each start and
+# writes here before this runs; trusting it is what lets git through. Without a
+# GitHub App there is none, and one an older disk trusts goes.
+ca=/etc/cloudflare/certs/cloudflare-containers-ca.crt
+trusted=/usr/local/share/ca-certificates/cloudflare-containers-ca.crt
+if [ -r "$ca" ]; then
+  install -m 644 "$ca" "$trusted"
+else
+  rm -f "$trusted"
+fi
+update-ca-certificates --fresh >/dev/null 2>&1
+
 base=$ARAKUN_CLOUD_BASE
 name=$ARAKUN_CLOUD_NAME
 unset ARAKUN_CLOUD_MODEL ARAKUN_CLOUD_VERTEX ARAKUN_CLOUD_SIGNIN_KEY

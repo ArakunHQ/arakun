@@ -258,3 +258,49 @@ export async function issueStateType(env: Env, organizationId: string, issueId: 
   if (typeof type !== "string") throw new LinearRefused("Linear sent an unusable issue answer", 502);
   return type;
 }
+
+/// Linear's state types that mean work has not begun on an issue.
+const NOT_BEGUN = ["triage", "backlog", "unstarted"];
+
+/// Marks an issue as being worked on, as Linear asks of an agent once it
+/// starts: an issue not yet begun moves to its team's first `started` state
+/// (the lowest position), and one without a delegate gets the app. A state
+/// someone already moved it to, or a delegate already set, stays.
+export async function startIssue(env: Env, organizationId: string, issueId: string): Promise<void> {
+  const app = await env.DB.prepare("SELECT app_user_id FROM linear_workspaces WHERE organization_id = ?")
+    .bind(organizationId)
+    .first<{ app_user_id: string }>();
+  if (!app) throw new LinearRefused("Linear is not set up for this workspace", 404);
+  const data = await asApp<{
+    issue?: {
+      state?: { type?: unknown } | null;
+      delegate?: { id?: unknown } | null;
+      team?: { states?: { nodes?: { id?: unknown; position?: unknown }[] } | null } | null;
+    } | null;
+  }>(
+    env,
+    organizationId,
+    `query($id: String!) { issue(id: $id) {
+       state { type } delegate { id }
+       team { states(filter: { type: { eq: "started" } }) { nodes { id position } } }
+     } }`,
+    { id: issueId },
+  );
+  if (data.issue === null) throw new LinearRefused("Linear has no such issue", 404);
+  const type = data.issue?.state?.type;
+  const nodes = data.issue?.team?.states?.nodes;
+  if (typeof type !== "string" || !Array.isArray(nodes)) throw new LinearRefused("Linear sent an unusable issue answer", 502);
+  const first = nodes
+    .filter((n): n is { id: string; position: number } => typeof n.id === "string" && typeof n.position === "number")
+    .sort((a, b) => a.position - b.position)[0];
+  const input: { stateId?: string; delegateId?: string } = {};
+  if (NOT_BEGUN.includes(type) && first) input.stateId = first.id;
+  if (!data.issue?.delegate) input.delegateId = app.app_user_id;
+  if (!input.stateId && !input.delegateId) return;
+  await asApp(
+    env,
+    organizationId,
+    "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }",
+    { id: issueId, input },
+  );
+}

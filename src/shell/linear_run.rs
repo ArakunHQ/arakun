@@ -481,7 +481,7 @@ impl Shell {
         self.linear_save();
         self.linear_watch(cx);
         let line = started_line(&name, &computer(), &branch);
-        self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
+        self.linear_report_started(&start.agent_session, line, cx);
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }

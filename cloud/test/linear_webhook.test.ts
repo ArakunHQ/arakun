@@ -1052,6 +1052,92 @@ describe("what the computer sends back", () => {
     expect(links.status).toBe(502);
   });
 
+  describe("the thought that says the session started", () => {
+    const START = { type: "thought", body: "Started in arakun on Desk.", started: true };
+    const FIRST = "77777777-7777-4777-8777-000000000001";
+    const LATER = "77777777-7777-4777-8777-000000000002";
+    const startedStates = () => linearFake.startedStates.set(TEAM, [{ id: LATER, position: 2 }, { id: FIRST, position: 1 }]);
+
+    it("moves an issue not begun to the team's first started state and makes Arakun its delegate", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      for (const stateType of ["triage", "backlog", "unstarted"]) {
+        linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+        expect((await activity(owner.session, START)).status).toBe(204);
+        expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: START.body });
+        expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { stateId: FIRST, delegateId: "app-user" } });
+      }
+      expect(linearFake.issueUpdates()).toHaveLength(3);
+    });
+
+    it("leaves a state someone already moved it to, and a delegate already set", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      for (const stateType of ["started", "completed", "canceled"]) {
+        linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+        expect((await activity(owner.session, START)).status).toBe(204);
+        expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { delegateId: "app-user" } });
+      }
+      linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType: "backlog", delegateId: "someone-else" });
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates().at(-1)).toEqual({ id: ISSUE, input: { stateId: FIRST } });
+      const before = linearFake.issueUpdates().length;
+      linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType: "started", delegateId: "app-user" });
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates()).toHaveLength(before);
+    });
+
+    it("sets only the delegate when the team has no started state", async () => {
+      const { owner } = await delegatedIssue();
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.issueUpdates()).toEqual([{ id: ISSUE, input: { delegateId: "app-user" } }]);
+    });
+
+    it("does not touch the issue for any other activity", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      expect((await activity(owner.session, { type: "thought", body: "Waiting on Desk." })).status).toBe(204);
+      expect((await activity(owner.session, { type: "response", body: "Done.", started: false })).status).toBe(204);
+      expect(linearFake.issueUpdates()).toEqual([]);
+      expect(linearFake.calls.filter((c) => c.query.includes("states("))).toEqual([]);
+    });
+
+    it("is for a thought only, and not an ephemeral one", async () => {
+      const { owner } = await delegatedIssue();
+      for (const bad of [
+        { ...START, type: "response" },
+        { ...START, ephemeral: true },
+        { ...START, started: "yes" },
+      ]) {
+        const res = await activity(owner.session, bad);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "bad activity" });
+      }
+      expect(linearFake.issueUpdates()).toEqual([]);
+    });
+
+    it("still answers 204 when Linear refuses the update, and logs only the status", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      linearFake.refuse = 403;
+      linearFake.refuseOnly = "issueUpdate";
+      expect((await activity(owner.session, START)).status).toBe(204);
+      expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "thought", body: START.body });
+      expect(log.mock.calls).toEqual([["linear start issue: 403"]]);
+      log.mockRestore();
+    });
+
+    it("posts no issue update when the activity itself was refused", async () => {
+      const { owner } = await delegatedIssue();
+      startedStates();
+      linearFake.refuse = 500;
+      linearFake.refuseOnly = "agentActivityCreate";
+      expect((await activity(owner.session, START)).status).toBe(502);
+      expect(linearFake.calls.filter((c) => c.query.includes("states(") || c.query.includes("issueUpdate"))).toEqual([]);
+    });
+  });
+
   it("counts activities per account", async () => {
     const { owner } = await delegatedIssue();
     let last = 0;

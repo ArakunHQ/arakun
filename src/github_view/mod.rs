@@ -85,6 +85,10 @@ pub enum GitHubViewEvent {
     ConnectPilot,
 }
 
+// Runs `gh auth login` in a terminal; the shell, which owns terminals,
+// handles it.
+gpui::actions!(arakun, [SignInToGitHub]);
+
 /// The button that fixes what `text` says, when it is one of the texts for a
 /// missing or signed-out `gh` (`github::NO_GH`, `github::SIGNED_OUT`). The
 /// GitHub tab, Runs and Branches carry the error as text; matching it here
@@ -105,7 +109,7 @@ pub fn gh_fix(id: impl Into<gpui::ElementId>, text: &str) -> Option<AnyElement> 
             if get {
                 cx.open_url(crate::onboarding::GH_URL);
             } else {
-                window.dispatch_action(Box::new(crate::shell::SignInToGitHub), cx);
+                window.dispatch_action(Box::new(SignInToGitHub), cx);
             }
         });
     Some(button.into_any_element())

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod assets;
 pub mod browser;
 pub mod caret;
+pub mod cli;
 pub mod clone_source;
 pub mod cloud;
 pub mod durable;

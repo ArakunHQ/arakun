@@ -46,7 +46,7 @@ pub fn cli(args: &[String]) -> i32 {
         return code;
     }
     let Some(msg) = proto::from_args(args) else {
-        eprintln!("usage: {}", crate::control::ISLAND_USAGE);
+        eprintln!("usage: {}", crate::control::island_usage());
         return 2;
     };
     send(msg)

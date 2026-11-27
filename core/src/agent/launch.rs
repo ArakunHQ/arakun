@@ -450,7 +450,8 @@ pub fn agent_hint(kind: AgentKind, cwd: Option<&Path>) -> Option<String> {
 
 fn base_hint(secrets: bool) -> String {
     let secrets = if secrets { super::secret::HINT } else { "" };
-    format!("{HINT}{LAB_HINT}{secrets}{HINT_END}")
+    let commands = crate::cli::hint();
+    format!("{HINT}{commands}{LAB_HINT}{secrets}{HINT_END}")
 }
 
 // `arakun lab` exists only in the coderlabs build. Told to an agent in a public
@@ -461,13 +462,9 @@ const LAB_HINT: &str =
 #[cfg(not(feature = "coderlabs"))]
 const LAB_HINT: &str = "";
 
-const HINT: &str = "Running inside arakun. Optional `arakun` CLI commands (`arakun <cmd> --help` for flags):\n\
-         - `arakun browse -s <url>` / `arakun open -s <file[:line]>` show a page or file beside the chat.\n\
-         - `arakun run [--port N] [--ready TEXT] <cmd>` starts a long-running process in a visible dock terminal; `arakun logs [term] [--until TEXT]` reads it.\n\
-         - `arakun page <screenshot|console|text|open|reload|click|type|press|eval>` drives project browser tabs; use it to check UI changes you made.\n\
-         - `arakun check` runs the project check command (when configured, arakun also runs it after each turn that edits files and sends you the output on failure); `arakun shrink -- <cmd>` summarizes verbose test/build output and saves the full log — use it rather than cutting with `| tail`.\n\
-         - `arakun fetch <url>` reads a page; `arakun crawl <url>` reads site pages (honoring robots.txt and Content Signals). Stop on 403/429/bot challenges.\n\
-         - `arakun agent <new|wait|log|send|stop|ls>` runs background agents; `arakun rename <branch>`, `arakun notify <msg>`, `arakun feedback --kind <bug|feature|ux|other> \"<text>\"` (about Arakun itself, not this project; plain text, no Markdown/code/paths/secrets).\n";
+/// The lines about each command come from `crate::cli::COMMANDS`.
+const HINT: &str =
+    "Running inside arakun. Optional `arakun` CLI commands (`arakun <cmd> --help` for flags):\n";
 
 const HINT_END: &str = "Use them when showing something helps the user; they are optional.";
 

@@ -678,10 +678,6 @@ fn spawn_host(
 
 // ---- the command line --------------------------------------------------------
 
-pub const RUN_USAGE: &str = "arakun agent run [--resume <id>] [--model <id>] [--dir <path>] [--title <t>] [--effort <e>] \
-     [--policy readonly|workspace|full] [--allow net,modal,mail-read] [--read <path>]… [--no-sandbox [--yes]] \
-     [--append-system-prompt <file>] [--wait [--timeout <secs>] [--result <file>]] [--] <prompt…>";
-
 /// The options of `agent run`, flags only before the prompt.
 #[derive(Debug, Default, PartialEq)]
 struct Run {
@@ -798,7 +794,9 @@ pub fn cli(rest: &[String], cwd: &Path) -> Option<i32> {
     match sub.as_str() {
         "run" => Some(match run_args(args) {
             Ok(r) => run(r, cwd),
-            Err(stop) => crate::control::report(stop, RUN_USAGE),
+            Err(stop) => {
+                crate::control::report(stop, &crate::cli::usage("agent run").unwrap_or_default())
+            }
         }),
         "ls" if args.is_empty() => Some(ls()),
         "pending" => Some(pending_cmd(args.iter().any(|a| a == "--json"))),

@@ -673,7 +673,7 @@ impl Shell {
                 let mut turns: Vec<crate::memory::Turn> = Vec::new();
                 let mut since = None;
                 for e in t.entries() {
-                    match e {
+                    match &**e {
                         crate::agent::Entry::User { text, at, .. } => {
                             since.get_or_insert(*at);
                             turns.push(crate::memory::Turn {
@@ -1457,7 +1457,7 @@ impl Shell {
         session.continues = old.continues.clone();
         let talked = entries
             .iter()
-            .any(|e| matches!(e, crate::agent::Entry::User { .. }));
+            .any(|e| matches!(&**e, crate::agent::Entry::User { .. }));
         let thread = if talked {
             session.continues.push(model::Earlier {
                 id: old_id.to_string(),
@@ -2545,7 +2545,7 @@ fn phone_text(
     kind: Kind,
     needs_input: bool,
     short: &str,
-    entries: &[crate::agent::Entry],
+    entries: &[std::sync::Arc<crate::agent::Entry>],
     permission: Option<&crate::agent::PermissionRequest>,
     question: Option<&crate::agent::AskUserRequest>,
 ) -> String {
@@ -2904,9 +2904,9 @@ mod tests {
     fn a_phone_hears_the_agents_words_not_the_desktops_short_line() {
         use super::{Kind, phone_text};
         use crate::agent::Entry;
-        let entries = [Entry::Agent {
+        let entries = [std::sync::Arc::new(Entry::Agent {
             text: "Done: 3 files".into(),
-        }];
+        })];
         assert_eq!(
             phone_text(
                 Kind::Done,

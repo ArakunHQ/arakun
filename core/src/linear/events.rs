@@ -8,6 +8,7 @@
 //! contents, commands with secrets or whole diffs, nor the agent's thinking.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use super::runs::{PlanItem, PlanItemStatus, ReportKind, Run, RunState, Runs, cut};
 use super::start::failed_line;
@@ -140,12 +141,12 @@ impl Action {
 /// kind. A step on a file names the file, relative to `cwd`; any other step
 /// says only what kind it is, never its command, query or address. None
 /// when no step runs, or its kind says nothing.
-pub fn progress_step(entries: &[Entry], cwd: &Path) -> Option<Action> {
+pub fn progress_step(entries: &[Arc<Entry>], cwd: &Path) -> Option<Action> {
     let turn = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::User { .. }))
+        .rposition(|e| matches!(&**e, Entry::User { .. }))
         .map_or(entries, |at| &entries[at + 1..]);
-    let tc = turn.iter().rev().find_map(|e| match e {
+    let tc = turn.iter().rev().find_map(|e| match &**e {
         Entry::Tool(tc) => Some(tc),
         _ => None,
     })?;
@@ -190,10 +191,10 @@ pub const STEPS_LIMIT: usize = 8;
 /// wrote before a step it took (the text that ends a turn is its reply, which
 /// goes on its own) and steps that finished, named like progress lines. None
 /// when nothing new settled.
-pub fn progress_digest(entries: &[Entry], cwd: &Path, from: usize) -> (Option<String>, usize) {
+pub fn progress_digest(entries: &[Arc<Entry>], cwd: &Path, from: usize) -> (Option<String>, usize) {
     let turn = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::User { .. }))
+        .rposition(|e| matches!(&**e, Entry::User { .. }))
         .map_or(0, |at| at + 1);
     // A cursor past the end is from a thread that was cut short since.
     let from = if from > entries.len() {
@@ -206,7 +207,7 @@ pub fn progress_digest(entries: &[Entry], cwd: &Path, from: usize) -> (Option<St
     let mut steps = Steps::default();
     let mut settled = from;
     for (i, e) in entries.iter().enumerate().skip(from) {
-        match e {
+        match &**e {
             Entry::Tool(tc) => {
                 said.append(&mut waiting);
                 if matches!(tc.status, ToolStatus::Pending | ToolStatus::InProgress) {
@@ -305,7 +306,7 @@ impl Steps {
 pub fn progress_reports(
     runs: &mut Runs,
     arakun_session: &str,
-    entries: &[Entry],
+    entries: &[Arc<Entry>],
     cwd: &Path,
     now: u64,
 ) -> Option<(String, Option<String>, Option<Action>)> {
@@ -347,12 +348,12 @@ pub const PLAN_ITEM_LIMIT: usize = 300;
 /// The plan of the turn that runs now, as Linear shows it at the top of the
 /// session. Each item is scrubbed of secrets, kept to one line and cut like a
 /// reply. None when the turn has no plan: Linear keeps the last one.
-pub fn plan_items(entries: &[Entry]) -> Option<Vec<PlanItem>> {
+pub fn plan_items(entries: &[Arc<Entry>]) -> Option<Vec<PlanItem>> {
     let turn = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::User { .. }))
+        .rposition(|e| matches!(&**e, Entry::User { .. }))
         .map_or(entries, |at| &entries[at + 1..]);
-    let plan = turn.iter().rev().find_map(|e| match e {
+    let plan = turn.iter().rev().find_map(|e| match &**e {
         Entry::Plan { entries } => Some(entries),
         _ => None,
     })?;
@@ -618,14 +619,14 @@ pub fn advance(run: &mut Run, ev: Event, now: Now, key: Option<&str>) -> Option<
 }
 
 /// The last thing the agent said in its latest turn, whole.
-pub fn turn_reply(entries: &[Entry]) -> String {
+pub fn turn_reply(entries: &[Arc<Entry>]) -> String {
     let turn = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::User { .. }))
+        .rposition(|e| matches!(&**e, Entry::User { .. }))
         .map_or(entries, |at| &entries[at + 1..]);
     turn.iter()
         .rev()
-        .find_map(|e| match e {
+        .find_map(|e| match &**e {
             Entry::Agent { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
             _ => None,
         })
@@ -662,9 +663,9 @@ pub fn permission_ask(
     tool_call_id: &str,
     title: &str,
     plan: bool,
-    entries: &[Entry],
+    entries: &[Arc<Entry>],
 ) -> (String, Seen) {
-    let kind = entries.iter().find_map(|e| match e {
+    let kind = entries.iter().find_map(|e| match &**e {
         Entry::Tool(tc) if tc.id == tool_call_id => Some(tc.kind.as_str()),
         _ => None,
     });
@@ -904,19 +905,22 @@ mod tests {
         assert!(!body.contains(&"x".repeat(WHAT_LIMIT + 1)));
     }
 
-    fn tool(kind: &str, status: &str, locations: &[&str]) -> Entry {
-        Entry::Tool(
+    fn tool(kind: &str, status: &str, locations: &[&str]) -> Arc<Entry> {
+        Arc::new(Entry::Tool(
             serde_json::from_value(serde_json::json!({
                 "id": "tc", "title": "Run `curl -H 'Authorization: Bearer hunter2'`",
                 "kind": kind, "status": status, "locations": locations,
                 "raw_input": {"command": "curl -H 'Authorization: Bearer hunter2'"},
             }))
             .unwrap(),
-        )
+        ))
     }
 
-    fn user() -> Entry {
-        serde_json::from_value(serde_json::json!({"type": "user", "text": "go", "at": 0})).unwrap()
+    fn user() -> Arc<Entry> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({"type": "user", "text": "go", "at": 0}))
+                .unwrap(),
+        )
     }
 
     fn act(action: &'static str, parameter: &str) -> Option<Action> {
@@ -929,7 +933,7 @@ mod tests {
     #[test]
     fn progress_names_the_running_step_and_its_file() {
         let cwd = Path::new("/home/rik/app");
-        let at = |e: Entry| progress_step(&[user(), e], cwd);
+        let at = |e: Arc<Entry>| progress_step(&[user(), e], cwd);
         assert_eq!(
             at(tool("edit", "in_progress", &["/home/rik/app/src/main.rs"])),
             act("Editing", "src/main.rs")
@@ -957,8 +961,8 @@ mod tests {
         assert_eq!(at(tool("other", "in_progress", &[])), None);
     }
 
-    fn plan(items: &[(&str, PlanStatus)]) -> Entry {
-        Entry::Plan {
+    fn plan(items: &[(&str, PlanStatus)]) -> Arc<Entry> {
+        Arc::new(Entry::Plan {
             entries: items
                 .iter()
                 .map(|(content, status)| crate::agent::PlanEntry {
@@ -967,7 +971,7 @@ mod tests {
                     status: *status,
                 })
                 .collect(),
-        }
+        })
     }
 
     fn item(content: &str, status: PlanItemStatus) -> PlanItem {
@@ -1042,9 +1046,9 @@ mod tests {
         let running = tool("execute", "in_progress", &[]);
         assert_eq!(progress_step(&[user(), done.clone()], cwd), None);
         assert_eq!(progress_step(&[running.clone(), user()], cwd), None);
-        let text = Entry::Agent {
+        let text = Arc::new(Entry::Agent {
             text: "Now the tests.".into(),
-        };
+        });
         assert_eq!(
             progress_step(&[user(), running, text], cwd),
             act("Running", "a command")
@@ -1054,7 +1058,7 @@ mod tests {
     #[test]
     fn a_digest_says_what_settled_and_never_the_reply_or_arguments() {
         let cwd = Path::new("/a");
-        let said = |t: &str| Entry::Agent { text: t.into() };
+        let said = |t: &str| Arc::new(Entry::Agent { text: t.into() });
         // `tool` gives every call a title and arguments with a secret.
         let cmd = tool("execute", "completed", &[]);
         let entries = [
@@ -1092,16 +1096,16 @@ mod tests {
     fn a_digest_names_a_few_steps_and_counts_the_rest() {
         let cwd = Path::new("/a");
         let paths: Vec<String> = (0..12).map(|i| format!("/a/f{i}.rs")).collect();
-        let entries: Vec<Entry> = paths
+        let entries: Vec<Arc<Entry>> = paths
             .iter()
             .map(|p| tool("edit", "completed", &[p.as_str()]))
             .collect();
         let digest = progress_digest(&entries, cwd, 0).0.unwrap();
         assert_eq!(digest.lines().count(), STEPS_LIMIT + 1);
         assert!(digest.ends_with("- and 4 more"), "{digest}");
-        let long = Entry::Agent {
+        let long = Arc::new(Entry::Agent {
             text: "x".repeat(SAID_LIMIT * 2),
-        };
+        });
         let digest = progress_digest(&[long, tool("search", "completed", &[])], cwd, 0)
             .0
             .unwrap();
@@ -1133,7 +1137,7 @@ mod tests {
             "locations": ["/home/rik/app/secrets.env"],
         }))
         .unwrap();
-        let entries = [Entry::Tool(tool)];
+        let entries = [Arc::new(Entry::Tool(tool))];
         let (key, seen) = permission_ask("tc1", title, false, &entries);
         assert_eq!(seen, Seen::Permission("run a command".into()));
         let (_, body) = report(seen).unwrap();
@@ -1310,15 +1314,17 @@ mod tests {
 
     #[test]
     fn the_reply_is_the_last_words_of_the_latest_turn() {
-        let user = || Entry::User {
-            text: "go".into(),
-            at: 1,
-            elapsed_ms: None,
-            message_id: None,
-            tokens: None,
-            shell_changes: Vec::new(),
+        let user = || {
+            Arc::new(Entry::User {
+                text: "go".into(),
+                at: 1,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            })
         };
-        let agent = |t: &str| Entry::Agent { text: t.into() };
+        let agent = |t: &str| Arc::new(Entry::Agent { text: t.into() });
         assert_eq!(
             turn_reply(&[
                 user(),

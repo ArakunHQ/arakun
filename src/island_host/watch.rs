@@ -193,12 +193,12 @@ pub fn read_replies(alerts: &mut [Alert]) {
 }
 
 /// The turn's last reply, as a card tells it.
-fn last_reply(entries: &[Entry]) -> Option<String> {
+fn last_reply(entries: &[std::sync::Arc<Entry>]) -> Option<String> {
     entries
         .iter()
         .rev()
-        .take_while(|e| !matches!(e, Entry::User { .. }))
-        .find_map(|e| match e {
+        .take_while(|e| !matches!(&***e, Entry::User { .. }))
+        .find_map(|e| match &**e {
             Entry::Agent { text } => Some(brief(text)).filter(|b| !b.is_empty()),
             _ => None,
         })
@@ -374,7 +374,8 @@ mod tests {
         let one_word = "x".repeat(500);
         assert_eq!(brief(&one_word).chars().count(), 301);
         // The turn's last reply, not an earlier turn's.
-        let entry = |v: serde_json::Value| -> Entry { serde_json::from_value(v).unwrap() };
+        let entry =
+            |v: serde_json::Value| -> std::sync::Arc<Entry> { serde_json::from_value(v).unwrap() };
         let user = entry(serde_json::json!({"type": "user", "text": "go", "at": 0}));
         let agent = |t: &str| entry(serde_json::json!({"type": "agent", "text": t}));
         assert_eq!(

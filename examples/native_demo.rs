@@ -113,12 +113,12 @@ fn parse_args() -> Args {
     a
 }
 
-fn print_entries(entries: &[Entry], printed: &mut Vec<String>) {
+fn print_entries(entries: &[std::sync::Arc<Entry>], printed: &mut Vec<String>) {
     if entries.len() < printed.len() {
         printed.clear();
     }
     for (i, e) in entries.iter().enumerate() {
-        let line = match e {
+        let line = match &**e {
             Entry::User { text, .. } => format!("[user] {text}"),
             Entry::Agent { text } => format!("[agent] {text}"),
             Entry::Thought { text } => format!("[thought] {text}"),
@@ -169,8 +169,8 @@ fn print_entries(entries: &[Entry], printed: &mut Vec<String>) {
             } else {
                 printed.push(line.clone());
             }
-            let streaming =
-                matches!(e, Entry::Agent { .. } | Entry::Thought { .. }) && i + 1 == entries.len();
+            let streaming = matches!(&**e, Entry::Agent { .. } | Entry::Thought { .. })
+                && i + 1 == entries.len();
             if !streaming {
                 println!("{line}");
             }

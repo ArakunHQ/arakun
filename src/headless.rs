@@ -1224,7 +1224,7 @@ fn last_message(id: &str) -> String {
     Thread::read_transcript(&transcript_path(id))
         .ok()
         .and_then(|t| {
-            t.entries.iter().rev().find_map(|e| match e {
+            t.entries.iter().rev().find_map(|e| match &**e {
                 Entry::Agent { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
                 _ => None,
             })
@@ -1664,7 +1664,7 @@ impl Host {
         {
             return;
         }
-        let tool = t.entries().iter().rev().find_map(|e| match e {
+        let tool = t.entries().iter().rev().find_map(|e| match &**e {
             Entry::Tool(tc) if tc.id == req.tool_call_id => Some(tc.clone()),
             _ => None,
         });
@@ -1896,11 +1896,11 @@ impl Host {
 }
 
 /// What the session did last, in a line.
-fn last_line(entries: &[Entry]) -> String {
+fn last_line(entries: &[std::sync::Arc<Entry>]) -> String {
     entries
         .iter()
         .rev()
-        .find_map(|e| match e {
+        .find_map(|e| match &**e {
             Entry::Agent { text } | Entry::Thought { text } if !text.trim().is_empty() => Some(
                 text.trim()
                     .lines()
@@ -2410,17 +2410,17 @@ mod tests {
                 seat_key: None,
             },
             entries: vec![
-                Entry::User {
+                std::sync::Arc::new(Entry::User {
                     text: "hi".into(),
                     at: 1,
                     elapsed_ms: None,
                     message_id: None,
                     tokens: None,
                     shell_changes: Vec::new(),
-                },
-                Entry::Agent {
+                }),
+                std::sync::Arc::new(Entry::Agent {
                     text: "done\n".into(),
-                },
+                }),
             ],
             usage: agent::Usage::default(),
             fork_point: None,

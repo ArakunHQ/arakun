@@ -48,28 +48,33 @@ impl ThreadView {
                             d.cursor_pointer()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let entries = this.thread.read(cx).entries();
-                                    let (old, new) = match (at, entries.get(turn_start)) {
-                                        (DiffAt::Tool(i, ci), _) => match entries.get(base + i) {
-                                            Some(Entry::Tool(t)) => match t.content.get(ci) {
-                                                Some(ToolContent::Diff {
-                                                    old_text,
-                                                    new_text,
-                                                    ..
-                                                }) => {
-                                                    (old_text.as_deref(), Some(new_text.as_str()))
+                                    let (old, new) =
+                                        match (at, entries.get(turn_start).map(Arc::as_ref)) {
+                                            (DiffAt::Tool(i, ci), _) => {
+                                                match entries.get(base + i).map(Arc::as_ref) {
+                                                    Some(Entry::Tool(t)) => match t.content.get(ci)
+                                                    {
+                                                        Some(ToolContent::Diff {
+                                                            old_text,
+                                                            new_text,
+                                                            ..
+                                                        }) => (
+                                                            old_text.as_deref(),
+                                                            Some(new_text.as_str()),
+                                                        ),
+                                                        _ => (None, None),
+                                                    },
+                                                    _ => (None, None),
                                                 }
-                                                _ => (None, None),
-                                            },
+                                            }
+                                            (
+                                                DiffAt::Shell(i),
+                                                Some(Entry::User { shell_changes, .. }),
+                                            ) => shell_changes.get(i).map_or((None, None), |c| {
+                                                (c.old.as_deref(), Some(c.new.as_str()))
+                                            }),
                                             _ => (None, None),
-                                        },
-                                        (
-                                            DiffAt::Shell(i),
-                                            Some(Entry::User { shell_changes, .. }),
-                                        ) => shell_changes.get(i).map_or((None, None), |c| {
-                                            (c.old.as_deref(), Some(c.new.as_str()))
-                                        }),
-                                        _ => (None, None),
-                                    };
+                                        };
                                     let line = new.and_then(|new| {
                                         std::fs::read_to_string(&full)
                                             .ok()
@@ -115,14 +120,14 @@ pub(super) enum DiffAt {
 }
 
 /// The diffs of the edit tools, then what the shell commands changed besides.
-pub(super) fn turn_edits<'a>(shell: &'a [ShellChange], content: &'a [Entry]) -> TurnEdits<'a> {
+pub(super) fn turn_edits<'a>(shell: &'a [ShellChange], content: &'a [Arc<Entry>]) -> TurnEdits<'a> {
     let mut edits = TurnEdits {
         files: Vec::new(),
         added: 0,
         removed: 0,
     };
     for (i, e) in content.iter().enumerate() {
-        let Entry::Tool(t) = e else { continue };
+        let Entry::Tool(t) = &**e else { continue };
         if t.status != ToolStatus::Completed {
             continue;
         }

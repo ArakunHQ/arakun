@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::Context;
 use serde::{Deserialize, Serialize};
@@ -1375,7 +1376,7 @@ impl Thread {
         (self.remote || self.native_live() || (self.acp_live() && self.caps.fork))
             && !self.is_busy()
             && matches!(
-                self.entries.get(ix),
+                self.entries.get(ix).map(Arc::as_ref),
                 Some(Entry::User {
                     message_id: Some(_),
                     ..
@@ -1400,7 +1401,7 @@ impl Thread {
             text,
             message_id: Some(message_id),
             ..
-        }) = self.entries.get(ix)
+        }) = self.entries.get(ix).map(Arc::as_ref)
         else {
             return;
         };
@@ -1557,7 +1558,7 @@ impl Thread {
             text,
             message_id: Some(message_id),
             ..
-        }) = self.entries.get(ix)
+        }) = self.entries.get(ix).map(Arc::as_ref)
         else {
             return;
         };
@@ -1705,15 +1706,16 @@ impl Thread {
         });
         for entry in &mut self.entries {
             let Entry::User {
-                text, message_id, ..
-            } = entry
+                text,
+                message_id: None,
+                ..
+            } = &**entry
             else {
                 continue;
             };
-            if message_id.is_some() {
-                continue;
-            }
-            if let Some((_, id)) = known.by_ref().find(|(t, _)| *t == text) {
+            if let Some((_, id)) = known.by_ref().find(|(t, _)| *t == text)
+                && let Entry::User { message_id, .. } = Arc::make_mut(entry)
+            {
                 *message_id = Some(id.clone());
             }
         }
@@ -1746,7 +1748,7 @@ impl Thread {
         if let Some(messages) = session["messages"].as_array() {
             let entries = history(messages);
             if rebuild && !entries.is_empty() {
-                self.set_entries(entries);
+                self.set_entries(entries.into_iter().map(Arc::new).collect());
                 cx.emit(ThreadEvent::Reset);
             } else {
                 self.adopt_message_ids(&entries);
@@ -1979,7 +1981,7 @@ impl Thread {
         self.cancelling = false;
         self.settle_turn(cx);
         let plan_declined = reason == "permission_rejected"
-            && self.entries.iter().rev().find_map(|e| match e {
+            && self.entries.iter().rev().find_map(|e| match &**e {
                 Entry::Tool(t) => Some(t.kind == "switch_mode"),
                 _ => None,
             }) == Some(true);
@@ -2075,7 +2077,7 @@ impl Thread {
                         .collect();
                     for ix in ixs {
                         if let Some(Entry::Agent { text } | Entry::Thought { text }) =
-                            self.entries.get_mut(ix)
+                            self.entries.get_mut(ix).map(Arc::make_mut)
                         {
                             text.clear();
                             self.entries_changed(ix, cx);
@@ -2090,7 +2092,7 @@ impl Thread {
             "tool_execution_phase_changed" => {
                 let id = str_of(n, "toolUseId").unwrap_or_default();
                 if let Some(&ix) = self.tool_index.get(&id)
-                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix)
+                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut)
                     && matches!(t.status, ToolStatus::Pending | ToolStatus::InProgress)
                 {
                     t.status = match n["phase"].as_str() {
@@ -2108,7 +2110,7 @@ impl Thread {
             "tool_result" => {
                 let id = str_of(n, "toolUseId").unwrap_or_default();
                 if let Some(&ix) = self.tool_index.get(&id)
-                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix)
+                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut)
                 {
                     finish_tool(t, &n["content"], n["isError"].as_bool().unwrap_or(false));
                     self.tool_started.remove(&id);
@@ -2166,7 +2168,8 @@ impl Thread {
             n["blockIndex"].as_u64().unwrap_or(0),
         );
         if let Some(&ix) = self.native.blocks.get(&key)
-            && let Some(Entry::Agent { text } | Entry::Thought { text }) = self.entries.get_mut(ix)
+            && let Some(Entry::Agent { text } | Entry::Thought { text }) =
+                self.entries.get_mut(ix).map(Arc::make_mut)
         {
             text.push_str(&delta);
             self.entries_changed(ix, cx);
@@ -2203,8 +2206,10 @@ impl Thread {
             match self.native.blocks.get(&key) {
                 Some(&ix) => {
                     if let Some(Entry::Agent { text } | Entry::Thought { text }) =
-                        self.entries.get_mut(ix)
+                        self.entries.get(ix).map(Arc::as_ref)
                         && *text != full
+                        && let Some(Entry::Agent { text } | Entry::Thought { text }) =
+                            self.entries.get_mut(ix).map(Arc::make_mut)
                     {
                         *text = full;
                         self.entries_changed(ix, cx);
@@ -2244,7 +2249,7 @@ impl Thread {
             Some(&ix) => ix,
             None => self.push_entry(Entry::Tool(new_tool(&id)), cx),
         };
-        if let Some(Entry::Tool(t)) = self.entries.get_mut(ix) {
+        if let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut) {
             // Input streams in; an empty object would wipe what an earlier event had.
             if input.as_object().is_some_and(|o| !o.is_empty()) || t.raw_input.is_none() {
                 describe_tool(t, &name, &input);
@@ -2280,7 +2285,7 @@ impl Thread {
                     && let (Some(path), Some(new)) =
                         (str_of(details, "filePath"), str_of(details, "newContent"))
                     && let Some(&ix) = self.tool_index.get(&tool_call_id)
-                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix)
+                    && let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut)
                 {
                     t.content = vec![ToolContent::Diff {
                         path: path.into(),
@@ -2343,7 +2348,7 @@ impl Thread {
                 let title = self
                     .tool_index
                     .get(&tool_call_id)
-                    .and_then(|&i| match &self.entries[i] {
+                    .and_then(|&i| match &*self.entries[i] {
                         Entry::Tool(t) => Some(t.title.clone()),
                         _ => None,
                     })

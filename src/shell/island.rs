@@ -742,7 +742,7 @@ fn seen(s: &model::Session, t: &Thread) -> Seen {
         t.entries()
             .iter()
             .rev()
-            .find_map(|e| match e {
+            .find_map(|e| match &**e {
                 Entry::User { elapsed_ms, .. } => Some(*elapsed_ms),
                 _ => None,
             })
@@ -789,9 +789,9 @@ fn model_label(t: &Thread, s: Option<&model::Session>) -> String {
 
 /// What the agent is doing now: its latest tool call, else the latest of what
 /// it thought or wrote, in the running (or last) turn.
-fn doing_now(entries: &[Entry]) -> Option<String> {
+fn doing_now(entries: &[Arc<Entry>]) -> Option<String> {
     for e in entries.iter().rev() {
-        let line = match e {
+        let line = match &**e {
             Entry::User { .. } => return None,
             Entry::Tool(call) => one_line(&call.title),
             Entry::Agent { text } | Entry::Thought { text } => text
@@ -810,19 +810,19 @@ fn doing_now(entries: &[Entry]) -> Option<String> {
 }
 
 /// The turn's last reply, whole.
-fn last_text(entries: &[Entry]) -> Option<&str> {
+fn last_text(entries: &[Arc<Entry>]) -> Option<&str> {
     entries
         .iter()
         .rev()
-        .take_while(|e| !matches!(e, Entry::User { .. }))
-        .find_map(|e| match e {
+        .take_while(|e| !matches!(&***e, Entry::User { .. }))
+        .find_map(|e| match &**e {
             Entry::Agent { text } if !text.trim().is_empty() => Some(text.as_str()),
             _ => None,
         })
 }
 
 /// The first line of the turn's last reply: what a finished turn's row says.
-fn last_reply(entries: &[Entry]) -> Option<String> {
+fn last_reply(entries: &[Arc<Entry>]) -> Option<String> {
     last_text(entries).and_then(|text| text.lines().map(one_line).find(|l| !l.is_empty()))
 }
 
@@ -874,21 +874,21 @@ mod tests {
         assert_eq!(spoken("Checks failed", " "), "Checks failed");
     }
 
-    fn entry(v: serde_json::Value) -> Entry {
+    fn entry(v: serde_json::Value) -> Arc<Entry> {
         serde_json::from_value(v).unwrap()
     }
 
-    fn user() -> Entry {
+    fn user() -> Arc<Entry> {
         entry(serde_json::json!({"type": "user", "text": "go", "at": 0}))
     }
 
-    fn tool(title: &str) -> Entry {
+    fn tool(title: &str) -> Arc<Entry> {
         entry(
             serde_json::json!({"type": "tool", "id": "1", "title": title, "kind": "execute", "status": "in_progress"}),
         )
     }
 
-    fn agent(text: &str) -> Entry {
+    fn agent(text: &str) -> Arc<Entry> {
         entry(serde_json::json!({"type": "agent", "text": text}))
     }
 

@@ -3,6 +3,7 @@
 //! session on the composer to hand its conversation to the session there.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
@@ -26,7 +27,7 @@ const SLIDE: Duration = crate::ui::motion::SLOW;
 const CONTEXT_BUDGET: usize = 16 * 1024;
 
 /// The entries saved for session `id`; none if it has no transcript.
-fn saved_entries(id: &str) -> Vec<Entry> {
+fn saved_entries(id: &str) -> Vec<Arc<Entry>> {
     std::fs::read(state::transcript_path(id))
         .ok()
         .and_then(|b| serde_json::from_slice::<crate::agent::Transcript>(&b).ok())
@@ -419,7 +420,7 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn session_entries(&self, env: &Path, id: &str, cx: &gpui::App) -> Vec<Entry> {
+    pub(super) fn session_entries(&self, env: &Path, id: &str, cx: &gpui::App) -> Vec<Arc<Entry>> {
         let live = self
             .find_env(env)
             .and_then(|e| e.sessions.iter().find(|s| s.id.as_ref() == id))
@@ -437,7 +438,7 @@ impl Shell {
         d: &DraggedSession,
         env: PathBuf,
         cx: &mut Context<Self>,
-        work: impl FnOnce(Vec<Entry>) -> R + Send + 'static,
+        work: impl FnOnce(Vec<Arc<Entry>>) -> R + Send + 'static,
         apply: impl FnOnce(&mut Self, &Path, R, &mut Context<Self>) + 'static,
     ) {
         let live = self
@@ -471,7 +472,7 @@ impl Shell {
         let (title, agent) = (d.title.clone(), d.agent.label());
         let work = {
             let title = title.clone();
-            move |entries: Vec<Entry>| {
+            move |entries: Vec<Arc<Entry>>| {
                 (!entries.is_empty()).then(|| {
                     crate::agent::notes::context_block(&title, agent, &entries, CONTEXT_BUDGET)
                 })
@@ -498,7 +499,7 @@ impl Shell {
         let path = state::linked_path(&d.id);
         let work = {
             let (title, path) = (title.clone(), path.clone());
-            move |entries: Vec<Entry>| {
+            move |entries: Vec<Arc<Entry>>| {
                 let text = crate::agent::notes::transcript_markdown(&title, agent, &entries);
                 state::write_linked(&path, &text)
             }

@@ -3,6 +3,7 @@
 //! composer and are written out after the typed text when it is sent.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::attach;
 
@@ -131,11 +132,11 @@ pub fn format(notes: &[ChatNote]) -> String {
 
 /// The messages of a transcript as "User:" / "Agent:" paragraphs, tool
 /// calls as one line each.
-fn messages(entries: &[super::Entry], tools: bool) -> Vec<String> {
+fn messages(entries: &[Arc<super::Entry>], tools: bool) -> Vec<String> {
     use super::Entry;
     entries
         .iter()
-        .filter_map(|e| match e {
+        .filter_map(|e| match &**e {
             Entry::User { text, .. } => Some(format!("User: {}", text.trim())),
             Entry::Agent { text } if !text.trim().is_empty() => {
                 Some(format!("Agent: {}", text.trim()))
@@ -150,7 +151,12 @@ fn messages(entries: &[super::Entry], tools: bool) -> Vec<String> {
 
 /// Another session's conversation for a prompt, the newest messages that fit
 /// in `budget` bytes.
-pub fn context_block(title: &str, agent: &str, entries: &[super::Entry], budget: usize) -> String {
+pub fn context_block(
+    title: &str,
+    agent: &str,
+    entries: &[Arc<super::Entry>],
+    budget: usize,
+) -> String {
     let all = messages(entries, false);
     let mut kept: Vec<&str> = Vec::new();
     let mut used = 0;
@@ -181,7 +187,7 @@ pub fn context_block(title: &str, agent: &str, entries: &[super::Entry], budget:
 }
 
 /// A whole transcript as markdown, for a session linked into another.
-pub fn transcript_markdown(title: &str, agent: &str, entries: &[super::Entry]) -> String {
+pub fn transcript_markdown(title: &str, agent: &str, entries: &[Arc<super::Entry>]) -> String {
     let title = crate::secrets::scrub(title);
     let mut s = format!("# {title}\n\nA {agent} session in Arakun.\n\n");
     s.push_str(&messages(entries, true).join("\n\n"));
@@ -199,7 +205,7 @@ pub const HANDOFF_BUDGET: usize = 16 * 1024;
 pub fn handoff(
     from: &str,
     title: &str,
-    entries: &[super::Entry],
+    entries: &[Arc<super::Entry>],
     transcript: &str,
     budget: usize,
 ) -> String {
@@ -221,7 +227,7 @@ mod tests {
     #[test]
     fn keeps_the_newest_messages_in_context() {
         use super::super::Entry;
-        let entries = vec![
+        let entries = [
             Entry::User {
                 text: "first question".into(),
                 at: 0,
@@ -244,7 +250,8 @@ mod tests {
             Entry::Agent {
                 text: "done".into(),
             },
-        ];
+        ]
+        .map(Arc::new);
         let block = context_block("Fix \"auth\"", "Droid", &entries, 30);
         assert_eq!(
             block,
@@ -256,7 +263,7 @@ mod tests {
     #[test]
     fn hands_the_conversation_over() {
         use super::super::Entry;
-        let entries = vec![
+        let entries = [
             Entry::User {
                 text: "fix the login".into(),
                 at: 0,
@@ -268,7 +275,8 @@ mod tests {
             Entry::Agent {
                 text: "fixed".into(),
             },
-        ];
+        ]
+        .map(Arc::new);
         let text = handoff("Droid", "Login", &entries, "/data/linked/s1.md", 1024);
         assert!(text.starts_with(
             "<handoff from=\"Droid\">
@@ -290,7 +298,7 @@ Agent: fixed
     fn another_agent_never_reads_a_secret() {
         use super::super::Entry;
         let key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-        let entries = vec![
+        let entries = [
             Entry::User {
                 text: format!("push with {key}"),
                 at: 0,
@@ -302,7 +310,8 @@ Agent: fixed
             Entry::Agent {
                 text: format!("pushed with {key}"),
             },
-        ];
+        ]
+        .map(Arc::new);
         let title = format!("Push {key}");
         let text = handoff("Droid", &title, &entries, "/data/linked/s1.md", 1024);
         let whole = transcript_markdown(&title, "Droid", &entries);

@@ -960,7 +960,7 @@ fn notice_payload(
     title: &str,
     env: &str,
     body: &str,
-    entries: &[Entry],
+    entries: &[Arc<Entry>],
 ) -> String {
     let secs = (kind == notify::Kind::Done)
         .then(|| notify::turn_secs(entries))
@@ -1080,11 +1080,11 @@ fn error_text(t: &Thread) -> String {
     }
 }
 
-fn last_message(entries: &[Entry]) -> String {
+fn last_message(entries: &[Arc<Entry>]) -> String {
     entries
         .iter()
         .rev()
-        .find_map(|e| match e {
+        .find_map(|e| match &**e {
             Entry::Agent { text } if !text.trim().is_empty() => Some(text.trim().to_string()),
             _ => None,
         })
@@ -1092,11 +1092,11 @@ fn last_message(entries: &[Entry]) -> String {
 }
 
 /// What the last failed turn left in the transcript to say why.
-fn last_error(entries: &[Entry]) -> String {
+fn last_error(entries: &[Arc<Entry>]) -> String {
     entries
         .iter()
         .rev()
-        .find_map(|e| match e {
+        .find_map(|e| match &**e {
             Entry::Notice {
                 text, error: true, ..
             } => Some(text.trim().to_string()),
@@ -2018,7 +2018,7 @@ impl Daemon {
                 p.picked(agent)
             })
             .unwrap_or_default();
-        let talked = entries.iter().any(|e| matches!(e, Entry::User { .. }));
+        let talked = entries.iter().any(|e| matches!(&**e, Entry::User { .. }));
         let before = conversation(&entries);
         let linked = self.store.linked_path(&id);
         let markdown = talked
@@ -2143,7 +2143,7 @@ impl Daemon {
         id: &str,
         agent: &str,
         cx: &App,
-    ) -> Result<(Record, AgentKind, Vec<Entry>), String> {
+    ) -> Result<(Record, AgentKind, Vec<Arc<Entry>>), String> {
         let agent = AgentKind::parse(agent).ok_or_else(|| unknown_agent(agent))?;
         let old = self
             .store
@@ -2185,7 +2185,7 @@ impl Daemon {
     /// The entries saved for session `id`, whose agent is not running: none
     /// when it has no transcript yet, and an error when the one it has
     /// cannot be read, its last save is not written, or follow-ups wait in it.
-    fn saved_entries(&self, id: &str) -> Result<Vec<Entry>, String> {
+    fn saved_entries(&self, id: &str) -> Result<Vec<Arc<Entry>>, String> {
         let path = self.store.transcript_path(id);
         if self.writer.behind(&path) {
             return Err(format!(
@@ -2349,7 +2349,7 @@ impl Daemon {
 
     /// Runs `f` over a session's entries and directory: the live thread's, or
     /// the transcript's when its agent is not running.
-    fn with_entries<R>(&self, id: &str, cx: &App, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
+    fn with_entries<R>(&self, id: &str, cx: &App, f: impl FnOnce(&[Arc<Entry>], &Path) -> R) -> R {
         match self.live.get(id) {
             Some(live) => {
                 let t = live.thread.read(cx);
@@ -4938,7 +4938,7 @@ fn waiting_follow_ups() -> String {
 
 /// What a handover compares to see whether a session changed while its
 /// conversation was being written for the new agent.
-fn conversation(entries: &[Entry]) -> serde_json::Value {
+fn conversation(entries: &[Arc<Entry>]) -> serde_json::Value {
     serde_json::to_value(entries).unwrap_or_default()
 }
 
@@ -5850,15 +5850,17 @@ fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
 mod tests {
     #[test]
     fn a_turn_during_a_handover_shows_in_the_conversation() {
-        let user = |text: &str| Entry::User {
-            text: text.into(),
-            at: 1,
-            elapsed_ms: None,
-            message_id: None,
-            tokens: None,
-            shell_changes: Vec::new(),
+        let user = |text: &str| {
+            Arc::new(Entry::User {
+                text: text.into(),
+                at: 1,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: Vec::new(),
+            })
         };
-        let agent = |text: &str| Entry::Agent { text: text.into() };
+        let agent = |text: &str| Arc::new(Entry::Agent { text: text.into() });
         let before = vec![user("fix it"), agent("fixed")];
         let snapshot = conversation(&before);
         assert_eq!(conversation(&before.clone()), snapshot);
@@ -5869,7 +5871,7 @@ mod tests {
 
         // A settled turn changes an entry in place, not only the count.
         let mut settled = before.clone();
-        if let Entry::User { elapsed_ms, .. } = &mut settled[0] {
+        if let Entry::User { elapsed_ms, .. } = Arc::make_mut(&mut settled[0]) {
             *elapsed_ms = Some(5);
         }
         assert_ne!(conversation(&settled), snapshot);
@@ -7259,7 +7261,7 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
 
     #[test]
     fn a_finished_notice_carries_the_agents_words_and_the_place() {
-        let entries = vec![
+        let entries = [
             Entry::User {
                 text: "go".into(),
                 at: 1,
@@ -7271,7 +7273,8 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
             Entry::Agent {
                 text: "Done: 3 files".into(),
             },
-        ];
+        ]
+        .map(Arc::new);
         let body = notify::finished_body(&entries);
         let n: serde_json::Value = serde_json::from_str(&notice_payload(
             notify::Kind::Done,
@@ -7503,7 +7506,7 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
 
     #[test]
     fn the_last_agent_message_skips_what_came_after_it() {
-        let entries = vec![
+        let entries = [
             Entry::Agent {
                 text: " Done. ".into(),
             },
@@ -7514,17 +7517,18 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
                 mark: None,
                 places: Vec::new(),
             },
-        ];
+        ]
+        .map(Arc::new);
         assert_eq!(last_message(&entries), "Done.");
         assert_eq!(last_message(&[]), "");
         // A notice that is no error says nothing about a failure.
         assert_eq!(last_error(&entries), "Stopped with an error.");
-        let failed = [Entry::Notice {
+        let failed = [Arc::new(Entry::Notice {
             text: " No token. ".into(),
             error: true,
             mark: None,
             places: Vec::new(),
-        }];
+        })];
         assert_eq!(last_error(&failed), "No token.");
     }
 
@@ -7542,7 +7546,7 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
                 seat: None,
                 seat_key: None,
             },
-            entries: vec![Entry::Agent { text: text.into() }],
+            entries: vec![Arc::new(Entry::Agent { text: text.into() })],
             usage: agent::Usage::default(),
             fork_point: None,
             interrupted: false,

@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -90,10 +91,10 @@ fn fmt_elapsed(ms: u64) -> String {
 
 /// What a working turn waits on while its calls run: the subagents it
 /// started, or the command it ran. None while it writes or thinks.
-fn waiting_on(content: &[Entry], cwd: &Path) -> Option<(String, Option<String>)> {
+fn waiting_on(content: &[Arc<Entry>], cwd: &Path) -> Option<(String, Option<String>)> {
     let running: Vec<&ToolCall> = content
         .iter()
-        .filter_map(|e| match e {
+        .filter_map(|e| match &**e {
             Entry::Tool(t)
                 if t.parent.is_none()
                     && matches!(t.status, ToolStatus::Pending | ToolStatus::InProgress) =>
@@ -156,9 +157,9 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
 /// Drops parsed messages from `from` on whose entry is no longer a message. A
 /// shrink resets the view, but a sync can replace entries in place without one.
 /// Entries before `from` did not change, so a streamed chunk visits only the tail.
-fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry], from: usize) {
+fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Arc<Entry>], from: usize) {
     for (ix, entry) in entries.iter().enumerate().skip(from) {
-        if !matches!(entry, Entry::Agent { .. } | Entry::Thought { .. }) {
+        if !matches!(&**entry, Entry::Agent { .. } | Entry::Thought { .. }) {
             docs.remove(&ix);
         }
     }
@@ -219,7 +220,7 @@ fn build_rows(
 
 fn build_rows_from(
     turns: &[Range<usize>],
-    all_entries: &[Entry],
+    all_entries: &[Arc<Entry>],
     is_live: impl Fn(usize) -> bool,
     folds: &HashSet<usize>,
 ) -> (Vec<ListRow>, HashMap<usize, LongTurn>) {
@@ -261,11 +262,11 @@ fn build_rows_from(
     (rows, long_turns)
 }
 
-fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
+fn turns_of(entries: &[Arc<Entry>]) -> Vec<Range<usize>> {
     let mut turns = Vec::new();
     let mut start = 0;
     for (i, e) in entries.iter().enumerate() {
-        if matches!(e, Entry::User { .. }) && i > start {
+        if matches!(&**e, Entry::User { .. }) && i > start {
             turns.push(start..i);
             start = i;
         }
@@ -819,7 +820,7 @@ impl ThreadView {
             ThreadStatus::Connecting | ThreadStatus::Idle => Mood::Idle,
             ThreadStatus::NeedsInput => Mood::Waiting,
             ThreadStatus::Error(_) => Mood::Error,
-            ThreadStatus::Working => match t.entries().last() {
+            ThreadStatus::Working => match t.entries().last().map(Arc::as_ref) {
                 Some(Entry::Tool(_) | Entry::Agent { .. } | Entry::Plan { .. }) => Mood::Working,
                 _ => Mood::Thinking,
             },
@@ -906,11 +907,11 @@ impl ThreadView {
                 // Nested subagent tool calls render inside their parent Agent phase.
                 let entries = self.thread.read(cx).entries();
                 if let Some(content) = entries.get(base..base + lt.content_len)
-                    && let Some(Entry::Tool(tc)) = content.get(rel)
+                    && let Some(Entry::Tool(tc)) = content.get(rel).map(Arc::as_ref)
                     && let Some(parent_id) = tc.parent.as_deref()
                     && let Some(parent_rel) = content
                         .iter()
-                        .position(|e| matches!(e, Entry::Tool(p) if p.id == parent_id))
+                        .position(|e| matches!(&**e, Entry::Tool(p) if p.id == parent_id))
                 {
                     rel = parent_rel;
                 }
@@ -1881,7 +1882,7 @@ impl ThreadView {
         let permission = t.pending_permission().filter(|p| {
             !t.entries()
                 .iter()
-                .any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
+                .any(|e| matches!(&**e, Entry::Tool(tc) if tc.id == p.tool_call_id))
         });
         let question = t.pending_question();
         let secret = t.pending_secret();
@@ -2009,7 +2010,7 @@ impl ThreadView {
             at,
             elapsed_ms: e,
             ..
-        }) = entries.first()
+        }) = entries.first().map(Arc::as_ref)
         {
             elapsed_ms = *e;
             if slice != TurnSlice::Tail {
@@ -2048,7 +2049,7 @@ impl ThreadView {
                 };
                 let turn_start = range.start;
                 let group: SharedString = format!("fold-{turn_start}").into();
-                let shell = match entries.first() {
+                let shell = match entries.first().map(Arc::as_ref) {
                     Some(Entry::User { shell_changes, .. }) => shell_changes.as_slice(),
                     _ => &[],
                 };
@@ -2215,7 +2216,7 @@ impl ThreadView {
         }
 
         if let Some(p) = plan
-            && let Entry::Plan { entries: plan } = &content[p]
+            && let Entry::Plan { entries: plan } = &*content[p]
         {
             col = col.child(
                 div()
@@ -2227,7 +2228,7 @@ impl ThreadView {
 
         for (k, e) in content[reply.clone()].iter().enumerate() {
             let entry_ix = base + reply.start + k;
-            if let Entry::Agent { text } = e {
+            if let Entry::Agent { text } = &**e {
                 let reply = div()
                     .id(("reply", entry_ix))
                     .map(|d| crate::ui::article(d, kind.label(), text.trim().to_string()))
@@ -2241,10 +2242,10 @@ impl ThreadView {
             }
         }
 
-        if !live && let Some(Entry::User { at, tokens, .. }) = entries.first() {
+        if !live && let Some(Entry::User { at, tokens, .. }) = entries.first().map(Arc::as_ref) {
             let reply = content[reply.clone()]
                 .iter()
-                .filter_map(|e| match e {
+                .filter_map(|e| match &**e {
                     Entry::Agent { text } => Some(text.trim()),
                     _ => None,
                 })
@@ -2263,7 +2264,7 @@ impl ThreadView {
             && live
             && !entries
                 .iter()
-                .any(|e| matches!(e, Entry::Tool(tc) if tc.id == p.tool_call_id))
+                .any(|e| matches!(&**e, Entry::Tool(tc) if tc.id == p.tool_call_id))
         {
             col = col.child(
                 div()
@@ -2286,7 +2287,7 @@ impl ThreadView {
 
         let notices_from = body.len() - trailing_notices;
         for (k, e) in body[notices_from..].iter().enumerate() {
-            match e {
+            match &**e {
                 Entry::Notice { text, error, .. }
                     if !*error && legacy_compaction(text).is_some() =>
                 {
@@ -2664,7 +2665,7 @@ impl ThreadView {
     fn render_phase(
         &mut self,
         phase: &Phase,
-        content: &[Entry],
+        content: &[Arc<Entry>],
         base: usize,
         cwd: &Path,
         live: bool,
@@ -2675,7 +2676,7 @@ impl ThreadView {
     ) -> AnyElement {
         let mut col = div().flex().flex_col().min_w_0();
         if let Some(h) = phase.head
-            && let Entry::Agent { text } = &content[h]
+            && let Entry::Agent { text } = &*content[h]
         {
             let head = div()
                 .min_w_0()
@@ -2696,14 +2697,14 @@ impl ThreadView {
         }
         // A subagent's call waiting for an answer opens its Agent call's phase.
         let asking_parent = permission.and_then(|p| {
-            content.iter().find_map(|e| match e {
+            content.iter().find_map(|e| match &**e {
                 Entry::Tool(t) if t.id == p.tool_call_id => t.parent.clone(),
                 _ => None,
             })
         });
         let asking = permission.is_some_and(|p| {
             phase.steps.iter().any(|&i| {
-                matches!(&content[i], Entry::Tool(t)
+                matches!(&*content[i], Entry::Tool(t)
                     if t.id == p.tool_call_id || asking_parent.as_deref() == Some(t.id.as_str()))
             })
         });
@@ -2713,7 +2714,7 @@ impl ThreadView {
             .get(&key)
             .copied()
             .unwrap_or(active || asking);
-        let steps: Vec<&Entry> = phase.steps.iter().map(|&i| &content[i]).collect();
+        let steps: Vec<&Entry> = phase.steps.iter().map(|&i| &*content[i]).collect();
         let (glyph, summary) = phase_summary(&steps);
         let group: SharedString = format!("phase-{key}").into();
         col = col.child(
@@ -2818,7 +2819,7 @@ impl ThreadView {
     fn step(
         &mut self,
         i: usize,
-        content: &[Entry],
+        content: &[Arc<Entry>],
         base: usize,
         cwd: &Path,
         live: bool,
@@ -2827,7 +2828,7 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let row = self.activity_row(base + i, &content[i], cwd, live, permission, window, cx);
-        let Entry::Tool(agent) = &content[i] else {
+        let Entry::Tool(agent) = &*content[i] else {
             return row;
         };
         let calls = subagent_calls(content, &agent.id);
@@ -2838,7 +2839,7 @@ impl ThreadView {
         let asking = permission.is_some_and(|p| {
             calls
                 .iter()
-                .any(|&c| matches!(&content[c], Entry::Tool(t) if t.id == p.tool_call_id))
+                .any(|&c| matches!(&*content[c], Entry::Tool(t) if t.id == p.tool_call_id))
         });
         if !(running
             || asking
@@ -2876,23 +2877,23 @@ struct Phase {
 /// A settled turn that ends in tool calls instead (Droid ticks its todo list
 /// after writing the summary) keeps its last agent messages as the reply, so
 /// the summary doesn't fold away with the work.
-fn reply_span(content: &[Entry], settled: bool) -> Range<usize> {
+fn reply_span(content: &[Arc<Entry>], settled: bool) -> Range<usize> {
     let run_start = |end: usize| {
         content[..end]
             .iter()
-            .rposition(|e| !matches!(e, Entry::Agent { .. }))
+            .rposition(|e| !matches!(&**e, Entry::Agent { .. }))
             .map_or(0, |i| i + 1)
     };
     let tail = run_start(content.len());
     let tail_has_text = content[tail..]
         .iter()
-        .any(|e| matches!(e, Entry::Agent { text } if !text.trim().is_empty()));
+        .any(|e| matches!(&**e, Entry::Agent { text } if !text.trim().is_empty()));
     if !settled || tail_has_text {
         return tail..content.len();
     }
     match content
         .iter()
-        .rposition(|e| matches!(e, Entry::Agent { text } if !text.trim().is_empty()))
+        .rposition(|e| matches!(&**e, Entry::Agent { text } if !text.trim().is_empty()))
     {
         Some(last) => run_start(last)..last + 1,
         None => content.len()..content.len(),
@@ -2913,13 +2914,16 @@ struct TurnParts {
     work: Vec<usize>,
 }
 
-fn turn_parts(entries: &[Entry], live: bool) -> TurnParts {
-    let body_start = usize::from(matches!(entries.first(), Some(Entry::User { .. })));
+fn turn_parts(entries: &[Arc<Entry>], live: bool) -> TurnParts {
+    let body_start = usize::from(matches!(
+        entries.first().map(Arc::as_ref),
+        Some(Entry::User { .. })
+    ));
     let body = &entries[body_start..];
     let trailing_notices = body
         .iter()
         .rev()
-        .take_while(|e| matches!(e, Entry::Notice { .. } | Entry::Compacted { .. }))
+        .take_while(|e| matches!(&***e, Entry::Notice { .. } | Entry::Compacted { .. }))
         .count();
     let content = &body[..body.len() - trailing_notices];
     let reply = reply_span(content, !live);
@@ -2930,7 +2934,7 @@ fn turn_parts(entries: &[Entry], live: bool) -> TurnParts {
             (0..content.len())
                 .rev()
                 .filter(|i| !reply.contains(i))
-                .find(|&i| matches!(content[i], Entry::Plan { .. }))
+                .find(|&i| matches!(*content[i], Entry::Plan { .. }))
         })
         .flatten();
     let work = (0..content.len())
@@ -2946,10 +2950,10 @@ fn turn_parts(entries: &[Entry], live: bool) -> TurnParts {
 }
 
 /// A turn split into phases: prose starts one, thoughts and tool calls join the current one.
-fn phases_of(content: &[Entry], work: &[usize]) -> Vec<Phase> {
+fn phases_of(content: &[Arc<Entry>], work: &[usize]) -> Vec<Phase> {
     let mut phases: Vec<Phase> = Vec::new();
     for &i in work {
-        match &content[i] {
+        match &*content[i] {
             Entry::Agent { .. } => phases.push(Phase {
                 head: Some(i),
                 steps: Vec::new(),
@@ -2967,21 +2971,21 @@ fn phases_of(content: &[Entry], work: &[usize]) -> Vec<Phase> {
 }
 
 /// The calls a subagent made, nested under its Agent call rather than in the trail.
-fn subagent_calls(content: &[Entry], parent: &str) -> Vec<usize> {
+fn subagent_calls(content: &[Arc<Entry>], parent: &str) -> Vec<usize> {
     (0..content.len())
-        .filter(|&i| matches!(&content[i], Entry::Tool(t) if t.parent.as_deref() == Some(parent)))
+        .filter(|&i| matches!(&*content[i], Entry::Tool(t) if t.parent.as_deref() == Some(parent)))
         .collect()
 }
 
 /// A call whose Agent call is in the same turn: it shows under that one.
-fn nested(content: &[Entry], i: usize) -> bool {
-    let Entry::Tool(t) = &content[i] else {
+fn nested(content: &[Arc<Entry>], i: usize) -> bool {
+    let Entry::Tool(t) = &*content[i] else {
         return false;
     };
     t.parent.as_deref().is_some_and(|p| {
         content
             .iter()
-            .any(|e| matches!(e, Entry::Tool(o) if o.id == p))
+            .any(|e| matches!(&**e, Entry::Tool(o) if o.id == p))
     })
 }
 
@@ -3341,15 +3345,17 @@ mod tests {
         assert_eq!(fit((0., 0.), 400., 220.), (48., 48.));
     }
 
-    fn agent(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn agent(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
-    fn tool(title: &str) -> Entry {
-        serde_json::from_value(serde_json::json!({
-            "type": "tool", "id": title, "title": title, "kind": "other", "status": "completed",
-        }))
-        .unwrap()
+    fn tool(title: &str) -> Arc<Entry> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "type": "tool", "id": title, "title": title, "kind": "other", "status": "completed",
+            }))
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -3357,9 +3363,9 @@ mod tests {
         let entries = [
             agent("kept"),
             tool("Read"),
-            Entry::Thought {
+            Arc::new(Entry::Thought {
                 text: "kept too".into(),
-            },
+            }),
         ];
         let docs = || -> HashMap<usize, ()> { [(0, ()), (1, ()), (2, ())].into() };
         let left = |mut docs: HashMap<usize, ()>| {
@@ -3412,14 +3418,14 @@ mod tests {
 
     #[test]
     fn long_expanded_turn_splits_into_per_phase_list_rows() {
-        let mut entries = vec![Entry::User {
+        let mut entries = vec![Arc::new(Entry::User {
             text: "do 1000 steps".into(),
             at: 0,
             elapsed_ms: None,
             tokens: None,
             message_id: None,
             shell_changes: Vec::new(),
-        }];
+        })];
         for i in 0..1000 {
             entries.push(agent(&format!("step {i}")));
             entries.push(tool("Read"));
@@ -3457,13 +3463,15 @@ mod tests {
         assert_eq!(reply_span(&[], true), 0..0);
     }
 
-    fn edit(path: &str, old: Option<&str>, new: &str, added: u32, status: &str) -> Entry {
-        serde_json::from_value(serde_json::json!({
-            "type": "tool", "id": path, "title": "Edit", "kind": "edit", "status": status,
-            "content": [{"type": "diff", "path": path, "old_text": old, "new_text": new}],
-            "added": added,
-        }))
-        .unwrap()
+    fn edit(path: &str, old: Option<&str>, new: &str, added: u32, status: &str) -> Arc<Entry> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "type": "tool", "id": path, "title": "Edit", "kind": "edit", "status": status,
+                "content": [{"type": "diff", "path": path, "old_text": old, "new_text": new}],
+                "added": added,
+            }))
+            .unwrap(),
+        )
     }
 
     #[test]

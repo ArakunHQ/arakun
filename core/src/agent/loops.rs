@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -66,7 +67,7 @@ impl Stuck {
 
 /// The latest pattern among a turn's entries, unless it was dismissed or has
 /// not recurred in the last few calls.
-pub fn detect(entries: &[Entry], dismissed: &[String]) -> Option<Stuck> {
+pub fn detect(entries: &[Arc<Entry>], dismissed: &[String]) -> Option<Stuck> {
     let mut latest: Option<(usize, Stuck)> = None;
     let mut keep = |at: usize, s: Stuck| {
         if !dismissed.contains(&s.key) {
@@ -77,7 +78,7 @@ pub fn detect(entries: &[Entry], dismissed: &[String]) -> Option<Stuck> {
     let mut edits: HashMap<(&Path, &str, &str), usize> = HashMap::new();
     let mut run: Option<(String, String, usize)> = None;
     let mut n = 0;
-    let tools = entries.iter().filter_map(|e| match e {
+    let tools = entries.iter().filter_map(|e| match &**e {
         Entry::Tool(t) => Some(t),
         _ => None,
     });
@@ -300,17 +301,17 @@ mod tests {
         .unwrap()
     }
 
-    fn run(id: usize, cmd: &str, status: &str, output: &str) -> Entry {
-        tool(id, "execute", json!({"command": cmd}), status, output)
+    fn run(id: usize, cmd: &str, status: &str, output: &str) -> Arc<Entry> {
+        Arc::new(tool(id, "execute", json!({"command": cmd}), status, output))
     }
 
-    fn edit(id: usize, old: &str, new: &str) -> Entry {
-        serde_json::from_value(json!({
+    fn edit(id: usize, old: &str, new: &str) -> Arc<Entry> {
+        Arc::new(serde_json::from_value(json!({
             "type": "tool", "id": id.to_string(), "title": "Edit src/a.rs", "kind": "edit",
             "status": "completed", "raw_input": {"old_str": old, "new_str": new},
             "content": [{"type": "diff", "path": "/p/src/a.rs", "old_text": old, "new_text": new}],
         }))
-        .unwrap()
+        .unwrap())
     }
 
     const FAIL: &str =
@@ -370,7 +371,15 @@ mod tests {
 
     #[test]
     fn identical_calls_back_to_back_repeat() {
-        let read = |i, out| tool(i, "read", json!({"file_path": "/p/a.rs"}), "completed", out);
+        let read = |i, out| {
+            Arc::new(tool(
+                i,
+                "read",
+                json!({"file_path": "/p/a.rs"}),
+                "completed",
+                out,
+            ))
+        };
         let entries: Vec<_> = (0..4).map(|i| read(i, "fn main() {}")).collect();
         let stuck = detect(&entries, &[]).unwrap();
         assert_eq!(

@@ -63,7 +63,7 @@ impl ThreadView {
         }
         let thread = self.thread.clone();
         for (ix, e) in thread.read(cx).entries().iter().enumerate() {
-            let n = match e {
+            let n = match &**e {
                 Entry::User { text, .. } => {
                     search::find_all(&crate::agent::attach::split_pastes(text).0, query).len()
                 }
@@ -237,7 +237,7 @@ impl ThreadView {
         let mut fold = false;
         let mut phase = None;
         let mut row = false;
-        match &entries[k] {
+        match &*entries[k] {
             Entry::User { text, .. } => {
                 let (typed, _) = crate::agent::attach::split_pastes(text);
                 row = typed.lines().count() > 8 || typed.len() > 700;

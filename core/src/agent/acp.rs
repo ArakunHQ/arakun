@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{AppContext as _, Context};
 use serde_json::{Value, json};
@@ -82,7 +83,7 @@ impl Thread {
                             .get(start..)
                             .unwrap_or(&[])
                             .iter()
-                            .any(|e| matches!(e, Entry::Compacted { .. }));
+                            .any(|e| matches!(&**e, Entry::Compacted { .. }));
                         if !marked && v["stopReason"].as_str() != Some("cancelled") {
                             let before = t.native.compact_before.take();
                             t.push_entry(
@@ -179,8 +180,8 @@ impl Thread {
         let recent = self.entries.len().saturating_sub(3);
         if let Some(ix) = (recent..self.entries.len())
             .rev()
-            .find(|&i| matches!(self.entries[i], Entry::Compacted { after: None, .. }))
-            && let Entry::Compacted { after, .. } = &mut self.entries[ix]
+            .find(|&i| matches!(*self.entries[i], Entry::Compacted { after: None, .. }))
+            && let Entry::Compacted { after, .. } = Arc::make_mut(&mut self.entries[ix])
         {
             *after = pct;
             self.entries_changed(ix, cx);
@@ -267,10 +268,12 @@ impl Thread {
         if let Some(id) = &self.fork_point {
             return Some(id.clone());
         }
-        let said = self
-            .entries
-            .iter()
-            .any(|e| matches!(e, Entry::User { .. } | Entry::Agent { .. } | Entry::Tool(_)));
+        let said = self.entries.iter().any(|e| {
+            matches!(
+                &**e,
+                Entry::User { .. } | Entry::Agent { .. } | Entry::Tool(_)
+            )
+        });
         (!said).then(String::new)
     }
 
@@ -281,7 +284,7 @@ impl Thread {
             text,
             message_id: Some(point),
             ..
-        }) = self.entries.get(ix)
+        }) = self.entries.get(ix).map(Arc::as_ref)
         else {
             return;
         };
@@ -388,7 +391,7 @@ impl Thread {
 /// The files `entries` (a prompt and what came after it) changed, as they
 /// were before: `{filePath, content}` to write back, and `{filePath}` for
 /// files that did not exist yet. The first change of a file tells how it was.
-fn rewind_files(entries: &[Entry], cwd: &Path) -> (Vec<Value>, Vec<Value>) {
+fn rewind_files(entries: &[Arc<Entry>], cwd: &Path) -> (Vec<Value>, Vec<Value>) {
     let mut seen = HashSet::new();
     let (mut restore, mut delete) = (Vec::new(), Vec::new());
     let mut note = |path: PathBuf, old: Option<&String>| {
@@ -407,7 +410,7 @@ fn rewind_files(entries: &[Entry], cwd: &Path) -> (Vec<Value>, Vec<Value>) {
         }
     };
     for e in entries {
-        match e {
+        match &**e {
             Entry::User { shell_changes, .. } => {
                 for c in shell_changes {
                     note(c.path.clone(), c.old.as_ref());
@@ -480,7 +483,10 @@ mod tests {
             edit("a.rs", Some("two"), ToolStatus::Completed),
             edit("b.rs", None, ToolStatus::Completed),
             edit("c.rs", Some("x"), ToolStatus::Failed),
-        ];
+        ]
+        .into_iter()
+        .map(Arc::new)
+        .collect::<Vec<_>>();
         let (restore, delete) = rewind_files(&entries, Path::new("/p"));
         assert_eq!(
             restore,

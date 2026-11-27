@@ -3050,6 +3050,7 @@ impl Daemon {
                 text,
                 settings,
                 mentions_from,
+                uploads,
             } => {
                 let path = PathBuf::from(env);
                 if let Err(e) = self.admit(&path) {
@@ -3069,6 +3070,8 @@ impl Daemon {
                     }
                     _ => text,
                 };
+                // After the move: the photos are named by absolute path.
+                let text = self.uploads.attach(text, &uploads);
                 let Some(place) = self.store.place_mut(&path) else {
                     // Said to be about the start: the app waits for its answer.
                     self.transport

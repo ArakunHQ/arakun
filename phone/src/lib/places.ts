@@ -4,7 +4,8 @@
 import { useCallback, useContext, useEffect, useState } from "react";
 import { keepPlace, lastPlacePath } from "./drafts";
 import { LinkContext, useLink } from "./link";
-import type { InboxSession, Place } from "./model";
+import type { ClientMessage, InboxSession, Place } from "./model";
+import { sendShot, type Shot } from "./shots";
 import { toast } from "./toast";
 
 export const AGENTS: [string, string][] = [
@@ -102,6 +103,7 @@ export function useStartForm(init: StartForm, { needLink = false } = {}) {
   const answer = useLink((s) => s.options);
   const [form, setForm] = useState(init);
   const [sent, setSent] = useState(false);
+  const [shots, setShots] = useState<Shot[]>([]);
 
   // The model and reasoning a session there would start with, and their
   // choices. Asked again once the link is back, as an ask while away is lost.
@@ -130,7 +132,7 @@ export function useStartForm(init: StartForm, { needLink = false } = {}) {
       return { ...f, picked };
     });
 
-  const canSend = !sent && !!form.text.trim();
+  const canSend = !sent && (!!form.text.trim() || shots.length > 0);
   const start = () => {
     if (!canSend) return false;
     // The quick sheet stays open while away, so it says why nothing happened.
@@ -138,15 +140,32 @@ export function useStartForm(init: StartForm, { needLink = false } = {}) {
       toast("Not connected. Try again once it reconnects.");
       return false;
     }
+    // Photos go up in pieces before the start that names them, over the socket now.
+    if (shots.length && !link.getState().connected) {
+      toast("Photos wait for a connection");
+      return false;
+    }
     setSent(true);
     keepPlace(form.path);
     // The model goes first: the reasoning on offer depends on it.
     const settings = ["modelId", "reasoningEffort"].filter((k) => form.picked[k]).map((k) => [k, form.picked[k]]);
-    link.send({ type: "start", env: form.path, agent: form.agent, text: form.text, settings });
+    const msg: ClientMessage = { type: "start", env: form.path, agent: form.agent, text: form.text, settings };
+    if (shots.length) {
+      // No session yet: the computer keeps an upload by its id alone.
+      const send = (m: ClientMessage) => link.send(m);
+      msg.uploads = shots.map((sh, i) => {
+        const up = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
+        sendShot(sh, up, "", send);
+        return up;
+      });
+      if (!form.text.trim()) msg.text = shots.length === 1 ? "(photo)" : `(${shots.length} photos)`;
+      setShots([]);
+    }
+    link.send(msg);
     return true;
   };
 
-  return { form, options, sent, canSend, setPlace, setAgent, setText, pick, start };
+  return { form, options, sent, canSend, shots, setShots, setPlace, setAgent, setText, pick, start };
 }
 
 declare module "@tanstack/history" {

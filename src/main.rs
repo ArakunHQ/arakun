@@ -5,6 +5,8 @@ use arakun_core::{
     platform, poll, private_socket, redact, schedule, secret, secret_store, secrets, server,
     signals, terminal, theme, ui, when, zoom,
 };
+#[cfg(test)]
+mod a11y_lint;
 mod account_view;
 mod app_menu;
 mod arakun_teams;

@@ -1254,7 +1254,7 @@ impl ServersView {
             .into_iter()
             .map(|(k, v)| ui::kv(k, v).into_any_element())
             .collect();
-        for a in agents {
+        for (i, a) in agents.iter().enumerate() {
             let plan = if a.plan.is_empty() {
                 "Signed in".to_string()
             } else {
@@ -1262,6 +1262,7 @@ impl ServersView {
             };
             lines.push(
                 div()
+                    .id(("computer-agent", i))
                     .flex()
                     .flex_col()
                     .py(ui::sp(8.))

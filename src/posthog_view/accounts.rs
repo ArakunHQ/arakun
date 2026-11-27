@@ -186,6 +186,7 @@ impl PostHogView {
             let id = s.id.clone();
             list = list.child(
                 div()
+                    .id(("ph-account", i))
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(12.))

@@ -1204,6 +1204,7 @@ impl Shell {
         let phone = if o.fresh {
             div()
                 .id("onboarding-phone")
+                .map(|d| ui::as_switch(d, "Pair after setup", o.pair_phone))
                 .flex()
                 .items_center()
                 .gap(ui::sp(8.))
@@ -1268,6 +1269,7 @@ impl Shell {
         };
         let reports = div()
             .id("onboarding-reports")
+            .map(|d| ui::as_switch(d, "Crash reports and usage counts", shown_on))
             .flex()
             .child(ui::switch(shown_on))
             .when(fixed, |d| d.opacity(0.5))

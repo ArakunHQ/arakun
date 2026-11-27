@@ -506,6 +506,7 @@ impl Render for GalleryView {
                 .map(|(i, label)| {
                     div()
                         .id(("ds-switch", i))
+                        .map(|d| ui::as_switch(d, label, self.switches[i]))
                         .flex()
                         .items_center()
                         .gap(crate::ui::sp(8.))

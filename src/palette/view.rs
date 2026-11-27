@@ -162,8 +162,13 @@ impl Palette {
             });
         kit::palette_row(
             ElementId::NamedInteger("palette-row".into(), i as u64),
+            item.title.clone(),
             selected,
         )
+        .when(!item.sub.is_empty(), |d| {
+            d.aria_description(item.sub.clone())
+        })
+        .when_some(item.toggle, |d, on| d.aria_toggled(crate::ui::toggled(on)))
         .when(selected, |d| d.child(bar(&item.key)))
         .child(if marking {
             kit::check_box(marked).into_any_element()
@@ -576,6 +581,7 @@ impl Palette {
         let key = self.entries[i].item.key.clone();
         kit::palette_card(
             ElementId::NamedInteger("palette-card".into(), i as u64),
+            self.entries[i].item.title.clone(),
             tint,
             selected,
         )
@@ -767,6 +773,8 @@ impl Palette {
         let empty = self.entries.is_empty() && !self.rows.iter().any(|r| matches!(r, Row::Pins));
         div()
             .id("palette-list")
+            .role(gpui::Role::ListBox)
+            .aria_label("Results")
             .flex()
             .flex_col()
             .flex_1()
@@ -985,33 +993,37 @@ impl Palette {
                     let on = n == menu.selected;
                     let what = a.what.clone();
                     let key = menu.key.clone();
-                    kit::palette_row(ElementId::NamedInteger("palette-act".into(), n as u64), on)
-                        // 7 px (padding and border) inside the menu's 12 px corner.
-                        .rounded(crate::ui::nested(12., 7.))
-                        .h(px(40.))
-                        .px(crate::ui::sp(8.))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_none()
-                                .items_center()
-                                .justify_center()
-                                .size(px(26.))
-                                .rounded(crate::ui::rad(8.))
-                                .bg(theme::fill_raised())
-                                .child(icon(a.icon, 14.).text_color(theme::text_muted())),
-                        )
-                        .child(kit::row_title(a.label.clone(), &[], on, false))
-                        .child(kit::row_end(on).child(kit::keycap(if on {
-                            "↵".to_string()
-                        } else {
-                            a.key.to_ascii_uppercase().to_string()
-                        })))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.menu = None;
-                            this.run_action(&key, what.clone(), cx);
-                            cx.notify();
-                        }))
+                    kit::palette_row(
+                        ElementId::NamedInteger("palette-act".into(), n as u64),
+                        a.label.clone(),
+                        on,
+                    )
+                    // 7 px (padding and border) inside the menu's 12 px corner.
+                    .rounded(crate::ui::nested(12., 7.))
+                    .h(px(40.))
+                    .px(crate::ui::sp(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .size(px(26.))
+                            .rounded(crate::ui::rad(8.))
+                            .bg(theme::fill_raised())
+                            .child(icon(a.icon, 14.).text_color(theme::text_muted())),
+                    )
+                    .child(kit::row_title(a.label.clone(), &[], on, false))
+                    .child(kit::row_end(on).child(kit::keycap(if on {
+                        "↵".to_string()
+                    } else {
+                        a.key.to_ascii_uppercase().to_string()
+                    })))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.run_action(&key, what.clone(), cx);
+                        cx.notify();
+                    }))
                 }))
                 .into_any_element(),
         )

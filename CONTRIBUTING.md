@@ -317,6 +317,12 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   A test in `src/design_lint.rs` fails on hand-written values where the system has a
   name for them. The **Design system** tab (Settings → Design system → Open) shows every
   token and component live.
+- **Give controls a role and a name.** Screen readers only see an element with a role.
+  The kit's controls set both; a clickable `div` of your own needs
+  `.role(Role::…)` and `.aria_label(…)`, or `ui::labelled`. A test in
+  `src/a11y_lint.rs` fails on an `on_click` element without a role. The files
+  counted in `src/a11y_baseline.txt` may only get fewer; lower a count with
+  `ARAKUN_BLESS=1 cargo test --no-default-features --bin arakun a11y_lint`.
 - **See your change.** `arakun dev start` runs a second, fresh Arakun from your build,
   with data of its own. On Linux it runs on a virtual display (it needs `Xvfb`). On
   macOS it opens a window that never takes the focus, and `dev shot` has it render

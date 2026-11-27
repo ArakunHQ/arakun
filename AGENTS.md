@@ -215,6 +215,10 @@ request that also fixes the new lints.
 - Tests go in a `#[cfg(test)] mod tests` at the bottom of the file they test.
 - UI code uses the design system: colors, grays, text sizes and fonts from `theme` and
   `ui`, never hand-written values. `src/design_lint.rs` fails the tests otherwise.
+- Clickable elements have a role and a name for screen readers (`.role(…)` and
+  `.aria_label(…)`, `ui::labelled`, or a kit control). `src/a11y_lint.rs` fails the
+  tests on an `on_click` without one; the counts in `src/a11y_baseline.txt` may only
+  go down.
 - Interface text uses one word per thing: environment, session, palette, color scheme,
   Workspace panel, notice (the glossary under "Words in the interface" in
   CONTRIBUTING.md). `src/words_lint.rs` fails the tests on a retired word.

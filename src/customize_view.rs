@@ -1131,11 +1131,15 @@ impl CustomizeView {
                     .flex_wrap()
                     .gap(crate::ui::sp(8.))
                     .children(ACCENTS.into_iter().enumerate().map(|(i, c)| {
-                        ui::swatch(("pal-accent", i), gpui::rgb(c), p.accent == c).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.edit_palette(|p| p.accent = c, cx)
-                            }),
+                        ui::swatch(
+                            ("pal-accent", i),
+                            format!("#{c:06x}"),
+                            gpui::rgb(c),
+                            p.accent == c,
                         )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.edit_palette(|p| p.accent = c, cx)
+                        }))
                     }))
                     .into_any_element(),
             ))
@@ -1309,6 +1313,7 @@ impl CustomizeView {
         let glass = theme::glass_chosen();
         let glass_row = div()
             .id("cz-glass")
+            .map(|d| ui::as_switch(d, "Glass", glass))
             .flex()
             .items_center()
             .gap(crate::ui::sp(12.))
@@ -1458,6 +1463,7 @@ impl CustomizeView {
         let switch = |id: &'static str, title: &'static str, on: bool, flip: fn(&mut Style)| {
             div()
                 .id(id)
+                .map(|d| ui::as_switch(d, title, on))
                 .flex()
                 .items_center()
                 .justify_between()

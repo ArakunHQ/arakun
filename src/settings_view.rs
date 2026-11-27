@@ -1051,6 +1051,9 @@ impl SettingsDialog {
         };
         div()
             .id(s.title())
+            .role(gpui::Role::Tab)
+            .aria_label(s.title())
+            .aria_selected(selected)
             .w_full()
             .flex()
             .flex_none()
@@ -1101,52 +1104,28 @@ impl SettingsDialog {
         let body: AnyElement = match s {
             Section::General => {
                 let raccoon = vec![
-                    row(
-                        "Raccoon animation",
-                        "Follows the cursor and acts out what agents do. Off, it holds still.",
-                        switch(self.arcade).into_any_element(),
-                    )
-                    .id("set-arcade")
-                    .cursor_pointer()
+                    toggle_row("set-arcade", "Raccoon animation", "Follows the cursor and acts out what agents do. Off, it holds still.", self.arcade)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.arcade = !this.arcade;
                         cx.emit(SettingsEvent::Arcade(this.arcade));
                         cx.notify();
                     }))
                     .into_any_element(),
-                    row(
-                        "Dynamic Island",
-                        "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. On Linux it needs Wayland.",
-                        switch(crate::island::enabled()).into_any_element(),
-                    )
-                    .id("set-island")
-                    .cursor_pointer()
+                    toggle_row("set-island", "Dynamic Island", "What every agent is doing, at the top of the screen, and a card when one finishes, needs you or fails. On Linux it needs Wayland.", crate::island::enabled())
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(SettingsEvent::Island(!crate::island::enabled()));
                         cx.notify();
                     }))
                     .into_any_element(),
                     #[cfg(target_os = "linux")]
-                    row(
-                        "Keep running in the background",
-                        "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.",
-                        switch(crate::background::enabled()).into_any_element(),
-                    )
-                    .id("set-background")
-                    .cursor_pointer()
+                    toggle_row("set-background", "Keep running in the background", "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.", crate::background::enabled())
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(SettingsEvent::Background(!crate::background::enabled()));
                         cx.notify();
                     }))
                     .into_any_element(),
                     #[cfg(feature = "coderlabs")]
-                    row(
-                        "Oye Arakun",
-                        "The island listens for \"Oye Arakun\" to start a call, on this computer. Off, it doesn't use the microphone until you call it yourself.",
-                        switch(crate::island_host::wake::enabled()).into_any_element(),
-                    )
-                    .id("set-wake")
-                    .cursor_pointer()
+                    toggle_row("set-wake", "Oye Arakun", "The island listens for \"Oye Arakun\" to start a call, on this computer. Off, it doesn't use the microphone until you call it yourself.", crate::island_host::wake::enabled())
                     .on_click(cx.listener(|_, _, _, cx| {
                         crate::island_host::wake::set_enabled(!crate::island_host::wake::enabled());
                         cx.notify();
@@ -1201,29 +1180,17 @@ impl SettingsDialog {
                     titled(
                         "Browser",
                         vec![
-                            row(
-                                "Open links in Arakun",
-                                if crate::browser::ENABLED {
+                            toggle_row("set-links-in-arakun", "Open links in Arakun", if crate::browser::ENABLED {
                                     "Links from sessions, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
                                 } else {
                                     "This build has no browser tabs, so leave it off: links then open in your own browser."
-                                },
-                                switch(crate::browser::links_in_arakun()).into_any_element(),
-                            )
-                            .id("set-links-in-arakun")
-                            .cursor_pointer()
+                                }, crate::browser::links_in_arakun())
                             .on_click(cx.listener(|_, _, _, cx| {
                                 crate::browser::set_links_in_arakun(!crate::browser::links_in_arakun());
                                 cx.notify();
                             }))
                             .into_any_element(),
-                            row(
-                                "Agents drive any web page",
-                                "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.",
-                                switch(crate::page_drive::any_page()).into_any_element(),
-                            )
-                            .id("set-drive-pages")
-                            .cursor_pointer()
+                            toggle_row("set-drive-pages", "Agents drive any web page", "Click, type and run scripts in any tab, with your signed-in accounts. Off, they drive local pages and only read the rest.", crate::page_drive::any_page())
                             .on_click(cx.listener(|_, _, _, cx| {
                                 crate::page_drive::set_any_page(!crate::page_drive::any_page());
                                 cx.notify();
@@ -1266,13 +1233,7 @@ impl SettingsDialog {
                     days.into_any_element(),
                 )
                 .into_any_element();
-                let settle = row(
-                    "Archive after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its GitHub notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the GitHub notifications of every merged pull request.",
-                    switch(crate::settle::on()).into_any_element(),
-                )
-                .id("set-settle-after-merge")
-                .cursor_pointer()
+                let settle = toggle_row("set-settle-after-merge", "Archive after merge", "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its GitHub notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the GitHub notifications of every merged pull request.", crate::settle::on())
                 .on_click(cx.listener(|_, _, _, cx| {
                     crate::settle::set(!crate::settle::on());
                     cx.notify();
@@ -1309,13 +1270,7 @@ impl SettingsDialog {
                 ])
             }
             Section::Privacy => {
-                let redacted = row(
-                    "Redacted mode",
-                    "For streams, demos and screen sharing: hides account emails, keys and tokens, pairing codes, addresses and your user name, in the views, the terminals and the agents' replies. Ctrl+Shift+H turns it on and off.",
-                    switch(crate::redact::on()).into_any_element(),
-                )
-                .id("set-redacted")
-                .cursor_pointer()
+                let redacted = toggle_row("set-redacted", "Redacted mode", "For streams, demos and screen sharing: hides account emails, keys and tokens, pairing codes, addresses and your user name, in the views, the terminals and the agents' replies. Ctrl+Shift+H turns it on and off.", crate::redact::on())
                 .on_click(cx.listener(|_, _, _, cx| {
                     if let Err(e) = crate::redact::set(!crate::redact::on()) {
                         eprintln!("arakun: redacted mode will not last past a restart: {e}");
@@ -1323,13 +1278,7 @@ impl SettingsDialog {
                     cx.refresh_windows();
                 }))
                 .into_any_element();
-                let secrets = row(
-                    "Hide secrets in sessions",
-                    "Keys, tokens and passwords an agent prints show as stars until you click them, and copying one asks first. Redacted mode hides them too, and doesn't show them on a click.",
-                    switch(crate::redact::hides_secrets()).into_any_element(),
-                )
-                .id("set-hide-secrets")
-                .cursor_pointer()
+                let secrets = toggle_row("set-hide-secrets", "Hide secrets in sessions", "Keys, tokens and passwords an agent prints show as stars until you click them, and copying one asks first. Redacted mode hides them too, and doesn't show them on a click.", crate::redact::hides_secrets())
                 .on_click(cx.listener(|_, _, _, cx| {
                     if let Err(e) = crate::redact::set_hides_secrets(!crate::redact::hides_secrets()) {
                         eprintln!("arakun: hiding secrets in sessions will not last past a restart: {e}");
@@ -1716,13 +1665,7 @@ impl SettingsDialog {
             ];
         }
         let automatic = update::automatic();
-        let auto = row(
-            "Update automatically",
-            "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.",
-            switch(automatic).into_any_element(),
-        )
-        .id("set-auto-update")
-        .cursor_pointer()
+        let auto = toggle_row("set-auto-update", "Update automatically", "Looks for a new release on GitHub every 6 hours and downloads it. It is installed when you quit Arakun.", automatic)
         .on_click(cx.listener(move |_, _, _, cx| {
             if let Err(e) = update::set_automatic(!automatic) {
                 eprintln!("arakun: the update setting will not last past a restart: {e}");
@@ -1787,17 +1730,16 @@ impl SettingsDialog {
             })
             .detach();
         };
-        let switch_row = row("Nightly builds", hint, switch(on).into_any_element())
-            .id("set-nightly")
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| {
+        let switch_row = toggle_row("set-nightly", "Nightly builds", hint, on).on_click(
+            cx.listener(move |this, _, _, cx| {
                 if on {
                     set(Channel::Stable, cx);
                 } else {
                     this.confirm_nightly = !this.confirm_nightly;
                     cx.notify();
                 }
-            }));
+            }),
+        );
         if on || !self.confirm_nightly {
             return switch_row.into_any_element();
         }
@@ -1892,12 +1834,14 @@ impl SettingsDialog {
             Some(var) => format!("{hint} Set by {var} in the environment.").into(),
             None => hint.into(),
         };
-        row(title, hint, switch(on).into_any_element())
+        row(title, hint.clone(), switch(on).into_any_element())
             .id(if crashes {
                 "set-crash-reports"
             } else {
                 "set-usage-counts"
             })
+            .map(|d| ui::as_switch(d, title, on))
+            .aria_description(hint)
             .when(locked.is_none(), |d| d.cursor_pointer())
             .on_click(cx.listener(move |this, _, _, cx| {
                 if locked.is_some() {
@@ -2343,17 +2287,11 @@ impl SettingsDialog {
                     )
                     .into_any_element()
                 } else {
-                row(
-                    "Sandbox agents",
-                    if cfg!(target_os = "macos") {
+                toggle_row("set-project-sandbox", "Sandbox agents", if cfg!(target_os = "macos") {
                         "Agents of this project run in a Seatbelt sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network and the keychain. Applies to sessions started afterwards."
                     } else {
                         "Agents of this project run in a bubblewrap sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network. Applies to sessions started afterwards."
-                    },
-                    switch(project.sandbox).into_any_element(),
-                )
-                .id("set-project-sandbox")
-                .cursor_pointer()
+                    }, project.sandbox)
                 .on_click(cx.listener(|this, _, _, cx| {
                     let Some(p) = this.project.as_mut().filter(|p| !p.remote) else {
                         return;
@@ -2445,13 +2383,7 @@ impl SettingsDialog {
             titled(
                 "Read aloud",
                 vec![
-                    row(
-                        "Read questions aloud",
-                        "When Droid asks you something, Arakun says the question and its options, even with the session on screen. It stops once you answer.",
-                        switch(enabled).into_any_element(),
-                    )
-                    .id("set-voice")
-                    .cursor_pointer()
+                    toggle_row("set-voice", "Read questions aloud", "When Droid asks you something, Arakun says the question and its options, even with the session on screen. It stops once you answer.", enabled)
                     .on_click(cx.listener(move |this, _, _, cx| this.set_voice_enabled(!enabled, cx)))
                     .into_any_element(),
                     row(
@@ -2783,6 +2715,22 @@ fn row(
         .hover(|s| s.bg(theme::fill_raised()))
         .child(label_block(title, hint))
         .child(control)
+}
+
+/// One setting that turns on and off: `row` with a switch, clickable as a
+/// whole, and read by screen readers as a switch with the hint after it.
+fn toggle_row(
+    id: impl Into<gpui::ElementId>,
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let (title, hint) = (title.into(), hint.into());
+    row(title.clone(), hint.clone(), switch(on).into_any_element())
+        .id(id)
+        .map(|d| ui::as_switch(d, title, on))
+        .aria_description(hint)
+        .cursor_pointer()
 }
 
 /// One setting with its control under the text: chips, a field, or more

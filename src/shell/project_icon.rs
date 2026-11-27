@@ -207,12 +207,18 @@ impl Render for IconEditor {
                     .child(ui::overline("Color"))
                     .child(div().flex().flex_wrap().gap(ui::sp(6.)).children(
                         model::LOGO_COLORS.iter().enumerate().map(|(n, &c)| {
-                            ui::swatch(("icon-color", n), gpui::rgb(c), c == self.logo).on_click(
-                                cx.listener(move |this, _, _, cx| {
+                            ui::swatch(
+                                ("icon-color", n),
+                                format!("#{c:06x}"),
+                                gpui::rgb(c),
+                                c == self.logo,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     this.logo = c;
                                     cx.notify();
-                                }),
-                            )
+                                },
+                            ))
                         }),
                     )),
             )

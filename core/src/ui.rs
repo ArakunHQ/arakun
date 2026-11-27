@@ -127,7 +127,7 @@ pub fn antigravity_logo(size: f32) -> Svg {
 }
 
 /// What a hovered icon-only button shows: one line in a small dark card.
-struct Tip(SharedString);
+struct Tip(SharedString, Option<SharedString>);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -141,7 +141,10 @@ impl Render for Tip {
             .shadow_lg()
             .text_size(px(TEXT_XS))
             .text_color(theme::content())
-            .child(self.0.clone());
+            .child(self.0.clone())
+            .when_some(self.1.clone(), |d, line| {
+                d.child(div().text_color(theme::text_subtle()).child(line))
+            });
         motion::enter(tip, "tip-in", motion::From::Above, 3., motion::FAST)
     }
 }
@@ -222,7 +225,7 @@ pub fn tip(label: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView {
     let label = SharedString::from(crate::platform::shortcut_label(label));
     move |_, cx| {
         let label = label.clone();
-        cx.new(|_| Tip(label)).into()
+        cx.new(|_| Tip(label, None)).into()
     }
 }
 
@@ -231,7 +234,20 @@ pub fn tip_text(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App
     let label = label.into();
     move |_, cx| {
         let label = label.clone();
-        cx.new(|_| Tip(label)).into()
+        cx.new(|_| Tip(label, None)).into()
+    }
+}
+
+/// `tip_text` with a second, quieter line under the name: what the control
+/// shows now ("5h 46% · 7d 21%"). Without one it is `tip_text`.
+pub fn tip_detail(
+    label: impl Into<SharedString>,
+    detail: Option<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let label = label.into();
+    move |_, cx| {
+        let (label, detail) = (label.clone(), detail.clone());
+        cx.new(|_| Tip(label, detail)).into()
     }
 }
 

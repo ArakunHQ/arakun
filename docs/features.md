@@ -1034,7 +1034,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
 - **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
-  Everything); it lays out the pieces and keeps the style you chose. The Switcher, the
+  Everything, View strip); it lays out the pieces and keeps the style you chose. The Switcher, the
   default, names three views (Runs, Branches and GitHub), then More views for the rest,
   and puts plan usage on one line (5h, a bar, the percentage) above Settings. Which
   views get a row is yours: add a view from the chips, or remove its row and it moves
@@ -1053,9 +1053,16 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   the tree of sessions; Left and Right fold and open it there. A hidden sidebar
   opens first. Screen readers hear the list and each row as you reach it.
   Search, the Inbox, Add project, More views, Settings and the account stay; the other
-  views wait in More views. While this tab is open the sidebar is being arranged: it shows in full,
+  views wait in More views.
+  View strip puts a 40 px strip of tiles at the window's edge: Sessions, Inbox, Team
+  and the views, More views, then plan usage, Settings and the account at its foot.
+  Beside it a panel holds only the sessions, the full height, with New session at its
+  foot. Point at a tile to see its name and a live line under it (Usage: 5h 46% · 7d
+  21%; Sessions and Inbox: how many need you, failed or work). Ctrl+B, or the Sessions
+  tile, hides the panel and keeps the strip. Any segment can be such a strip: set it
+  to Strip instead of Fixed or Scroll. While this tab is open the sidebar is being arranged: it shows in full,
   every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of
-  opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
+  opening it. The tab then shows its options (name, emoji, folding, Fixed, Scroll or Strip,
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
   a spacer or what the sidebar does not hold yet, into the selected segment with a
   click (with nothing selected, into the segment that holds the most views), and selects what it added. The pieces among them (not Group, Link, Command or Title, which ask for more

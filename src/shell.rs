@@ -3371,16 +3371,48 @@ impl Shell {
     }
 
     /// The rail holds "Add project", so it stays while there is no project.
-    /// Narrowed to icons it still shows, and some rails never close.
+    /// Narrowed to icons it still shows, and some rails never close. A strip
+    /// of tiles stays when the rest hides.
     fn rail_shown(&self) -> bool {
+        self.rail_body_shown() || self.rail_strip()
+    }
+
+    /// The rail's card shows: the whole rail, or the panel beside a strip.
+    /// While it hides, its buttons move to the title bar.
+    fn rail_body_shown(&self) -> bool {
         use crate::sidebar::Collapse;
         self.rail.open
             || self.arranging()
             || !self.has_projects()
-            || matches!(
-                self.sidebar.style.collapse,
-                Collapse::Icons | Collapse::Never
-            )
+            || match self.sidebar.style.collapse {
+                Collapse::Never => true,
+                // Beside a strip, closing hides the panel: no second column of icons.
+                Collapse::Icons => !self.rail_strip(),
+                Collapse::Hide => false,
+            }
+    }
+
+    /// The strip's width when it sits left of the rail's card, else 0.
+    fn rail_strip_left(&self) -> f32 {
+        if self.rail_strip() && self.sidebar.style.side == crate::sidebar::Side::Left {
+            rail_blocks::RAIL_STRIP_W
+        } else {
+            0.
+        }
+    }
+
+    /// The strip's width when the layout has one, else 0.
+    fn rail_strip_w(&self) -> f32 {
+        if self.rail_strip() {
+            rail_blocks::RAIL_STRIP_W
+        } else {
+            0.
+        }
+    }
+
+    /// How wide the rail's card is drawn: the rail without its strip.
+    fn rail_card_width(&self) -> f32 {
+        self.rail_width() - self.rail_strip_w()
     }
 
     /// Where the title bar starts, from the window's left edge: past the rail
@@ -3412,10 +3444,13 @@ impl Shell {
     fn fit_side_cards(&self, window: &Window) {
         let rail = self.rail_shown();
         let viewport_w = window.viewport_size().width.as_f32();
-        let rail_card = match (rail, self.rail_narrow()) {
-            (false, _) => (0., 0.),
-            (true, true) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
-            (true, false) => (self.rail.width, RAIL_W_RANGE.start),
+        let strip = self.rail_strip_w();
+        let rail_card = match (rail, self.rail_narrow(), self.rail_body_shown()) {
+            (false, _, _) => (0., 0.),
+            (true, true, _) => (rail_blocks::RAIL_ICONS_W, rail_blocks::RAIL_ICONS_W),
+            // The strip alone, its panel hidden.
+            (true, false, false) => (strip, strip),
+            (true, false, true) => (self.rail.width + strip, RAIL_W_RANGE.start + strip),
         };
         // Each card's narrowest, with the handle beside it.
         let crowded = crowd_out(
@@ -3466,6 +3501,16 @@ impl Shell {
             self.panel.width.max(SUBAGENT_TRANSCRIPT_W)
         } else {
             self.panel.width
+        }
+    }
+
+    /// The gap beside the rail, its resize handle while its card shows. A
+    /// strip alone has a fixed width: just the gap.
+    fn rail_handle(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.rail_body_shown() {
+            self.side_handle(SideDrag::Rail, cx).into_any_element()
+        } else {
+            div().flex_none().w(gap_px()).h_full().into_any_element()
         }
     }
 
@@ -4471,7 +4516,7 @@ impl Render for Shell {
                                     window_w - gap() - x
                                 } else {
                                     x - gap()
-                                };
+                                } - this.rail_strip_w();
                                 this.rail.width = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end)
                             }
                             Some(SideDrag::Panel) => {
@@ -4666,7 +4711,7 @@ impl Render for Shell {
                     .min_h_0()
                     .when(chrome && self.rail_shown() && !rail_right, |d| {
                         d.child(self.render_rail(window, cx))
-                            .child(self.side_handle(SideDrag::Rail, cx))
+                            .child(self.rail_handle(cx))
                     })
                     .child(body)
                     .when(chrome && self.panel_shown(), |d| {
@@ -4674,7 +4719,7 @@ impl Render for Shell {
                             .child(self.render_panel(cx))
                     })
                     .when(chrome && self.rail_shown() && rail_right, |d| {
-                        d.child(self.side_handle(SideDrag::Rail, cx))
+                        d.child(self.rail_handle(cx))
                             .child(self.render_rail(window, cx))
                     }),
             )

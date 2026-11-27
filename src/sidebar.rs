@@ -300,6 +300,10 @@ impl Default for Style {
 pub enum Piece {
     /// The search box (Ctrl+K).
     Search,
+    /// Shows or hides the panel beside a strip of tiles, as Ctrl+B does.
+    Sessions,
+    /// Starts a session, as Ctrl+T does.
+    NewSession,
     View {
         view: View,
     },
@@ -405,6 +409,8 @@ impl Piece {
     pub fn label(&self) -> String {
         match self {
             Piece::Search => "Search".into(),
+            Piece::Sessions => "Sessions".into(),
+            Piece::NewSession => "New session".into(),
             Piece::View { view } => view.label().into(),
             Piece::Projects { .. } => "Projects".into(),
             Piece::Active => "Active".into(),
@@ -432,6 +438,8 @@ impl Piece {
     pub fn icon(&self) -> &'static str {
         match self {
             Piece::Search => "search01",
+            Piece::Sessions => "message-multiple01",
+            Piece::NewSession => "add01",
             Piece::View { view } => view.icon(),
             Piece::Projects { .. } => "folder01",
             Piece::Active => "clock01",
@@ -542,6 +550,9 @@ pub enum Mode {
     /// Scrolls; scrolling segments next to each other share one scroll.
     #[default]
     Scroll,
+    /// A thin column of tiles at the window's edge, beside the other
+    /// segments. Ctrl+B hides the others and leaves it.
+    Strip,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -648,16 +659,19 @@ pub enum Preset {
     Compact,
     /// Every view, as the rail was before it could be arranged.
     Everything,
+    /// Views as tiles in a thin strip, the sessions in a panel beside it.
+    ViewStrip,
 }
 
 impl Preset {
-    pub const ALL: [Preset; 6] = [
+    pub const ALL: [Preset; 7] = [
         Preset::Switcher,
         Preset::Focused,
         Preset::Developer,
         Preset::Notion,
         Preset::Compact,
         Preset::Everything,
+        Preset::ViewStrip,
     ];
 
     pub fn label(self) -> &'static str {
@@ -668,6 +682,7 @@ impl Preset {
             Preset::Notion => "Notion",
             Preset::Compact => "Icons",
             Preset::Everything => "Everything",
+            Preset::ViewStrip => "View strip",
         }
     }
 
@@ -679,6 +694,7 @@ impl Preset {
             Preset::Notion => "Search and inbox up top, your pins, projects, account below",
             Preset::Compact => "Narrowed to icons; names show on hover",
             Preset::Everything => "Every view, as the rail used to be",
+            Preset::ViewStrip => "Views as tiles in a strip, the sessions beside them",
         }
     }
 
@@ -929,6 +945,37 @@ impl Preset {
                     Piece::Settings,
                 ]),
             ],
+            // Every view a click away in the strip; the panel beside it holds
+            // only the sessions, so Ctrl+B can hide it and keep the views.
+            Preset::ViewStrip => vec![
+                Section::new(
+                    "Strip",
+                    Mode::Strip,
+                    [
+                        vec![Piece::Sessions, Piece::view(View::Inbox)],
+                        views(&[
+                            View::Teams,
+                            #[cfg(feature = "coderlabs")]
+                            View::Tasks,
+                            View::Runs,
+                            View::Branches,
+                            View::GitHub,
+                            View::Notes,
+                        ]),
+                        vec![
+                            Piece::MoreViews,
+                            Piece::Spacer,
+                            Piece::usage_line(),
+                            Piece::Settings,
+                            Piece::User,
+                        ],
+                    ]
+                    .concat(),
+                ),
+                active(),
+                Section::new("Sessions", Mode::Scroll, vec![Piece::projects()]),
+                Section::new("New", Mode::Fixed, vec![Piece::NewSession]),
+            ],
         };
         Sidebar {
             style,
@@ -1108,6 +1155,13 @@ impl Sidebar {
             .map(Box::new);
         let sections = v.get_mut("sections")?.as_array_mut()?;
         for s in sections.iter_mut() {
+            // A mode from a newer Arakun falls back to the default.
+            let unknown_mode = s
+                .get("mode")
+                .is_some_and(|m| serde_json::from_value::<Mode>(m.clone()).is_err());
+            if unknown_mode && let Some(o) = s.as_object_mut() {
+                o.remove("mode");
+            }
             if let Some(items) = s.get_mut("items").and_then(|i| i.as_array_mut()) {
                 items.retain(|i| serde_json::from_value::<Item>(i.clone()).is_ok());
             }
@@ -1189,6 +1243,11 @@ impl Sidebar {
 
     pub fn has(&self, piece: &Piece) -> bool {
         self.find(piece).is_some()
+    }
+
+    /// Whether a segment is a strip of tiles beside the others.
+    pub fn has_strip(&self) -> bool {
+        self.sections.iter().any(|s| s.mode == Mode::Strip)
     }
 
     /// Views without a row of their own: what More views lists.
@@ -2270,5 +2329,49 @@ mod tests {
         assert_eq!(back.style.collapse, Collapse::Hide);
         assert_eq!(back.style.density, Density::Normal);
         assert_eq!(back.style.side, Side::Right);
+    }
+
+    #[test]
+    fn the_view_strip_keeps_views_in_a_strip_and_sessions_beside_it() {
+        let s = Preset::ViewStrip.layout();
+        assert!(s.has_strip());
+        assert!(!Sidebar::default().has_strip());
+        let strip = s.sections.iter().find(|x| x.mode == Mode::Strip).unwrap();
+        let pieces: Vec<&Piece> = strip.items.iter().map(|i| &i.piece).collect();
+        // Sessions, then the Inbox, first; the account last.
+        assert_eq!(pieces[..2], [&Piece::Sessions, &Piece::view(View::Inbox)]);
+        assert_eq!(pieces.last(), Some(&&Piece::User));
+        assert!(pieces.contains(&&Piece::Settings));
+        assert!(pieces.contains(&&Piece::usage_line()));
+        assert!(pieces.contains(&&Piece::view(View::Runs)));
+        // The panel holds the sessions and New session, nothing else.
+        let panel: Vec<&Piece> = s
+            .sections
+            .iter()
+            .filter(|x| x.mode != Mode::Strip)
+            .flat_map(|x| &x.items)
+            .map(|i| &i.piece)
+            .collect();
+        assert_eq!(
+            panel,
+            [&Piece::active(), &Piece::projects(), &Piece::NewSession]
+        );
+        assert_eq!(s.preset(), Some(Preset::ViewStrip));
+        // Ctrl+B hides the panel; the strip stays whatever collapse says.
+        assert_eq!(s.style.collapse, Collapse::Hide);
+    }
+
+    #[test]
+    fn a_mode_from_a_newer_arakun_scrolls() {
+        let json = br#"{"sections":[
+            {"title":"A","mode":"orbit","items":[{"type":"projects"}]},
+            {"title":"B","mode":"strip","items":[{"type":"sessions"},{"type":"new_session"}]}
+        ]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        let a = s.sections.iter().find(|x| x.title == "A").unwrap();
+        let b = s.sections.iter().find(|x| x.title == "B").unwrap();
+        assert_eq!(a.mode, Mode::Scroll);
+        assert_eq!(b.mode, Mode::Strip);
+        assert_eq!(b.items.len(), 2);
     }
 }

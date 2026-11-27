@@ -29,6 +29,25 @@ impl Badge {
 /// Width of the rail narrowed to icons.
 pub(super) const RAIL_ICONS_W: f32 = 52.;
 
+/// Width of the strip of tiles (`Mode::Strip`) at the window's edge.
+pub(super) const RAIL_STRIP_W: f32 = 40.;
+
+/// What a tile's tooltip says under its name about sessions: how many need
+/// the user, failed and work, leaving out what is zero.
+fn sessions_line(waiting: usize, failed: usize, working: usize, notices: usize) -> Option<String> {
+    let parts: Vec<String> = [
+        (waiting, "need you"),
+        (failed, "failed"),
+        (working, "working"),
+        (notices, if notices == 1 { "notice" } else { "notices" }),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 fn badge_pill(b: Badge, mode: BadgeMode) -> Option<gpui::Div> {
     let dot = || div().flex_none().size(px(6.)).rounded_full().bg(b.color());
     match mode {
@@ -179,11 +198,56 @@ fn section_gone(section: &Section, how: &str) -> String {
 
 impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
+    /// With a strip, closing hides the panel beside it instead.
     pub(super) fn rail_narrow(&self) -> bool {
         self.sidebar.style.collapse == Collapse::Icons
             && !self.rail.open
             && self.has_projects()
             && !self.arranging()
+            && !self.rail_strip()
+    }
+
+    /// The layout has a strip of tiles, drawn apart at the window's edge.
+    /// Arranging, it is a segment like the others, so its pieces can be moved.
+    pub(super) fn rail_strip(&self) -> bool {
+        self.sidebar.has_strip() && !self.arranging()
+    }
+
+    /// The live line under a tile's name in its tooltip: plan usage, or
+    /// what the sessions are doing.
+    fn tile_detail(&self, piece: &Piece, cx: &App) -> Option<SharedString> {
+        let count = |items: &[InboxItem], s| items.iter().filter(|i| i.status == s).count();
+        let line = match piece {
+            Piece::Usage { .. } | Piece::View { view: View::Usage } => {
+                let seats = crate::agent::plan::latest_seats();
+                account_view::usage_summary(
+                    self.account.read(cx),
+                    seats.as_ref(),
+                    crate::agent::opencode_plan::latest().as_ref(),
+                    crate::agent::devin_plan::latest().as_ref(),
+                )
+            }
+            Piece::Sessions => {
+                let items = self.inbox_items();
+                sessions_line(
+                    count(&items, Status::NeedsInput),
+                    count(&items, Status::Error),
+                    count(&items, Status::Working),
+                    0,
+                )
+            }
+            Piece::View { view: View::Inbox } => {
+                let items = self.inbox_items();
+                sessions_line(
+                    count(&items, Status::NeedsInput),
+                    count(&items, Status::Error),
+                    0,
+                    self.unseen_notices(),
+                )
+            }
+            _ => None,
+        };
+        line.map(SharedString::from)
     }
 
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
@@ -429,10 +493,14 @@ impl Shell {
             {
                 continue;
             }
+            // The strip is drawn beside the rest (`render_rail_strip`).
+            if section.mode == Mode::Strip && self.rail_strip() {
+                continue;
+            }
             let el = self.render_section(si, section, cx);
             match section.mode {
                 Mode::Scroll => run.push(el),
-                Mode::Fixed => {
+                Mode::Fixed | Mode::Strip => {
                     flush(&mut run, &mut out);
                     out.push(div().flex_none().child(el).into_any_element());
                 }
@@ -710,7 +778,7 @@ impl Shell {
         ))
     }
 
-    fn render_item(
+    pub(super) fn render_item(
         &self,
         path: crate::sidebar::Path,
         item: &Item,
@@ -781,6 +849,7 @@ impl Shell {
         let mut help =
             (!narrow && item.piece == Piece::Settings && self.help_beside_settings(path.0))
                 .then(|| self.help_button(cx));
+        let detail = narrow.then(|| self.tile_detail(&item.piece, cx)).flatten();
         // A plain row: icon, name, then what goes at its end.
         let row = |end: Option<AnyElement>| {
             div()
@@ -802,7 +871,7 @@ impl Shell {
                 .when(narrow, |d| {
                     d.justify_center()
                         .px(crate::ui::sp(0.))
-                        .tooltip(ui::tip_text(name.clone()))
+                        .tooltip(ui::tip_detail(name.clone(), detail.clone()))
                 })
                 .child(lead)
                 .when(!narrow, |d| {
@@ -923,6 +992,23 @@ impl Shell {
             Piece::Settings => row(shortcut(&item.piece))
                 .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
                 .into_any_element(),
+            Piece::Sessions => {
+                let open = self.rail_strip() && self.rail_body_shown();
+                row(None)
+                    .aria_expanded(open)
+                    .when(open, |d| {
+                        d.bg(theme::fill_selected()).text_color(theme::content())
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_rail(cx)))
+                    .into_any_element()
+            }
+            Piece::NewSession => {
+                row(None)
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(NewSession), cx)
+                    }))
+                    .into_any_element()
+            }
             Piece::Search => {
                 if narrow {
                     row(None)
@@ -1139,12 +1225,14 @@ impl Shell {
                     )
                     .into_any_element()
             }
-            Piece::Usage { line: true } => {
-                if narrow {
-                    return None;
-                }
-                self.render_usage_line(cx)?
+            // Narrowed, plan usage is a tile whose tooltip says it.
+            Piece::Usage { .. } if narrow => {
+                detail.as_ref()?;
+                row(None)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_usage_tab(window, cx)))
+                    .into_any_element()
             }
+            Piece::Usage { line: true } => self.render_usage_line(cx)?,
             Piece::MoreViews => {
                 let dot = more_dot?;
                 let mark = || div().size(px(7.)).rounded_full().flex_none();
@@ -1182,15 +1270,10 @@ impl Shell {
                 }))
                 .into_any_element()
             }
-            Piece::Usage { line: false } => {
-                if narrow {
-                    return None;
-                }
-                div()
-                    .mt(px(4.))
-                    .children(self.render_usage_block(cx))
-                    .into_any_element()
-            }
+            Piece::Usage { line: false } => div()
+                .mt(px(4.))
+                .children(self.render_usage_block(cx))
+                .into_any_element(),
             Piece::Projects {
                 envs,
                 changes,
@@ -1605,6 +1688,19 @@ mod tests {
         assert_eq!(section_gone(&s, "removed"), "Tools removed");
         s.title = " ".into();
         assert_eq!(section_gone(&s, "ungrouped"), "Segment ungrouped");
+    }
+
+    #[test]
+    fn a_tile_says_what_its_sessions_do_and_skips_zeros() {
+        assert_eq!(sessions_line(0, 0, 0, 0), None);
+        assert_eq!(
+            sessions_line(2, 0, 3, 0).as_deref(),
+            Some("2 need you · 3 working")
+        );
+        assert_eq!(
+            sessions_line(0, 1, 0, 1).as_deref(),
+            Some("1 failed · 1 notice")
+        );
     }
 
     #[test]

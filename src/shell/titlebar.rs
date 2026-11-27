@@ -24,7 +24,7 @@ impl Shell {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         // With the rail hidden its toggles move here: one brings the rail back,
         // the other the workspace panel.
-        if !self.rail_shown() {
+        if !self.rail_body_shown() {
             for (id, icon_name, lit, rail) in [
                 ("title-rail", "sidebar-left", false, true),
                 (
@@ -90,7 +90,8 @@ impl Shell {
             ("tab-back", "arrow-left01", back, true),
             ("tab-fwd", "arrow-right01", fwd, false),
         ];
-        for (id, icon_name, enabled, go_back) in history.into_iter().filter(|_| !self.rail_shown())
+        for (id, icon_name, enabled, go_back) in
+            history.into_iter().filter(|_| !self.rail_body_shown())
         {
             strip = strip.child(
                 div()
@@ -131,7 +132,7 @@ impl Shell {
         // Pinned tabs carry their project's icon, so no run of tabs needs a label.
         let pinned_bar = layout.pinned_bar();
         // While the sidebar is hidden, its tree is a menu here.
-        if layout.tree() && !self.rail_shown() {
+        if layout.tree() && !self.rail_body_shown() {
             strip = strip.child(self.render_sessions_button(cx));
         }
         let in_other_pane = self.split_other();

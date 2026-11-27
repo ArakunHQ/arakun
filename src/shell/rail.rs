@@ -499,7 +499,70 @@ impl Shell {
         Activity::of((0..n).map(|ei| self.env_status(pi, ei, cx)))
     }
 
-    pub(super) fn render_rail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The rail: its card, and beside it at the window's edge the strip of
+    /// tiles when the layout has one. Ctrl+B hides the card and keeps the strip.
+    pub(super) fn render_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if !self.rail_strip() {
+            return self.render_rail_card(window, cx).into_any_element();
+        }
+        let strip = self.render_rail_strip(window, cx).into_any_element();
+        let card = self
+            .rail_body_shown()
+            .then(|| self.render_rail_card(window, cx).into_any_element());
+        // The strip sits at the window's edge, the card toward the work.
+        let mut parts: Vec<AnyElement> = [Some(strip), card].into_iter().flatten().collect();
+        if self.sidebar.style.side == crate::sidebar::Side::Right {
+            parts.reverse();
+        }
+        div()
+            .flex()
+            .flex_none()
+            .h_full()
+            .children(parts)
+            .into_any_element()
+    }
+
+    /// The strip's segments as one column of tiles, a name and a live line
+    /// in each tooltip. A spacer in it pushes what follows to the foot.
+    fn render_rail_strip(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let lights = crate::ui::traffic_lights_inset(window) > px(0.)
+            && self.sidebar.style.side == crate::sidebar::Side::Left;
+        let mut col = div()
+            .id("rail-strip")
+            .map(ui::stop_window_move)
+            .flex()
+            .flex_col()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(2.))
+            .w(px(rail_blocks::RAIL_STRIP_W))
+            .h_full()
+            .pb(crate::ui::sp(4.))
+            .child(
+                div()
+                    .w_full()
+                    .flex_none()
+                    .h(px(if lights { 40. } else { 8. }))
+                    .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                        crate::ui::drag_window(ev, window)
+                    }),
+            );
+        for (si, section) in self.sidebar.sections.iter().enumerate() {
+            if section.mode != crate::sidebar::Mode::Strip {
+                continue;
+            }
+            for (ii, item) in section.items.iter().enumerate() {
+                if item.piece == crate::sidebar::Piece::Spacer {
+                    col = col.child(div().flex_1().min_h(px(8.)));
+                    continue;
+                }
+                col = col.children(self.render_item((si, ii), item, true, cx));
+            }
+        }
+        col
+    }
+
+    fn render_rail_card(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let inbox = self.inbox_items();
         let mood = if inbox.iter().any(|i| i.status == Status::NeedsInput) {
             crate::mascot::Mood::Waiting
@@ -516,7 +579,8 @@ impl Shell {
             .h(px(ui::BAR_H))
             // The raccoon lines up with the list below; the buttons at the end
             // sit as far from the side as from the top.
-            .pl(crate::ui::sp(14.).max(crate::ui::traffic_lights_inset(window) - px(gap())))
+            .pl(crate::ui::sp(14.)
+                .max(crate::ui::traffic_lights_inset(window) - px(gap() + self.rail_strip_left())))
             .pr(ui::icon_inset())
             .gap(crate::ui::sp(2.))
             .when(
@@ -609,7 +673,7 @@ impl Shell {
 
         let narrow = self.rail_narrow();
         let card = self.side_card();
-        let width = self.rail_width();
+        let width = self.rail_card_width();
         card.id("rail-card")
             .map(ui::stop_window_move)
             .flex()

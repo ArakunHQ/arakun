@@ -20,7 +20,8 @@ one on the messages it receives.
   account ID, so signatures made then still check. A new account's ID is not its
   GitHub ID. The one `github_id` that is a GitHub user's is in the answer to an
   invite, which names a GitHub user who may have no account yet. Signs in with
-  `POST /auth/github` (see README.md) and holds a session.
+  `POST /auth/github`, or with a code mailed to its address (`POST /auth/email`, see
+  README.md), and holds a session.
 - **Device**: one install of the app for one user. Has two P-256 key pairs made on
   the device and never sent anywhere:
   - `sig`: ECDSA P-256 with SHA-256, signs what the device publishes;

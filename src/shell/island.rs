@@ -301,11 +301,11 @@ impl Shell {
             let events = cx.spawn_in(window, async move |this, cx| {
                 while let Some(ev) = presses.next().await {
                     let handled = this.update_in(cx, |this, window, cx| match ev {
-                        FromIsland::Ver { key } | FromIsland::Row { key } => {
+                        FromIsland::View { key } | FromIsland::Row { key } => {
                             this.open_from_island(key, window, cx)
                         }
                         // "Later" puts a message of the operator away for good.
-                        FromIsland::Luego { key } => {
+                        FromIsland::Later { key } => {
                             if let Some(Open::Notice { id, .. }) = Open::parse(&key) {
                                 this.teams.update(cx, |t, cx| t.read_notice(&id, cx));
                             }

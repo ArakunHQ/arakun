@@ -70,29 +70,31 @@ pub enum ToIsland {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+// The wire keeps the first, Spanish names, so a host from an older Arakun
+// still understands a newer CLI.
 #[serde(rename_all = "snake_case")]
 pub enum Button {
-    Ver,
-    Luego,
-    Aprobar,
-    Rechazar,
+    #[serde(rename = "ver")]
+    View,
+    #[serde(rename = "luego")]
+    Later,
+    #[serde(rename = "aprobar")]
+    Approve,
+    #[serde(rename = "rechazar")]
+    Deny,
 }
 
 /// What the island asks of the app.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromIsland {
-    /// The card's "Ver".
-    Ver {
-        key: SharedString,
-    },
-    Luego {
-        key: SharedString,
-    },
+    /// The card's "View". The wire names stay "ver" and "luego", as with `Button`.
+    #[serde(rename = "ver")]
+    View { key: SharedString },
+    #[serde(rename = "luego")]
+    Later { key: SharedString },
     /// A row of the list.
-    Row {
-        key: SharedString,
-    },
+    Row { key: SharedString },
 }
 
 /// `$XDG_RUNTIME_DIR/arakun/island.sock`; a test instance's own with
@@ -140,10 +142,11 @@ pub fn from_args(args: &[String]) -> Option<ToIsland> {
                 brand: SharedString::default(),
             },
         }),
-        ["ver"] => button(Button::Ver),
-        ["luego"] => button(Button::Luego),
-        ["aprobar"] => button(Button::Aprobar),
-        ["rechazar"] => button(Button::Rechazar),
+        // The Spanish words were the first ones; scripts may still use them.
+        ["view" | "ver"] => button(Button::View),
+        ["later" | "luego"] => button(Button::Later),
+        ["approve" | "aprobar"] => button(Button::Approve),
+        ["deny" | "rechazar"] => button(Button::Deny),
         ["list"] => Some(ToIsland::Pin { on: None }),
         ["fps"] => Some(ToIsland::Fps),
         ["auto"] => Some(ToIsland::Hold { phase: None }),
@@ -247,7 +250,7 @@ mod tests {
             },
             ToIsland::Pin { on: None },
             ToIsland::Press {
-                button: Button::Aprobar,
+                button: Button::Approve,
             },
             ToIsland::State,
             ToIsland::Fps,
@@ -272,7 +275,7 @@ mod tests {
             decode::<FromIsland>(&back).unwrap(),
             FromIsland::Row { key: "s1".into() }
         );
-        // A notice that isn't a session's, and "Ver" coming back with what it opens.
+        // A notice that isn't a session's, and "View" coming back with what it opens.
         let notice = ToIsland::Alert {
             alert: Alert {
                 key: "open:run:42:/home/k/app".into(),
@@ -286,10 +289,18 @@ mod tests {
         };
         assert_eq!(decode::<ToIsland>(&encode(&notice)).unwrap(), notice);
         assert!(encode(&notice).contains("\"kind\":\"failure\""));
-        let ver = FromIsland::Ver {
+        let view = FromIsland::View {
             key: "open:run:42:/home/k/app".into(),
         };
-        assert_eq!(decode::<FromIsland>(&encode(&ver)).unwrap(), ver);
+        assert_eq!(decode::<FromIsland>(&encode(&view)).unwrap(), view);
+        // The wire names from before the English words, both ways.
+        assert!(encode(&view).contains("\"type\":\"ver\""));
+        assert!(
+            encode(&ToIsland::Press {
+                button: Button::Deny
+            })
+            .contains("\"button\":\"rechazar\"")
+        );
         // An alert from before confirmations has no request.
         let a: ToIsland = decode(
             r#"{"type":"alert","alert":{"key":"","kind":"input","title":"t","subtitle":""}}"#,
@@ -315,12 +326,19 @@ mod tests {
             Some(ToIsland::Hold { phase: None })
         );
         assert_eq!(from_args(&s(&["list"])), Some(ToIsland::Pin { on: None }));
-        assert_eq!(
-            from_args(&s(&["rechazar"])),
-            Some(ToIsland::Press {
-                button: Button::Rechazar
-            })
-        );
+        for (word, button) in [
+            ("view", Button::View),
+            ("later", Button::Later),
+            ("approve", Button::Approve),
+            ("deny", Button::Deny),
+            ("rechazar", Button::Deny),
+        ] {
+            assert_eq!(
+                from_args(&s(&[word])),
+                Some(ToIsland::Press { button }),
+                "{word}"
+            );
+        }
         assert_eq!(from_args(&s(&["fps"])), Some(ToIsland::Fps));
         match from_args(&s(&["alert", "GLM terminó", "listo"])) {
             Some(ToIsland::Alert { alert }) => assert_eq!(

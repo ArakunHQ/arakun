@@ -119,8 +119,8 @@ Usage:
                              none runs), so these work with arakun closed
   arakun island alert <title> [subtitle]
                              show a card on the island
-  arakun island ver | luego | aprobar | rechazar
-                             press the card's button (aprobar and rechazar
+  arakun island view | later | approve | deny
+                             press the card's button (approve and deny
                              answer a headless agent's request)
   arakun agent new [--model <provider/model>] [--effort <level>] [--mode <id>] [--dir <dir>] [--title <text>] [--ask] <prompt…>
                              start a background agent, listed in the sidebar,

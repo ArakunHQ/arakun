@@ -389,8 +389,8 @@ Usage:
                              none runs), so these work with arakun closed
   arakun island alert <title> [subtitle]
                              show a card on the island
-  arakun island ver | luego | aprobar | rechazar
-                             press the card's button (aprobar and rechazar
+  arakun island view | later | approve | deny
+                             press the card's button (approve and deny
                              answer a headless agent's request)
   arakun agent new [--model <provider/model>] [--effort <level>] [--mode <id>] [--dir <dir>] [--title <text>] [--ask] <prompt…>
                              start a background agent, listed in the sidebar,
@@ -905,10 +905,10 @@ fn cli(args: Vec<String>) -> Cli {
 }
 
 #[cfg(not(windows))]
-pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
+pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|view|later|approve|deny] \
      | arakun island alert <title> [subtitle]";
 #[cfg(windows)]
-pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
+pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|view|later|approve|deny] \
      | arakun island alert <title> [subtitle] \
      | arakun island session <id> <working|waiting|done|error|ended> [project] [doing] \
      | arakun island hook [agent]";
@@ -931,6 +931,10 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
                 "aprobar",
                 "rechazar",
                 "fps",
+                "view",
+                "later",
+                "approve",
+                "deny",
             ]
             .contains(&state.as_str()) =>
         {
@@ -2135,7 +2139,8 @@ mod tests {
         let a = |v: &[&str]| island_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(a(&[]), Some(vec![]));
         assert_eq!(a(&["working"]), Some(vec!["working".to_string()]));
-        assert_eq!(a(&["ver"]), Some(vec!["ver".to_string()]));
+        assert_eq!(a(&["view"]), Some(vec!["view".to_string()]));
+        assert_eq!(a(&["deny"]), Some(vec!["deny".to_string()]));
         assert_eq!(a(&["rechazar"]), Some(vec!["rechazar".to_string()]));
         assert_eq!(
             a(&["alert", "GLM terminó"]),

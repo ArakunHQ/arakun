@@ -753,6 +753,78 @@ impl Palette {
             .into_any_element()
     }
 
+    /// Under an empty palette: what to type for more, each with an example.
+    /// A click types the start of it.
+    fn render_tips(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tips = super::tips::tips(self.seed.pilot.is_some());
+        div()
+            .flex()
+            .flex_col()
+            .child(kit::palette_section("Type to", None, self.rows.len() == 1))
+            .child(div().flex().flex_wrap().px(crate::ui::sp(4.)).children(
+                tips.into_iter().enumerate().map(|(i, t)| {
+                    let line = div()
+                        .id(ElementId::NamedInteger("palette-tip".into(), i as u64))
+                        .w_1_2()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(28.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(8.))
+                        // A column, so the labels line up past `@opus` and `to-do:`.
+                        .child(div().flex_none().w(px(52.)).child(kit::keycap(t.lead)))
+                        .child(
+                            div()
+                                .flex_none()
+                                .ty(Type::Caption)
+                                .text_color(theme::text_muted())
+                                .child(t.label),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .ty(Type::Caption)
+                                .text_color(theme::text_faint())
+                                .child(t.example),
+                        );
+                    match t.fill {
+                        Some(fill) => line
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Type {}: {}", t.lead, t.label))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_hover()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.type_tip(fill, window, cx);
+                            }))
+                            .into_any_element(),
+                        None => line.into_any_element(),
+                    }
+                }),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(crate::ui::sp(14.))
+                    .pt(crate::ui::sp(6.))
+                    .px(crate::ui::sp(12.))
+                    .pb(crate::ui::sp(6.))
+                    .ty(Type::Caption)
+                    .text_color(theme::text_faint())
+                    .children(
+                        super::tips::KEYS
+                            .iter()
+                            .map(|(keys, what)| kit::footer_hint(keys, *what)),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut first = true;
         let rows: Vec<AnyElement> = self
@@ -764,6 +836,7 @@ impl Palette {
                         kit::palette_section(label.clone(), count.clone(), first).into_any_element()
                     }
                     Row::Pins => self.render_pins(cx),
+                    Row::Tips => self.render_tips(cx),
                     Row::Entry(i) => self.render_row(*i, cx),
                 };
                 first = false;

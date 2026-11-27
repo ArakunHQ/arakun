@@ -1180,6 +1180,14 @@ impl Shell {
                 Target::NewEnvironment,
             );
             add(
+                "new-env-options",
+                "git-branch",
+                "New environment with options…",
+                &["Ctrl", "Alt", "N"],
+                "Asks for the branch, the base and the agent first.",
+                Target::NewEnvironmentWithOptions,
+            );
+            add(
                 "new-terminal",
                 "computer-terminal01",
                 "New terminal",
@@ -1227,6 +1235,22 @@ impl Shell {
                 "The session's pull request and subagents, in the Workspace panel.",
                 Target::ToggleSubagents,
             );
+            add(
+                "close-tab",
+                "cancel01",
+                "Close tab",
+                &["Ctrl", "W"],
+                "Closes the tab in front.",
+                Target::CloseTab,
+            );
+            add(
+                "reopen-tab",
+                "arrow-turn-backward",
+                "Reopen closed tab",
+                &["Ctrl", "Alt", "T"],
+                "Opens the last closed tab again, where it was.",
+                Target::ReopenClosedTab,
+            );
         }
         add(
             "add-project",
@@ -1270,6 +1294,70 @@ impl Shell {
             Target::Customize,
         );
         add(
+            "customize-sidebar",
+            "sidebar-left",
+            "Customize sidebar…",
+            &[],
+            "Which views and blocks the sidebar shows, and in what order.",
+            Target::CustomizeSidebar,
+        );
+        add(
+            "zoom-in",
+            "add-square",
+            "Zoom in",
+            &["Ctrl", "="],
+            "Makes the whole interface larger.",
+            Target::ZoomIn,
+        );
+        add(
+            "zoom-out",
+            "minus-sign",
+            "Zoom out",
+            &["Ctrl", "-"],
+            "Makes the whole interface smaller.",
+            Target::ZoomOut,
+        );
+        add(
+            "zoom-reset",
+            "square",
+            "Actual size",
+            &["Ctrl", "0"],
+            "The interface back at 100%.",
+            Target::ZoomReset,
+        );
+        add(
+            "minimize-window",
+            "app-window",
+            "Minimize window",
+            if cfg!(target_os = "macos") {
+                &["Ctrl", "M"]
+            } else {
+                &[]
+            },
+            "Hides the window to the dock or taskbar.",
+            Target::MinimizeWindow,
+        );
+        add(
+            "maximize-window",
+            "app-window",
+            if cfg!(target_os = "macos") {
+                "Zoom window"
+            } else {
+                "Maximize window"
+            },
+            &[],
+            "Fills the screen with the window, or puts it back.",
+            Target::MaximizeWindow,
+        );
+        add(
+            "full-screen",
+            "arrow-expand01",
+            "Toggle full screen",
+            &[],
+            "The window alone on the screen, without its title bar.",
+            Target::ToggleFullScreen,
+        );
+        add(
             "settings",
             "settings01",
             "Settings",
@@ -1285,24 +1373,6 @@ impl Shell {
             "A bug, an idea or anything else, sent to the Arakun team.",
             Target::SendFeedback,
         );
-        add(
-            "extensions",
-            "store01",
-            "Marketplace: plugins, skills & MCP",
-            &[],
-            "Plugins and MCP servers to add, and what the agents load now.",
-            Target::Extensions,
-        );
-        if self.has_projects() {
-            add(
-                "automations",
-                "alarm-clock",
-                "Automations",
-                &[],
-                "Scheduled runs and the rules you made from the palette.",
-                Target::View(View::Automations),
-            );
-        }
         add(
             "signin-claude",
             "square-lock02",
@@ -1359,6 +1429,18 @@ impl Shell {
             "Opens a terminal with agy's Google sign-in.",
             Target::SignIn(AgentKind::Antigravity),
         );
+        add(
+            "quit",
+            "cancel-circle",
+            "Quit Arakun",
+            if cfg!(target_os = "macos") {
+                &["Ctrl", "Q"]
+            } else {
+                &[]
+            },
+            "Closes every window and stops the agents Arakun runs.",
+            Target::Quit,
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         let p = self.pilot.read(cx);
@@ -1372,7 +1454,7 @@ impl Shell {
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {
-        let rows: [(Setting, &str, &str, &str, bool); 8] = [
+        let rows: [(Setting, &str, &str, &str, bool); 4] = [
             (
                 Setting::Redacted,
                 "Redacted mode",
@@ -1401,34 +1483,6 @@ impl Shell {
                 "The mascot moves with what the agents do.",
                 self.arcade,
             ),
-            (
-                Setting::Dock,
-                "Terminal dock",
-                "Layout",
-                "The terminals under the main area.",
-                self.dock_open,
-            ),
-            (
-                Setting::Sidebar,
-                "Sidebar",
-                "Layout",
-                "Projects and views, at the side of the window.",
-                self.rail.open,
-            ),
-            (
-                Setting::Panel,
-                "Workspace panel",
-                "Layout",
-                "Sessions, files and changes at the right.",
-                self.panel.open,
-            ),
-            (
-                Setting::Subagents,
-                "Session tab",
-                "Layout",
-                "The session's pull request and subagents, in the Workspace panel.",
-                self.subagents_shown(),
-            ),
         ];
         for (s, name, path, blurb, on) in rows {
             let mut item = Item::new(
@@ -1442,10 +1496,6 @@ impl Shell {
                     Setting::Redacted => "view-off",
                     Setting::Island => "sparkles",
                     Setting::Glass | Setting::Arcade => "paint-board",
-                    Setting::Dock => "layout-bottom",
-                    Setting::Sidebar => "sidebar-left",
-                    Setting::Panel => "layout-align-right",
-                    Setting::Subagents => "bot",
                 },
                 Tint::Neutral,
             )
@@ -1475,6 +1525,11 @@ impl Shell {
             Target::Session(pi, ei, id) => self.open_session_at(pi, ei, id, window, cx),
             Target::NewSession => self.new_session(window, cx),
             Target::NewEnvironment => self.quick_create_env(self.active_project, window, cx),
+            Target::NewEnvironmentWithOptions => {
+                if self.has_projects() {
+                    self.open_create_env(self.active_project, window, cx)
+                }
+            }
             Target::NewTerminal => self.new_terminal(window, cx),
             Target::NewBrowserTab => self.open_browser_tab(String::new(), window, cx),
             Target::AddProject => self.open_picker(window, cx),
@@ -1483,11 +1538,28 @@ impl Shell {
             Target::ToggleSidebar => self.toggle_rail(cx),
             Target::TogglePanel => self.toggle_panel(cx),
             Target::Customize => self.open_customize(CustomizeTab::Colors, window, cx),
+            Target::CustomizeSidebar => self.open_customize(CustomizeTab::Sidebar, window, cx),
+            Target::CloseTab => {
+                if self.has_projects() {
+                    self.close_tab(self.strip.active_tab, window, cx)
+                }
+            }
+            Target::ReopenClosedTab => self.reopen_closed_tab(window, cx),
+            Target::ZoomIn => {
+                self.zoom_to(crate::ui_zoom::next(crate::ui_zoom::pct(), 1), window, cx)
+            }
+            Target::ZoomOut => {
+                self.zoom_to(crate::ui_zoom::next(crate::ui_zoom::pct(), -1), window, cx)
+            }
+            Target::ZoomReset => self.zoom_to(100, window, cx),
+            Target::MinimizeWindow => window.minimize_window(),
+            Target::MaximizeWindow => window.zoom_window(),
+            Target::ToggleFullScreen => window.toggle_fullscreen(),
+            Target::Quit => cx.quit(),
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),
             Target::Settings => self.open_settings(window, cx),
             Target::SendFeedback => self.send_feedback(window, cx),
-            Target::Extensions => self.open_extensions_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             Target::Tasks => self.open_tasks_tab(window, cx),
             Target::Runs => self.open_runs_tab(None, window, cx),
@@ -1618,10 +1690,6 @@ impl Shell {
                 self.save(cx);
                 cx.refresh_windows();
             }
-            Setting::Dock => self.toggle_dock(window, cx),
-            Setting::Sidebar => self.toggle_rail(cx),
-            Setting::Panel => self.toggle_panel(cx),
-            Setting::Subagents => self.toggle_subagents(cx),
         }
         cx.notify();
     }

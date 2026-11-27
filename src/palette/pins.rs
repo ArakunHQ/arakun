@@ -68,15 +68,69 @@ impl Pins {
         pins
     }
 
-    /// A view's id is its label, and Extensions is now Marketplace: pins saved
-    /// before the rename open it under the new name.
+    /// Pins of rows that are gone open what took their place. A view's id is
+    /// its label, and Extensions is now Marketplace. The Marketplace and
+    /// Automations commands were the same as their views, and the layout
+    /// switches the same as the toggle commands.
     fn migrate(&mut self) {
+        // From kind and id, to kind, id and label.
+        const MOVED: &[[&str; 5]] = &[
+            ["view", "extensions", "view", "marketplace", "Marketplace"],
+            [
+                "command",
+                "extensions",
+                "view",
+                "marketplace",
+                "Marketplace",
+            ],
+            [
+                "command",
+                "automations",
+                "view",
+                "automations",
+                "Automations",
+            ],
+            [
+                "setting",
+                "dock",
+                "command",
+                "toggle-dock",
+                "Toggle terminal dock",
+            ],
+            [
+                "setting",
+                "sidebar",
+                "command",
+                "toggle-sidebar",
+                "Toggle sidebar",
+            ],
+            [
+                "setting",
+                "panel",
+                "command",
+                "toggle-panel",
+                "Toggle workspace panel",
+            ],
+            [
+                "setting",
+                "subagents",
+                "command",
+                "toggle-subagents",
+                "Toggle session tab",
+            ],
+        ];
         for pin in &mut self.items {
-            if pin.kind == "view" && pin.id == "extensions" {
-                pin.id = "marketplace".into();
-                pin.label = "Marketplace".into();
+            if let Some([_, _, kind, id, label]) =
+                MOVED.iter().find(|m| pin.kind == m[0] && pin.id == m[1])
+            {
+                pin.kind = (*kind).into();
+                pin.id = (*id).into();
+                pin.label = (*label).into();
             }
         }
+        // Two old pins may now be the same one.
+        let mut seen = std::collections::HashSet::new();
+        self.items.retain(|p| seen.insert(p.key()));
     }
 
     pub fn save(&self) {
@@ -124,6 +178,33 @@ mod tests {
         assert!(!p.has("view:extensions"));
         assert_eq!(p.items[0].label, "Marketplace");
         assert!(p.has("view:github"), "other pins stay as they were");
+    }
+
+    #[test]
+    fn pins_of_removed_rows_open_what_replaced_them() {
+        let mut p = Pins::default();
+        for (kind, id) in [
+            ("command", "extensions"),
+            ("view", "marketplace"),
+            ("setting", "dock"),
+            ("setting", "redacted"),
+        ] {
+            p.toggle(Pin {
+                kind: kind.into(),
+                id: id.into(),
+                label: id.into(),
+            });
+        }
+        p.migrate();
+        let keys: Vec<String> = p.items.iter().map(Pin::key).collect();
+        assert_eq!(
+            keys,
+            [
+                "view:marketplace",
+                "command:toggle-dock",
+                "setting:redacted"
+            ]
+        );
     }
 
     #[test]

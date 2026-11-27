@@ -507,6 +507,21 @@ impl Runs {
             .collect()
     }
 
+    /// The runs waiting for a slot that Linear has not heard from in a while,
+    /// each with how many run and how many wait before it. Linear calls a
+    /// session stale after 30 minutes without a word, though the run still
+    /// starts in turn.
+    pub fn quiet_waiting(&self, now: u64) -> Vec<(String, usize, usize)> {
+        let running = self.busy();
+        self.runs
+            .iter()
+            .filter(|r| r.state == RunState::Waiting)
+            .enumerate()
+            .filter(|(_, r)| now.saturating_sub(r.reported_at) >= QUIET_SECS)
+            .map(|(ahead, r)| (r.agent_session.clone(), running, ahead))
+            .collect()
+    }
+
     /// Runs whose held reply waited `HOLD_SECS` for background work that
     /// never ended: they are done, and give their reply to send.
     pub fn overdue(&mut self, now: u64) -> Vec<(String, Held)> {
@@ -552,9 +567,10 @@ impl Runs {
         told
     }
 
-    /// Whether a run is at work, so Linear may need telling it still is.
+    /// Whether a run is at work or waits for a slot, so Linear may need
+    /// telling it still is.
     pub fn any_running(&self) -> bool {
-        self.count(RunState::Running) > 0
+        self.count(RunState::Running) > 0 || self.count(RunState::Waiting) > 0
     }
 
     /// Whether reports wait to be sent.
@@ -1429,6 +1445,30 @@ mod tests {
         r.by_agent_session("b").unwrap().state = RunState::Asked;
         assert!(r.quiet(1_000 + 24 * 60).is_empty());
         assert_eq!(r.quiet(1_000 + QUIET_SECS), ["a"]);
+    }
+
+    #[test]
+    fn a_waiting_run_tells_linear_again_before_it_goes_stale() {
+        let mut r = Runs::default();
+        for id in ["a", "b", "c", "d", "e"] {
+            r.add_at(run(id), 1_000, SLOTS);
+        }
+        r.by_agent_session("e").unwrap().reported_at = 2_000;
+        assert!(r.quiet_waiting(1_000 + QUIET_SECS - 1).is_empty());
+        // Three run; "d" waits first, "e" heard from later.
+        assert_eq!(
+            r.quiet_waiting(1_000 + QUIET_SECS),
+            [("d".to_string(), 3, 0)]
+        );
+        assert_eq!(
+            r.quiet_waiting(2_000 + QUIET_SECS),
+            [("d".to_string(), 3, 0), ("e".to_string(), 3, 1)]
+        );
+        // The timer goes on while runs wait, even with none at work.
+        for id in ["a", "b", "c"] {
+            r.by_agent_session(id).unwrap().state = RunState::Asked;
+        }
+        assert!(r.any_running());
     }
 
     #[test]

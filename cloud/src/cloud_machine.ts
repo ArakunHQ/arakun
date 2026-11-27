@@ -20,7 +20,14 @@
 //
 // Model credentials. The owner's API key for the agents (cloud_model.ts) is
 // kept here sealed and goes in on every start, to a file under /run/arakun
-// that sleep removes before the snapshot, with the copy Codex makes of a key. No removal, no snapshot.
+// that sleep removes before the snapshot, with the copy Codex makes of a key.
+// No removal, no snapshot.
+//
+// Plan sign-ins. The owner signs in to a Claude or ChatGPT plan inside the
+// machine, and the agent's CLI keeps the token on the disk. Before a snapshot
+// the image seals those files under a key made here for that one snapshot and
+// kept with its record, never on the disk; the wake from it hands the key back.
+// So a snapshot alone gives no token.
 //
 // Lifecycle. A device knocking at the machine's door wakes it (machines.ts).
 // An alarm checks every few minutes: while the server says an agent turn runs
@@ -63,6 +70,8 @@ export const SERVER_USER = "arakun";
 /// What writes the owner's model credentials into the container, under
 /// /run/arakun, and with `forget` removes them (machine/model-env).
 export const MODEL_ENV = "/opt/arakun/bin/model-env";
+/// The variable the key for the sealed plan sign-ins goes in.
+export const SIGNIN_VAR = "ARAKUN_CLOUD_SIGNIN_KEY";
 /// How long one `arakun-server status` may take.
 const STATUS_TIMEOUT_MS = 10_000;
 /// The soonest the alarm comes back, so a machine at its limit does not spin.
@@ -91,6 +100,9 @@ interface Snap {
   size: number;
   image: string;
   at: number;
+  /// Opens the plan sign-ins sealed on this snapshot's disk (base64url).
+  /// Missing on a snapshot from before they were sealed.
+  signin?: string;
 }
 
 /// What `arakun-server status` says about work and devices.
@@ -321,6 +333,7 @@ export class MachineLife {
     if (snap && snap.image === image) {
       const vars = await startEnv(this.env, m, false, stored);
       if (!vars) return "not_allowed";
+      if (snap.signin) vars[SIGNIN_VAR] = snap.signin;
       try {
         const t0 = Date.now();
         box.start({ containerSnapshot: { id: snap.id }, instance: INSTANCE, enableInternet: true, env: vars });
@@ -519,10 +532,11 @@ export class MachineLife {
     try {
       if (!image) throw new Error("the image it runs is unknown");
       // The owner's key is worth more than the work since the last snapshot.
-      const gone = await (await box.exec([MODEL_ENV, "forget"], { stdout: "ignore", stderr: "ignore" })).exitCode;
+      const signin = b64url(crypto.getRandomValues(new Uint8Array(32)));
+      const gone = await (await box.exec([MODEL_ENV, "forget"], { env: { [SIGNIN_VAR]: signin }, stdout: "ignore", stderr: "ignore" })).exitCode;
       if (gone !== 0) throw new Error(`the model credentials could not be removed (model-env exited ${gone})`);
       const s = await box.snapshotContainer({ name: `${m.label}-${Date.now()}` });
-      await this.storage.put("snap", { id: s.id, size: s.size, image, at: Date.now() } satisfies Snap);
+      await this.storage.put("snap", { id: s.id, size: s.size, image, at: Date.now(), signin } satisfies Snap);
     } catch (e) {
       console.error(`cloud machine ${m.label}: snapshot failed (${reason}):`, e);
     }

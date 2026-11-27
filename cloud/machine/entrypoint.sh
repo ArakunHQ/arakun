@@ -13,6 +13,8 @@
 #   ARAKUN_CLOUD_IDENTITY_PUBLIC from the image only, with its public half
 #   ARAKUN_CLOUD_MODEL           the owner's model credentials, for model-env;
 #   ARAKUN_CLOUD_VERTEX          empty when the owner gave none
+#   ARAKUN_CLOUD_SIGNIN_KEY      opens the plan sign-ins sealed before the
+#                                snapshot, on a start from one
 #
 # It writes the sign-in where the server reads it (account.json), the relay key
 # into phone.json on the first start, and starts `arakun-server serve` as
@@ -73,7 +75,7 @@ EOF
 
 base=$ARAKUN_CLOUD_BASE
 name=$ARAKUN_CLOUD_NAME
-unset ARAKUN_CLOUD_MODEL ARAKUN_CLOUD_VERTEX
+unset ARAKUN_CLOUD_MODEL ARAKUN_CLOUD_VERTEX ARAKUN_CLOUD_SIGNIN_KEY
 unset ARAKUN_CLOUD_SESSION ARAKUN_CLOUD_SESSION_ID ARAKUN_CLOUD_IDENTITY ARAKUN_CLOUD_IDENTITY_PUBLIC
 
 # As `arakun`, with an environment of its own: nothing of this one, the

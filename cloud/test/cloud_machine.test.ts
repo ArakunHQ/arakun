@@ -12,6 +12,7 @@ import {
   INSTANCE,
   MODEL_ENV,
   MachineLife,
+  SIGNIN_VAR,
   SERVER_DIR,
   newMachineKey,
   nextStep,
@@ -887,6 +888,31 @@ describe("a machine's model credentials", () => {
       };
       await life.sleep("idle");
       expect(order.slice(-2)).toEqual([`${MODEL_ENV} forget`, "snapshot"]);
+    });
+  });
+
+  it("seals the plan sign-ins under a key the snapshot's wake alone gets, new each time", async () => {
+    const me = await owner();
+    const m = await machineOf(me);
+    const box = new FakeBox();
+    await withLife(m, box, async (life, storage) => {
+      await life.wake();
+      // From the image there is nothing sealed to open.
+      expect(box.starts[0]!.env?.[SIGNIN_VAR]).toBeUndefined();
+      await life.sleep("idle");
+      const first = box.execs.at(-1)!;
+      expect(first.cmd).toEqual([MODEL_ENV, "forget"]);
+      const key = first.options?.env?.[SIGNIN_VAR];
+      expect(key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect((await storage.get<{ signin?: string }>("snap"))?.signin).toBe(key);
+
+      await life.wake();
+      expect(box.starts[1]!.containerSnapshot).toBeDefined();
+      expect(box.starts[1]!.env?.[SIGNIN_VAR]).toBe(key);
+      await life.sleep("idle");
+      const second = box.execs.at(-1)!.options?.env?.[SIGNIN_VAR];
+      expect(second).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(second).not.toBe(key);
     });
   });
 

@@ -10,10 +10,34 @@
 # An empty one removes its file, so a key the owner took away is gone from the
 # disk too. /run/arakun is not for the snapshot: before it takes one, the
 # object runs `model-env forget`, which removes every key from the disk.
+#
+# The owner's plan sign-ins (Claude Code's and Codex's own files in the home
+# folder of `agent`) are not for the snapshot either, but must be there after a
+# wake. `forget` seals them under ARAKUN_CLOUD_SIGNIN_KEY, a new key each time
+# that the object keeps and the disk never holds, and removes the files; the
+# next start gets the key and puts them back. Without the key they are only
+# removed, and the owner signs in again.
 set -eu
 umask 077
 
 dir=/run/arakun
+sealed=/var/lib/arakun/sign-in
+# Not for anything started from here.
+key=${ARAKUN_CLOUD_SIGNIN_KEY:-}
+unset ARAKUN_CLOUD_SIGNIN_KEY
+# Under /home/agent.
+signins='.claude/.credentials.json .codex/auth.json'
+
+# The files are the agent's, in folders it can change: everything that touches
+# them runs as `agent`, so a link it planted leads root nowhere.
+as_agent() {
+  setpriv --reuid=agent --regid=agent --init-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- \
+    env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/agent "$@"
+}
+
+seal() {
+  SEAL=$key openssl enc "$@" -aes-256-cbc -pbkdf2 -pass env:SEAL
+}
 
 # Codex copies an API key it was started with into its own sign-in file. That
 # copy goes whenever the key changes and before a snapshot; the adapter makes
@@ -24,11 +48,43 @@ if [ -f "$codex" ] && grep -Eqi '"auth_mode"[[:space:]]*:[[:space:]]*"api' "$cod
 fi
 
 if [ "${1:-}" = forget ]; then
+  # An agent still running could write its sign-in again after this. The
+  # container stops right after the snapshot anyway.
+  pkill -KILL -u agent || true
+  install -d -o root -g root -m 755 "$dir"
+  rm -f "$sealed"
+  # shellcheck disable=SC2086 # the names have no spaces
+  have=$(as_agent sh -c 'cd /home/agent && for f in "$@"; do if [ -f "$f" ] && [ ! -L "$f" ]; then echo "$f"; fi; done' sh $signins)
+  if [ -n "$key" ] && [ -n "$have" ]; then
+    install -d -o root -g root -m 700 "$(dirname "$sealed")"
+    # shellcheck disable=SC2086
+    as_agent tar -C /home/agent -cf - $have >"$dir/sign-in.tar"
+    seal -e -salt -in "$dir/sign-in.tar" -out "$sealed"
+  fi
+  # shellcheck disable=SC2086
+  as_agent sh -c 'cd /home/agent && rm -f "$@"' sh $signins
+  for f in $signins; do
+    if [ -e "/home/agent/$f" ] || [ -L "/home/agent/$f" ]; then
+      echo "model-env: /home/agent/$f would not go" >&2
+      exit 1
+    fi
+  done
   rm -rf "$dir"
   exit
 fi
 
 install -d -o root -g root -m 755 "$dir"
+
+# After a wake: the sign-ins `forget` sealed, back where the agents keep them.
+# A sealed file that does not open is dropped, and the owner signs in again.
+if [ -f "$sealed" ]; then
+  if [ -n "$key" ] && seal -d -in "$sealed" -out "$dir/sign-in.tar" 2>/dev/null; then
+    as_agent tar -C /home/agent -xpf - <"$dir/sign-in.tar" || echo "model-env: could not put the sign-ins back" >&2
+  else
+    echo "model-env: the sealed sign-ins do not open; sign in again" >&2
+  fi
+  rm -f "$dir/sign-in.tar" "$sealed"
+fi
 
 # Writes $1 to $2 for the user $3 alone, in one rename; removes $2 when $1 is empty.
 put() {

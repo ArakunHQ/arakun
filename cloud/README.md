@@ -851,9 +851,12 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
     `claude` and `codex` there are `machine/run`, which runs the CLI as `agent`,
     so the sign-in lands in that user's home folder, where the sessions find it.
     The token goes from the provider to the machine's disk: the Worker never sees
-    it, and no route takes one. It stays on the disk, and so in the machine's
-    snapshot, like the rest of the home folder; else every wake would ask for a
-    new sign-in. `/logout` or `codex logout` there, or removing the machine, ends
+    it, and no route takes one. A snapshot holds it only sealed: before each
+    one, `model-env forget` seals the two sign-in files under a new key and
+    removes them, and the machine's object keeps that key with the snapshot's
+    record, never on the disk. The wake from that snapshot hands the key back and
+    the files return, so the owner signs in once. A snapshot alone gives no
+    token. `/logout` or `codex logout` there, or removing the machine, ends
     it. With both an API key and a sign-in, Claude Code uses the key and Codex
     uses the sign-in.
   - *An API key*, given to `PUT /cloud/machines/<label>/model/<provider>`
@@ -865,9 +868,9 @@ phone reach it at the usual `/machines/<label>` doors. One per account for now.
     `machine/model-env` writes it under `/run/arakun` for root alone, and
     `machine/as-agent` puts it in the environment of each agent it starts, so the
     server never holds it. A session that runs keeps the key it started with.
-    Before a snapshot, sleep runs `model-env forget`, which removes `/run/arakun`
-    and the copy Codex makes of an API key in its sign-in file, and it takes no
-    snapshot when that fails, so no snapshot holds a key. An agent can read its
+    Before a snapshot, sleep runs `model-env forget`, which stops the agents,
+    removes `/run/arakun` and the copy Codex makes of an API key in its sign-in
+    file, and it takes no snapshot when that fails, so no snapshot holds a key. An agent can read its
     own environment, so the key is as safe as what the owner lets the agent do.
   Other agents (Droid, Cursor, Devin, Antigravity, OpenCode) are not in the image:
   the server does not install their CLIs, and each comes from its maker's installer.

@@ -32,7 +32,12 @@ copy of it, rename it back, and start a version that can read it.
   hide it); the project on screen and
   any project with a session that works or needs you stay open. Click a project to
   fold or open it. `Ctrl`+click or `Shift`+click picks rows, as described below. This
-  list takes the place of the Active list and the project's worktrees below. A state
+  list takes the place of the project's worktrees below. Above it, **Needs you** lists
+  the sessions of every project that wait on you, failed or whose checks failed, the
+  worst first, each with its project's icon and how long it has waited or why it
+  failed. Its title shows the count, and it is gone when nothing needs you. A session
+  in it leaves its project's list until it works again or passes. While the pointer is
+  over the sidebar, no row moves: the order holds until the pointer leaves. A state
   file from before it keeps the projects and worktrees described next (the Classic
   layout).
 - **Pinned tabs.** With sessions in the sidebar, the title bar holds only the

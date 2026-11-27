@@ -33,6 +33,9 @@ pub(super) struct Rail {
     /// Where the tree's rows sat when the pointer came over it. They stay
     /// there until it leaves, so no row moves from under the pointer.
     pub tree_held: Option<session_tree::HeldRows>,
+    /// The sessions Needs you listed when the pointer came over the sidebar,
+    /// in its order. It lists them, and only them, until the pointer leaves.
+    pub needs_held: Option<Vec<SharedString>>,
     /// The tree menu's Applies to is on Select projects: the order picked
     /// goes to the projects ticked in the list beside it.
     pub tree_sort_select: bool,
@@ -65,6 +68,7 @@ impl Rail {
             tree_open: std::collections::HashMap::new(),
             tree_hover: None,
             tree_held: None,
+            needs_held: None,
             tree_sort_select: false,
             active_hover: None,
             tree_filter,
@@ -620,6 +624,12 @@ impl Shell {
                 // environments' least height (`RAIL_SCROLL_MIN_H`).
                 div()
                     .id("rail-body")
+                    // No session jumps between Needs you and its project,
+                    // or within either, while the pointer is over them.
+                    .on_hover(cx.listener(|this, over: &bool, _, cx| {
+                        this.hold_rail_rows(*over, cx);
+                        cx.notify();
+                    }))
                     .flex()
                     .flex_col()
                     .flex_1()

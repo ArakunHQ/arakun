@@ -149,21 +149,26 @@ impl Shell {
         self.linear_report_plan(&agent_session, plan, cx);
     }
 
-    /// The step a working delegated session is on, for its issue to show
-    /// while it runs. Most entry changes are text streaming in: they cost one
-    /// lookup, and Linear hears a step at most every `PROGRESS_SECS`.
+    /// What a working delegated session said and did, and the step it is
+    /// on, for its issue to show while it runs. Most entry changes are text
+    /// streaming in: Linear hears progress at most every `PROGRESS_SECS`.
     fn linear_progress(&mut self, id: &str, thread: &Entity<Thread>, cx: &mut Context<Self>) {
         if self.linear_runs.by_session(id).is_none() {
             return;
         }
         let t = thread.read(cx);
-        let Some(step) = progress_step(t.entries(), t.cwd()) else {
+        let now = unix_now();
+        let progress = progress_reports(&mut self.linear_runs, id, t.entries(), t.cwd(), now);
+        let Some((agent_session, digest, step)) = progress else {
             return;
         };
-        let Some(agent_session) = self.linear_runs.progress(id, &step.line(), unix_now()) else {
-            return;
-        };
-        self.linear_report_step(&agent_session, step, cx);
+        // The digest first: a newer report makes an unsent step moot.
+        if let Some(digest) = digest {
+            self.linear_report(&agent_session, ReportKind::Thought, digest, None, cx);
+        }
+        if let Some(step) = step {
+            self.linear_report_step(&agent_session, step, cx);
+        }
     }
 
     /// The run's pull request, once the session or the CI view knows it: its

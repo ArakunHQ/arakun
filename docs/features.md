@@ -620,7 +620,10 @@ again after a week) in its [data folder](storage-and-env.md).
   is on, shown as Linear shows a tool call: Editing `src/main.rs`, Reading `README.md`,
   Running a command or Searching the code. It holds only the kind of step and, for a file, its path in the
   project, never a command, a search or a web address. A step shows until the next
-  activity replaces it, and at most one goes every 30 seconds. When the agent keeps
+  activity replaces it. Next to it, the issue keeps a note of what the agent said
+  before its steps and the steps it finished, such as Edited `src/main.rs` or
+  Ran 3 commands, so the work stays readable after it moves on. The agent's thinking
+  and its final reply are not in it. At most one step and one note go every 30 seconds. When the agent keeps
   a plan (its to-do list), the session in Linear shows it as a checklist at its
   top: each item's text, with secrets taken out and cut to 300 characters, and
   whether it is pending, in progress or done. The whole plan goes again when it

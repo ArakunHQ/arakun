@@ -20,6 +20,10 @@
 //   PUT    /admin/cloud/requests/<account_id>/decline → declines a pending one, { by? }
 //   GET    /admin/cloud/machines                  → every cloud machine, its owner and whether it runs (cloud_machines.ts)
 //   POST   /admin/cloud/machines/<label>/sleep    → stops one now, after a snapshot
+//   PUT    /admin/cloud/stop                      → stops every cloud machine until DELETE, { reason? } (cloud_machines.ts)
+//   DELETE /admin/cloud/stop                      → lets them run again
+//   PUT    /admin/users/<account_id>/cloud/stop   → stops one account's cloud machines until DELETE, { reason? }
+//   DELETE /admin/users/<account_id>/cloud/stop   → lets them run again
 //   GET    /admin/log                             → what was changed and by whom, newest first (admin_log.ts)
 //   GET    /admin/beta/signups                    → sign-ups for the phone app betas, pending first, ?platform= ?status=
 //   PUT    /admin/beta/signups/<account_id>/<platform>/admit   → marks one admitted, { by? }
@@ -45,7 +49,7 @@ import { getUser, listNotices, listPlans, listUsers } from "./admin_lists";
 import { operatorTotp } from "./admin_totp";
 import { decideSignup, listSignups } from "./beta";
 import { decideRequest, listRequests } from "./cloud_access";
-import { listAllMachines, sleepMachine } from "./cloud_machines";
+import { holdAccount, listAllMachines, releaseAccount, resumeEveryone, sleepMachine, stopEveryone } from "./cloud_machines";
 import { accountFor, GITHUB_ACCOUNT } from "./auth";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
@@ -88,6 +92,14 @@ export async function admin(request: Request, env: Env, url: URL): Promise<Respo
   if (path === "/admin/cloud/machines" && request.method === "GET") return listAllMachines(env);
   const cloudMachine = /^\/admin\/cloud\/machines\/([a-z2-7]{16})\/sleep$/.exec(path);
   if (cloudMachine && request.method === "POST") return sleepMachine(env, op, cloudMachine[1]!);
+  if (path === "/admin/cloud/stop" && request.method === "PUT") return stopEveryone(request, env, op);
+  if (path === "/admin/cloud/stop" && request.method === "DELETE") return resumeEveryone(env, op);
+  const hold = /^\/admin\/users\/([^/]+)\/cloud\/stop$/.exec(path);
+  if (hold && (request.method === "PUT" || request.method === "DELETE")) {
+    const id = numericId(hold[1]!);
+    if (id === null) return error(400, NO_ID);
+    return request.method === "PUT" ? holdAccount(request, env, op, id) : releaseAccount(env, op, id);
+  }
   if (path === "/admin/beta/signups" && request.method === "GET") return listSignups(env, url);
   const signup = /^\/admin\/beta\/signups\/([^/]+)\/([^/]+)\/(admit|decline)$/.exec(path);
   if (signup && request.method === "PUT") return decideSignup(request, env, signup[1]!, signup[2]!, signup[3] as "admit" | "decline", op);

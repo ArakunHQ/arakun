@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
 # The cloud machine's first process, as root. The machine's object
 # (cloud/src/cloud_machine.ts) starts the container with:
 #

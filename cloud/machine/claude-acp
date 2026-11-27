@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see LICENSE in this folder)
 # What arakun-server runs for a Claude session (ARAKUN_CLAUDE_ACP): the adapter,
 # as the user `agent`. sudo lets `arakun` run as-agent and nothing else, and
 # as-agent starts nothing but the adapter. -E keeps the variables the server

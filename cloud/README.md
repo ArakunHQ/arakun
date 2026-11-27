@@ -62,7 +62,8 @@ cloud/
   src/cloud_machines.ts the account's cloud machines: /cloud/machines, and the
                         operator's side of them
   machine/              the cloud machine's image: Dockerfile, entrypoint and the
-                        wrapper that runs agents as their own user
+                        wrapper that runs agents as their own user. Noncommercial
+                        license (machine/LICENSE), not AGPL-3.0
   src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the

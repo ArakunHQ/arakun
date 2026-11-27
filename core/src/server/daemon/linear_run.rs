@@ -410,7 +410,7 @@ impl Daemon {
         let name = crate::server::store::repo_name(&project)
             .unwrap_or_else(|| project.display().to_string());
         let line = started_line(&name, &computer(), &branch);
-        self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
+        self.linear_report_started(&start.agent_session, line, cx);
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
@@ -958,23 +958,44 @@ impl Daemon {
         options: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        let now = unix_now();
-        self.linear_run.runs.queue(Report {
+        self.linear_queue(Report {
             agent_session: agent_session.to_string(),
             kind,
             body,
             link,
             options,
-            made_at: now,
+            started: false,
+            made_at: unix_now(),
         });
+        self.linear_flush(cx);
+    }
+
+    /// The thought that says the session started: with it, Arakun's server
+    /// marks the issue as being worked on in Linear.
+    fn linear_report_started(&mut self, agent_session: &str, body: String, cx: &mut Context<Self>) {
+        self.linear_queue(Report {
+            agent_session: agent_session.to_string(),
+            kind: ReportKind::Thought,
+            body,
+            link: None,
+            options: Vec::new(),
+            started: true,
+            made_at: unix_now(),
+        });
+        self.linear_flush(cx);
+    }
+
+    fn linear_queue(&mut self, r: Report) {
+        let (kind, now) = (r.kind, r.made_at);
+        let agent_session = r.agent_session.clone();
+        self.linear_run.runs.queue(r);
         // A link is no activity: Linear still needs to hear the run works.
         if kind != ReportKind::Link
-            && let Some(run) = self.linear_run.runs.by_agent_session(agent_session)
+            && let Some(run) = self.linear_run.runs.by_agent_session(&agent_session)
         {
             run.reported_at = now;
         }
         self.linear_save_runs();
-        self.linear_flush(cx);
     }
 
     /// Sends what the outbox holds, in order, off the UI thread.

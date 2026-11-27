@@ -8,8 +8,9 @@ use super::runs::{Report, ReportKind};
 use crate::cloud::{self, LinearActivity, LinearLinkOut};
 
 /// The activity a report is posted as, or None for one that is only a link.
-fn activity(kind: ReportKind) -> Option<LinearActivity> {
-    Some(match kind {
+fn activity(r: &Report) -> Option<LinearActivity> {
+    Some(match r.kind {
+        ReportKind::Thought if r.started => LinearActivity::Started,
         ReportKind::Thought => LinearActivity::Thought,
         ReportKind::Elicitation => LinearActivity::Elicitation,
         ReportKind::Response => LinearActivity::Response,
@@ -77,7 +78,7 @@ pub fn flush(base: &str, session: &str, reports: Vec<Report>) -> Flushed {
                 url: url.clone(),
             })
             .collect();
-        let sent = match activity(r.kind) {
+        let sent = match activity(&r) {
             Some(kind) => {
                 let (to, body) = (&r.agent_session, &r.body);
                 cloud::linear_activity_with(base, session, to, kind, body, &links, &r.options)
@@ -115,6 +116,7 @@ mod tests {
             body: body.into(),
             link: None,
             options: Vec::new(),
+            started: false,
             made_at: 1,
         }
     }
@@ -142,6 +144,17 @@ mod tests {
             "{}",
             got[2]
         );
+    }
+
+    #[test]
+    fn only_the_started_thought_says_it_started() {
+        let (base, rx) = serve(vec![(204, ""), (204, "")]);
+        let mut started = report("Started.");
+        started.started = true;
+        flush(&base, "s", vec![started, report("Working.")]);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert!(got[0].ends_with(r#""started":true}"#), "{}", got[0]);
+        assert!(!got[1].contains("started"), "{}", got[1]);
     }
 
     #[test]

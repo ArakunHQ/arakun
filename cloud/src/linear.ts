@@ -12,7 +12,9 @@
 //                         → the computer took a delivery
 //   POST /linear/sessions/<agent_session>/activity
 //   POST /linear/sessions/<agent_session>/links
-//                         → the computer's progress, posted as Arakun
+//                         → the computer's progress, posted as Arakun. The
+//                           activity that says the session started also
+//                           marks the issue as being worked on.
 //
 // Without all four LINEAR_* secrets, or with a LINEAR_TOKEN_KEY that is not 32
 // bytes of base64url, every /linear path is a 404. All routes
@@ -20,7 +22,7 @@
 // with the `linear` flag.
 
 import { cookie, session, type Session } from "./auth";
-import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, UUID, viewer } from "./linear_api";
+import { addLinks, exchangeCode, LinearRefused, postActivity, saveWorkspace, startIssue, UUID, viewer } from "./linear_api";
 import { keyUsable } from "./linear_seal";
 import { webhook } from "./linear_webhook";
 import { dropDelivery } from "./machines";
@@ -318,15 +320,18 @@ interface Activity {
   links: { label: string; url: string }[];
   /// The choices of a question, for Linear to show as ones to pick from.
   options: string[];
+  /// The session started on the computer: the thought that says so.
+  started: boolean;
 }
 
 /// The activity, checked, or null. Only the known fields are copied out.
 function parseActivity(v: unknown): Activity | null {
   if (!isObject(v)) return null;
-  const { type, body, ephemeral = false, links = [], options = [] } = v;
+  const { type, body, ephemeral = false, links = [], options = [], started = false } = v;
   if (!ACTIVITY_TYPES.includes(type as Activity["type"])) return null;
   // Linear takes it for a thought only.
   if (typeof ephemeral !== "boolean" || (ephemeral && type !== "thought")) return null;
+  if (typeof started !== "boolean" || (started && (type !== "thought" || ephemeral))) return null;
   if (typeof body !== "string" || body.length === 0 || chars(body) > MAX_ACTIVITY_TEXT) return null;
   const out = parseLinks(links);
   if (!out) return null;
@@ -334,7 +339,7 @@ function parseActivity(v: unknown): Activity | null {
   if (!Array.isArray(options) || options.length > MAX_OPTIONS || options.length === 1) return null;
   if (options.length > 0 && type !== "elicitation") return null;
   if (!options.every((o) => typeof o === "string" && o.trim().length > 0 && chars(o) <= MAX_OPTION)) return null;
-  return { type: type as Activity["type"], body, ephemeral, links: out, options: options as string[] };
+  return { type: type as Activity["type"], body, ephemeral, links: out, options: options as string[], started };
 }
 
 /// At most MAX_LINKS links, each a label and a plain https address, or null.
@@ -351,16 +356,16 @@ function parseLinks(links: unknown): Activity["links"] | null {
   return out;
 }
 
-/// The workspace of a session the caller was given. It comes from the
-/// delivery, not the caller.
-async function ownedSession(env: Env, who: Session, agentSessionId: string): Promise<string | null> {
+/// The workspace and issue of a session the caller was given. They come from
+/// the delivery, not the caller.
+async function ownedSession(env: Env, who: Session, agentSessionId: string): Promise<{ organizationId: string; issueId: string } | null> {
   const owned = await env.DB.prepare(
-    `SELECT organization_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
+    `SELECT organization_id, issue_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
      ORDER BY created_at DESC LIMIT 1`,
   )
     .bind(agentSessionId, who.accountId)
-    .first<{ organization_id: string }>();
-  return owned?.organization_id ?? null;
+    .first<{ organization_id: string; issue_id: string }>();
+  return owned ? { organizationId: owned.organization_id, issueId: owned.issue_id } : null;
 }
 
 /// The computer's progress in a session it was given, posted as Arakun. The
@@ -371,8 +376,9 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
   if (!activity) return error(400, "bad activity");
   const refused = await overLimit(env, who);
   if (refused) return refused;
-  const organizationId = await ownedSession(env, who, agentSessionId);
-  if (!organizationId) return error(404, "no such session");
+  const owned = await ownedSession(env, who, agentSessionId);
+  if (!owned) return error(404, "no such session");
+  const { organizationId, issueId } = owned;
   try {
     await postActivity(env, organizationId, agentSessionId, activity.type, activity.body, activity.ephemeral, activity.options);
     if (activity.links.length > 0) await addLinks(env, organizationId, agentSessionId, activity.links);
@@ -380,7 +386,22 @@ async function sessionActivity(request: Request, env: Env, who: Session, agentSe
     if (e instanceof LinearRefused) return error(502, "linear refused");
     throw e;
   }
+  if (activity.started) await markStarted(env, organizationId, issueId);
   return new Response(null, { status: 204 });
+}
+
+/// The issue as being worked on, after the activity that says the session
+/// started. Only after it, so an offline computer or a refusal leaves the
+/// issue as it was. A failure here is logged and goes no further: the
+/// activity is in, and a retry would post it twice.
+async function markStarted(env: Env, organizationId: string, issueId: string): Promise<void> {
+  try {
+    await startIssue(env, organizationId, issueId);
+  } catch (e) {
+    // The status or the error's name only: a message could quote Linear.
+    const why = e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
+    console.error(`linear start issue: ${why}`);
+  }
 }
 
 /// Links for a session the computer was given, such as its pull request,
@@ -393,8 +414,9 @@ async function sessionLinks(request: Request, env: Env, who: Session, agentSessi
   if (!links || links.length === 0) return error(400, "bad links");
   const refused = await overLimit(env, who);
   if (refused) return refused;
-  const organizationId = await ownedSession(env, who, agentSessionId);
-  if (!organizationId) return error(404, "no such session");
+  const owned = await ownedSession(env, who, agentSessionId);
+  if (!owned) return error(404, "no such session");
+  const { organizationId } = owned;
   try {
     await addLinks(env, organizationId, agentSessionId, links);
   } catch (e) {

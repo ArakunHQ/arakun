@@ -245,8 +245,11 @@ export const linearFake = {
   /// answers the same pair again for 30 minutes; with `grace` off it refuses.
   rotated: new Map<string, { access: string; refresh: string }>(),
   grace: true,
-  /// Issue id → its team and project.
-  issues: new Map<string, { teamId: string; projectId: string | null; stateType?: string }>(),
+  /// Issue id → its team and project, and for `startIssue` its state type
+  /// (`unstarted` when not given) and delegate.
+  issues: new Map<string, { teamId: string; projectId: string | null; stateType?: string; delegateId?: string }>(),
+  /// Team id → its `started` states, in any order.
+  startedStates: new Map<string, { id: string; position: number }[]>(),
   /// Every GraphQL call: the query, its variables and the access token.
   calls: [] as { query: string; variables: unknown; token: string }[],
   /// The calls Linear accepted, apart from `calls`: what `activities()` and `links()` read.
@@ -292,6 +295,12 @@ export const linearFake = {
         return { ...sent, ...(input.ephemeral === undefined ? {} : { ephemeral: input.ephemeral }), ...select };
       });
   },
+  /// The issue updates, in order.
+  issueUpdates(): { id: string; input: { stateId?: string; delegateId?: string } }[] {
+    return this.accepted
+      .filter((c) => c.query.includes("issueUpdate"))
+      .map((c) => c.variables as { id: string; input: { stateId?: string; delegateId?: string } });
+  },
   /// The links added to agent sessions, in order.
   links(): { agentSessionId: string; label: string; url: string }[] {
     return this.accepted
@@ -312,6 +321,7 @@ function resetLinear(): void {
   linearFake.rotated.clear();
   linearFake.grace = true;
   linearFake.issues.clear();
+  linearFake.startedStates.clear();
   linearFake.calls = [];
   linearFake.accepted = [];
   linearFake.auth = [];
@@ -381,9 +391,20 @@ async function linearReply(req: Request): Promise<Response> {
     });
   if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))
     return Response.json({ data: { agentActivityCreate: { success: true }, agentSessionUpdate: { success: true } } });
+  if (query.includes("issueUpdate")) return Response.json({ data: { issueUpdate: { success: true } } });
   if (query.includes("issue(")) {
     const issue = linearFake.issues.get((variables as { id: string }).id);
     if (!issue) return Response.json({ errors: [{ message: "Entity not found", extensions: { code: "INVALID_INPUT" } }] });
+    if (query.includes("states("))
+      return Response.json({
+        data: {
+          issue: {
+            state: { type: issue.stateType ?? "unstarted" },
+            delegate: issue.delegateId ? { id: issue.delegateId } : null,
+            team: { states: { nodes: linearFake.startedStates.get(issue.teamId) ?? [] } },
+          },
+        },
+      });
     return Response.json({
       data: {
         issue: { team: { id: issue.teamId }, project: issue.projectId ? { id: issue.projectId } : null, state: { type: issue.stateType ?? "started" } },

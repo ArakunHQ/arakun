@@ -185,6 +185,10 @@ pub struct Report {
     /// A question's choices, for Linear to show as ones to pick from.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// The thought that says the session started on this computer. The
+    /// server then marks the issue as being worked on in Linear.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub started: bool,
     pub made_at: u64,
 }
 
@@ -196,6 +200,7 @@ impl std::fmt::Debug for Report {
             .field("body", &format_args!("…"))
             .field("link", &self.link.is_some())
             .field("options", &self.options.len())
+            .field("started", &self.started)
             .field("made_at", &self.made_at)
             .finish()
     }
@@ -617,6 +622,7 @@ mod tests {
             body: body.into(),
             link: None,
             options: Vec::new(),
+            started: false,
             made_at,
         }
     }

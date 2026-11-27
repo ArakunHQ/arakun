@@ -1038,6 +1038,8 @@ name, or `this computer` if its row is gone (`This computer` in the expiry one).
 | `error` | the computer already has 50 deliveries waiting (the delivery is not kept) | `Too many requests are waiting for <computer>. Try again when it has caught up.` |
 | `error` | a follow-up for a session that has no live delegation | `Arakun has no session for this. Delegate the issue again.` |
 | `thought` | a follow-up from someone other than the delegator | `Only the person who delegated this can steer it.` |
+| `thought` | a reply from the delegator was kept for a computer that is offline | `<computer> is offline. Your message reaches the session when it is back.` |
+| `response` | a stop from the delegator was kept for a computer that is offline | `<computer> is offline. The session there is stopped as soon as it is back.` |
 | `error` | a `created` delivery waited 7 days and the computer never took it | `<computer> stayed offline for 7 days, so this was dropped. Delegate it again when the computer is on.` |
 
 A follow-up that is dropped for a full queue is also answered with the full-queue text.

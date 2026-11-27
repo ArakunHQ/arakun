@@ -752,7 +752,8 @@ after a week).
   has no Linear sign-in for the workspace, the issue can't be read, an environment
   can't be made, or the same issue is already in work on this computer. If this
   computer is off, the server says so in the issue and keeps the delivery for up to
-  7 days; it starts when the computer is back.
+  7 days; it starts when the computer is back. A reply or a stop sent while this
+  computer is off is kept the same way, and the issue hears that it waits.
 
   *What goes where.* The Linear key of each workspace you connect goes to Arakun's
   server, to prove which Linear user you are, and the server does not store it. You

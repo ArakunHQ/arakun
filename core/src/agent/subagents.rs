@@ -149,6 +149,18 @@ impl Subagent {
     pub fn answers_to(&self, id: &str) -> bool {
         self.id == id || self.call.as_deref() == Some(id) || self.earlier.iter().any(|e| e == id)
     }
+
+    /// The subagent that started it, when another subagent did.
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+}
+
+impl SubagentRecord {
+    /// Whether `id` names it, as [`Subagent::answers_to`] says.
+    pub fn answers_to(&self, id: &str) -> bool {
+        self.id == id || self.call.as_deref() == Some(id) || self.earlier.iter().any(|e| e == id)
+    }
 }
 
 /// The agent a child session runs: AIR names a resumed one's session

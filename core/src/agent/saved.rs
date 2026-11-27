@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use super::{Entry, Thread};
+use super::{Entry, SubagentRecord, Thread};
 
 /// How long a read is kept with nobody asking for it.
 const KEEP: Duration = Duration::from_secs(60);
@@ -23,6 +23,8 @@ struct Kept {
     cwd: PathBuf,
     /// The follow-ups that waited when it was saved.
     queue: Vec<String>,
+    /// Its subagents, each with its own transcript.
+    subagents: Vec<SubagentRecord>,
     used: Cell<Instant>,
 }
 
@@ -61,6 +63,7 @@ fn load(path: &Path) -> Option<Kept> {
         entries: read.entries,
         cwd: read.meta.cwd,
         queue: read.queue,
+        subagents: read.subagents,
         used: Cell::new(Instant::now()),
     })
 }
@@ -80,6 +83,18 @@ impl LastRead {
     /// restored thread holds them, paused, until someone lets them go.
     pub fn queue(&self, path: &Path) -> Vec<String> {
         self.kept(path).map(|k| k.queue.clone()).unwrap_or_default()
+    }
+
+    /// The subagents saved at `path`, with the directory, as [`LastRead::with`] reads it.
+    pub fn with_subagents<R>(
+        &self,
+        path: &Path,
+        f: impl FnOnce(&[SubagentRecord], &Path) -> R,
+    ) -> R {
+        match self.kept(path) {
+            Some(kept) => f(&kept.subagents, &kept.cwd),
+            None => f(&[], Path::new("")),
+        }
     }
 
     fn kept(&self, path: &Path) -> Option<Rc<Kept>> {
@@ -134,6 +149,18 @@ impl LastRead {
     /// Like [`LastRead::queue`], but never reads the file.
     pub fn queue_kept(&self, path: &Path) -> Vec<String> {
         self.peek(path).map(|k| k.queue.clone()).unwrap_or_default()
+    }
+
+    /// Like [`LastRead::with_subagents`], but never reads the file.
+    pub fn with_kept_subagents<R>(
+        &self,
+        path: &Path,
+        f: impl FnOnce(&[SubagentRecord], &Path) -> R,
+    ) -> R {
+        match self.peek(path) {
+            Some(kept) => f(&kept.subagents, &kept.cwd),
+            None => f(&[], Path::new("")),
+        }
     }
 
     fn peek(&self, path: &Path) -> Option<Rc<Kept>> {
@@ -227,6 +254,35 @@ mod tests {
         // A file gone has none.
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(last.queue(&path).is_empty());
+    }
+
+    #[test]
+    fn the_subagents_saved_come_with_the_read() {
+        let dir = std::env::temp_dir().join(format!("arakun-last-subs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.json");
+        save(&path, &["one"]);
+        let mut t: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        t["subagents"] = serde_json::json!([{
+            "id": "a", "name": "Explore", "task": "look", "state": "completed", "started": 1,
+            "call": "toolu_1", "entries": [{ "type": "agent", "text": "found it" }],
+        }]);
+        std::fs::write(&path, t.to_string()).unwrap();
+        let last = LastRead::default();
+        let found = |sub: &str| {
+            last.with_subagents(&path, |all, cwd| {
+                let r = all.iter().find(|r| r.answers_to(sub))?;
+                Some((r.id.clone(), r.entries.len(), cwd.to_path_buf()))
+            })
+        };
+        // By its own id or by the call that started it, from one read.
+        assert_eq!(found("a"), Some(("a".into(), 1, PathBuf::from("/work"))));
+        assert_eq!(found("toolu_1").map(|f| f.0), Some("a".into()));
+        assert_eq!(found("b"), None);
+        assert_eq!(last.reads.get(), 1);
+        assert_eq!(last.with_kept_subagents(&path, |all, _| all.len()), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

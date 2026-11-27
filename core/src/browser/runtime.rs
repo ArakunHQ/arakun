@@ -356,8 +356,8 @@ fn adopt_ns_app() {
 /// Why browser tabs cannot start where Linux blocks Chromium's sandbox.
 #[cfg(target_os = "linux")]
 const NO_SANDBOX: &str = "This system blocks the sandbox Chromium keeps web pages in, so \
-Arakun does not start it. Ubuntu 23.10 and later block it with AppArmor; the README's \
-\"Browser tabs on Ubuntu\" section shows the rule that allows it.";
+Arakun does not start it. Ubuntu 23.10 and later block it with AppArmor; \
+\"Browser tabs on Ubuntu\" in docs/browser.md shows the rule that allows it.";
 
 fn start(cx: &mut App) -> Result<Arc<PumpSignal>, String> {
     let started = Instant::now();

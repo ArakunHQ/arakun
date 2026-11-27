@@ -301,7 +301,7 @@ reviews:
         Browser tabs build only with the `browser` feature. CI builds them with clippy on Linux only, never on Windows or macOS and never in the tests. Check `cfg` gates and platform-specific paths by eye, and that code outside `src/browser` that uses them is behind `cfg(feature = "browser")`.
     - name: Docs follow the code
       description: |
-        Flag a pull request that adds, removes or renames a CLI command or subcommand, a command-line flag, a keyboard shortcut or a storage path (a file or directory the app reads or writes under the user's home, config or data directories), when README.md does not change to match. If the change is Windows-specific or behaves differently on Windows, docs/windows.md must change too.
+        Flag a pull request that adds, removes or renames a CLI command or subcommand, a command-line flag, a keyboard shortcut or a storage path (a file or directory the app reads or writes under the user's home, config or data directories), when the docs do not change to match: README.md for the main commands, or the page in docs/ that covers it (docs/cli.md, docs/shortcuts.md and the storage tables are generated, so a test catches those). If the change is Windows-specific or behaves differently on Windows, docs/windows.md must change too.
         In Markdown files, check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on wording, style, line length or Markdown formatting.
     - name: Isometric scenes
       include:

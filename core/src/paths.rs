@@ -11,8 +11,8 @@
 //!   Arakun with its own file there would sign the person's own Arakun out).
 //!
 //! Both take only a name from the list below, so every file is in it, and
-//! the storage table in `docs/windows.md` is rendered from it (see the test
-//! at the bottom).
+//! the storage tables in `docs/windows.md` and `docs/storage-and-env.md` are
+//! rendered from it (see the tests at the bottom).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -249,17 +249,25 @@ mod tests {
     const BEGIN: &str = "<!-- paths: generated from core/src/paths.rs -->\n";
     const END: &str = "<!-- paths: end -->\n";
 
-    /// The two tables, as `docs/windows.md` shows them.
-    fn windows_tables() -> String {
+    /// The two tables, for the data folder at `root` with `sep` between
+    /// folders, of the files that exist on one of `systems`.
+    fn tables(root: &str, sep: &str, systems: &[&str]) -> String {
         let table = |own: bool| {
             let mut out = String::from("| What | Where |\n|---|---|\n");
             for f in FILES
                 .iter()
-                .filter(|f| f.own == own && f.only.is_none_or(|os| os == "windows"))
+                .filter(|f| f.own == own && f.only.is_none_or(|os| systems.contains(&os)))
             {
-                let slash = if f.folder { "\\" } else { "" };
-                let name = f.name.replace('/', "\\");
-                out += &format!("| {} | `%LOCALAPPDATA%\\arakun\\{name}{slash}` |\n", f.what);
+                let slash = if f.folder { sep } else { "" };
+                let name = f.name.replace('/', sep);
+                let what = match f.only {
+                    Some(os) if systems.len() > 1 => {
+                        let os = if os == "macos" { "macOS" } else { "Linux" };
+                        format!("{} ({os} only)", f.what)
+                    }
+                    _ => f.what.to_string(),
+                };
+                out += &format!("| {what} | `{root}{name}{slash}` |\n");
             }
             out
         };
@@ -267,37 +275,54 @@ mod tests {
             "{BEGIN}\n### This Arakun's own\n\n\
              With `ARAKUN_STATE` set, these are in the folder of that file instead.\n\n\
              {}\n### Shared by every Arakun on this computer\n\n\
-             These stay in `%LOCALAPPDATA%\\arakun\\` whatever `ARAKUN_STATE` says.\n\n\
+             These stay in `{root}` whatever `ARAKUN_STATE` says.\n\n\
              {}\n{END}",
             table(true),
             table(false)
         )
     }
 
-    /// Run with `ARAKUN_BLESS=1` to write the tables into the docs.
-    #[test]
-    fn the_windows_docs_list_every_file() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/windows.md");
-        let doc = std::fs::read_to_string(&path).unwrap();
-        let start = doc
+    /// Checks the tables between the markers of `doc`, or writes them there
+    /// with `ARAKUN_BLESS=1`.
+    fn check_tables(doc: &str, want: String) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(doc);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let start = text
             .find(BEGIN)
-            .expect("docs/windows.md has no paths: begin marker");
-        let end = doc[start..]
+            .unwrap_or_else(|| panic!("{doc} has no paths: begin marker"));
+        let end = text[start..]
             .find(END)
-            .expect("docs/windows.md has no paths: end marker")
+            .unwrap_or_else(|| panic!("{doc} has no paths: end marker"))
             + start
             + END.len();
-        let want = windows_tables();
-        if doc[start..end] == want {
+        if text[start..end] == want {
             return;
         }
         if std::env::var_os("ARAKUN_BLESS").is_some() {
-            std::fs::write(&path, format!("{}{want}{}", &doc[..start], &doc[end..])).unwrap();
+            std::fs::write(&path, format!("{}{want}{}", &text[..start], &text[end..])).unwrap();
             return;
         }
         panic!(
-            "the storage tables in docs/windows.md are not the list in core/src/paths.rs; \
+            "the storage tables in {doc} are not the list in core/src/paths.rs; \
              write them with `ARAKUN_BLESS=1 cargo test -p arakun-core paths`"
+        );
+    }
+
+    /// Run with `ARAKUN_BLESS=1` to write the tables into the docs.
+    #[test]
+    fn the_windows_docs_list_every_file() {
+        check_tables(
+            "docs/windows.md",
+            tables("%LOCALAPPDATA%\\arakun\\", "\\", &["windows"]),
+        );
+    }
+
+    /// Run with `ARAKUN_BLESS=1` to write the tables into the docs.
+    #[test]
+    fn the_storage_docs_list_every_file() {
+        check_tables(
+            "docs/storage-and-env.md",
+            tables("~/.local/share/arakun/", "/", &["linux", "macos"]),
         );
     }
 }

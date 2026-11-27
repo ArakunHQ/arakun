@@ -1471,7 +1471,10 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
                 "tools/install-release.ps1",
                 include_str!("../tools/install-release.ps1"),
             ),
-            ("README.md", include_str!("../README.md")),
+            (
+                "docs/updates-and-verification.md",
+                include_str!("../docs/updates-and-verification.md"),
+            ),
         ] {
             for b64 in [main, backup] {
                 assert!(

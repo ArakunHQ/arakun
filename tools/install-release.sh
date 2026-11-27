@@ -391,7 +391,7 @@ main() {
       fi
       # The app carries the server: `arakun server`.
       [ -z "$server" ] || die "arakun-server is built for Linux only; on a Mac, install the app and run 'arakun server'"
-      [ "$arch" = arm64 ] || die "Intel Macs have no release build; build from source (see README.md)"
+      [ "$arch" = arm64 ] || die "Intel Macs have no release build; build from source (see docs/building.md)"
       # The disk image, or the archive for a release from before there was one.
       command -v tar >/dev/null || die "tar is needed"
       platform=macos-arm64 ext=dmg
@@ -400,7 +400,7 @@ main() {
       case $arch in
         x86_64 | amd64) platform=linux-x86_64 ;;
         aarch64 | arm64) platform=linux-arm64 ;;
-        *) die "Linux on $arch has no release build; build from source (see README.md)" ;;
+        *) die "Linux on $arch has no release build; build from source (see docs/building.md)" ;;
       esac
       check_glibc
       command -v tar >/dev/null || die "tar is needed"
@@ -619,7 +619,7 @@ main() {
     say "to uninstall: $uninstall"
     return 0
   fi
-  # Ubuntu 23.10 and later: Chromium's sandbox needs an AppArmor profile (README.md).
+  # Ubuntu 23.10 and later: Chromium's sandbox needs an AppArmor profile (docs/browser.md).
   if [ "$os" = Linux ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then
     say "browser tabs need an AppArmor profile on this system; see"
     say "https://github.com/$repo#browser-tabs-on-ubuntu"

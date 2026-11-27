@@ -44,7 +44,7 @@ Closes #ISSUE_ID
 
 ## Docs
 
-<!-- Changed a command, flag, shortcut or storage path? Update the README (and docs/windows.md if it differs on Windows). Also the platform table, a CLI usage string, or a skill in .claude/skills if they changed. Name what you updated, or write "- None." -->
+<!-- Changed a command, flag, shortcut or storage path? Update the README or its page in docs/ (and docs/windows.md if it differs on Windows). Also the platform table, a CLI usage string, or a skill in .claude/skills if they changed. Name what you updated, or write "- None." -->
 
 ## 🤖 Agent context
 

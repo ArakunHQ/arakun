@@ -18,6 +18,7 @@
 pub mod balance;
 pub mod client;
 pub mod git;
+pub mod upload;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

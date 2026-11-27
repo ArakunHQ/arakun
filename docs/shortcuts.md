@@ -111,14 +111,18 @@ More about some of them:
   opens a new session or closes the other tabs of its environment or those to its
   right. The tab on screen stays open when its environment has no other. `Alt+P` pins
   or unpins a session (see Pinned tabs). GNOME, Ubuntu and some KDE setups keep
-  `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the File
-  menu or a tab's right-click menu
+  `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the
+  palette or a tab's right-click menu
 - `Tab` / `Shift+Tab` move between buttons, switches and menu rows, and `Enter` or
   `Space` presses the one with the ring. Terminals, web pages, fields and the composer
   keep `Tab` for themselves
 - The palette (`Ctrl+K` or `Ctrl+P`): sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
+  `@` followed by a model name (`@opus fix the build`) asks that model instead. With
+  nothing typed, the palette ends with these and the sentences below, each with an
+  example; a click types its start. Every command of the macOS menu bar is in the
+  palette too, so Linux and Windows reach the same ones.
   `#` lists every open pull request of your projects' repositories, not only yours;
   `#86` finds that one even when it is closed or merged, and a first word that names a
   repository or project narrows to it (`#arakun 86`, `#frameshi`).

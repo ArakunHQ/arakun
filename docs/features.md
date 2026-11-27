@@ -84,8 +84,8 @@ copy of it, rename it back, and start a version that can read it.
   worktree at once on a random branch from origin's default branch (usually `main`),
   fetched first, or from the project's **Base branch** set in Settings › Project. When
   origin has no such branch it starts from the local one, else the local commit; on a
-  server, from that server's checkout, with no fetch. File › New Environment with
-  Options… asks for the branch and where to start from, the local commit among them. Every environment
+  server, from that server's checkout, with no fetch. New environment with options…
+  (`Ctrl+Alt+N`, in the palette) asks for the branch and where to start from, the local commit among them. Every environment
   has its own sessions, terminals and draft prompt. The window has one row of tabs for
   all of them: a session, file, diff or browser tab belongs to its environment, and
   going to the tab shows that environment. Going to an environment shows the tab it
@@ -933,7 +933,7 @@ again after a week) in its [data folder](storage-and-env.md).
 
 How the app looks is changed in the **Customize** panel, at the right of the window where
 the workspace panel is, so the work stays in view while you change it. Open it from the
-palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
+palette (`Customize`), the View menu on macOS or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
 Settings › Appearance › Tabs and sessions sets where sessions and tabs show. Three
@@ -1002,7 +1002,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   first) can also be dragged onto the sidebar where they should go. Pieces and segment
   titles drag into another order on the sidebar itself. The panel's header has undo
   and redo for these changes; what is typed into one field is one step. Done closes the panel, and "Customize sidebar…" in the
-  sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
+  palette or the sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
   or removes a segment, a note at the foot of the sidebar says so for ten seconds, with an Undo button; it stays while the pointer is on it. Reset sidebar goes back to the default
   layout and width.
 - **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,

@@ -17,6 +17,8 @@ pub enum Target {
     Session(usize, usize, SharedString),
     NewSession,
     NewEnvironment,
+    /// The form that asks for the branch and options first.
+    NewEnvironmentWithOptions,
     NewTerminal,
     NewBrowserTab,
     AddProject,
@@ -26,11 +28,21 @@ pub enum Target {
     ToggleSidebar,
     TogglePanel,
     Customize,
+    CustomizeSidebar,
     ToggleSubagents,
+    CloseTab,
+    ReopenClosedTab,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    MinimizeWindow,
+    /// Maximize, or back; macOS calls it Zoom.
+    MaximizeWindow,
+    ToggleFullScreen,
+    Quit,
     Account,
     Settings,
     SendFeedback,
-    Extensions,
     #[cfg(feature = "coderlabs")]
     Tasks,
     Runs,
@@ -97,10 +109,6 @@ pub enum Setting {
     Island,
     Glass,
     Arcade,
-    Dock,
-    Sidebar,
-    Panel,
-    Subagents,
 }
 
 /// What a row is; decides its tab, its icon and its actions.

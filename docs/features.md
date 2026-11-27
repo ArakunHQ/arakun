@@ -14,7 +14,7 @@ leaves it at once. It ends on the start screen of the project
 you added, with three shortcuts worth knowing. Open it again with "Show onboarding" in
 the palette (`Ctrl+K`).
 
-If Arakun can't read one of its files in its [data folder](storage-and-env.md) (`state.json`, `history.json`,
+If Arakun can't read one of its files in its [data folder](storage-and-env.md) (`state.json`, `settings.json`, `history.json`,
 `prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
 store), say one written by a newer version or edited by hand, it renames it to
 `<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing

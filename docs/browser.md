@@ -12,8 +12,7 @@ browser tab; turn off Settings › General › Open links in Arakun to open them
 own browser instead. That covers links from sessions, the GitHub view and pins; a link
 clicked inside a browser tab always stays in Arakun. Builds without the browser open
 links in your own browser from the start. The choice is
-saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
-Windows). A link to a pull request or issue on the host `gh` is signed in to opens in
+saved in [`settings.json`](storage-and-env.md#the-data-folder). A link to a pull request or issue on the host `gh` is signed in to opens in
 the GitHub tab instead, from a chat, a terminal (⌘-click, Ctrl-click elsewhere), the
 palette, the pull request button or a session card's pull request chip; its "Open on
 GitHub" opens the page. A tab shows its site's icon even before its page loads again:

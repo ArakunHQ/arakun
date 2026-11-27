@@ -57,6 +57,12 @@ APNS_TOPIC = "com.arakun.ios"
 # Where sign-in codes come from (src/email_auth.ts).
 EMAIL_FROM = "sign-in@arakun.dev"
 
+# Once a day, the Worker refreshes the Linear tokens of quiet workspaces
+# (src/linear_keep.ts). Set again under [env.production]: an environment
+# inherits no triggers.
+[triggers]
+crons = ["17 4 * * *"]
+
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
 # so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
@@ -325,6 +331,9 @@ id = "c6b6881faa8941e7aac00b98dbe0b45d"
 directory = "../phone/dist"
 binding = "ASSETS"
 run_worker_first = true
+
+[env.production.triggers]
+crons = ["17 4 * * *"]
 
 [env.production.vars]
 GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"

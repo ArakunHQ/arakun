@@ -5,7 +5,11 @@
 // (production), that is the one host; any other answers 404, so the session
 // cookie and the page live on one name only. Unset (a Worker of one's own on
 // workers.dev, the tests), every other host is the account host.
+//
+// The cron triggers of wrangler.toml run `scheduled`: once a day, it keeps
+// the Linear installs of quiet workspaces working.
 
+import { keepWorkspaces } from "./linear_keep";
 import { labelFrom, oldHost } from "./relay/router";
 import { teamsFetch } from "./teams-router";
 import { error, type Env } from "./util";
@@ -20,5 +24,8 @@ export default {
     if (labelFrom(url.hostname, env)) return oldHost(request, env, url.pathname);
     if (env.ACCOUNT_HOST && url.hostname !== env.ACCOUNT_HOST.toLowerCase()) return error(404, "not found");
     return teamsFetch(request, env, ctx);
+  },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(keepWorkspaces(env));
   },
 } satisfies ExportedHandler<Env>;

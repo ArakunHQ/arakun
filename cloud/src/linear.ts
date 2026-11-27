@@ -1,7 +1,9 @@
 // Linear delegation: Linear hands an issue to Arakun and the Worker passes it
 // to the user's computer. Every path is under /linear.
 //
-//   GET /linear/link      → the caller's links: [{ organization_id, linear_user_id, installed }]
+//   GET /linear/link      → the caller's links: [{ organization_id, linear_user_id, installed }],
+//                           `installed` when the app is in the workspace and
+//                           Linear still takes its token
 //   POST /linear/link     → proves a Linear user with the user's own token
 //   DELETE /linear/link/<organization_id>
 //   PUT /linear/routes    → what a computer takes: Linear teams and projects
@@ -155,7 +157,7 @@ const LABEL = /^[a-z2-7]{16}$/;
 
 async function listLinks(env: Env, who: Session): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT l.organization_id, l.linear_user_id, EXISTS (SELECT 1 FROM linear_workspaces w WHERE w.organization_id = l.organization_id) AS installed
+    `SELECT l.organization_id, l.linear_user_id, EXISTS (SELECT 1 FROM linear_workspaces w WHERE w.organization_id = l.organization_id AND w.refused_at IS NULL) AS installed
      FROM linear_links l WHERE l.account_id = ? ORDER BY l.linked_at, l.organization_id`,
   )
     .bind(who.accountId)
@@ -191,7 +193,7 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
       `INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT (organization_id, linear_user_id) DO UPDATE SET account_id = excluded.account_id, linked_at = excluded.linked_at`,
     ).bind(seen.organizationId, seen.userId, who.accountId, now()),
-    env.DB.prepare("SELECT COUNT(*) AS n FROM linear_workspaces WHERE organization_id = ?").bind(seen.organizationId),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM linear_workspaces WHERE organization_id = ? AND refused_at IS NULL").bind(seen.organizationId),
   ]);
   return Response.json({
     organization_id: seen.organizationId,

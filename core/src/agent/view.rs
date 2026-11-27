@@ -2006,7 +2006,14 @@ impl ThreadView {
     ) -> AnyElement {
         let group: SharedString = format!("user-{ix}").into();
         let (typed, pastes) = super::attach::split_pastes(full);
-        let (typed, images) = super::attach::split_images(&typed, self.thread.read(cx).cwd());
+        let thread = self.thread.read(cx);
+        let (typed, images) = if thread.is_remote() {
+            // A server's files are not here: its mentions show the copies that came.
+            let fetched = thread.fetched_images();
+            super::attach::split_mentions(&typed, |m| fetched.get(m).cloned())
+        } else {
+            super::attach::split_images(&typed, thread.cwd())
+        };
         let single_image = images.len() == 1;
         let text = typed.as_str();
         let expanded = self.open.contains(&ix);

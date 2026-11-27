@@ -137,7 +137,8 @@ struct Following {
     /// The prompts waiting there for the running turn, as its last `state`
     /// said: the server keeps the queue.
     queue: RemoteQueue,
-    /// The images its agent named that are on the server, by link as written.
+    /// The images its agent named or its prompts mentioned that are on the
+    /// server, by link as written.
     images: HashMap<String, ImageCopy>,
 }
 
@@ -970,14 +971,21 @@ fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
     }));
 }
 
-/// The images `entries` name to ask the server for, each with the last entry
+/// The images `entries` name or mention to ask the server for, each with the last entry
 /// naming it: the ones not asked for yet, and the ones named again since they
 /// were. The files are the server's: one at the same path here is another.
 fn images_to_ask(entries: &[Entry], asked: &HashMap<String, ImageCopy>) -> Vec<(String, usize)> {
     let mut last: Vec<(String, usize)> = Vec::new();
     for (at, e) in entries.iter().enumerate() {
-        let Entry::Agent { text } = e else { continue };
-        for link in crate::agent::markdown::image_files(text) {
+        let links = match e {
+            Entry::Agent { text } => crate::agent::markdown::image_files(text),
+            // As the prompt is shown: a mention in a pasted block is not one.
+            Entry::User { text, .. } => {
+                crate::agent::attach::image_mentions(&crate::agent::attach::split_pastes(text).0)
+            }
+            _ => continue,
+        };
+        for link in links {
             match last.iter_mut().find(|(l, _)| *l == link) {
                 Some(seen) => seen.1 = at,
                 None => last.push((link, at)),
@@ -4033,6 +4041,22 @@ mod tests {
         assert_eq!(
             images_to_ask(&entries, &asked),
             [("shot.png".to_string(), 2)]
+        );
+        // The images a prompt mentions are the server's too.
+        entries.push(Entry::User {
+            text: "compare @shot.png with @\"my shots/b.jpg\" and @notes.md".into(),
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        });
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [
+                ("shot.png".to_string(), 3),
+                ("my shots/b.jpg".to_string(), 3)
+            ]
         );
     }
 

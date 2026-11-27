@@ -143,11 +143,11 @@ A session has a kind: `app`, `server`, `phone`, `ios` or `android`, as the sign-
 says, or `cloud`. No sign-in makes a `cloud` session: the Worker makes one for a
 machine it runs in a container, bound to that machine's label. An agent in the
 container could leak the token, so it is good only at `/machines/<label>/pc` of its
-own label and at `GET /sessions`, which answers it without the devices' names: the
-server asks there which devices are still signed in, and takes a `401` as the end of
-its own sign-in. Everywhere else, the other labels and every device door included, it
-counts as no session (`401`, or `signed_out` on a socket). A machine has one cloud
-session at a time, and a new one ends the one before. Cloud sessions do not count toward the 100,
+own label and at `GET /sessions`, which answers it with the ids alone (no names or
+times): the server asks there which devices are still signed in, and takes a `401` as
+the end of its own sign-in. Everywhere else, the other labels and every device door
+included, it counts as no session (`401`, or `signed_out` on a socket). A machine has
+one cloud session at a time, and a new one ends the one before. Cloud sessions do not count toward the 100,
 and a sign-in never ends one to make room. They expire and renew like any session,
 `GET /sessions` lists them with kind `cloud`, and `DELETE /sessions/<id>`, a block
 and signing out everywhere end them.

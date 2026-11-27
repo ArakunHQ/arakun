@@ -305,7 +305,8 @@ function withoutCookie(request: Request, res: Response): Response {
 /// A cloud session may ask too. `arakun-server` asks to learn which of the
 /// devices the relay let in are still signed in, and takes a 401 as the end
 /// of its own sign-in: it then forgets every one of them. It needs the ids
-/// only, so a token an agent leaked reads no device names here.
+/// only, so a token an agent leaked reads no device names or times here;
+/// the fields stay, empty, because the server reads the whole row.
 export async function listSessions(request: Request, env: Env): Promise<Response> {
   const s = await session(request, env, { cloud: true });
   if (!s) return error(401, "not signed in");
@@ -314,8 +315,10 @@ export async function listSessions(request: Request, env: Env): Promise<Response
   )
     .bind(s.accountId, now())
     .all<{ id: string; name: string; kind: string; created_at: number; last_used_at: number }>();
-  const names = s.kind !== CLOUD_KIND;
-  return Response.json(rows.results.map((r) => ({ ...r, name: names ? r.name : "", current: r.id === s.id })));
+  const idsOnly = s.kind === CLOUD_KIND;
+  return Response.json(
+    rows.results.map((r) => (idsOnly ? { id: r.id, name: "", kind: r.kind, created_at: 0, last_used_at: 0, current: r.id === s.id } : { ...r, current: r.id === s.id })),
+  );
 }
 
 /// Signs one of the account's devices out. Another account's id is not found.
@@ -387,7 +390,8 @@ export async function session(
     }>();
   if (!row) return null;
   // Before the renewal: a refused request must not keep the session alive.
-  if ((row.kind === CLOUD_KIND || row.machine_label !== null) && !cloud && (machine === null || row.machine_label !== machine)) return null;
+  const bound = row.kind === CLOUD_KIND || row.machine_label !== null;
+  if (bound && !(cloud && row.kind === CLOUD_KIND) && (machine === null || row.machine_label !== machine)) return null;
   const t = now();
   if (row.expires_at <= t) {
     // Only while it is still expired: a request that renewed it meanwhile wins.

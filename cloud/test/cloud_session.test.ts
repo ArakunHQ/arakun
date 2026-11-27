@@ -53,11 +53,11 @@ describe("a cloud session", () => {
     const { owner, cloud } = await cloudMachine();
     const res = await call("GET", "/sessions", as(cloud.session));
     expect(res.status).toBe(200);
-    const list = (await res.json()) as { id: string; name: string; kind: string; current: boolean }[];
-    expect(list.map((s) => [s.id, s.name, s.current]).sort()).toEqual(
+    const list = (await res.json()) as { id: string; name: string; created_at: number; last_used_at: number; current: boolean }[];
+    expect(list.map((s) => [s.id, s.name, s.created_at, s.last_used_at, s.current]).sort()).toEqual(
       [
-        [owner.session_id, "", false],
-        [cloud.session_id, "", true],
+        [owner.session_id, "", 0, 0, false],
+        [cloud.session_id, "", 0, 0, true],
       ].sort(),
     );
   });

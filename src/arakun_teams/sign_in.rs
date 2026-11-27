@@ -1,9 +1,11 @@
-//! The "Sign in with GitHub" dialog: GitHub's device code and what to do
-//! with it, then how it ended. The flow itself runs in [`Teams`]; this only
-//! draws where it stands.
+//! The sign-in dialog: GitHub or an address first; then GitHub's device code
+//! and what to do with it, or the box for the code mailed to the address; then
+//! how it ended. The flows themselves run in [`Teams`]; this only draws where
+//! they stand.
 
 use std::time::{Duration, Instant};
 
+use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
@@ -12,6 +14,7 @@ use gpui::{
 };
 
 use super::{Phase, Teams, hub};
+use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 
@@ -23,6 +26,14 @@ pub enum SignInEvent {
 
 pub struct SignInDialog {
     teams: Entity<Teams>,
+    /// The address to mail a code to.
+    email: Entity<TextInput>,
+    /// The code mailed to it.
+    code: Entity<TextInput>,
+    /// "Send a new code" was pressed: while it mails, the code screen stays.
+    resending: bool,
+    /// The code screen was up at the last change of the sign-in.
+    at_code: bool,
     /// Opened for the account itself, not Teams: once signed in there is
     /// nothing more to say here.
     close_when_in: bool,
@@ -30,7 +41,7 @@ pub struct SignInDialog {
     copied: bool,
     /// Ticks the countdown while a code waits.
     _tick: Task<()>,
-    _sub: Subscription,
+    _subs: Vec<Subscription>,
 }
 
 impl EventEmitter<SignInEvent> for SignInDialog {}
@@ -42,8 +53,9 @@ impl Focusable for SignInDialog {
 }
 
 impl SignInDialog {
-    /// Opens the dialog and starts a sign-in when none is under way. With
-    /// `close_when_in` it closes itself once signed in.
+    /// Opens the dialog at the choice of GitHub or an address, or where a
+    /// sign-in under way stands. With `close_when_in` it closes itself once
+    /// signed in.
     pub fn new(
         teams: Entity<Teams>,
         close_when_in: bool,
@@ -51,18 +63,43 @@ impl SignInDialog {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        teams.update(cx, |t, cx| {
-            if !t.signed_in() && t.phase().at_rest() {
-                t.sign_in(cx);
-            }
-        });
-        let sub = cx.observe(&teams, |this, teams, cx| {
-            if this.close_when_in && teams.read(cx).signed_in() {
+        let email = cx.new(|cx| TextInput::new("you@example.com", cx));
+        let code = cx.new(|cx| TextInput::new("123456", cx).mono());
+        window.focus(&email.focus_handle(cx), cx);
+        let mut subs = vec![cx.observe_in(&teams, window, |this, teams, window, cx| {
+            let (signed_in, code_sent) = {
+                let t = teams.read(cx);
+                (t.signed_in(), matches!(t.phase(), Phase::CodeSent { .. }))
+            };
+            if this.close_when_in && signed_in {
                 cx.emit(SignInEvent::Dismissed);
             }
+            // The code box takes the keys once there is a code to type.
+            if code_sent && !this.at_code {
+                window.focus(&this.code.focus_handle(cx), cx);
+            }
+            this.at_code = code_sent;
+            if code_sent {
+                this.resending = false;
+            }
             cx.notify();
-        });
+        })];
+        subs.push(
+            cx.subscribe_in(&email, window, |this, _, ev, _, cx| match ev {
+                InputEvent::Submit => this.send_code(cx),
+                InputEvent::Cancel => this.dismiss(cx),
+                InputEvent::Changed => cx.notify(),
+                _ => {}
+            }),
+        );
+        subs.push(
+            cx.subscribe_in(&code, window, |this, _, ev, _, cx| match ev {
+                InputEvent::Submit => this.check_code(cx),
+                InputEvent::Cancel => this.dismiss(cx),
+                InputEvent::Changed => cx.notify(),
+                _ => {}
+            }),
+        );
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -78,12 +115,67 @@ impl SignInDialog {
         });
         Self {
             teams,
+            email,
+            code,
+            resending: false,
+            at_code: false,
             close_when_in,
             focus,
             copied: false,
             _tick: tick,
-            _sub: sub,
+            _subs: subs,
         }
+    }
+
+    /// The address typed, when it could be one.
+    fn address(&self, cx: &App) -> Option<String> {
+        let a = self.email.read(cx).text().trim();
+        (a.contains('@') && a.len() >= 3).then(|| a.to_string())
+    }
+
+    /// The code typed, spaces left out, when it is six digits.
+    fn typed_code(&self, cx: &App) -> Option<String> {
+        let c: String = self
+            .code
+            .read(cx)
+            .text()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        (c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())).then_some(c)
+    }
+
+    fn github(&mut self, cx: &mut Context<Self>) {
+        self.copied = false;
+        self.teams.update(cx, |t, cx| {
+            t.cancel(cx);
+            t.sign_in(cx);
+        });
+    }
+
+    fn send_code(&mut self, cx: &mut Context<Self>) {
+        let Some(address) = self.address(cx) else {
+            return;
+        };
+        self.resending = matches!(self.teams.read(cx).phase(), Phase::CodeSent { .. });
+        self.code.update(cx, |c, cx| c.clear(cx));
+        self.teams
+            .update(cx, |t, cx| t.send_email_code(address, cx));
+    }
+
+    fn check_code(&mut self, cx: &mut Context<Self>) {
+        let Some(code) = self.typed_code(cx) else {
+            return;
+        };
+        self.teams.update(cx, |t, cx| t.sign_in_with_code(code, cx));
+    }
+
+    /// Back to the choice, with the address kept to fix it.
+    fn other_address(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.resending = false;
+        self.code.update(cx, |c, cx| c.clear(cx));
+        self.teams.update(cx, |t, cx| t.cancel(cx));
+        window.focus(&self.email.focus_handle(cx), cx);
     }
 
     /// Closes the dialog; a code still waiting on GitHub is given up.
@@ -97,11 +189,7 @@ impl SignInDialog {
     }
 
     fn again(&mut self, cx: &mut Context<Self>) {
-        self.copied = false;
-        self.teams.update(cx, |t, cx| {
-            t.cancel(cx);
-            t.sign_in(cx);
-        });
+        self.github(cx);
     }
 
     /// GitHub's code, a box per character, split where GitHub puts its dash.
@@ -194,6 +282,13 @@ impl SignInDialog {
             .as_ref()
             .map(|m| crate::redact::value(&m.login))
             .unwrap_or_default();
+        let name = me
+            .as_ref()
+            .map(|m| super::account_name(&m.login))
+            .unwrap_or_default();
+        let via = me
+            .as_ref()
+            .map_or("Signed in", |m| super::signed_in_with(&m.login));
         let picture = me
             .as_ref()
             .filter(|_| !crate::redact::on())
@@ -224,16 +319,14 @@ impl SignInDialog {
                                     .ty(Type::Body)
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::text())
-                                    .child(format!("Signed in as @{login}")),
+                                    .child(format!("Signed in as {name}")),
                             )
                             .child(
                                 div()
                                     .truncate()
                                     .ty(Type::Caption)
                                     .text_color(theme::text_subtle())
-                                    .child(format!(
-                                        "Signed in with GitHub · this device is {device}"
-                                    )),
+                                    .child(format!("{via} · this device is {device}")),
                             ),
                     )
                     .child(ui::badge("Connected", Tone::Success)),
@@ -275,7 +368,7 @@ impl SignInDialog {
             );
         (
             "Signed in".into(),
-            "This device is now yours on GitHub.".into(),
+            "This device is now signed in to your account.".into(),
             body,
         )
     }
@@ -432,19 +525,186 @@ impl SignInDialog {
                 Some(user_code),
                 cx,
             ),
-            Phase::Idle => ended(
-                "It did not go through.",
+            Phase::Idle => self.render_choose(false, error, cx),
+            Phase::Mailing { email } if self.resending => self.render_code(email, true, error, cx),
+            Phase::Mailing { .. } => self.render_choose(true, error, cx),
+            Phase::CodeSent { email } => self.render_code(email, false, error, cx),
+            Phase::Checking { email } => self.render_code(email, true, error, cx),
+        }
+    }
+
+    /// A line saying what went wrong, under the form it is about.
+    fn error_note(error: Option<SharedString>) -> Option<gpui::Div> {
+        error.map(|e| {
+            Self::note(
                 icon("alert-circle", 14.)
                     .text_color(theme::error())
                     .into_any_element(),
-                error
-                    .map(|e| crate::redact::text(&e).into_owned())
-                    .unwrap_or_else(|| "Nothing was signed in.".into()),
-                "Try again",
-                None,
-                cx,
-            ),
-        }
+                crate::redact::text(&e).into_owned(),
+            )
+        })
+    }
+
+    /// GitHub, or an address to mail a code to. `mailing` while the server
+    /// is asked to send one.
+    fn render_choose(
+        &self,
+        mailing: bool,
+        error: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> (String, String, gpui::Div) {
+        let can_send = !mailing && self.address(cx).is_some();
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(16.))
+            .p(ui::sp(16.))
+            .child(
+                ui::button_with(
+                    "signin-github",
+                    Some("github"),
+                    "Continue with GitHub",
+                    ButtonKind::Outline,
+                    !mailing,
+                )
+                .w_full()
+                .on_click(cx.listener(|this, _, _, cx| this.github(cx))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .child(div().flex_1().h(px(1.)).bg(theme::border()))
+                    .child(ui::text(
+                        Type::Caption,
+                        theme::text_subtle(),
+                        "or with your email",
+                    ))
+                    .child(div().flex_1().h(px(1.)).bg(theme::border())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(8.))
+                    .child(
+                        ui::field()
+                            .flex_1()
+                            .min_w_0()
+                            .bg(theme::background())
+                            .child(div().flex_1().min_w_0().child(self.email.clone())),
+                    )
+                    .child(
+                        ui::button(
+                            "signin-email",
+                            if mailing {
+                                "Sending…"
+                            } else {
+                                "Email me a code"
+                            },
+                            ButtonKind::Primary,
+                            can_send,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.send_code(cx))),
+                    ),
+            )
+            .children(Self::error_note(error))
+            .child(Self::note(
+                icon("inbox", 14.)
+                    .text_color(theme::text_subtle())
+                    .into_any_element(),
+                "No account yet? Either way makes one.",
+            ));
+        (
+            "Sign in".into(),
+            "Use GitHub, or a code we email you.".into(),
+            body,
+        )
+    }
+
+    /// The box for the code mailed to `email`. `busy` while it is checked, or
+    /// a new one is mailed.
+    fn render_code(
+        &self,
+        email: SharedString,
+        busy: bool,
+        error: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> (String, String, gpui::Div) {
+        let checking = matches!(self.teams.read(cx).phase(), Phase::Checking { .. });
+        let can_check = !busy && self.typed_code(cx).is_some();
+        let shown = crate::redact::value(&email);
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(16.))
+            .p(ui::sp(16.))
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(8.))
+                    .child(
+                        ui::field()
+                            .flex_1()
+                            .min_w_0()
+                            .bg(theme::background())
+                            .child(div().flex_1().min_w_0().child(self.code.clone())),
+                    )
+                    .child(
+                        ui::button(
+                            "signin-code",
+                            if checking { "Signing in…" } else { "Sign in" },
+                            ButtonKind::Primary,
+                            can_check,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.check_code(cx))),
+                    ),
+            )
+            .children(Self::error_note(error))
+            .child(Self::note(
+                if busy {
+                    ui::spinner(14., theme::text_subtle()).into_any_element()
+                } else {
+                    icon("inbox", 14.)
+                        .text_color(theme::text_subtle())
+                        .into_any_element()
+                },
+                if checking {
+                    "Checking the code…".to_string()
+                } else if busy {
+                    format!("Sending a new code to {shown}…")
+                } else {
+                    "It works once, for 10 minutes. Not there? Look in spam.".to_string()
+                },
+            ))
+            .child(
+                Self::buttons()
+                    .child(
+                        ui::button(
+                            "signin-other",
+                            "Use another address",
+                            ButtonKind::Ghost,
+                            !checking,
+                        )
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.other_address(window, cx)),
+                        ),
+                    )
+                    .child(
+                        ui::button(
+                            "signin-resend",
+                            "Send a new code",
+                            ButtonKind::Outline,
+                            !busy,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.send_code(cx))),
+                    ),
+            );
+        (
+            "Check your email".into(),
+            format!("We sent a six-digit code to {shown}. Type it here."),
+            body,
+        )
     }
 }
 

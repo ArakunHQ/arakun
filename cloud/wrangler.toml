@@ -54,12 +54,14 @@ BASE_DOMAIN = "arakun.dev"
 # is `wrangler secret put APNS_KEY` and `APNS_KEY_ID`.
 APNS_TEAM_ID = "V9JGU28UV7"
 APNS_TOPIC = "com.arakun.ios"
+# Where sign-in codes come from (src/email_auth.ts).
+EMAIL_FROM = "sign-in@arakun.dev"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
 # so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
-# 1011, 1013, 1015 and 1017, production 1001, 1002, 1006, 1008, 1012, 1014,
-# 1016 and 1018. cloud/admin has 1009, 1010, 1019 and 1020.
+# 1011, 1013, 1015, 1017 and 1021, production 1001, 1002, 1006, 1008, 1012,
+# 1014, 1016, 1018 and 1022. cloud/admin has 1009, 1010, 1019 and 1020.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -67,6 +69,23 @@ namespace_id = "1003"
   [ratelimits.simple]
   limit = 10
   period = 60
+
+# Sign-in codes mailed for each client IP (src/email_auth.ts). Each is a mail
+# sent, and a person needs one, or two when the first is slow to come.
+[[ratelimits]]
+name = "EMAIL_CODE_LIMIT"
+namespace_id = "1021"
+
+  [ratelimits.simple]
+  limit = 3
+  period = 60
+
+# Email Sending, for the sign-in codes. The domain is onboarded once per
+# Cloudflare account: `npx wrangler email sending enable arakun.dev`. The
+# binding may only send from EMAIL_FROM.
+[[send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["sign-in@arakun.dev"]
 
 # Messages each device may send on channel sockets: 60 every 10 seconds.
 [[ratelimits]]
@@ -212,6 +231,18 @@ namespace_id = "1001"
   period = 60
 
 [[env.production.ratelimits]]
+name = "EMAIL_CODE_LIMIT"
+namespace_id = "1022"
+
+  [env.production.ratelimits.simple]
+  limit = 3
+  period = 60
+
+[[env.production.send_email]]
+name = "EMAIL"
+allowed_sender_addresses = ["sign-in@arakun.dev"]
+
+[[env.production.ratelimits]]
 name = "SEND_LIMIT"
 namespace_id = "1002"
 
@@ -302,6 +333,7 @@ BASE_DOMAIN = "arakun.dev"
 ACCOUNT_HOST = "app.arakun.dev"
 APNS_TEAM_ID = "V9JGU28UV7"
 APNS_TOPIC = "com.arakun.ios"
+EMAIL_FROM = "sign-in@arakun.dev"
 # The Arakun team in Linear, where feedback becomes customer requests
 # (src/feedback.ts). The key is `wrangler secret put LINEAR_API_KEY`.
 LINEAR_TEAM_ID = "8b4b9034-fa97-447d-b9db-04ee52b0f360"

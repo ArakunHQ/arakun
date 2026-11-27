@@ -1,8 +1,9 @@
 // Runs before each test file: the tables from migrations/ and the relay's KV,
-// emptied before each test, and GitHub replaced by the fake in helpers.ts.
+// emptied before each test, and GitHub and Email Sending replaced by the
+// fakes in helpers.ts.
 import { applyD1Migrations, env } from "cloudflare:test";
 import { afterEach, beforeEach, vi } from "vitest";
-import { fakeGitHub } from "./helpers";
+import { fakeGitHub, fakeMail } from "./helpers";
 
 await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 
@@ -31,6 +32,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM devices"),
     env.DB.prepare("DELETE FROM sessions"),
     env.DB.prepare("DELETE FROM user_flags"),
+    env.DB.prepare("DELETE FROM email_codes"),
     env.DB.prepare("DELETE FROM identities"),
     env.DB.prepare("DELETE FROM accounts"),
   ]);
@@ -39,6 +41,7 @@ beforeEach(async () => {
   const keys = await env.CONFIG.list();
   for (const key of keys.keys) await env.CONFIG.delete(key.name);
   fakeGitHub();
+  fakeMail();
 });
 
 afterEach(() => {

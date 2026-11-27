@@ -1,5 +1,5 @@
 // A fake GitHub and short ways to call the Worker under test.
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { vi } from "vitest";
 
 export const ADMIN = { Authorization: "Bearer test-secret" };
@@ -559,4 +559,53 @@ export function notification({
       userId: FAKE_APP_USER,
     },
   };
+}
+
+/// What the fake Email Sending was asked to send.
+export const mail = {
+  sent: [] as { from: { email: string; name: string }; to: string; subject: string; text: string; html: string }[],
+  /// An error code the next sends fail with, as the binding throws them.
+  failure: null as string | null,
+};
+
+export function fakeMail(): void {
+  mail.sent = [];
+  mail.failure = null;
+  vi.spyOn(env.EMAIL!, "send").mockImplementation(async (message) => {
+    if (mail.failure) throw Object.assign(new Error("sending failed"), { code: mail.failure });
+    mail.sent.push(message as (typeof mail.sent)[number]);
+    return { messageId: `m${mail.sent.length}` };
+  });
+}
+
+/// The code in the last mail to the address.
+export function lastCode(address: string): string {
+  const m = mail.sent.filter((s) => s.to === address).at(-1);
+  if (!m) throw new Error(`no mail to ${address}`);
+  return /\b([0-9]{6})\b/.exec(m.text)![1]!;
+}
+
+export function askCode(email: unknown, ip = freshIp()): Promise<Response> {
+  return SELF.fetch("https://teams.test/auth/email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function verifyCode(email: string, code: string, extra: object = {}, ip = freshIp()): Promise<Response> {
+  return SELF.fetch("https://teams.test/auth/email/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+    body: JSON.stringify({ email, code, ...extra }),
+  });
+}
+
+/// Signs in with a code mailed to the address, and returns the Worker's answer.
+export async function signInByEmail(address: string, extra: { name?: string; kind?: string } = {}): Promise<Omit<SignedIn, "githubId">> {
+  const asked = await askCode(address);
+  if (asked.status !== 200) throw new Error(`asking for a code failed: ${asked.status} ${await asked.text()}`);
+  const res = await verifyCode(address, lastCode(address.trim().toLowerCase()), extra);
+  if (res.status !== 200) throw new Error(`email sign-in failed: ${res.status} ${await res.text()}`);
+  return res.json();
 }

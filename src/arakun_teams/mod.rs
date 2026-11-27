@@ -1,9 +1,12 @@
-//! Arakun Teams, the pilot: sign in with GitHub, and the flags the Teams
+//! Arakun Teams, the pilot: sign in with GitHub or a code mailed to an
+//! address, and the flags the Teams
 //! server sets per account. The Teams tab shows only to accounts with the
 //! `teams` flag. Named apart from the private `team` hub, which is something else.
 //!
 //! The app runs GitHub's device flow, hands the GitHub token to the server once
 //! and keeps only the session the server answers with, in the system keyring.
+//! By email, the server mails a code, and the code typed in is traded for the
+//! session the same way.
 
 pub mod api;
 pub mod bot;
@@ -50,6 +53,26 @@ fn session_account() -> String {
     store::account(&keyring_account())
 }
 
+/// The account as the app names it: `@login` for a GitHub login, and the
+/// address as it is for an account made by email, whose login is its address.
+/// Hidden while names are redacted.
+pub fn account_name(login: &str) -> String {
+    if login.contains('@') {
+        crate::redact::value(login)
+    } else {
+        format!("@{}", crate::redact::value(login))
+    }
+}
+
+/// How the account signs in, for a line under its name.
+pub fn signed_in_with(login: &str) -> &'static str {
+    if login.contains('@') {
+        "Signed in by email"
+    } else {
+        "Signed in with GitHub"
+    }
+}
+
 /// The account as the rest of the app reaches the Arakun service with it:
 /// the relay, the account's servers and its signed-in devices. No `Debug`:
 /// the session opens the account, so it must never end up in a log.
@@ -85,6 +108,18 @@ pub enum Phase {
     Denied {
         user_code: SharedString,
     },
+    /// Asking the server to mail a code to `email`.
+    Mailing {
+        email: SharedString,
+    },
+    /// A code went to `email`; waiting for it to be typed.
+    CodeSent {
+        email: SharedString,
+    },
+    /// Trading the code typed for a session.
+    Checking {
+        email: SharedString,
+    },
 }
 
 impl Phase {
@@ -92,7 +127,7 @@ impl Phase {
     pub fn at_rest(&self) -> bool {
         matches!(
             self,
-            Phase::Idle | Phase::Expired { .. } | Phase::Denied { .. }
+            Phase::Idle | Phase::Expired { .. } | Phase::Denied { .. } | Phase::CodeSent { .. }
         )
     }
 
@@ -457,17 +492,7 @@ impl Teams {
                 let code = this.phase.user_code().cloned().unwrap_or_default();
                 this.phase = Phase::Idle;
                 match result {
-                    Ok((signed, saved)) => {
-                        this.session = Some(signed.session.expose().to_string());
-                        this.me = Some(signed.me);
-                        this.asked = Some(Instant::now());
-                        this.error = saved.err().map(|e| {
-                            format!(
-                                "Signed in for now, but the keyring could not keep the session: {e}"
-                            )
-                            .into()
-                        });
-                    }
+                    Ok((signed, saved)) => this.signed_in_as(signed, saved),
                     Err(Ended::Expired) => {
                         this.error = Some(EXPIRED.into());
                         this.phase = Phase::Expired { user_code: code };
@@ -481,6 +506,132 @@ impl Teams {
                 cx.notify();
             });
         }));
+    }
+
+    /// Asks the server to mail a sign-in code to `email`, the first time or
+    /// again. The code is then typed in the dialog: [`Teams::sign_in_with_code`].
+    pub fn send_email_code(&mut self, email: String, cx: &mut Context<Self>) {
+        if self.session.is_some() || !self.phase.at_rest() {
+            return;
+        }
+        let base = match &self.base {
+            Ok(b) => b.clone(),
+            Err(e) => {
+                self.error = Some(e.clone().into());
+                cx.notify();
+                return;
+            }
+        };
+        let email: SharedString = email.trim().to_string().into();
+        // Asking again keeps the code screen if the new mail fails.
+        let before = match &self.phase {
+            Phase::CodeSent { .. } => self.phase.clone(),
+            _ => Phase::Idle,
+        };
+        self.phase = Phase::Mailing {
+            email: email.clone(),
+        };
+        self.error = None;
+        cx.notify();
+        let address = email.to_string();
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let sent = if fixture().is_some() {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                Ok(())
+            } else {
+                cx.background_spawn(async move { cloud::send_email_code(&base, &address) })
+                    .await
+            };
+            let _ = this.update(cx, |this, cx| {
+                match sent {
+                    Ok(()) => this.phase = Phase::CodeSent { email },
+                    Err(e) => {
+                        this.phase = before;
+                        this.error = Some(email_error(&e).into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Signs in with the code mailed to the address of [`Phase::CodeSent`].
+    /// A wrong code leaves the code screen up, with what the server said.
+    pub fn sign_in_with_code(&mut self, code: String, cx: &mut Context<Self>) {
+        let Phase::CodeSent { email } = self.phase.clone() else {
+            return;
+        };
+        if self.session.is_some() {
+            return;
+        }
+        let Ok(base) = self.base.clone() else {
+            return;
+        };
+        self.phase = Phase::Checking {
+            email: email.clone(),
+        };
+        self.error = None;
+        cx.notify();
+        let address = email.to_string();
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result: Result<(api::SignedIn, Result<(), String>), String> = match fixture() {
+                Some(path) => {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    // In the fixture, 000000 is the wrong code.
+                    if code.trim() == "000000" {
+                        Err(email_error(&cloud::Error::Refused(
+                            "the code is wrong or has run out; ask for a new one".into(),
+                        )))
+                    } else {
+                        read_fixture(&path)
+                            .map(|me| {
+                                (
+                                    api::SignedIn {
+                                        session: "fixture-session-0000000000".into(),
+                                        me,
+                                    },
+                                    Ok(()),
+                                )
+                            })
+                            .map_err(|e| e.to_string())
+                    }
+                }
+                None => {
+                    cx.background_spawn(async move {
+                        let name = hub::device_name();
+                        let signed = cloud::sign_in_with_code(&base, &address, &code, &name, "app")
+                            .map(api::SignedIn::from)
+                            .map_err(|e| email_error(&e))?;
+                        let saved = keep_session(&signed);
+                        Ok((signed, saved))
+                    })
+                    .await
+                }
+            };
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok((signed, saved)) => {
+                        this.phase = Phase::Idle;
+                        this.signed_in_as(signed, saved);
+                    }
+                    Err(e) => {
+                        this.phase = Phase::CodeSent { email };
+                        this.error = Some(e.into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Takes a session a sign-in got, and says so if the keyring did not keep it.
+    fn signed_in_as(&mut self, signed: api::SignedIn, saved: Result<(), String>) {
+        self.session = Some(signed.session.expose().to_string());
+        self.me = Some(signed.me);
+        self.asked = Some(Instant::now());
+        self.error = saved.err().map(|e| {
+            format!("Signed in for now, but the keyring could not keep the session: {e}").into()
+        });
     }
 
     /// Stops a sign-in that is waiting on GitHub, or puts away one that
@@ -549,7 +700,10 @@ fn access(signed_in: bool, flag: Option<bool>) -> Access {
 /// would not keep it from making the session and storing it, and the UI would
 /// say signed out with a session in the keyring. So it runs to its end.
 fn can_cancel(phase: &Phase) -> bool {
-    !matches!(phase, Phase::Idle | Phase::Finishing)
+    !matches!(
+        phase,
+        Phase::Idle | Phase::Finishing | Phase::Checking { .. }
+    )
 }
 
 impl Teams {
@@ -577,7 +731,10 @@ impl Teams {
         let now = Instant::now();
         for login in logins {
             let key = login.to_ascii_lowercase();
+            // An account made by email has its address for a login, and no
+            // GitHub picture to fetch.
             if key.is_empty()
+                || key.contains('@')
                 || !wants_download(self.pictures.get(&key), now)
                 || want.contains(&key)
             {
@@ -738,15 +895,35 @@ async fn device_flow(
             api::sign_in(&base, token.expose()).map_err(|e| Ended::Failed(format!("Teams: {e}")));
         drop(token);
         let signed = signed?;
-        let saved = keyring::store(
-            &session_account(),
-            "arakun: Teams session",
-            signed.session.expose(),
-        )
-        .map_err(String::from);
+        let saved = keep_session(&signed);
         Ok((signed, saved))
     })
     .await
+}
+
+/// Stores a new session in the keyring, for the next start.
+fn keep_session(signed: &api::SignedIn) -> Result<(), String> {
+    keyring::store(
+        &session_account(),
+        "arakun: Teams session",
+        signed.session.expose(),
+    )
+    .map_err(String::from)
+}
+
+/// What went wrong with an email sign-in, as a sentence: the server's own
+/// words when it gave some, such as a wrong code or a throwaway address.
+fn email_error(e: &cloud::Error) -> String {
+    match e {
+        cloud::Error::Refused(said) if !said.is_empty() && !said.starts_with("HTTP ") => {
+            let mut chars = said.trim_end_matches('.').chars();
+            match chars.next() {
+                Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
+                None => e.to_string(),
+            }
+        }
+        _ => e.to_string(),
+    }
 }
 
 /// How a device flow ended without a session.
@@ -852,6 +1029,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn email_errors_are_the_servers_words_as_a_sentence() {
+        assert_eq!(
+            email_error(&cloud::Error::Refused(
+                "the code is wrong or has run out; ask for a new one".into()
+            )),
+            "The code is wrong or has run out; ask for a new one."
+        );
+        assert_eq!(
+            email_error(&cloud::Error::Refused("HTTP 500".into())),
+            "The server answered: HTTP 500."
+        );
+        assert_eq!(
+            email_error(&cloud::Error::Unreachable("timed out".into())),
+            "Could not reach the server (timed out)."
+        );
+    }
+
+    #[test]
     fn sessions_look_like_the_servers() {
         assert!(session_ok("Qm9vbXNoYWthbGFrYS1ib29tc2hha2FsYWthLWJvb20"));
         assert!(!session_ok(""));
@@ -953,6 +1148,16 @@ mod tests {
             user_code: "ABCD-1234".into(),
         }));
         assert!(!can_cancel(&Phase::Finishing));
+        assert!(can_cancel(&Phase::Mailing {
+            email: "a@b.c".into()
+        }));
+        assert!(can_cancel(&Phase::CodeSent {
+            email: "a@b.c".into()
+        }));
+        // Like Finishing: the session may be made whatever happens here.
+        assert!(!can_cancel(&Phase::Checking {
+            email: "a@b.c".into()
+        }));
         assert!(!can_cancel(&Phase::Idle));
     }
 

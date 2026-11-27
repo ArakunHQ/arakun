@@ -1561,12 +1561,12 @@ impl SettingsDialog {
         let hint = match teams.me() {
             Some(m) if teams.signed_in() => {
                 format!(
-                    "Signed in with GitHub as @{}.",
-                    crate::redact::value(&m.login)
+                    "Signed in as {}.",
+                    crate::arakun_teams::account_name(&m.login)
                 )
             }
-            _ if teams.signed_in() => "Signed in with GitHub.".to_string(),
-            _ => "Not signed in. Sign in with GitHub from your profile.".to_string(),
+            _ if teams.signed_in() => "Signed in.".to_string(),
+            _ => "Not signed in. Sign in from your profile.".to_string(),
         };
         stack(vec![titled(
             "GitHub",

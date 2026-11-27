@@ -18,6 +18,14 @@ declare namespace Cloudflare {
     ACCOUNT_HOST?: string;
     /// Counts sign-ins per client IP.
     SIGN_IN_LIMIT: RateLimit;
+    /// Counts the sign-in codes each client IP asks to have mailed.
+    EMAIL_CODE_LIMIT: RateLimit;
+    /// Email Sending, for sign-in codes (src/email_auth.ts). Unset = no
+    /// sign-in by email.
+    EMAIL?: SendEmail;
+    /// The address codes come from, on a domain onboarded to Email Sending
+    /// and allowed by the binding.
+    EMAIL_FROM?: string;
     /// Counts the messages each device sends on channel sockets.
     SEND_LIMIT: RateLimit;
     /// Counts the invites each user makes, since each one asks GitHub.

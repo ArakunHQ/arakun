@@ -905,7 +905,7 @@ impl Shell {
             // Signed out of GitHub: the row signs in, as Teams needs.
             Piece::User if self.teams.read(cx).ready() && !self.teams.read(cx).signed_in() => div()
                 .id(gpui::ElementId::Name(row_id.clone()))
-                .map(|d| ui::labelled(d, gpui::Role::Button, "Sign in with GitHub"))
+                .map(|d| ui::labelled(d, gpui::Role::Button, "Sign in"))
                 .group("rail-row")
                 .flex()
                 .items_center()
@@ -928,17 +928,11 @@ impl Shell {
                 .when(narrow, |d| {
                     d.justify_center()
                         .px(crate::ui::sp(0.))
-                        .tooltip(ui::tip("Sign in with GitHub"))
+                        .tooltip(ui::tip("Sign in"))
                 })
-                .child(icon("github", 15.).text_color(theme::text_muted()))
+                .child(icon("user", 15.).text_color(theme::text_muted()))
                 .when(!narrow, |d| {
-                    d.child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child("Sign in with GitHub"),
-                    )
+                    d.child(div().flex_1().min_w_0().truncate().child("Sign in"))
                 })
                 .on_click(cx.listener(|this, _, window, cx| this.open_teams_sign_in(window, cx)))
                 // As on every rail row: hide it or edit it from Customize.
@@ -954,10 +948,11 @@ impl Shell {
                     }),
                 )
                 .into_any_element(),
-            // Signed in: the GitHub account, with its picture.
+            // Signed in: the account, with its GitHub picture when it has one.
             Piece::User if self.teams.read(cx).me().is_some() => {
                 let teams = self.teams.read(cx);
                 let login = teams.me().map(|m| m.login.clone()).unwrap_or_default();
+                let via = crate::arakun_teams::signed_in_with(&login);
                 let redacted = crate::redact::on();
                 let picture = teams
                     .picture(&login)
@@ -1009,7 +1004,7 @@ impl Shell {
                                         .truncate()
                                         .text_size(px(ui::TEXT_XS))
                                         .text_color(theme::text_faint())
-                                        .child("Signed in with GitHub"),
+                                        .child(via),
                                 ),
                         )
                         .child(icon("unfold-more", 12.).text_color(theme::text_subtle()))

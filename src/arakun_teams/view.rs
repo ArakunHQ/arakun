@@ -4666,7 +4666,7 @@ impl Render for TeamsView {
             Self::centered(ui::empty_state(
                 "ungroup-items",
                 "Team is not on here",
-                "Sign in with GitHub in your profile, with an account that has Teams.",
+                "Sign in from your profile, with an account that has Teams.",
                 Some(
                     ui::button(
                         "teams-open-profile",

@@ -243,7 +243,8 @@ export function profileLines(login: string, signals: Signals, at: number): strin
     `account age: ${age === null ? "unknown" : `${age} days`}`,
     `public repos: ${signals.public_repos ?? "unknown"}`,
     `followers: ${signals.followers ?? "unknown"}`,
-    `<https://github.com/${login}>`,
+    // An account made by email sign-in has its address for a login.
+    GITHUB_LOGIN.test(login) ? `<https://github.com/${login}>` : "no GitHub account",
   ];
 }
 

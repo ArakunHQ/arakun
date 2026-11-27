@@ -342,6 +342,53 @@ pub fn sign_in(base: &str, github_token: &str, name: &str, kind: &str) -> Result
     }
 }
 
+/// Asks the server to mail a six-digit sign-in code to `email`. The server
+/// answers the same whether the address has an account or not.
+pub fn send_email_code(base: &str, email: &str) -> Result<(), Error> {
+    let body = serde_json::json!({ "email": email.trim() });
+    let (status, body) = send(base, "POST", "/auth/email", None, Some(body), SMALL_LIMIT)?;
+    match status {
+        200..=299 => Ok(()),
+        _ => Err(email_refusal(status, &body)),
+    }
+}
+
+/// Trades the code mailed to `email` for a session, as [`sign_in`] does a
+/// GitHub token. The account is the address's, or a new one.
+pub fn sign_in_with_code(
+    base: &str,
+    email: &str,
+    code: &str,
+    name: &str,
+    kind: &str,
+) -> Result<SignedIn, Error> {
+    let body = serde_json::json!({ "email": email.trim(), "code": code.trim(), "name": name, "kind": kind });
+    let (status, body) = send(
+        base,
+        "POST",
+        "/auth/email/verify",
+        None,
+        Some(body),
+        SMALL_LIMIT,
+    )?;
+    match status {
+        200..=299 => serde_json::from_str(&body).map_err(|_| unreadable()),
+        _ => Err(email_refusal(status, &body)),
+    }
+}
+
+/// What the server said about an email sign-in, in its own words: its 401 is
+/// a wrong code, not a stale session, and its 429 says which limit was hit.
+fn email_refusal(status: u16, body: &str) -> Error {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    match v["error"].as_str() {
+        Some(said) if !said.is_empty() && matches!(status, 400 | 401 | 429 | 502 | 503) => {
+            Error::Refused(said.to_string())
+        }
+        _ => refusal(status, body),
+    }
+}
+
 pub fn me(base: &str, session: &str) -> Result<Me, Error> {
     get(base, session, "/me", SMALL_LIMIT)
 }
@@ -1364,6 +1411,63 @@ mod tests {
         assert_eq!(
             body,
             serde_json::json!({ "access_token": "gho_x", "name": "studio", "kind": "app" })
+        );
+    }
+
+    #[test]
+    fn asks_for_an_email_code_with_the_address_trimmed() {
+        let (base, rx) = serve(200, r#"{"sent": true, "expires_in": 600}"#);
+        assert_eq!(send_email_code(&base, " ada@example.com "), Ok(()));
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /auth/email HTTP/1.1\r\n"), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "email": "ada@example.com" }));
+
+        let (base, _rx) = serve(
+            429,
+            r#"{"error": "too many codes for this address, try again in an hour"}"#,
+        );
+        assert_eq!(
+            send_email_code(&base, "ada@example.com"),
+            Err(Error::Refused(
+                "too many codes for this address, try again in an hour".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn signs_in_with_an_email_code_and_says_when_it_is_wrong() {
+        let (base, rx) = serve(
+            200,
+            r#"{"session": "tok", "session_id": "0123", "expires_at": 1800000000, "account_id": 5000000000,
+                "github_id": 5000000000, "login": "ada@example.com", "flags": [], "plan": "free"}"#,
+        );
+        let signed =
+            sign_in_with_code(&base, "ada@example.com", " 123456 ", "studio", "app").unwrap();
+        assert_eq!(signed.login, "ada@example.com");
+        assert_eq!(signed.github_id, 5_000_000_000);
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with("POST /auth/email/verify HTTP/1.1\r\n"),
+            "{req}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "email": "ada@example.com", "code": "123456", "name": "studio", "kind": "app" })
+        );
+
+        let (base, _rx) = serve(
+            401,
+            r#"{"error": "the code is wrong or has run out; ask for a new one"}"#,
+        );
+        assert_eq!(
+            sign_in_with_code(&base, "ada@example.com", "000000", "studio", "app"),
+            Err(Error::Refused(
+                "the code is wrong or has run out; ask for a new one".into()
+            ))
         );
     }
 

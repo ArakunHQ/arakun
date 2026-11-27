@@ -5,7 +5,7 @@ import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
 import { deliver, dropDelivery } from "../src/machines";
 import { guidanceOf, MAX_GUIDANCE, verified, webhook } from "../src/linear_webhook";
-import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, nowSeconds, prompted, signedWebhook } from "./helpers";
+import { ADMIN, HOOK_ORG, HOOK_SESSION, as, call, created, dump, linearFake, notification, nowSeconds, prompted, signedWebhook } from "./helpers";
 import { account, away, claim, connectedComputer, openPc, stored, type Computer, type PcSocket } from "./relay/helpers";
 
 const ORG = HOOK_ORG;
@@ -732,6 +732,158 @@ describe("follow-ups from Linear", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad webhook" });
     expect(await count("linear_deliveries")).toBe(1);
+  });
+});
+
+describe("stops Linear did not ask for", () => {
+  const unassigned = (n: Partial<Parameters<typeof notification>[0]> = {}) => notification({ action: "issueUnassignedFromYou", issueId: ISSUE, ...n });
+  const statusChanged = (n: Partial<Parameters<typeof notification>[0]> = {}) => notification({ action: "issueStatusChanged", issueId: ISSUE, ...n });
+  const setState = (stateType: string) => linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT, stateType });
+
+  it("stops the session when Arakun is unassigned, from anyone, and says nothing in Linear", async () => {
+    const { pc, me } = await delegatedIssue();
+    expect((await send(signedWebhook(unassigned({ actorId: OTHER })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({
+      type: "linear",
+      kind: "stop",
+      reason: "unassigned",
+      agent_session: SESSION,
+      issue: ISSUE,
+      organization: ORG,
+      activity: null,
+      body: null,
+    });
+    expect(linearFake.activities()).toEqual([SENT]);
+    const rows = await env.DB.prepare("SELECT kind, reason, label, team_id FROM linear_deliveries ORDER BY kind").all();
+    expect(rows.results).toEqual([
+      { kind: "created", reason: null, label: me.label, team_id: TEAM },
+      { kind: "stop", reason: "unassigned", label: me.label, team_id: null },
+    ]);
+  });
+
+  it("the same notification twice is one stop", async () => {
+    const { pc } = await delegatedIssue();
+    const n = unassigned();
+    expect((await send(signedWebhook(n))).status).toBe(200);
+    expect((await send(signedWebhook(n))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop" });
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("stops the newest session of the issue only", async () => {
+    const { pc } = await delegatedIssue();
+    const NEWER = crypto.randomUUID();
+    await env.DB.prepare("UPDATE linear_deliveries SET created_at = created_at - 10").run();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: NEWER })))).status).toBe(200);
+    await pc.inbox.control();
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", agent_session: NEWER });
+  });
+
+  it.each([
+    ["canceled, or a duplicate", "canceled", "22222222-2222-4222-8222-222222222222", "canceled"],
+    ["done by a person", "completed", "22222222-2222-4222-8222-222222222222", "completed"],
+  ])("stops the session when the issue is %s", async (_n, state, actorId, reason) => {
+    const { pc } = await delegatedIssue();
+    setState(state);
+    expect((await send(signedWebhook(statusChanged({ actorId })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason, agent_session: SESSION });
+    expect(linearFake.calls.at(-1)!.query).toContain("state { type }");
+  });
+
+  it.each([
+    ["done by an integration, such as a merged pull request", "completed", null],
+    ["done by Arakun itself", "completed", "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a"],
+    ["moved to another open state", "started", "22222222-2222-4222-8222-222222222222"],
+  ])("leaves the session alone when the issue is %s", async (_n, state, actorId) => {
+    const { pc } = await delegatedIssue();
+    setState(state);
+    expect((await send(signedWebhook(statusChanged({ actorId })))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("does nothing for an issue with no session, or one whose delegation ran out", async () => {
+    const { pc, id } = await delegatedIssue();
+    expect((await send(signedWebhook(unassigned({ issueId: UNMAPPED })))).status).toBe(200);
+    await env.DB.prepare("UPDATE linear_deliveries SET expired_at = ? WHERE id = ?").bind(nowSeconds(), id).run();
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect(await count("linear_deliveries")).toBe(1);
+  });
+
+  it("an issue the app can no longer see is left to the access change", async () => {
+    const { pc } = await delegatedIssue();
+    linearFake.malformed = "issue-null";
+    expect((await send(signedWebhook(statusChanged()))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("an offline computer gets the stop when it is back", async () => {
+    const { me, pc, owner } = await delegatedIssue();
+    await away(me.label, pc);
+    expect((await send(signedWebhook(unassigned()))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([SENT]);
+    const back = await connectedComputerAgain(me, owner.session);
+    const frames = [await back.inbox.control(), await back.inbox.control()];
+    expect(frames.find((f) => f["kind"] === "stop")).toMatchObject({ reason: "unassigned", agent_session: SESSION });
+  });
+
+  it("stops the sessions of a team Arakun lost, and no others", async () => {
+    const { pc } = await delegatedIssue();
+    const change = (removedTeamIds: string[]) => ({
+      type: "PermissionChange",
+      action: "teamAccessChanged",
+      organizationId: ORG,
+      oauthClientId: "lin-test",
+      appUserId: "app-user",
+      canAccessAllPublicTeams: false,
+      addedTeamIds: [],
+      removedTeamIds,
+    });
+    expect((await send(signedWebhook(change([TEAM2])))).status).toBe(200);
+    expect((await send(signedWebhook(change([])))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect((await send(signedWebhook(change([TEAM2, TEAM])))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason: "team_access", agent_session: SESSION });
+    // Linear's retry stops nothing twice.
+    expect((await send(signedWebhook(change([TEAM])))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+    expect((await send(signedWebhook(change(["team"])))).status).toBe(400);
+  });
+
+  it("when the app is removed, stops its sessions and shows the workspace as not installed", async () => {
+    const { pc, owner } = await delegatedIssue();
+    const removed = { type: "OAuthApp", action: "revoked", organizationId: ORG, oauthClientId: "lin-test" };
+    expect((await send(signedWebhook(removed))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "stop", reason: "revoked", agent_session: SESSION });
+    expect(await count("linear_workspaces")).toBe(0);
+    const links = (await (await call("GET", "/linear/link", as(owner.session))).json()) as { links: { installed: boolean }[] };
+    expect(links.links).toEqual([expect.objectContaining({ organization_id: ORG, installed: false })]);
+    // A retry after the tokens are gone still answers 200 and sends nothing again.
+    expect((await send(signedWebhook(removed))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("refuses a notification without its ids", async () => {
+    await delegatedIssue();
+    const n = unassigned();
+    expect((await send(signedWebhook({ ...n, notification: { ...(n["notification"] as object), issueId: "x" } }))).status).toBe(400);
+    expect((await send(signedWebhook({ ...n, organizationId: "org" }))).status).toBe(400);
+  });
+
+  it("ignores the notifications it does not act on", async () => {
+    const { pc } = await delegatedIssue();
+    expect((await send(signedWebhook(notification({ action: "issueNewComment", issueId: ISSUE })))).status).toBe(200);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("the relay takes a reason on a stop only", async () => {
+    const { me } = await linkedComputerWithRoute();
+    const d = { id: "a".repeat(32), kind: "created" as const, agent_session: SESSION, issue: ISSUE, organization: ORG, activity: null, created: nowSeconds() };
+    await expect(deliver(env, me.label, { ...d, reason: "unassigned" }, null)).rejects.toThrow(/400/);
+    await expect(deliver(env, me.label, { ...d, kind: "stop", reason: "bored" as never }, null)).rejects.toThrow(/400/);
+    await expect(deliver(env, me.label, { ...d, kind: "stop", reason: "canceled" }, null)).resolves.toEqual({ online: true });
   });
 });
 

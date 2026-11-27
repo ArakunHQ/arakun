@@ -797,9 +797,13 @@ impl Shell {
             }))
         };
         let mut mode = ui::segmented();
-        for (i, (m, label)) in [(Mode::Fixed, "Fixed"), (Mode::Scroll, "Scroll")]
-            .into_iter()
-            .enumerate()
+        for (i, (m, label)) in [
+            (Mode::Fixed, "Fixed"),
+            (Mode::Scroll, "Scroll"),
+            (Mode::Strip, "Strip"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             mode = mode.child(
                 ui::segment(("sb-sec-mode-opt", i), None, label, sec.mode == m).on_click(

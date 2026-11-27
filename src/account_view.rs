@@ -401,11 +401,31 @@ fn first_window(
     devin: Option<&PlanUsage>,
     now: u64,
 ) -> Option<(String, f32)> {
-    let plan_window =
-        |p: &PlanUsage| (p.windows.first()).map(|w| (w.short_label(), w.percent as f32));
+    usage_windows(account, seats, go, devin, now)?
+        .into_iter()
+        .next()
+}
+
+/// Every window of the first provider the usage card would show, each as a
+/// short name and its percentage.
+fn usage_windows(
+    account: &Account,
+    seats: Option<&Seats>,
+    go: Option<&PlanUsage>,
+    devin: Option<&PlanUsage>,
+    now: u64,
+) -> Option<Vec<(String, f32)>> {
+    let plan_windows = |p: &PlanUsage| {
+        let ws: Vec<(String, f32)> = p
+            .windows
+            .iter()
+            .map(|w| (w.short_label(), w.percent as f32))
+            .collect();
+        (!ws.is_empty()).then_some(ws)
+    };
     let claude = || {
         rail_shows(AgentKind::Claude)
-            .then(|| seats.and_then(Seats::active).and_then(plan_window))
+            .then(|| seats.and_then(Seats::active).and_then(plan_windows))
             .flatten()
     };
     let droid = || {
@@ -414,15 +434,41 @@ fn first_window(
             UsageMode::DroidCore => limits.core.or(limits.standard),
             _ => limits.standard,
         }?;
-        let (label, b) = pool.buckets().into_iter().next()?;
-        Some((label.to_string(), b.current(now)))
+        let ws: Vec<(String, f32)> = pool
+            .buckets()
+            .into_iter()
+            .map(|(label, b)| (label.to_string(), b.current(now)))
+            .collect();
+        (!ws.is_empty()).then_some(ws)
     };
-    let other =
-        |agent, p: Option<&PlanUsage>| rail_shows(agent).then(|| p.and_then(plan_window)).flatten();
+    let other = |agent, p: Option<&PlanUsage>| {
+        rail_shows(agent)
+            .then(|| p.and_then(plan_windows))
+            .flatten()
+    };
     claude()
         .or_else(droid)
         .or_else(|| other(AgentKind::OpenCode, go))
         .or_else(|| other(AgentKind::Devin, devin))
+}
+
+/// Plan usage in a few words, for a tooltip: "5h 46% · 7d 21%".
+pub fn usage_summary(
+    account: &Account,
+    seats: Option<&Seats>,
+    go: Option<&PlanUsage>,
+    devin: Option<&PlanUsage>,
+) -> Option<String> {
+    let windows = usage_windows(account, seats, go, devin, account::unix_now())?;
+    Some(summary_line(&windows))
+}
+
+fn summary_line(windows: &[(String, f32)]) -> String {
+    windows
+        .iter()
+        .map(|(label, pct)| format!("{label} {:.0}%", pct.ceil()))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Plan usage as one rail row: the first window's name, a bar and the
@@ -803,4 +849,15 @@ pub fn rail_card(
         );
     }
     Some(card.into_any_element())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_usage_summary_lists_each_window() {
+        let windows = [("5h".to_string(), 45.2), ("7d".to_string(), 21.)];
+        assert_eq!(summary_line(&windows), "5h 46% · 7d 21%");
+    }
 }

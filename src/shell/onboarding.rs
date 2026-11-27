@@ -1360,6 +1360,7 @@ fn preset_blurb(p: Preset) -> &'static str {
         Preset::Notion => "Your pins up top",
         Preset::Compact => "Icons, names on hover",
         Preset::Everything => "Every view, listed",
+        Preset::ViewStrip => "Views in a strip",
     }
 }
 

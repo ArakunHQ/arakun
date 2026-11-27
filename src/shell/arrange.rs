@@ -273,6 +273,8 @@ impl Shell {
             Piece::Search,
             Piece::projects(),
             Piece::active(),
+            Piece::Sessions,
+            Piece::NewSession,
             Piece::User,
             Piece::usage(),
             Piece::MoreViews,

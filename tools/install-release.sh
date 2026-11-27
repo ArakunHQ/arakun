@@ -42,8 +42,10 @@ die() {
 }
 
 # The release tag that /releases/latest redirects to. No API call, so no rate limit.
+# Read the redirect without following it: the release page it points to can fail
+# (504) while the redirect and the release files still work.
 latest_tag() {
-  url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest") ||
+  url=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$repo/releases/latest") ||
     die "could not reach GitHub to find the latest release"
   tag=${url##*/tag/}
   if [ "$tag" = "$url" ] || [ -z "$tag" ]; then

@@ -238,7 +238,8 @@ sees the project's skills.
   `list_saved_secrets` for the names (never the values) and `use_saved_secret` for a
   fresh `secret-ref:` handle, which works once like any other, or with
   `deliver: "file"` for a private file. A card with several fields saves each as
-  "name (field)".
+  "name (field)". Settings › Project › Saved secrets lists them, masked, to rename,
+  replace or remove; no screen shows a stored value.
 
 - **SSH in a session (Linux and macOS).** To use a build machine from a local
   agent session without installing Arakun there, open **Connect SSH** in that

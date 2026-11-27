@@ -172,7 +172,8 @@ gpui::actions!(
         ZoomReset,
         CustomizeSidebar,
         OpenCustomize,
-        SendFeedback
+        SendFeedback,
+        SignInToGitHub
     ]
 );
 
@@ -4451,6 +4452,9 @@ impl Render for Shell {
                 crate::ui::drag_window(ev, window)
             })
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
+            .on_action(cx.listener(|this, _: &SignInToGitHub, window, cx| {
+                this.sign_in_to_github(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
                 this.open_customize(CustomizeTab::Sidebar, window, cx)
             }))

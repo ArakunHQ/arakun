@@ -614,7 +614,17 @@ impl GitHubView {
         let g = self.github.read(cx);
         match g.problem().or(g.search_problem()) {
             Some(p @ (Problem::NoGh | Problem::SignedOut)) => {
-                out.push(line("gh-problem", p.text()))
+                let text = p.text();
+                let fix = super::gh_fix("gh-problem-fix", &text);
+                out.push(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .child(line("gh-problem", text))
+                        .children(fix)
+                        .into_any_element(),
+                )
             }
             Some(Problem::Other(e)) => {
                 out.push(line("gh-problem", format!("Couldn't read GitHub: {e}")))

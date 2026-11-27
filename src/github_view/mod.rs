@@ -85,6 +85,32 @@ pub enum GitHubViewEvent {
     ConnectPilot,
 }
 
+/// The button that fixes what `text` says, when it is one of the texts for a
+/// missing or signed-out `gh` (`github::NO_GH`, `github::SIGNED_OUT`). The
+/// GitHub tab, Runs and Branches carry the error as text; matching it here
+/// gives all of them the same fix.
+pub fn gh_fix(id: impl Into<gpui::ElementId>, text: &str) -> Option<AnyElement> {
+    use gpui::StatefulInteractiveElement as _;
+    let (icon_name, label) = if text == crate::github::NO_GH {
+        ("link-square02", "Get the GitHub CLI")
+    } else if text == crate::github::SIGNED_OUT {
+        ("github", "Sign in to GitHub")
+    } else {
+        return None;
+    };
+    let get = text == crate::github::NO_GH;
+    let button = ui::button_with(id, Some(icon_name), label, ui::ButtonKind::Outline, true)
+        .flex_none()
+        .on_click(move |_, window, cx| {
+            if get {
+                cx.open_url(crate::onboarding::GH_URL);
+            } else {
+                window.dispatch_action(Box::new(crate::shell::SignInToGitHub), cx);
+            }
+        });
+    Some(button.into_any_element())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     /// "Pilot activity": the board's timeline.

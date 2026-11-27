@@ -242,3 +242,19 @@ export async function issuePlace(env: Env, organizationId: string, issueId: stri
     throw new LinearRefused("Linear sent an unusable issue answer", 502);
   return { teamId, projectId };
 }
+
+/// The type of an issue's workflow state: `triage`, `backlog`, `unstarted`,
+/// `started`, `completed` or `canceled`. A duplicate is `canceled`. Linear's
+/// status notification does not carry it.
+export async function issueStateType(env: Env, organizationId: string, issueId: string): Promise<string> {
+  const data = await asApp<{ issue?: { state?: { type?: unknown } | null } | null }>(
+    env,
+    organizationId,
+    "query($id: String!) { issue(id: $id) { state { type } } }",
+    { id: issueId },
+  );
+  if (data.issue === null) throw new LinearRefused("Linear has no such issue", 404);
+  const type = data.issue?.state?.type;
+  if (typeof type !== "string") throw new LinearRefused("Linear sent an unusable issue answer", 502);
+  return type;
+}

@@ -230,6 +230,7 @@ impl Shell {
                     issue: start.issue,
                     organization: start.organization,
                     activity: None,
+                    reason: None,
                     body: None,
                     guidance: start.guidance,
                 };

@@ -19,6 +19,7 @@ function delivery(kind: Delivery["kind"] = "created", ago = 0): Delivery {
     issue: crypto.randomUUID(),
     organization: crypto.randomUUID(),
     activity: kind === "created" ? null : crypto.randomUUID(),
+    reason: null,
     created: Math.floor(Date.now() / 1000) - ago,
   };
 }
@@ -26,7 +27,16 @@ function delivery(kind: Delivery["kind"] = "created", ago = 0): Delivery {
 /// What a frame carries of a delivery: everything but its time, and no
 /// guidance unless a test passes some.
 function frame(d: Delivery): Record<string, unknown> {
-  return { id: d.id, kind: d.kind, agent_session: d.agent_session, issue: d.issue, organization: d.organization, activity: d.activity, guidance: null };
+  return {
+    id: d.id,
+    kind: d.kind,
+    agent_session: d.agent_session,
+    issue: d.issue,
+    organization: d.organization,
+    activity: d.activity,
+    reason: d.reason ?? null,
+    guidance: null,
+  };
 }
 
 function stub(label: string) {
@@ -70,6 +80,22 @@ afterEach(() => {
 });
 
 describe("Linear deliveries in the relay", () => {
+  it("passes a stop's reason on and keeps it", async () => {
+    const { me, pc } = await connectedComputer();
+    const S = { ...delivery("stop"), activity: null, reason: "unassigned" as const };
+    await deliver(env, me.label, S, null);
+    expect(await pc.inbox.control()).toEqual({ type: "linear", ...frame(S), reason: "unassigned", body: null });
+    expect(await stored(me.label, `linear:${S.id}`)).toEqual(S);
+  });
+
+  it("sends a delivery kept from before reasons with none", async () => {
+    const { me, owner } = await awayComputer();
+    const { reason: _none, ...old } = delivery("stop");
+    await runInDurableObject(stub(me.label), (_i, state) => state.storage.put(`linear:${old.id}`, old));
+    const pc = await reconnect(me, owner.session);
+    expect(await pc.inbox.control()).toEqual({ type: "linear", ...frame(old), reason: null, body: null });
+  });
+
   it("sends a delivery to a connected computer and keeps it until dropped", async () => {
     const { me, pc } = await connectedComputer();
     const D1 = delivery();

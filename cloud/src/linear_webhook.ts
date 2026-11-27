@@ -1,7 +1,8 @@
 // POST /linear/webhook: Linear tells Arakun that someone delegated an issue to
-// it, mentioned it, or wrote in its session. It carries no session: the
-// signature is its proof. Linear wants an HTTP answer within 5 seconds and an
-// activity in the session within 10.
+// it, mentioned it, or wrote in its session; or that it was unassigned, its
+// issue closed, or its access taken away, which stops the session. It carries
+// no session: the signature is its proof. Linear wants an HTTP answer within
+// 5 seconds and an activity in the session within 10.
 //
 // The body holds the issue's text (promptContext, the title, comments). None
 // of it is kept, stored, logged or put in an error: only ids are kept. Two
@@ -9,8 +10,8 @@
 // follow-up's, and the guidance a workspace or team set for agents.
 
 import { routeFor, FLAG, UUID } from "./linear";
-import { issuePlace, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
-import { deliver, QueueFull, type Delivery, type GuidanceRule } from "./machines";
+import { issuePlace, issueStateType, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
+import { deliver, QueueFull, type Delivery, type GuidanceRule, type StopReason } from "./machines";
 import { bodyText, error, hex, isObject, now, sha256, type Env } from "./util";
 
 const MAX_BODY = 1024 * 1024;
@@ -69,19 +70,8 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
   if (!isObject(parsed)) return error(400, "bad webhook");
   const at = parsed["webhookTimestamp"];
   if (typeof at !== "number" || !(Math.abs(Date.now() - at) <= MAX_SKEW_MS)) return error(401, "bad signature");
-  const action = parsed["action"];
-  if (request.headers.get("Linear-Event") !== "AgentSessionEvent" || (action !== "created" && action !== "prompted")) return ok();
-  const session = parsed["agentSession"];
-  const { organizationId } = parsed;
-  if (!isObject(session) || !isUuid(organizationId) || !isUuid(session["id"])) return error(400, "bad webhook");
-  const hook: Hook = {
-    organizationId,
-    agentSessionId: session["id"],
-    creatorId: typeof session["creatorId"] === "string" && session["creatorId"] !== "" ? session["creatorId"] : null,
-    issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
-  };
   try {
-    return action === "created" ? await delegated(env, hook, guidanceOf(parsed)) : await followUp(env, hook, parsed);
+    return await handle(env, request.headers.get("Linear-Event"), parsed);
   } catch (e) {
     // The status or the error's name only: a message could quote Linear.
     const why = e instanceof TokenUnopened ? e.name : e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
@@ -94,6 +84,38 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
     // installs again: a 200.
     return lasting(e) ? ok() : error(500, "internal error");
   }
+}
+
+/// The event, by the signed body's `type` for the events that stop a session:
+/// the header is not signed. The agent session events keep to the header,
+/// as before.
+async function handle(env: Env, event: string | null, parsed: Record<string, unknown>): Promise<Response> {
+  const { type, action, organizationId } = parsed;
+  if (type === "AppUserNotification" && (action === "issueUnassignedFromYou" || action === "issueStatusChanged")) {
+    if (!isUuid(organizationId)) return error(400, "bad webhook");
+    return notified(env, organizationId, action, parsed);
+  }
+  if (type === "PermissionChange" && action === "teamAccessChanged") {
+    const removed = parsed["removedTeamIds"];
+    if (!isUuid(organizationId) || !Array.isArray(removed) || removed.length > MAX_TEAMS || !removed.every(isUuid)) return error(400, "bad webhook");
+    if (removed.length > 0) await stopAll(env, organizationId, "team_access", removed);
+    return ok();
+  }
+  if (type === "OAuthApp" && action === "revoked") {
+    if (!isUuid(organizationId)) return error(400, "bad webhook");
+    await revoked(env, organizationId);
+    return ok();
+  }
+  if (event !== "AgentSessionEvent" || (action !== "created" && action !== "prompted")) return ok();
+  const session = parsed["agentSession"];
+  if (!isObject(session) || !isUuid(organizationId) || !isUuid(session["id"])) return error(400, "bad webhook");
+  const hook: Hook = {
+    organizationId,
+    agentSessionId: session["id"],
+    creatorId: typeof session["creatorId"] === "string" && session["creatorId"] !== "" ? session["creatorId"] : null,
+    issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
+  };
+  return action === "created" ? await delegated(env, hook, guidanceOf(parsed)) : await followUp(env, hook, parsed);
 }
 
 /// Whether a retry of the webhook would fail the same way.
@@ -232,7 +254,7 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
 /// The delivery an event made, with its computer's name now.
 function readBack(env: Env, eventKey: string): D1PreparedStatement {
   return env.DB.prepare(
-    `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.label, d.created_at, d.announced_at,
+    `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.reason, d.label, d.created_at, d.announced_at,
        d.accepted_at, d.expired_at, m.name AS machine
      FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.account_id = d.account_id
      WHERE d.event_key = ?`,
@@ -259,6 +281,7 @@ interface Row {
   issue_id: string;
   kind: Delivery["kind"];
   activity_id: string | null;
+  reason: StopReason | null;
   label: string;
   created_at: number;
   announced_at: number | null;
@@ -302,9 +325,9 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   const key = `created:${hook.agentSessionId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, created_at)
-       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
-    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.account_id, route.label, now()),
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, team_id, created_at)
+       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.account_id, route.label, place.teamId, now()),
     readBack(env, key),
   ]);
   const row = read!.results[0]!;
@@ -343,4 +366,126 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   await say("thought", online ? sent(machine) : offline(machine));
   await done();
   return ok();
+}
+
+// ---- Stops Linear did not ask for --------------------------------------------
+//
+// Nobody pressed stop, but the work is no longer Arakun's: it was
+// unassigned, its issue was closed, or it lost the team or the workspace.
+// Each session still at work gets a stop with the reason, and its computer
+// says why in the session. Anyone who may unassign Arakun in Linear stops it
+// this way, not only the delegator: the issue is no longer Arakun's to work
+// on. Nothing is said in Linear from here: the run may have ended long ago,
+// and the computer knows whether it did.
+
+/// The most teams one access change may remove.
+const MAX_TEAMS = 1000;
+/// The most sessions one event stops, newest first.
+const MAX_STOPS = 20;
+/// How far back a session may have started and still be stopped. Its
+/// delegation is given up after 7 days, and a run rarely lasts longer.
+const STOP_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+
+/// A delegation that may still be at work on a computer.
+interface Started {
+  agent_session_id: string;
+  issue_id: string;
+  account_id: number;
+  label: string;
+}
+
+/// Arakun was unassigned, or the status of an issue it is subscribed to
+/// changed. The notification carries no state, so it is read from Linear.
+async function notified(env: Env, organizationId: string, action: string, parsed: Record<string, unknown>): Promise<Response> {
+  const n = parsed["notification"];
+  if (!isObject(n) || !isUuid(n["id"]) || !isUuid(n["issueId"])) return error(400, "bad webhook");
+  const issueId = n["issueId"];
+  let reason: StopReason;
+  if (action === "issueUnassignedFromYou") reason = "unassigned";
+  else {
+    let state: string;
+    try {
+      state = await issueStateType(env, organizationId, issueId);
+    } catch (e) {
+      // An issue the app can no longer see: the access change says so.
+      if (e instanceof LinearRefused && e.status === 404) return ok();
+      throw e;
+    }
+    // Done by a person: the person called it finished. Done by an
+    // integration, such as a merged pull request, has no person as actor:
+    // the session may still be answering its review.
+    const actor = n["actorId"];
+    const byPerson = typeof actor === "string" && actor !== "" && actor !== parsed["appUserId"];
+    if (state === "canceled") reason = "canceled";
+    else if (state === "completed" && byPerson) reason = "completed";
+    else return ok();
+  }
+  const newest = await env.DB.prepare(
+    `SELECT agent_session_id, issue_id, account_id, label FROM linear_deliveries
+     WHERE organization_id = ? AND issue_id = ? AND kind = 'created' AND expired_at IS NULL
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  )
+    .bind(organizationId, issueId)
+    .first<Started>();
+  if (newest) await stopOne(env, organizationId, newest, reason, `notification:${n["id"]}`);
+  return ok();
+}
+
+/// The app was removed from the workspace: its sessions stop, and its tokens
+/// are dropped, as Linear will not take them again. The Linear tab then
+/// shows the workspace as not installed.
+async function revoked(env: Env, organizationId: string): Promise<void> {
+  await stopAll(env, organizationId, "revoked", null);
+  await env.DB.prepare("DELETE FROM linear_workspaces WHERE organization_id = ?").bind(organizationId).run();
+}
+
+/// Stops the recent sessions of a workspace, or of its `teams`. A session
+/// delegated before its team was stored is not found by team.
+async function stopAll(env: Env, organizationId: string, reason: StopReason, teams: string[] | null): Promise<void> {
+  const byTeam = teams === null ? "" : `AND team_id IN (SELECT value FROM json_each(?3))`;
+  const binds: unknown[] = [organizationId, now() - STOP_WINDOW_SECONDS];
+  if (teams !== null) binds.push(JSON.stringify(teams));
+  const rows = await env.DB.prepare(
+    `SELECT agent_session_id, issue_id, account_id, label FROM linear_deliveries
+     WHERE organization_id = ?1 AND kind = 'created' AND expired_at IS NULL AND created_at >= ?2 ${byTeam}
+     ORDER BY created_at DESC, rowid DESC LIMIT ${MAX_STOPS}`,
+  )
+    .bind(...binds)
+    .all<Started>();
+  for (const r of rows.results) await stopOne(env, organizationId, r, reason, `${reason}:${r.agent_session_id}`);
+}
+
+/// One stop, sent once: a retry of the same event finds its row.
+async function stopOne(env: Env, organizationId: string, s: Started, reason: StopReason, key: string): Promise<void> {
+  const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const [, read] = await env.DB.batch<Row>([
+    env.DB.prepare(
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, 'stop', NULL, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
+    ).bind(id, key, s.agent_session_id, organizationId, s.issue_id, s.account_id, s.label, reason, now()),
+    readBack(env, key),
+  ]);
+  const row = read!.results[0]!;
+  if (row.organization_id !== organizationId || row.agent_session_id !== s.agent_session_id || row.kind !== "stop") return void mismatch();
+  if (row.announced_at !== null || row.accepted_at !== null || row.expired_at !== null) return;
+  const delivery: Delivery = {
+    id: row.id,
+    kind: "stop",
+    agent_session: row.agent_session_id,
+    issue: row.issue_id,
+    organization: row.organization_id,
+    activity: null,
+    reason: row.reason,
+    created: row.created_at,
+  };
+  try {
+    await deliver(env, row.label, delivery, null);
+  } catch (e) {
+    if (!(e instanceof QueueFull)) throw e;
+    // Nobody to tell: the computer has more waiting than it keeps.
+    await env.DB.prepare("DELETE FROM linear_deliveries WHERE id = ?").bind(row.id).run();
+    console.error(`POST /linear/webhook: stop for ${row.label} dropped, queue full`);
+    return;
+  }
+  await env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
 }

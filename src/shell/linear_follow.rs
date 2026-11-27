@@ -329,7 +329,7 @@ impl Shell {
             return;
         }
         let run = self.linear_runs.by_agent_session(&d.agent_session);
-        let decided = stop(run_state(run.as_deref(), &d.organization));
+        let decided = stop(run_state(run.as_deref(), &d.organization), d.reason);
         // Saved with the outcome, below.
         self.linear_runs.mark_seen(&d.id);
         if matches!(decided, Stop::Dequeue | Stop::Cancel)
@@ -356,7 +356,7 @@ impl Shell {
         match decided {
             Stop::Nothing => self.linear_save(),
             Stop::Report | Stop::Dequeue | Stop::Cancel => {
-                let line = STOPPED.to_string();
+                let line = stopped_line(d.reason).to_string();
                 self.linear_report(&d.agent_session, ReportKind::Response, line, None, cx);
             }
         }

@@ -25,11 +25,10 @@ use crate::linear::events::{
     progress_line, removed_line, to_report, turn_reply,
 };
 use crate::linear::follow::{
-    FollowUp, SKIPS, STOPPED, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line,
-    kept_line, kept_message, kept_unread_line, message, no_directions_line, no_session_line,
-    not_started_line, passed_line, pending_in, release_stops, reply_no_sign_in_line,
-    reply_off_line, reply_source, run_state, skips_question, stop, stopped_after_reply,
-    unread_line,
+    FollowUp, SKIPS, Source, Stop, after_reply, follow_up, hold_stop, interrupted_line, kept_line,
+    kept_message, kept_unread_line, message, no_directions_line, no_session_line, not_started_line,
+    passed_line, pending_in, release_stops, reply_no_sign_in_line, reply_off_line, reply_source,
+    run_state, skips_question, stop, stopped_after_reply, stopped_line, unread_line,
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
@@ -738,7 +737,7 @@ impl Daemon {
             return;
         }
         let run = self.linear_run.runs.by_agent_session(&d.agent_session);
-        let decided = stop(run_state(run.as_deref(), &d.organization));
+        let decided = stop(run_state(run.as_deref(), &d.organization), d.reason);
         let session = run.and_then(|r| r.session.clone());
         self.linear_run.runs.mark_seen(&d.id);
         if matches!(decided, Stop::Dequeue | Stop::Cancel)
@@ -763,7 +762,7 @@ impl Daemon {
         match decided {
             Stop::Nothing => self.linear_save_runs(),
             Stop::Report | Stop::Dequeue | Stop::Cancel => {
-                let line = STOPPED.to_string();
+                let line = stopped_line(d.reason).to_string();
                 self.linear_report(&d.agent_session, ReportKind::Response, line, None, cx);
             }
         }

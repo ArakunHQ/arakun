@@ -24,6 +24,34 @@ pub enum DeliveryKind {
     Stop,
 }
 
+/// Why the relay's Worker stopped a session when nobody pressed stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// Arakun was removed as the issue's delegate.
+    Unassigned,
+    /// The issue was canceled, or marked a duplicate.
+    Canceled,
+    /// A person marked the issue done.
+    Completed,
+    /// Arakun lost access to the issue's team.
+    TeamAccess,
+    /// The Arakun app was removed from the workspace.
+    Revoked,
+}
+
+impl StopReason {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "unassigned" => Self::Unassigned,
+            "canceled" => Self::Canceled,
+            "completed" => Self::Completed,
+            "team_access" => Self::TeamAccess,
+            "revoked" => Self::Revoked,
+            _ => return None,
+        })
+    }
+}
+
 /// One rule a Linear workspace or team set for agents, as the relay passed it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct GuidanceRule {
@@ -51,6 +79,8 @@ pub struct Delivery {
     pub issue: String,
     pub organization: String,
     pub activity: Option<String>,
+    /// For a stop nobody pressed, why the Worker sent it.
+    pub reason: Option<StopReason>,
     /// The follow-up's text, when the relay had it at hand.
     pub body: Option<String>,
     /// A new delegation's guidance for agents, when the relay had it at
@@ -68,6 +98,7 @@ impl fmt::Debug for Delivery {
             .field("issue", &self.issue)
             .field("organization", &self.organization)
             .field("activity", &self.activity)
+            .field("reason", &self.reason)
             .field("body", &self.body.as_ref().map(|_| "…"))
             .field("guidance", &self.guidance.len())
             .finish()
@@ -107,6 +138,11 @@ pub fn parse(msg: &Value) -> Option<Delivery> {
         Some(a) if a.chars().count() > MAX_ID => return None,
         a => a.map(str::to_string),
     };
+    // A reason this build does not know leaves a plain stop: it still stops.
+    let reason = match optional("reason")? {
+        Some(r) if kind == DeliveryKind::Stop => StopReason::parse(r),
+        _ => None,
+    };
     // A body too long to trust is left out; the delivery still counts.
     let body = optional("body")?
         .filter(|b| b.chars().count() <= MAX_BODY)
@@ -118,6 +154,7 @@ pub fn parse(msg: &Value) -> Option<Delivery> {
         issue: short("issue")?,
         organization: short("organization")?,
         activity,
+        reason,
         body,
         guidance: guidance(msg.get("guidance")),
     })
@@ -196,6 +233,7 @@ mod tests {
                 issue: "5b0c1f9e-0000-4000-8000-000000000002".into(),
                 organization: "5b0c1f9e-0000-4000-8000-000000000003".into(),
                 activity: Some("5b0c1f9e-0000-4000-8000-000000000004".into()),
+                reason: None,
                 body: Some("Please also fix the tests.".into()),
                 guidance: Vec::new(),
             }
@@ -207,6 +245,29 @@ mod tests {
         assert_eq!(
             parse(&with("kind", json!("stop"))).unwrap().kind,
             DeliveryKind::Stop
+        );
+    }
+
+    #[test]
+    fn a_stop_carries_its_reason() {
+        let stop = |reason: Value| {
+            let mut msg = with("kind", json!("stop"));
+            msg["reason"] = reason;
+            parse(&msg).unwrap().reason
+        };
+        assert_eq!(stop(json!("unassigned")), Some(StopReason::Unassigned));
+        assert_eq!(stop(json!("canceled")), Some(StopReason::Canceled));
+        assert_eq!(stop(json!("completed")), Some(StopReason::Completed));
+        assert_eq!(stop(json!("team_access")), Some(StopReason::TeamAccess));
+        assert_eq!(stop(json!("revoked")), Some(StopReason::Revoked));
+        // A reason from a newer Worker still stops, as a plain stop.
+        assert_eq!(stop(json!("bored")), None);
+        assert_eq!(stop(Value::Null), None);
+        assert_eq!(parse(&with("kind", json!("stop"))).unwrap().reason, None);
+        // Only a stop has one.
+        assert_eq!(
+            parse(&with("reason", json!("unassigned"))).unwrap().reason,
+            None
         );
     }
 
@@ -252,6 +313,7 @@ mod tests {
             with("activity", json!("a".repeat(65))),
             with("body", json!(5)),
             with("body", json!({"text": "hi"})),
+            with("reason", json!(5)),
             json!("linear"),
             Value::Null,
         ];

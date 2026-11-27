@@ -773,7 +773,11 @@ after a week).
   turn at work is cancelled, the rest of the reply goes to the session as the next
   message, the run goes on, and the issue hears `Interrupted the session on
   {computer}. It works on your new message now.` A reply that is only the marker
-  changes nothing. A stop in Linear cancels the turn and ends the run. A stop that
+  changes nothing. A stop in Linear cancels the turn and ends the run. So does
+  taking the work back in Linear: unassigning Arakun (by anyone), canceling the
+  issue or marking it a duplicate, a person marking it done, or removing Arakun's
+  access to the team or the workspace. The issue hears why, as in `Stopped: Arakun
+  was unassigned.`; a run that had already ended hears nothing. A stop that
   arrives while a reply or a new delegation for the same issue is still being read is applied after the work it follows. A stop
   works even with the switch off, or when this computer is no longer signed in to
   that Linear workspace.

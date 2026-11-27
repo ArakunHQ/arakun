@@ -1040,7 +1040,7 @@ Four D1 tables (`migrations/0013_linear.sql`):
 | `linear_workspaces` | One row per Linear workspace that installed the app: the workspace id and name, the app's user id, its access and refresh tokens, when the access token ends, who installed it. |
 | `linear_links` | Which GitHub account a Linear user is, per workspace. The row goes with its account. |
 | `linear_routes` | Which computer takes the issues of a Linear team or project. The row goes with the machine. |
-| `linear_deliveries` | One row per webhook event that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), the computer's label, and the times it was announced, accepted and expired. A unique event key makes Linear's retry a no-op (see "A retry" below). |
+| `linear_deliveries` | One row per webhook event that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), a stop's reason, the issue's team for a delegation, the computer's label, and the times it was announced, accepted and expired. A unique event key makes Linear's retry a no-op (see "A retry" below). |
 
 Both tokens of a workspace are sealed with AES-GCM under `LINEAR_TOKEN_KEY`, with the
 workspace id as additional data, so a token copied to another workspace's row does not
@@ -1080,8 +1080,11 @@ It answers `413 too large` for a body over 1 MiB, `401 bad signature` for a wron
 missing signature, and `400 bad webhook` for a body that is not JSON or lacks the ids.
 The body's `webhookTimestamp` must be within 60 seconds of the Worker's clock, or the
 answer is `401 bad signature`, so a captured webhook cannot be replayed later. Any
-event but an `AgentSessionEvent` with the action `created` or `prompted` gets an empty
-`200`.
+event but these gets an empty `200`: an `AgentSessionEvent` with the action `created` or
+`prompted`, an `AppUserNotification` with the action `issueUnassignedFromYou` or
+`issueStatusChanged`, a `PermissionChange` with `teamAccessChanged`, and an `OAuthApp`
+with `revoked`. The last three are told apart by the signed body's `type`, since the
+`Linear-Event` header is not signed.
 
 A failure after that is logged as one line, with the route and a status or an error
 name only. Linear sends a webhook again after 1 minute, 1 hour and 6 hours when it
@@ -1108,6 +1111,32 @@ newest `created` delivery of the session that has not expired. The words of the 
 who delegated it, and only theirs, go to that computer as a `prompt` delivery, or as a
 `stop` if Linear's signal says so. Anyone else's words get the "Only the person" answer
 below.
+
+**Stops nobody pressed**: the work is no longer Arakun's, so the session stops. The
+Worker sends the computer a `stop` delivery with a `reason` and no activity, and posts
+nothing in Linear itself: the run may have ended long ago, and the computer knows
+whether it did. It says why in the session, or nothing if the run was already over.
+
+- `issueUnassignedFromYou`: Arakun was removed as the issue's delegate, by anyone.
+  Linear lets any member do that, and the issue is no longer Arakun's to work on, so
+  this does not wait for the delegator. The reason is `unassigned`.
+- `issueStatusChanged`: the notification has no state, so the Worker asks Linear for the
+  issue's state type. `canceled` (a duplicate is one too) stops with `canceled`.
+  `completed` stops with `completed` when a person did it (`actorId` set and not the
+  app); one done by an integration, such as a merged pull request, has no person as
+  actor and stops nothing, since the session may still answer its review. Any other
+  state stops nothing. An issue the app can no longer see is left to the access change.
+- Both stop the newest `created` delivery of the issue that has not expired, keyed by
+  the notification's id.
+- `teamAccessChanged`: each team in `removedTeamIds` (at most 1000 UUIDs, or `400 bad
+  webhook`) stops the sessions delegated in it, with `team_access`. A delivery keeps the
+  issue's team from the time it was delegated, so a team the app can no longer see is
+  still found; one saved before `team_id` existed is not.
+- `revoked`: the app was removed from the workspace. Its sessions stop with `revoked`,
+  and its tokens are deleted, so `GET /linear/link` shows it as not installed.
+- The last two stop at most 20 sessions, newest first, of those delegated in the last 7
+  days, each keyed by the reason and the agent session. A stop the computer's queue has
+  no room for is logged and dropped.
 
 **A retry**: a delivery is keyed by the event: the agent session's id for a
 delegation, the activity's id for a follow-up. Both are in the signed body. The body's
@@ -1152,17 +1181,19 @@ JSON in a binary frame, like `claimed`):
 
 ```json
 { "type": "linear", "id": "<32 hex>", "kind": "created", "agent_session": "<uuid>",
-  "issue": "<uuid>", "organization": "<uuid>", "activity": null, "body": null }
+  "issue": "<uuid>", "organization": "<uuid>", "activity": null, "reason": null,
+  "body": null }
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `id` | The delivery's id, 32 hex characters. Unique per delivery. |
-| `kind` | `created` (start a session for the issue), `prompt` (a follow-up message) or `stop` (the person stopped the session). |
+| `kind` | `created` (start a session for the issue), `prompt` (a follow-up message) or `stop` (the person stopped the session, or the work was taken back). |
 | `agent_session` | The Linear agent session's id. Pass it back to `/linear/sessions/<agent_session>/activity`. |
 | `issue` | The issue's id. |
 | `organization` | The Linear workspace's id. |
-| `activity` | The id of the follow-up's activity in Linear, or `null` for `created`. |
+| `activity` | The id of the follow-up's activity in Linear, or `null` for `created` and for a stop nobody pressed. |
+| `reason` | For a stop nobody pressed, why: `unassigned`, `canceled`, `completed`, `team_access` or `revoked` (see "Stops nobody pressed"). `null` otherwise, and on a delivery kept from before the field. A computer that does not know a reason treats it as a plain stop. |
 | `body` | The follow-up's text, or `null`. See below. |
 
 `body` is set only on the frame sent the moment a `prompt` arrives while the computer is
@@ -1208,7 +1239,7 @@ after 3 seconds.
 - A workspace whose app sees no Linear traffic for 30 days can lose its refresh token.
   Its webhooks then answer `200` with nothing done, and someone must install the app
   again. `installed` in `GET /linear/link` only says that a workspace row exists: it
-  does not notice a lost refresh token, nor an app removed in Linear.
+  does not notice a lost refresh token. An app removed in Linear deletes the row.
 - A computer can still report progress for sessions it was given before its account
   unlinked Linear.
 
@@ -1216,7 +1247,8 @@ after 3 seconds.
 
 1. Register the app in Linear as an OAuth application, with the redirect URL
    `https://app.arakun.dev/linear/callback` and the webhook URL
-   `https://app.arakun.dev/linear/webhook`, with agent session events on. The app asks for
+   `https://app.arakun.dev/linear/webhook`, with the webhook categories agent session
+   events, inbox notifications and permission changes on. The app asks for
    the scopes `read,write,app:assignable,app:mentionable` with `actor=app`; the Worker
    sends them, so they are not set in Linear.
 2. Make the key that seals the tokens, and save it in your password manager:

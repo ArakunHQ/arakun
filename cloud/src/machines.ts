@@ -182,9 +182,17 @@ export interface Delivery {
   issue: string;
   organization: string;
   activity: string | null;
+  /// Why the Worker stopped a session itself; null for anything else. A
+  /// delivery kept from before it was added has none.
+  reason?: StopReason | null;
   /// Unix seconds.
   created: number;
 }
+
+/// Why a session is stopped without its stop button: Arakun was unassigned,
+/// the issue was canceled or marked done, or Arakun lost its team or the
+/// workspace.
+export type StopReason = "unassigned" | "canceled" | "completed" | "team_access" | "revoked";
 
 /// One rule of the guidance a Linear workspace or team set for agents. `team`
 /// is the display name of the team that set it, or null for the workspace.

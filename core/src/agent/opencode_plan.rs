@@ -49,7 +49,7 @@ fn key() -> Option<String> {
 }
 
 fn cache_path() -> PathBuf {
-    crate::paths::shared("opencode-plan.json")
+    crate::paths::shared(crate::paths::OPENCODE_PLAN)
 }
 
 /// The last fetch, however old; `None` when never fetched.

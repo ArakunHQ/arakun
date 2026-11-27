@@ -209,7 +209,7 @@ pub fn one_shot(cmd: &mut Command) -> std::io::Result<()> {
 }
 
 /// The file that hands a one-shot run the user's `apiKeyHelper`.
-const HELPER_SETTINGS: &str = "claude-key-helper.json";
+const HELPER_SETTINGS: &str = crate::paths::CLAUDE_KEY_HELPER.name();
 
 /// Writes `{"apiKeyHelper": helper}` to a file in `dir` only this user can
 /// read, and returns its path. A helper can hold a key (`echo sk-ant-…`), and

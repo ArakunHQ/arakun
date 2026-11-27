@@ -214,7 +214,7 @@ fn dir() -> PathBuf {
 }
 
 fn load_cache(dir: &Path) -> Vec<Survey> {
-    std::fs::read_to_string(dir.join("surveys.json"))
+    std::fs::read_to_string(dir.join(crate::paths::SURVEYS.name()))
         .map(|j| model::parse(&j))
         .unwrap_or_default()
 }
@@ -224,7 +224,7 @@ pub fn seen() -> SeenMap {
 }
 
 fn load_seen(dir: &Path) -> SeenMap {
-    std::fs::read(dir.join("surveys-seen.json"))
+    std::fs::read(dir.join(crate::paths::SURVEYS_SEEN.name()))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
@@ -247,7 +247,7 @@ fn mark_in(dir: &Path, id: &str, seen: Seen, now: u64) {
         },
     );
     if let Ok(json) = serde_json::to_vec(&map) {
-        let _ = write_file(dir, "surveys-seen.json", &json);
+        let _ = write_file(dir, crate::paths::SURVEYS_SEEN.name(), &json);
     }
 }
 
@@ -274,7 +274,7 @@ pub fn now_unix() -> u64 {
 /// How long ago this install was made, from the telemetry id file. Zero when
 /// there is none, which keeps a "wait" survey away.
 pub fn installed_for() -> Duration {
-    std::fs::metadata(dir().join("telemetry-id"))
+    std::fs::metadata(crate::paths::shared(crate::paths::TELEMETRY_ID))
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
@@ -349,7 +349,7 @@ pub fn refresh() {
         .map_or(Duration::ZERO, |(at, _)| {
             at.saturating_duration_since(Instant::now())
         });
-    let age = std::fs::metadata(dir.join("surveys.json"))
+    let age = std::fs::metadata(dir.join(crate::paths::SURVEYS.name()))
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok());
@@ -366,7 +366,9 @@ pub fn refresh() {
             let _guard = guard;
             // A cache that cannot be written counts as a failure, or an
             // unwritable disk would refetch on every call.
-            let ok = fetch().is_some_and(|body| write_file(&dir, "surveys.json", body.as_bytes()));
+            let ok = fetch().is_some_and(|body| {
+                write_file(&dir, crate::paths::SURVEYS.name(), body.as_bytes())
+            });
             if let Ok(mut r) = RETRY.lock() {
                 record(&mut r, ok, Instant::now());
             }

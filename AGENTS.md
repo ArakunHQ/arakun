@@ -231,3 +231,6 @@ request that also fixes the new lints.
 - Comments say why, not what. Docs and comments use plain, short sentences.
 - If you change a command, flag, shortcut or storage path, update the README (and
   `docs/windows.md` if it differs on Windows).
+- A new file in the data folder goes in the list in `core/src/paths.rs`. Then run
+  `ARAKUN_BLESS=1 cargo test --no-default-features -p arakun-core paths` to write
+  the storage tables in `docs/windows.md`.

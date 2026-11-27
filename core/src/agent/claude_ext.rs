@@ -274,7 +274,7 @@ fn cache_file(cwd: &Path) -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut h);
-    crate::paths::shared("cache")
+    crate::paths::shared(crate::paths::CACHE)
         .join("extensions")
         .join(format!("claude-{:016x}.json", h.finish()))
 }

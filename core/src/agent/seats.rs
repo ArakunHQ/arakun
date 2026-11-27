@@ -88,7 +88,7 @@ fn called(id: &str) -> String {
 
 /// Where named seats are listed: one file per seat, named after it.
 pub fn dir() -> PathBuf {
-    crate::paths::shared("seats")
+    crate::paths::shared(crate::paths::SEATS)
 }
 
 /// The keyring entry of seat `name`'s token. Not per test Arakun: the seats'

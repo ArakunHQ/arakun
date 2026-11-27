@@ -232,7 +232,7 @@ pub fn new_id() -> String {
 
 fn file() -> PathBuf {
     // A test instance with its own state file keeps its own servers.
-    crate::paths::store("servers.json")
+    crate::paths::store(crate::paths::SERVERS)
 }
 
 pub fn load() -> Vec<Saved> {
@@ -314,7 +314,7 @@ pub fn forget_token(id: &str) {
 }
 
 fn inbox_file() -> PathBuf {
-    file().with_file_name("servers-inbox.json")
+    crate::paths::store(crate::paths::SERVERS_INBOX)
 }
 
 /// What is kept of a server's inbox: its folders and sessions. No session is

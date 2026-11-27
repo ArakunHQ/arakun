@@ -214,7 +214,7 @@ pub struct Runs {
 }
 
 fn file() -> PathBuf {
-    crate::paths::shared("linear").join("runs.json")
+    crate::paths::shared(crate::paths::LINEAR_RUNS)
 }
 
 impl Runs {

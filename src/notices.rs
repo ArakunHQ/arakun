@@ -264,7 +264,7 @@ fn day_label(d: Date, today: Date) -> String {
 
 /// Next to the state file, like `github.json`, so a test instance keeps its own.
 fn file() -> PathBuf {
-    crate::paths::store("notices.json")
+    crate::paths::store(crate::paths::NOTICES)
 }
 
 pub fn load() -> History {

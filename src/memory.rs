@@ -101,7 +101,7 @@ pub fn now() -> u64 {
 pub fn root() -> PathBuf {
     std::env::var_os("ARAKUN_MEMORY_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| crate::state::data_dir().join("memory"))
+        .unwrap_or_else(|| crate::paths::store(crate::paths::MEMORY))
 }
 
 /// The repository `dir` belongs to: a worktree's main checkout, else the
@@ -1172,7 +1172,7 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
         Some("scripts") => crate::repeats::run(
             rest,
             &project,
-            &crate::state::data_dir().join("sessions"),
+            &crate::paths::store(crate::paths::SESSIONS),
             at,
         ),
         Some("context") => Ok(context(

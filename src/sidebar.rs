@@ -1358,7 +1358,7 @@ fn shift(to: Path, removed: Path) -> Path {
 }
 
 fn file() -> PathBuf {
-    crate::paths::store("sidebar.json")
+    crate::paths::store(crate::paths::SIDEBAR)
 }
 
 /// The extension views turned on in the Marketplace. Kept apart from the
@@ -1446,7 +1446,7 @@ impl Extensions {
 }
 
 fn extensions_file() -> PathBuf {
-    crate::paths::store("extensions.json")
+    crate::paths::store(crate::paths::EXTENSIONS)
 }
 
 #[cfg(test)]

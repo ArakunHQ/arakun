@@ -1415,7 +1415,7 @@ fn settings_file() -> PathBuf {
         return path.clone();
     }
     // A test instance with its own state file keeps its own phone, on its own port.
-    crate::paths::store("phone.json")
+    crate::paths::store(crate::paths::PHONE)
 }
 
 impl Settings {

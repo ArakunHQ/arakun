@@ -788,17 +788,21 @@ again after a week) in its [data folder](storage-and-env.md).
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
   repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
-  the repo's `.claude/skills` when "Install in" (below) picks this repo. A repository
+  the repo's `.claude/skills` when Where (below) picks everyone in the project. A repository
   with several skills is a package: a skill's details offer "Install all" for every skill
   in its repository, and typing `owner/repo` or a GitHub link in the search box lists the
   skills of that repository, also one skills.sh does not know. Skills you have already
   stay as they are. It uses
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
-  requests without one. "Install in" picks where Install puts a plugin, skill or MCP
-  server on this computer: every repo (your user), this repo shared (its committed
-  `.claude/settings.json`, `.mcp.json` or `.claude/skills`), or this repo just for you
-  (Claude Code's `local` scope; a skill goes in `.claude/skills` and is listed in
-  `.git/info/exclude`). An MCP server that signs in gets the repo in its name when it is
+  requests without one. Where, in an item's details, picks who Install sets it up for
+  on this computer, and each choice shows the file it writes: "Everyone in <project>"
+  (the committed `.mcp.json`, `.claude/settings.json` or `.claude/skills`), "Just me,
+  in <project>" (Claude Code's `local` scope: `~/.claude.json` for an MCP server,
+  `.claude/settings.local.json` for a plugin), or "Me, in every project" (your user:
+  `~/.claude.json`, `~/.claude/settings.json` or `~/.claude/skills`). A skill has no
+  "Just me" choice. The Install button, its tooltip and the notice after it name the
+  same place. With a paired server picked under "Install on", Where says the item goes
+  on that server for every project there, and a skill can't be installed. An MCP server that signs in gets the repo in its name when it is
   installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
   get what you install by the mirror (see [Server](server.md)). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,

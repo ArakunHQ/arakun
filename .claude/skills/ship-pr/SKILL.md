@@ -94,6 +94,9 @@ EOF
 
 - Follow the comments in the template, then delete them. Keep it under about
   150 words outside screenshots and `<details>`.
+- Link the issue under **Problem**: `Closes #<number>`, or `Refs #<number>` for
+  part of the work. Every pull request has one; open it first if there is none.
+  For a Linear issue, use the number of the GitHub issue the sync made for it.
 - **Problem** stays true under another solution. **Changes** says what a person
   will see or do differently; mark mechanical parts as mechanical.
 - **How did you test this?** Only commands you ran and things you tried. Say

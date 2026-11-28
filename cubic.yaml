@@ -128,6 +128,7 @@ reviews:
   custom_instructions: |
     Write in English, in plain, short sentences, as the repository's docs do. Say what breaks and why, then the fix. No praise, no filler, no emoji.
     Comment only when the change is wrong: a bug, a crash, a security or privacy problem, data loss, a broken build or platform, or a broken rule from AGENTS.md or the custom rules. Leave out style, naming, wording, comment polish, small refactors, extra tests "for completeness", unlikely edge cases and "consider" suggestions. If you are not sure something is a real problem, leave it out. Do not repeat a point you made on an earlier commit.
+    Every pull request links its issue in the description with `Closes #<number>` or `Refs #<number>` (CONTRIBUTING.md, "Pull requests"). Flag a description that links none or still says `#ISSUE_ID`.
     CI runs rustfmt, `clippy -D warnings`, the tests, cargo-deny, zizmor and the Conventional Commits title check; do not repeat what they catch.
 
   ignore:

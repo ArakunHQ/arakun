@@ -87,6 +87,13 @@ final class AppModel {
     private(set) var diffs: [DiffRef: FileDiff] = [:]
     /// The subagents of the session on screen, as the computer last listed them.
     private(set) var subagents: [Subagent] = []
+    /// The open session's model and reasoning and their choices, once asked
+    /// for (`loadSettings`); empty when the agent has not said yet.
+    private(set) var settings: [SettingSet]?
+    /// What a new session would start with, for the place and agent last asked about.
+    private(set) var startOptions: StartOptions?
+    /// Both agents' plan limits, once asked for (`loadPlanLimits`).
+    private(set) var planLimits: [PlanCard]?
     /// The subagent whose transcript is open, kept live by the computer.
     private(set) var subagent: SubagentTranscript?
     var loadingOlderSubagent = false
@@ -789,6 +796,13 @@ final class AppModel {
         case "diff":
             guard session?.id == msg["id"].str, let d = FileDiff(msg) else { return }
             diffs[d.ref] = d
+        case "settings":
+            guard session?.id == msg["id"].str else { return }
+            settings = SettingSet.list(msg)
+        case "options":
+            startOptions = StartOptions(msg)
+        case "usage":
+            planLimits = PlanCard.list(msg)
         case "started":
             starting = false
             open(msg["id"].str)
@@ -851,6 +865,7 @@ final class AppModel {
         subagents = []
         subagent = nil
         loadingOlderSubagent = false
+        settings = nil
     }
 
     /// Opens a subagent's transcript: its last entries, then every change, fill `subagent`.
@@ -898,6 +913,62 @@ final class AppModel {
             #endif
             send(["type": "diff", "session": s.id, "entry": r.entry, "index": r.index])
         }
+    }
+
+    /// Asks for the open session's model and reasoning; the answer fills `settings`.
+    func loadSettings() {
+        guard let s = session else { return }
+        #if DEBUG
+        if Self.isDemo {
+            settings = demoSettings(model: nil, reasoning: nil)
+            return
+        }
+        #endif
+        send(["type": "settings", "session": s.id])
+    }
+
+    /// Changes one of the open session's settings, from its next message on.
+    /// The computer answers with the settings as they are now. Whether it went out.
+    @discardableResult
+    func setSetting(_ key: String, to value: String) -> Bool {
+        guard let s = session else { return false }
+        #if DEBUG
+        if Self.isDemo {
+            func now(_ k: String) -> String? {
+                if k == key { return value }
+                return settings?.first(where: { $0.key == k })?.current
+            }
+            settings = demoSettings(model: now(StartPicks.model), reasoning: now(StartPicks.reasoning))
+            return true
+        }
+        #endif
+        guard canSend else { return false }
+        send(["type": "setting", "session": s.id, "key": key, "value": value])
+        return true
+    }
+
+    /// Asks what a new session of `agent` at `env` would start with; the
+    /// answer fills `startOptions`.
+    func loadStartOptions(env: String, agent: String) {
+        #if DEBUG
+        if Self.isDemo {
+            startOptions = StartOptions(env: env, agent: agent, settings: demoSettings(model: nil, reasoning: nil))
+            return
+        }
+        #endif
+        send(["type": "options", "env": env, "agent": agent])
+    }
+
+    /// Asks for both agents' plan limits; the answer fills `planLimits`. The
+    /// computer reads them again when they are stale, and sends them once read.
+    func loadPlanLimits() {
+        #if DEBUG
+        if Self.isDemo {
+            planLimits = demoPlanLimits()
+            return
+        }
+        #endif
+        send(["type": "usage"])
     }
 
     func loadOlder() {
@@ -986,11 +1057,13 @@ final class AppModel {
 
     /// Whether the start went out; the form keeps its prompt and photos when it did not.
     @discardableResult
-    func startSession(in place: Place, text: String, photos: [Photo] = []) -> Bool {
+    func startSession(in place: Place, agent: String? = nil, settings: StartPicks = StartPicks(), text: String,
+                      photos: [Photo] = []) -> Bool {
         guard canSend else { return false }
         starting = true
-        var msg: [String: Any] = ["type": "start", "env": place.path, "agent": place.agent,
+        var msg: [String: Any] = ["type": "start", "env": place.path, "agent": agent ?? place.agent,
                                   "text": PhotoUpload.text(text, photos: photos.count)]
+        if !settings.pairs.isEmpty { msg["settings"] = settings.pairs }
         // No session yet: the computer keeps the photos by their ids alone.
         if !photos.isEmpty { msg["uploads"] = upload(photos, session: "") }
         send(msg)
@@ -1259,7 +1332,7 @@ extension AppModel {
         var s = LiveSession(id: id, title: line?.title ?? "", agent: line?.agent ?? "")
         let at = Date().timeIntervalSince1970 - 600
         s.apply(session: JSON.parse(Data("""
-        {"from":0,"count":8,"status":"\(line?.status == .working ? "working" : "needs_input")","usage":{"summary":"48k tokens · $0.41"},
+        {"from":0,"count":8,"status":"\(line?.status == .working ? "working" : "needs_input")","usage":{"summary":"48k tok · $0.41 · 62% context","context_percent":62,"tokens":48000},
          "changes":{"files":3,"added":42,"removed":7},"elapsed_ms":95000,
          "entries":[
           {"type":"user","text":"Pairing links fail with limit:phones. Find out why and fix it.","at":\(at),"elapsed_ms":null,"pastes":[]},
@@ -1293,6 +1366,34 @@ extension AppModel {
           {"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[6,1]]},
           {"path":"cloud/test/relay.test.ts","name":"relay.test.ts","added":28,"removed":0,"diffs":[[7,0]]},
           {"path":"README.md","name":"README.md","added":2,"removed":2,"diffs":[[8,0]]}]}]}
+        """.utf8))!)
+    }
+
+    /// The sample model and reasoning, with `model` and `reasoning` picked.
+    func demoSettings(model: String?, reasoning: String?) -> [SettingSet] {
+        SettingSet.list(JSON.parse(Data("""
+        {"settings":[
+         {"key":"modelId","label":"Model","current":"\(model ?? "opus")","options":[
+          {"id":"opus","name":"Opus 5.5","detail":"Most capable"},
+          {"id":"sonnet","name":"Sonnet 5.5","detail":"Fast and capable"},
+          {"id":"haiku","name":"Haiku 5.5","detail":"Fastest","disabled":"Not on this plan"}]},
+         {"key":"reasoningEffort","label":"Reasoning","current":"\(reasoning ?? "medium")","options":[
+          {"id":"low","name":"Low"},{"id":"medium","name":"Medium"},{"id":"high","name":"High"},{"id":"max","name":"Max"}]}]}
+        """.utf8))!)
+    }
+
+    /// Both agents' sample plan limits.
+    func demoPlanLimits() -> [PlanCard] {
+        let now = Date().timeIntervalSince1970
+        return PlanCard.list(JSON.parse(Data("""
+        {"agents":[
+         {"agent":"claude","name":"Claude Code","signed_in":true,"plan":"Max 20x","rows":[
+          {"label":"5-hour","percent":38,"detail":"resets in 2h 10m"},
+          {"label":"Week","percent":74,"detail":"resets Tue"},
+          {"label":"Extra usage","percent":100,"detail":"$50.00 of $50.00"}],
+          "idle":["Week · Opus"],"note":null,"tone":"normal","at":\(now - 90)},
+         {"agent":"droid","name":"Droid","signed_in":false,
+          "note":"Sign in to droid or connect a Factory API key on the computer and its limits show up here."}]}
         """.utf8))!)
     }
 

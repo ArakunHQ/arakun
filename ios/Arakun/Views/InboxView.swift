@@ -8,6 +8,7 @@ struct InboxView: View {
     @State private var starting = false
     @State private var query = ""
     @State private var settings = false
+    @State private var limits = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -53,6 +54,7 @@ struct InboxView: View {
                         if model.machines.count > 1 {
                             Button("All computers", systemImage: "desktopcomputer") { model.leaveMachine() }
                         }
+                        Button("Plan limits", systemImage: "gauge.with.dots.needle.50percent") { limits = true }
                         Button("Settings", systemImage: "gearshape") { settings = true }
                     } label: {
                         Icon("more-horizontal", size: 22).foregroundStyle(Color.textMuted)
@@ -78,6 +80,7 @@ struct InboxView: View {
             .onAppear {
                 if AppModel.isDemo, let id = UserDefaults.standard.string(forKey: "demoOpen") { path = [id] }
                 if AppModel.isDemo, UserDefaults.standard.bool(forKey: "demoNew") { starting = true }
+                if AppModel.isDemo, UserDefaults.standard.bool(forKey: "demoLimits") { limits = true }
             }
             #endif
             .onAppear {
@@ -91,6 +94,7 @@ struct InboxView: View {
                 if id == nil, !path.isEmpty { path = [] }
             }
             .sheet(isPresented: $settings) { AccountView() }
+            .sheet(isPresented: $limits) { PlanLimitsView() }
             .alert("Arakun", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {

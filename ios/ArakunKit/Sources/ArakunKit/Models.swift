@@ -222,7 +222,12 @@ public struct LiveSession: Sendable {
     public var permission: PermissionAsk?
     public var question: QuestionAsk?
     public var secret: SecretAsk?
+    /// What the session has used, as one line: tokens, cost, context.
     public var usage: String?
+    /// How full the agent's context window is, 0 to 100, when the agent says.
+    public var contextPercent: Int?
+    /// Tokens the session has used so far.
+    public var tokens: Int?
     /// Prompts the computer holds until the turn ends.
     public var queue: [String]
     /// A Stop paused `queue`: it waits until resumed.
@@ -271,7 +276,10 @@ public struct LiveSession: Sendable {
         permission = PermissionAsk(j["permission"])
         question = QuestionAsk(j["question"])
         secret = SecretAsk(j["secret"])
-        usage = j["usage"]["summary"].string
+        let u = j["usage"]
+        usage = u["summary"].string.flatMap { $0.isEmpty ? nil : $0 }
+        contextPercent = u["context_percent"].int.map { min(100, max(0, $0)) }
+        tokens = u["tokens"].int.flatMap { $0 > 0 ? $0 : nil }
         queue = j["queue"].array.map(\.str)
         queuePaused = j["queue_paused"].bool
         if let t = j["title"].string, !t.isEmpty { title = t }

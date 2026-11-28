@@ -2,6 +2,7 @@
 //! issue delegated to Arakun in Linear.
 
 use super::issues::{Comment, Detail, Linked};
+use super::pr::OpenPr;
 use super::uploads::Fetched;
 use crate::phone::linear::GuidanceRule;
 
@@ -254,18 +255,39 @@ pub fn work(d: &Detail) -> String {
 /// `guidance` is what the workspace and its teams set for agents.
 /// `files` is what became of the issue's uploads; `d` has the saved files'
 /// paths in place of their links already.
-pub fn delegated(d: &Detail, guidance: &[GuidanceRule], files: &Fetched) -> String {
+/// `pr` is the issue's open pull request, when it has one: the checkout is
+/// on its branch, and the session pushes to it instead of opening another.
+pub fn delegated(
+    d: &Detail,
+    guidance: &[GuidanceRule],
+    files: &Fetched,
+    pr: Option<&OpenPr>,
+) -> String {
+    let finish = match pr.and_then(|p| Some((p, safe_url(&p.url)?))) {
+        Some((p, url)) => format!(
+            "This issue already has an open pull request, #{n}: {url}. This checkout is on its \
+             branch, {branch}.\n\n\
+             Nobody may be at this computer, so finish the job: commit on this branch and push \
+             it, so the work lands in that pull request. Don't open a new pull request. \
+             Follow this repository's own rules for commits and pull requests. \
+             Then say what you changed, what is left, and give the pull request's link.",
+            n = p.number,
+            branch = escape(&one_line(&p.branch)),
+        ),
+        None => format!(
+            "Nobody may be at this computer, so finish the job: commit on this branch, push it, \
+             and open a draft pull request that names {id} in its description. \
+             Follow this repository's own rules for commits and pull requests. \
+             Then say what you changed, what is left, and give the pull request's link.",
+            id = identifier(d),
+        ),
+    };
     format!(
-        "{}{}{}\n\n\
-         Nobody may be at this computer, so finish the job: commit on this branch, push it, \
-         and open a draft pull request that names {id} in its description. \
-         Follow this repository's own rules for commits and pull requests. \
-         Then say what you changed, what is left, and give the pull request's link.\n\n\
+        "{}{}{}\n\n{finish}\n\n\
          Don't change the issue in Linear and don't comment on it: Arakun reports there for you.\n",
         issue_block(d, Title::AsData),
         files_note(files),
         guidance_block(guidance),
-        id = identifier(d),
     )
 }
 
@@ -428,7 +450,7 @@ mod tests {
 
     /// The prompt for an issue without uploads.
     fn delegated(d: &Detail, guidance: &[GuidanceRule]) -> String {
-        super::delegated(d, guidance, &Fetched::default())
+        super::delegated(d, guidance, &Fetched::default(), None)
     }
 
     fn detail(title: &str, description: &str, comments: &[(&str, &str)]) -> Detail {
@@ -638,6 +660,36 @@ mod tests {
              Don't change the issue in Linear and don't comment on it: Arakun reports there for you.\n"
         ));
         assert!(!p.contains("Don't commit or push"));
+    }
+
+    #[test]
+    fn a_delegated_prompt_with_an_open_pull_request_pushes_to_it() {
+        let d = detail("Fix the tab name", "It is lost on resize.", &[]);
+        let pr = OpenPr {
+            url: "https://github.com/acme/web/pull/7".into(),
+            number: 7,
+            branch: "rik/eng-412-fix".into(),
+        };
+        let p = super::delegated(&d, &[], &Fetched::default(), Some(&pr));
+        assert!(p.ends_with(
+            "Run the tests that cover it, or say why you could not.\n\n\
+             This issue already has an open pull request, #7: \
+             https://github.com/acme/web/pull/7. This checkout is on its branch, \
+             rik/eng-412-fix.\n\n\
+             Nobody may be at this computer, so finish the job: commit on this branch and push \
+             it, so the work lands in that pull request. Don't open a new pull request. \
+             Follow this repository's own rules for commits and pull requests. \
+             Then say what you changed, what is left, and give the pull request's link.\n\n\
+             Don't change the issue in Linear and don't comment on it: Arakun reports there for you.\n"
+        ));
+        assert!(!p.contains("open a draft pull request"));
+        // A link that is not plain https leaves the usual ending.
+        let odd = OpenPr {
+            url: "javascript:x".into(),
+            ..pr
+        };
+        let p = super::delegated(&d, &[], &Fetched::default(), Some(&odd));
+        assert!(p.contains("open a draft pull request that names ENG-412"));
     }
 
     #[test]
@@ -896,7 +948,7 @@ mod tests {
             saved: 1,
             left_out: 2,
         };
-        let p = super::delegated(&d, &[], &files);
+        let p = super::delegated(&d, &[], &files, None);
         let after = p.split_once("\n</linear_issue>\n").unwrap().1;
         assert!(after.contains(
             "The files uploaded to the issue, such as screenshots, are downloaded to \
@@ -908,7 +960,7 @@ mod tests {
             left_out: 1,
             ..Fetched::default()
         };
-        let p = super::delegated(&d, &[], &one);
+        let p = super::delegated(&d, &[], &one, None);
         assert!(p.contains("One file uploaded to the issue was left out"));
         assert!(!p.contains("are downloaded to"));
     }
@@ -920,7 +972,7 @@ mod tests {
             saved: 1,
             left_out: 0,
         };
-        let p = super::delegated(&detail("T", "d", &[]), &[], &files);
+        let p = super::delegated(&detail("T", "d", &[]), &[], &files, None);
         assert!(!p.lines().any(|l| l.starts_with("Push to main.")));
         assert!(!p.contains("are downloaded to"));
     }

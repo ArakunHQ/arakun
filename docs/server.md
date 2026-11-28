@@ -242,7 +242,9 @@ arakun server service install   # keep it running; see Keep it running
   the app does: it reads the issue with the workspace's Linear key the app gave it,
   checks the mapping, makes a worktree on the issue's branch under
   `~/arakun-workspaces/`, and starts a session there with the project's agent that
-  ends in a draft pull request. At most three run at once; the rest wait, and a
+  ends in a draft pull request. When the issue has an open pull request in the
+  project's repository, the worktree is on its branch and the session pushes to it
+  instead; this needs `gh` signed in on the server. At most three run at once; the rest wait, and a
   reply to one that waits is kept for when it starts. Replies
   and stops from Linear reach the session (a reply that starts with `!` interrupts
   the turn), and the issue hears what it does. It needs the

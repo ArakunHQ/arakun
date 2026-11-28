@@ -20,6 +20,7 @@ use super::sessions::queued_from;
 use crate::cloud;
 use crate::linear::delegation::{Delegation, Refusal, target_for};
 use crate::linear::issues::{self, Detail};
+use crate::linear::pr::{self, OpenPr};
 use crate::linear::runs::{Added, ReportKind, Run, RunState};
 use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, Session, prompt};
@@ -48,6 +49,9 @@ struct Start {
     /// The guidance Linear sent with the delegation: from the live frame,
     /// or kept in memory with the run while it waited.
     guidance: Vec<GuidanceRule>,
+    /// The issue's open pull request, once it is looked up: the session
+    /// works on its branch and pushes to it.
+    pr: Option<OpenPr>,
 }
 
 impl Shell {
@@ -102,6 +106,7 @@ impl Shell {
                     delivery: Some(d.id),
                     comment: d.comment,
                     guidance: d.guidance,
+                    pr: None,
                 };
                 self.linear_read(start, sign_in, window, cx);
             }
@@ -175,6 +180,7 @@ impl Shell {
                 delivery: None,
                 comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
+                pr: None,
             };
             self.linear_save();
             let sessions = crate::linear::sessions();
@@ -365,6 +371,8 @@ impl Shell {
         .map(|m| m.project.clone())
     }
 
+    /// Looks for the issue's open pull request off the UI thread, then makes
+    /// the environment: on its branch when there is one.
     fn linear_make_env(
         &mut self,
         start: Start,
@@ -373,9 +381,55 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let (root, links) = (project.clone(), detail.links.clone());
+        cx.spawn_in(window, async move |this, cx| {
+            let found = cx
+                .background_spawn(crate::guard::task_or(
+                    async move { pr::open_pr(&root, &links) },
+                    |_| Err(HIT_AN_ERROR.to_string()),
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.linear_pr_found(start, detail, project, found, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn linear_pr_found(
+        &mut self,
+        mut start: Start,
+        detail: Detail,
+        project: PathBuf,
+        found: Result<Option<OpenPr>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Stopped while gh was asked.
+        if !self.linear_still_running(&start.agent_session) {
+            if let Some(id) = &start.delivery {
+                self.linear_accept(id, cx);
+            }
+            return;
+        }
         let bases = self.linear_bases(&project);
-        let branch = work_branch(&prompt::branch(&detail), &detail.issue.identifier, &bases);
-        self.linear_env(start, detail, project, branch, true, window, cx);
+        let found = found.and_then(|p| match p {
+            Some(p) => pr_branch(&p, &bases).map(|b| Some((p, b))),
+            None => Ok(None),
+        });
+        match found {
+            Err(e) => self.linear_fail(&start, no_env_line(&e), window, cx),
+            // No other name: it would not reach the pull request.
+            Ok(Some((p, branch))) => {
+                start.pr = Some(p);
+                self.linear_env(start, detail, project, branch, false, window, cx);
+            }
+            Ok(None) => {
+                let branch =
+                    work_branch(&prompt::branch(&detail), &detail.issue.identifier, &bases);
+                self.linear_env(start, detail, project, branch, true, window, cx);
+            }
+        }
     }
 
     /// The branches a delegated session must not commit on: the project's
@@ -535,7 +589,7 @@ impl Shell {
             settings.settle_in(env);
         }
         let title = prompt::title(&detail).into();
-        let text = prompt::delegated(&detail, &start.guidance, &files);
+        let text = prompt::delegated(&detail, &start.guidance, &files, start.pr.as_ref());
         let started =
             self.start_session_with(&env_path, agent, title, text, false, Vec::new(), window, cx);
         let Some(session) = started else {
@@ -553,8 +607,22 @@ impl Shell {
         }
         self.linear_save();
         self.linear_watch(cx);
-        let line = started_line(&name, &computer(), &branch);
+        let line = started_line(&name, &computer(), &branch, start.pr.as_ref());
         self.linear_report_started(&start.agent_session, line, cx);
+        // Linear shows the pull request from the start: no need to wait for
+        // the session or the CI view to find it.
+        if let Some(p) = &start.pr
+            && self.linear_runs.link(session.as_ref(), &p.url).is_some()
+        {
+            let link = Some(p.url.clone());
+            self.linear_report(
+                &start.agent_session,
+                ReportKind::Link,
+                String::new(),
+                link,
+                cx,
+            );
+        }
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }

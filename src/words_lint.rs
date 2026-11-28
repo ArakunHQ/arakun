@@ -53,7 +53,7 @@ const EXEMPT: &[&str] = &[
     "core/src/agent/launch.rs",
     // Prompts to agents and the GitHub API, in GitHub's words.
     "src/github/mod.rs",
-    "src/github/pr.rs",
+    "src/github/pr/prompts.rs",
     // Hooks and events of other apps, in their words.
     "src/island_host/external.rs",
     "src/island_host/desktop.rs",

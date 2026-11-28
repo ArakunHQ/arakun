@@ -75,6 +75,17 @@ pub(super) struct PhoneLink {
     dirty: HashMap<SharedString, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
     state_dirty: Vec<SharedString>,
+    /// Sessions whose subagents changed since the last flush.
+    subagents_dirty: Vec<SharedString>,
+    /// The brief `subagents` each phone last got, so a change that does not
+    /// show in the list stays quiet.
+    last_brief: HashMap<ClientId, String>,
+    /// The subagent each phone has open: its session, as phones call it, and its id.
+    subagent_open: HashMap<ClientId, (SharedString, String)>,
+    /// The thread of each phone's open subagent, followed for its changes.
+    subagent_follow: HashMap<ClientId, (gpui::EntityId, gpui::Subscription)>,
+    /// Phones whose open subagent changed since the last flush, with the lowest entry that did.
+    subagent_dirty: HashMap<ClientId, usize>,
     /// Something that shows in the inbox changed since the last flush.
     inbox_dirty: bool,
     flush: Option<Task<()>>,
@@ -1157,6 +1168,11 @@ impl Shell {
             hidden: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
+            subagents_dirty: Vec::new(),
+            last_brief: HashMap::new(),
+            subagent_open: HashMap::new(),
+            subagent_follow: HashMap::new(),
+            subagent_dirty: HashMap::new(),
             inbox_dirty: false,
             flush: None,
             last_inbox: String::new(),
@@ -1389,6 +1405,10 @@ impl Shell {
                 let pid: SharedString = session.into();
                 if let Some(link) = &mut self.phone {
                     link.watching.insert(client, pid.clone());
+                    if link.subagent_open.get(&client).is_some_and(|(p, _)| *p != pid) {
+                        link.subagent_open.remove(&client);
+                        link.subagent_follow.remove(&client);
+                    }
                 }
                 // A server's session: its server sends it here as it goes.
                 if self.find_env(&env_path).is_some_and(|e| e.remote.is_some()) {
@@ -1407,10 +1427,83 @@ impl Shell {
                         link.entry_stream.opened(client, &pid, append);
                     }
                     this.phone_send(client, reply);
+                    // After the session, which it belongs to. An app that
+                    // follows this one does not read a brief list.
+                    let brief = this.phone_brief_subagents(&path, &sid, &pid, cx);
+                    this.phone_send(client, brief.clone());
+                    if let Some(link) = &mut this.phone {
+                        link.last_brief.insert(client, brief);
+                    }
                 });
             }
             ClientMsg::Close { .. } => self.phone_stop_watching(client, cx),
-            ClientMsg::Entries { session, from, to } => {
+            ClientMsg::Entries {
+                session,
+                from,
+                to,
+                subagent: Some(sub),
+            } => {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
+                    return;
+                };
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let reply = this.with_phone_subagent(&path, &sid, &sub, cx, |all, scope| {
+                        let to = Some(to.max(from));
+                        wire::subagent_entries_message(&session, &sub, all, from, to, &scope)
+                    });
+                    if let Some(reply) = reply {
+                        this.phone_send(client, reply);
+                    }
+                });
+            }
+            ClientMsg::Subagent {
+                session,
+                subagent: None,
+            } => {
+                if let Some(link) = &mut self.phone
+                    && link.subagent_open.get(&client).is_some_and(|(p, _)| *p == session)
+                {
+                    link.subagent_open.remove(&client);
+                    link.subagent_follow.remove(&client);
+                }
+            }
+            ClientMsg::Subagent {
+                session,
+                subagent: Some(sub),
+            } => {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
+                    self.phone_send(client, wire::error("that session is gone"));
+                    return;
+                };
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let reply = this.with_phone_subagent(&path, &sid, &sub, cx, |all, scope| {
+                        let from = all.len().saturating_sub(wire::TAIL);
+                        wire::subagent_entries_message(&session, &sub, all, from, None, &scope)
+                    });
+                    let Some(reply) = reply else {
+                        if let Some(link) = &mut this.phone {
+                            link.subagent_open.remove(&client);
+                            link.subagent_follow.remove(&client);
+                        }
+                        this.phone_send(client, wire::error("that subagent is gone"));
+                        return;
+                    };
+                    if let Some(link) = &mut this.phone {
+                        link.subagent_open.insert(client, (session.into(), sub));
+                        link.subagent_follow.remove(&client);
+                    }
+                    this.phone_send(client, reply);
+                    this.phone_follow_subagent(client, cx);
+                });
+            }
+            ClientMsg::Entries {
+                session,
+                from,
+                to,
+                subagent: None,
+            } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     return;
                 };
@@ -1732,6 +1825,10 @@ impl Shell {
         let Some(link) = &mut self.phone else {
             return;
         };
+        link.subagent_open.remove(&client);
+        link.subagent_follow.remove(&client);
+        link.subagent_dirty.remove(&client);
+        link.last_brief.remove(&client);
         let Some(id) = link.watching.remove(&client) else {
             return;
         };
@@ -1941,6 +2038,109 @@ impl Shell {
         })
     }
 
+    /// `subagents`, brief, of session `id` (as phones call it `pid`): the
+    /// live thread's, or the read transcript's.
+    fn phone_brief_subagents(&self, env_path: &Path, id: &str, pid: &str, cx: &App) -> String {
+        match self.phone_thread(env_path, id) {
+            Some(thread) => {
+                let heads: Vec<wire::SubagentHead> =
+                    thread.read(cx).subagents().iter().map(Into::into).collect();
+                wire::brief_subagents_message(pid, &heads)
+            }
+            None => {
+                let path = state::transcript_path(id);
+                let with = |all: &[crate::agent::SubagentRecord], _: &Path| {
+                    let heads: Vec<wire::SubagentHead> = all.iter().map(Into::into).collect();
+                    wire::brief_subagents_message(pid, &heads)
+                };
+                match &self.phone {
+                    Some(link) => link.last_read.with_kept_subagents(&path, with),
+                    None => with(&[], Path::new("")),
+                }
+            }
+        }
+    }
+
+    /// Runs `f` over the entries of subagent `sub` of a session, with the
+    /// scope they are read in: the live thread's, or the transcript's that
+    /// [`Shell::phone_when_read`] read. None when there is no such subagent.
+    fn with_phone_subagent<R>(
+        &self,
+        env_path: &Path,
+        id: &str,
+        sub: &str,
+        cx: &App,
+        f: impl FnOnce(&[std::sync::Arc<crate::agent::Entry>], wire::Scope) -> R,
+    ) -> Option<R> {
+        match self.phone_thread(env_path, id) {
+            Some(thread) => {
+                let t = thread.read(cx);
+                let s = t.subagent(sub)?;
+                let scope = self.phone_scope(env_path, t.cwd());
+                Some(f(s.thread.read(cx).entries(), scope))
+            }
+            None => {
+                let link = self.phone.as_ref()?;
+                link.last_read
+                    .with_kept_subagents(&state::transcript_path(id), |all, cwd| {
+                        let r = all.iter().find(|r| r.answers_to(sub))?;
+                        Some(f(&r.entries, self.phone_scope(env_path, cwd)))
+                    })
+            }
+        }
+    }
+
+    /// Follows the thread of the subagent phone `client` has open, so what
+    /// changes in it reaches the phone. Called again when the session's
+    /// subagents change: the session may have come back to life since, with
+    /// new threads.
+    fn phone_follow_subagent(&mut self, client: ClientId, cx: &mut Context<Self>) {
+        let Some((pid, sub)) = self
+            .phone
+            .as_ref()
+            .and_then(|l| l.subagent_open.get(&client).cloned())
+        else {
+            return;
+        };
+        let child = self.phone_session(&pid).and_then(|(env_path, sid)| {
+            let thread = self.phone_thread(&env_path, &sid)?;
+            let t = thread.read(cx);
+            t.subagent(&sub).map(|s| s.thread.clone())
+        });
+        let Some(link) = &mut self.phone else {
+            return;
+        };
+        let Some(child) = child else {
+            link.subagent_follow.remove(&client);
+            return;
+        };
+        let before = link.subagent_follow.get(&client).map(|(e, _)| *e);
+        if before == Some(child.entity_id()) {
+            return;
+        }
+        let followed = cx.subscribe(&child, move |this, _, ev: &ThreadEvent, cx| {
+            let from = match ev {
+                ThreadEvent::EntriesChanged { from } => *from,
+                ThreadEvent::Reset => 0,
+                _ => return,
+            };
+            let Some(link) = &mut this.phone else {
+                return;
+            };
+            let e = link.subagent_dirty.entry(client).or_insert(from);
+            *e = (*e).min(from);
+            this.phone_schedule_flush(cx);
+        });
+        link.subagent_follow
+            .insert(client, (child.entity_id(), followed));
+        // Another thread than the one the phone read: its tail again.
+        if before.is_some() {
+            let tail = child.read(cx).entries().len().saturating_sub(wire::TAIL);
+            link.subagent_dirty.insert(client, tail);
+            self.phone_schedule_flush(cx);
+        }
+    }
+
     /// Runs `f` over a session's entries and directory: the live thread's, or
     /// the transcript's when the session is not running. The transcript is
     /// the one [`Shell::phone_when_read`] read; this never reads it.
@@ -2032,6 +2232,20 @@ impl Shell {
             ThreadEvent::Reset => {
                 link.dirty.insert(id.clone(), 0);
             }
+            ThreadEvent::SubagentsChanged { .. } => {
+                if !link.subagents_dirty.contains(id) {
+                    link.subagents_dirty.push(id.clone());
+                }
+                let open: Vec<ClientId> = link
+                    .subagent_open
+                    .iter()
+                    .filter(|(_, (p, _))| p == id)
+                    .map(|(c, _)| *c)
+                    .collect();
+                for client in open {
+                    self.phone_follow_subagent(client, cx);
+                }
+            }
             // Shell changes land a moment after the turn ends; the changes chip follows them.
             ThreadEvent::StatusChanged
             | ThreadEvent::NeedsPermission
@@ -2063,6 +2277,8 @@ impl Shell {
         link.flush = None;
         let dirty: Vec<(SharedString, usize)> = link.dirty.drain().collect();
         let states: Vec<SharedString> = std::mem::take(&mut link.state_dirty);
+        let subagents: Vec<SharedString> = std::mem::take(&mut link.subagents_dirty);
+        let opened: Vec<(ClientId, usize)> = link.subagent_dirty.drain().collect();
         if std::mem::take(&mut link.inbox_dirty) {
             self.phone_sync_inbox(cx);
         }
@@ -2098,6 +2314,39 @@ impl Shell {
             let private = self.phone.as_ref().is_some_and(|l| l.server.private());
             let msg = wire::state_message(&id, t, super::sessions::status_of(t), private);
             self.phone_send_watchers(&id, msg);
+        }
+        for pid in subagents {
+            let Some((env_path, sid)) = self.phone_session(&pid) else {
+                continue;
+            };
+            let brief = self.phone_brief_subagents(&env_path, &sid, &pid, cx);
+            let Some(link) = &mut self.phone else {
+                return;
+            };
+            for (client, watched) in &link.watching {
+                if *watched == pid && link.last_brief.get(client) != Some(&brief) {
+                    link.server.send(*client, brief.clone());
+                    link.last_brief.insert(*client, brief.clone());
+                }
+            }
+        }
+        for (client, from) in opened {
+            let Some((pid, sub)) = self
+                .phone
+                .as_ref()
+                .and_then(|l| l.subagent_open.get(&client).cloned())
+            else {
+                continue;
+            };
+            let Some((env_path, sid)) = self.phone_session(&pid) else {
+                continue;
+            };
+            let msg = self.with_phone_subagent(&env_path, &sid, &sub, cx, |all, scope| {
+                wire::subagent_entries_message(&pid, &sub, all, from, None, &scope)
+            });
+            if let Some(msg) = msg {
+                self.phone_send(client, msg);
+            }
         }
     }
 

@@ -11,6 +11,12 @@
 //!   client that opened the session with `append` (see [`EntryStream`]).
 //! - `state`: a watched session's status, permission or usage changed.
 //! - `usage`: both agents' plan limits, on request and when they change.
+//! - `subagents`: the subagents of a watched session, when the list changes.
+//!   A phone gets each one's name, task, state and times (`brief`); the app
+//!   gets them whole, with their transcripts.
+//! - `subagent_entries`: a subagent's entries from `from` on, as `entries`
+//!   are a session's: the tail when a phone opens it, then every change, and
+//!   older pages on request (`older`).
 //! - `transcript`: a session's entries whole, on request: for the app, which
 //!   shows a server's session as its own.
 //! - `part`: a piece of a message too big for one frame.
@@ -37,8 +43,8 @@ use serde_json::{Value, json};
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
-    AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, SubagentRecord,
-    Thread, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost,
+    AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, Subagent,
+    SubagentRecord, SubagentState, Thread, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
 
@@ -308,7 +314,7 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
             } else {
                 t.raw_output.as_deref().map(|o| tail(o, CLIP))
             };
-            json!({
+            let mut v = json!({
                 "type": "tool",
                 "id": t.id,
                 "title": t.title,
@@ -322,7 +328,12 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
                 "diffs": diffs,
                 "locations": t.locations.iter().map(|p| file_name(p)).collect::<Vec<_>>(),
                 "secret": t.secret,
-            })
+            });
+            // The subagent it ran under, so a phone can group it there.
+            if let Some(parent) = &t.parent {
+                v["parent"] = json!(parent);
+            }
+            v
         }
         Entry::Plan { entries } => json!({
             "type": "plan",
@@ -1249,8 +1260,110 @@ pub fn subagents_message(id: &str, subagents: &[SubagentRecord]) -> Vec<String> 
 }
 
 /// The subagents of a `subagents` message, or why they could not be read.
+/// A phone's `brief` list has no transcripts, so it is not read as one.
 pub fn read_subagents(msg: &Value) -> Result<Vec<SubagentRecord>, String> {
+    if msg["brief"].as_bool() == Some(true) {
+        return Err("a brief list has no transcripts".into());
+    }
     serde_json::from_value(msg["subagents"].clone()).map_err(|e| e.to_string())
+}
+
+/// A subagent as a phone lists it: what it is, not what it said.
+pub struct SubagentHead<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub task: &'a str,
+    pub state: SubagentState,
+    pub started: u64,
+    pub ended: Option<u64>,
+    /// The tool call in the session that started it.
+    pub call: Option<&'a str>,
+    /// The subagent that started it, when another one did.
+    pub host: Option<&'a str>,
+}
+
+impl<'a> From<&'a Subagent> for SubagentHead<'a> {
+    fn from(s: &'a Subagent) -> Self {
+        SubagentHead {
+            id: &s.id,
+            name: &s.name,
+            task: &s.task,
+            state: s.state,
+            started: s.started,
+            ended: s.ended,
+            // A mirrored one is its Task call.
+            call: s.call.as_deref().or(s.mirrored.then_some(s.id.as_str())),
+            host: s.host(),
+        }
+    }
+}
+
+impl<'a> From<&'a SubagentRecord> for SubagentHead<'a> {
+    fn from(r: &'a SubagentRecord) -> Self {
+        SubagentHead {
+            id: &r.id,
+            name: &r.name,
+            task: &r.task,
+            state: r.state,
+            started: r.started,
+            ended: r.ended,
+            call: r.call.as_deref(),
+            host: r.host.as_deref(),
+        }
+    }
+}
+
+/// `subagents` as a phone gets it: each one `brief`, without its transcript,
+/// which it asks for when it opens one. A phone takes no `part`s, so when the
+/// list is too long for a frame the oldest go first.
+pub fn brief_subagents_message(id: &str, subagents: &[SubagentHead]) -> String {
+    let list: Vec<Value> = subagents
+        .iter()
+        .map(|s| {
+            json!({
+                "id": s.id, "name": s.name, "task": head(s.task, CLIP_TASK), "state": s.state,
+                "started": s.started, "ended": s.ended, "call": s.call, "host": s.host,
+            })
+        })
+        .collect();
+    let mut skip = 0;
+    loop {
+        let msg =
+            json!({ "type": "subagents", "id": id, "brief": true, "subagents": &list[skip..] })
+                .to_string();
+        if msg.len() <= FRAME_TEXT || skip == list.len() {
+            return msg;
+        }
+        skip += 1;
+    }
+}
+
+/// The longest task a brief subagent carries: the list shows a line or two.
+const CLIP_TASK: usize = 300;
+
+/// `subagent_entries`: subagent `subagent`'s entries `from..to` (to the end
+/// without `to`), and how many it has. Only a page asked for has a `to`.
+pub fn subagent_entries_message(
+    id: &str,
+    subagent: &str,
+    all: &[Arc<Entry>],
+    from: usize,
+    to: Option<usize>,
+    scope: &Scope,
+) -> String {
+    let asked = to;
+    let to = to.unwrap_or(all.len()).min(all.len());
+    let from = from.min(to);
+    let entries: Vec<Value> = all[from..to].iter().map(|e| entry(e, scope)).collect();
+    let mut msg = json!({
+        "type": "subagent_entries", "id": id, "subagent": subagent,
+        "from": from, "count": all.len(), "entries": entries,
+    });
+    // A page asked for, which a phone puts before what it has.
+    if asked.is_some() {
+        msg["older"] = json!(true);
+    }
+    msg.to_string()
 }
 
 /// `msg` as the messages to send for it: itself when it fits a frame, else
@@ -1561,6 +1674,32 @@ mod tests {
         assert_eq!(v["output"], "ok\n");
         assert_eq!(v["locations"][0], "lib.rs");
         assert_eq!(v["status"], "completed");
+        // Not made under a subagent: no parent at all, as older phones knew it.
+        assert!(v.get("parent").is_none());
+    }
+
+    #[test]
+    fn a_call_made_under_a_subagent_names_it() {
+        let call = ToolCall {
+            id: "t2".into(),
+            title: "Read".into(),
+            kind: "read".into(),
+            status: ToolStatus::Completed,
+            content: vec![],
+            locations: vec![],
+            raw_input: None,
+            raw_output: None,
+            added: 0,
+            removed: 0,
+            terminal_output: String::new(),
+            terminal_dropped_lines: 0,
+            exit_code: None,
+            parent: Some("task1".into()),
+            tool_name: None,
+            secret: None,
+        };
+        let v = entry(&Entry::Tool(call), &scope(std::path::Path::new(".")));
+        assert_eq!(v["parent"], "task1");
     }
 
     #[test]
@@ -1948,6 +2087,114 @@ mod tests {
 
         // A message without them is not read as none.
         assert!(read_subagents(&json!({ "type": "subagents", "id": "s1" })).is_err());
+    }
+
+    fn record(id: &str, task: &str, entries: Vec<Arc<Entry>>) -> SubagentRecord {
+        SubagentRecord {
+            id: id.into(),
+            name: "Explore".into(),
+            task: task.into(),
+            state: SubagentState::Completed,
+            started: 7,
+            ended: Some(9),
+            host: None,
+            call: Some(format!("call-{id}")),
+            earlier: Vec::new(),
+            entries,
+        }
+    }
+
+    #[test]
+    fn a_phone_gets_subagents_brief_without_their_transcripts() {
+        let sent = [
+            record("a", "Find the bug", vec![said("found it")]),
+            record("b", &"y".repeat(5000), Vec::new()),
+        ];
+        let heads: Vec<SubagentHead> = sent.iter().map(Into::into).collect();
+        let msg: Value = serde_json::from_str(&brief_subagents_message("s1", &heads)).unwrap();
+        assert_eq!(
+            (
+                msg["type"].as_str(),
+                msg["id"].as_str(),
+                msg["brief"].as_bool()
+            ),
+            (Some("subagents"), Some("s1"), Some(true))
+        );
+        let a = &msg["subagents"][0];
+        assert_eq!(
+            a,
+            &json!({
+                "id": "a", "name": "Explore", "task": "Find the bug", "state": "completed",
+                "started": 7, "ended": 9, "call": "call-a", "host": null,
+            })
+        );
+        // A long task is cut to a line or two.
+        let task = msg["subagents"][1]["task"].as_str().unwrap();
+        assert!(task.chars().count() <= CLIP_TASK + 1 && task.ends_with('…'));
+
+        // The app, which reads them whole, does not take a brief list for one.
+        assert!(read_subagents(&msg).is_err());
+    }
+
+    #[test]
+    fn a_brief_list_too_long_for_a_frame_drops_the_oldest() {
+        let sent: Vec<SubagentRecord> = (0..1000)
+            .map(|i| record(&i.to_string(), &"t".repeat(400), Vec::new()))
+            .collect();
+        let heads: Vec<SubagentHead> = sent.iter().map(Into::into).collect();
+        let text = brief_subagents_message("s1", &heads);
+        assert!(text.len() <= FRAME_TEXT);
+        let msg: Value = serde_json::from_str(&text).unwrap();
+        let list = msg["subagents"].as_array().unwrap();
+        assert!(!list.is_empty() && list.len() < 1000);
+        assert_eq!(list.last().unwrap()["id"], "999");
+    }
+
+    #[test]
+    fn a_subagents_transcript_comes_as_its_tail_then_older_pages() {
+        let all: Vec<Arc<Entry>> = (0..80).map(|i| said(&i.to_string())).collect();
+        let at = scope(std::path::Path::new("."));
+        let read = |s: String| serde_json::from_str::<Value>(&s).unwrap();
+
+        // Opened: the tail, not marked older.
+        let tail = read(subagent_entries_message(
+            "s1",
+            "a",
+            &all,
+            80 - TAIL,
+            None,
+            &at,
+        ));
+        assert_eq!(
+            (
+                tail["type"].as_str(),
+                tail["id"].as_str(),
+                tail["subagent"].as_str()
+            ),
+            (Some("subagent_entries"), Some("s1"), Some("a"))
+        );
+        assert_eq!(
+            (tail["from"].as_u64(), tail["count"].as_u64()),
+            (Some(30), Some(80))
+        );
+        assert_eq!(tail["entries"].as_array().unwrap().len(), TAIL);
+        assert_eq!(tail["entries"][0]["text"], "30");
+        assert!(tail.get("older").is_none());
+
+        // A page asked for: that range, marked older, and kept inside the transcript.
+        let page = read(subagent_entries_message("s1", "a", &all, 10, Some(20), &at));
+        assert_eq!(page["from"], 10);
+        assert_eq!(page["entries"].as_array().unwrap().len(), 10);
+        assert_eq!(page["entries"][0]["text"], "10");
+        assert_eq!(page["older"], true);
+        let past = read(subagent_entries_message("s1", "a", &all, 90, Some(99), &at));
+        assert_eq!(
+            (
+                past["from"].as_u64(),
+                past["entries"].as_array().unwrap().len()
+            ),
+            (Some(80), 0)
+        );
     }
 
     #[test]

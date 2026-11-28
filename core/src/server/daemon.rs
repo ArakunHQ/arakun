@@ -183,11 +183,19 @@ pub struct Daemon {
     /// Sessions whose subagents changed since the last flush.
     subagents_dirty: HashSet<String>,
     /// Apps that read whole transcripts, as one following a server does.
-    /// Only they are sent `subagents`; a phone does not show them.
+    /// Only they are sent `subagents` whole; phones get them brief.
     readers: HashSet<ClientId>,
     /// What each watched session's entries were last sent as, to send a
     /// streaming reply's new words only.
     entry_stream: wire::EntryStream,
+    /// The brief `subagents` each phone last got of each session, so a
+    /// change that does not show in the list stays quiet.
+    last_brief: HashMap<(ClientId, String), String>,
+    /// The subagent each phone has open: its session and its id.
+    subagent_open: HashMap<ClientId, (String, String)>,
+    /// Open subagents whose entries changed since the last flush, by session
+    /// and id, with the lowest index that did.
+    subagent_dirty: HashMap<(String, String), usize>,
     inbox_dirty: bool,
     flush: Option<Task<()>>,
     last_inbox: String,
@@ -1246,6 +1254,9 @@ impl Daemon {
             subagents_dirty: HashSet::new(),
             readers: HashSet::new(),
             entry_stream: wire::EntryStream::default(),
+            last_brief: HashMap::new(),
+            subagent_open: HashMap::new(),
+            subagent_dirty: HashMap::new(),
             inbox_dirty: false,
             flush: None,
             last_inbox: String::new(),
@@ -1646,24 +1657,34 @@ impl Daemon {
         let Some(live) = self.live.get(id) else {
             return;
         };
-        let children: Vec<Entity<Thread>> = live
+        let children: Vec<(Entity<Thread>, String, bool)> = live
             .thread
             .read(cx)
             .subagents()
             .iter()
-            .filter(|s| !s.mirrored && !live.children.contains_key(&s.thread.entity_id()))
-            .map(|s| s.thread.clone())
+            .filter(|s| !live.children.contains_key(&s.thread.entity_id()))
+            .map(|s| (s.thread.clone(), s.id.clone(), s.mirrored))
             .collect();
-        for child in children {
+        for (child, sub_id, mirrored) in children {
             let sid = id.to_string();
             let sub = cx.subscribe(&child, move |this, _, ev: &ThreadEvent, cx| {
-                if matches!(
-                    ev,
-                    ThreadEvent::EntriesChanged { .. }
-                        | ThreadEvent::Reset
-                        | ThreadEvent::StatusChanged
-                ) {
+                // A mirrored one's changes are its session's, which say so.
+                if !mirrored
+                    && matches!(
+                        ev,
+                        ThreadEvent::EntriesChanged { .. }
+                            | ThreadEvent::Reset
+                            | ThreadEvent::StatusChanged
+                    )
+                {
                     this.subagents_changed(&sid, cx);
+                }
+                match ev {
+                    ThreadEvent::EntriesChanged { from } => {
+                        this.subagent_entries_changed(&sid, &sub_id, *from, cx)
+                    }
+                    ThreadEvent::Reset => this.subagent_entries_changed(&sid, &sub_id, 0, cx),
+                    _ => {}
                 }
             });
             if let Some(live) = self.live.get_mut(id) {
@@ -1672,20 +1693,89 @@ impl Daemon {
         }
     }
 
-    /// Notes that session `id`'s subagents are to be sent again, if an app
-    /// that shows them watches it.
+    /// Notes that session `id`'s subagents are to be sent again, if a
+    /// device watches it.
     fn subagents_changed(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.stopping || !self.read_by_app(id) {
+        if self.stopping || !self.watched(id) {
             return;
         }
         self.subagents_dirty.insert(id.to_string());
         self.schedule_flush(cx);
     }
 
-    fn read_by_app(&self, id: &str) -> bool {
-        self.watching
-            .iter()
-            .any(|(c, w)| self.readers.contains(c) && w.iter().any(|w| w == id))
+    /// Notes that subagent `sub` of session `id` changed from entry `from`
+    /// on, if a phone has it open.
+    fn subagent_entries_changed(
+        &mut self,
+        id: &str,
+        sub: &str,
+        from: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.stopping
+            || !self
+                .subagent_open
+                .values()
+                .any(|(s, a)| s == id && a == sub)
+        {
+            return;
+        }
+        let e = self
+            .subagent_dirty
+            .entry((id.to_string(), sub.to_string()))
+            .or_insert(from);
+        *e = (*e).min(from);
+        self.schedule_flush(cx);
+    }
+
+    /// Whether `client` is a phone: an app is sent `subagents` whole.
+    fn is_phone(&self, client: ClientId) -> bool {
+        !self.readers.contains(&client) && !self.desktops.0.contains(&client)
+    }
+
+    /// The brief `subagents` of session `id`, for phones.
+    fn brief_subagents(&self, id: &str, cx: &App) -> String {
+        match self.live.get(id) {
+            Some(live) => {
+                let t = live.thread.read(cx);
+                let heads: Vec<wire::SubagentHead> = t.subagents().iter().map(Into::into).collect();
+                wire::brief_subagents_message(id, &heads)
+            }
+            None => self
+                .last_read
+                .with_subagents(&self.store.transcript_path(id), |all, _| {
+                    let heads: Vec<wire::SubagentHead> = all.iter().map(Into::into).collect();
+                    wire::brief_subagents_message(id, &heads)
+                }),
+        }
+    }
+
+    /// Subagent `sub` of session `id`: `f` over its entries and the session's
+    /// directory, from the live thread or the saved transcript. None when the
+    /// session has no such subagent.
+    fn with_subagent<R>(
+        &self,
+        id: &str,
+        sub: &str,
+        cx: &App,
+        f: impl FnOnce(&[Arc<Entry>], &Path) -> R,
+    ) -> Option<R> {
+        match self.live.get(id) {
+            Some(live) => {
+                let t = live.thread.read(cx);
+                let s = t.subagent(sub)?;
+                Some(f(s.thread.read(cx).entries(), t.cwd()))
+            }
+            None => {
+                let path = self.store.transcript_path(id);
+                self.writer.behind(&path);
+                self.last_read.with_subagents(&path, |all, cwd| {
+                    all.iter()
+                        .find(|r| r.answers_to(sub))
+                        .map(|r| f(&r.entries, cwd))
+                })
+            }
+        }
     }
 
     /// The `subagents` message of session `id`: from its thread, or its saved transcript.
@@ -2828,12 +2918,43 @@ impl Daemon {
             self.send_watchers(&id, msg);
         }
         for id in subagents {
-            let frames = self.subagents_message(&id, cx);
-            for (client, watched) in &self.watching {
-                if self.readers.contains(client) && watched.contains(&id) {
+            let watchers: Vec<ClientId> = self
+                .watching
+                .iter()
+                .filter(|(_, w)| w.contains(&id))
+                .map(|(c, _)| *c)
+                .collect();
+            if watchers.iter().any(|c| self.readers.contains(c)) {
+                let frames = self.subagents_message(&id, cx);
+                for client in watchers.iter().filter(|c| self.readers.contains(c)) {
                     for frame in &frames {
                         self.transport.send(*client, frame.clone());
                     }
+                }
+            }
+            if watchers.iter().any(|c| self.is_phone(*c)) {
+                let brief = self.brief_subagents(&id, cx);
+                let phones: Vec<ClientId> =
+                    watchers.into_iter().filter(|c| self.is_phone(*c)).collect();
+                for client in phones {
+                    let key = (client, id.clone());
+                    if self.last_brief.get(&key) != Some(&brief) {
+                        self.transport.send(client, brief.clone());
+                        self.last_brief.insert(key, brief.clone());
+                    }
+                }
+            }
+        }
+        let opened: Vec<((String, String), usize)> = self.subagent_dirty.drain().collect();
+        for ((id, sub), from) in opened {
+            let Some(msg) = self.with_subagent(&id, &sub, cx, |all, cwd| {
+                wire::subagent_entries_message(&id, &sub, all, from, None, &self.scope(cwd))
+            }) else {
+                continue;
+            };
+            for (client, open) in &self.subagent_open {
+                if open.0 == id && open.1 == sub {
+                    self.transport.send(*client, msg.clone());
                 }
             }
         }
@@ -2849,6 +2970,8 @@ impl Daemon {
 
     /// A device looked away from its session: the agent may stop if no one else is looking.
     fn stop_watching(&mut self, client: ClientId, cx: &mut Context<Self>) {
+        self.subagent_open.remove(&client);
+        self.last_brief.retain(|(c, _), _| *c != client);
         for id in self.watching.remove(&client).unwrap_or_default() {
             self.retire_if_unwatched(&id, cx);
         }
@@ -2940,6 +3063,8 @@ impl Daemon {
         self.desktops.forget(id);
         self.readers.remove(&id);
         self.entry_stream.forget_client(id);
+        self.subagent_open.remove(&id);
+        self.last_brief.retain(|(c, _), _| *c != id);
         self.asked.retain(|_, c| *c != id);
         self.rewinds.retain(|_, r| r.client != id);
         // Its terminals keep running, for when it comes back.
@@ -3008,12 +3133,98 @@ impl Daemon {
                     Some(commands) => self.transport.send(client, commands),
                     None => self.send_folder_skills(client, &session, cx),
                 }
+                // An app asks for them whole with the transcript.
+                if !keep && self.is_phone(client) {
+                    let brief = self.brief_subagents(&session, cx);
+                    self.transport.send(client, brief.clone());
+                    self.last_brief.retain(|(c, _), _| *c != client);
+                    self.last_brief.insert((client, session.clone()), brief);
+                    if self
+                        .subagent_open
+                        .get(&client)
+                        .is_some_and(|(s, _)| *s != session)
+                    {
+                        self.subagent_open.remove(&client);
+                    }
+                }
             }
             ClientMsg::Close { session: None } => self.stop_watching(client, cx),
             ClientMsg::Close {
                 session: Some(session),
             } => self.stop_watching_one(client, &session, cx),
-            ClientMsg::Entries { session, from, to } => {
+            ClientMsg::Entries {
+                session,
+                from,
+                to,
+                subagent: Some(sub),
+            } => {
+                if self.store.session(&session).is_none() {
+                    return;
+                }
+                let reply = self.with_subagent(&session, &sub, cx, |all, cwd| {
+                    let to = to.max(from);
+                    wire::subagent_entries_message(
+                        &session,
+                        &sub,
+                        all,
+                        from,
+                        Some(to),
+                        &self.scope(cwd),
+                    )
+                });
+                if let Some(reply) = reply {
+                    self.transport.send(client, reply);
+                }
+            }
+            ClientMsg::Subagent {
+                session,
+                subagent: None,
+            } => {
+                if self
+                    .subagent_open
+                    .get(&client)
+                    .is_some_and(|(s, _)| *s == session)
+                {
+                    self.subagent_open.remove(&client);
+                }
+            }
+            ClientMsg::Subagent {
+                session,
+                subagent: Some(sub),
+            } => {
+                if self.store.session(&session).is_none() {
+                    self.transport.send(client, gone(&session));
+                    return;
+                }
+                let reply = self.with_subagent(&session, &sub, cx, |all, cwd| {
+                    let from = all.len().saturating_sub(wire::TAIL);
+                    wire::subagent_entries_message(
+                        &session,
+                        &sub,
+                        all,
+                        from,
+                        None,
+                        &self.scope(cwd),
+                    )
+                });
+                match reply {
+                    Some(reply) => {
+                        self.subagent_open.insert(client, (session, sub));
+                        self.transport.send(client, reply);
+                    }
+                    None => {
+                        self.subagent_open.remove(&client);
+                        self.transport
+                            .send(client, session_error(&session, "that subagent is gone"));
+                    }
+                }
+            }
+            ClientMsg::Entries {
+                session,
+                from,
+                to,
+                subagent: None,
+            } => {
                 if self.store.session(&session).is_none() {
                     return;
                 }

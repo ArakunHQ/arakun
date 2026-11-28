@@ -41,9 +41,9 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 | `Ctrl+1` … `Ctrl+9` | Go to tab 1–8, or the last tab |
 | `Ctrl+Shift+PgUp` / `Ctrl+Shift+PgDn` | Move the tab left / right |
 | `Alt+P` | Pin or unpin the session's tab in the title bar |
-| `Ctrl+D` / `Ctrl+Shift+D` | Split right / down (again to unsplit) |
-| `Ctrl+Alt+Arrows` | Move the focus to the other pane |
-| `Ctrl+Alt+Shift+Arrows` | Swap the panes |
+| `Ctrl+D` / `Ctrl+Shift+D` | Split right / down (again for a third pane, then to unsplit) |
+| `Ctrl+Alt+Arrows` | Move the focus to the previous / next pane |
+| `Ctrl+Alt+Shift+Arrows` | Swap the focused pane with the next one |
 
 **Terminal and browser**
 

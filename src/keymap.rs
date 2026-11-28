@@ -275,14 +275,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     bound(
         TABS,
-        "Split right / down (again to unsplit)",
+        "Split right / down (again for a third pane, then to unsplit)",
         NOT_TERMINAL,
         &["ctrl-d", "ctrl-shift-d"],
         &[act!(shell::SplitRight), act!(shell::SplitDown)],
     ),
     bound(
         TABS,
-        "Move the focus to the other pane",
+        "Move the focus to the previous / next pane",
         NOT_TERMINAL,
         &[
             "ctrl-alt-left",
@@ -290,11 +290,16 @@ pub const SHORTCUTS: &[Shortcut] = &[
             "ctrl-alt-up",
             "ctrl-alt-down",
         ],
-        &[act!(shell::FocusOtherPane)],
+        &[
+            act!(shell::FocusPrevPane),
+            act!(shell::FocusNextPane),
+            act!(shell::FocusPrevPane),
+            act!(shell::FocusNextPane),
+        ],
     ),
     bound(
         TABS,
-        "Swap the panes",
+        "Swap the focused pane with the next one",
         NOT_TERMINAL,
         &[
             "ctrl-alt-shift-left",

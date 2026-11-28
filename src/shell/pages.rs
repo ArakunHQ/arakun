@@ -212,7 +212,7 @@ impl Shell {
             .rev()
             .filter_map(|id| strip.position(*id));
         std::iter::once(strip.active_tab)
-            .chain(strip.split_other())
+            .chain(strip.split_others_near())
             .chain(strip.front_of(env_path))
             .chain(recent)
             .find(is_browser)

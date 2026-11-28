@@ -135,7 +135,7 @@ impl Shell {
         if layout.tree() && !self.rail_body_shown() {
             strip = strip.child(self.render_sessions_button(cx));
         }
-        let in_other_pane = self.split_other();
+        let in_other_pane = self.strip.split_others();
         let shell = cx.entity();
         let lifted = self.lifted_tab(cx);
         let session_lifted = self.lifted_session(cx).is_some();
@@ -319,7 +319,7 @@ impl Shell {
             let dragged = drag::DraggedTab::new(tab.id, tab.title.clone());
             let shell = shell.clone();
             let active = i == strip_tabs.active_tab;
-            let shown_beside = in_other_pane == Some(i);
+            let shown_beside = in_other_pane.contains(&i);
             // A pinned tab can always be closed: that unpins it.
             let closable = self.can_close_tab(i) || (pinned_bar && tab.pinned);
             let tab_icon = self.tab_lead(tab, cx);
@@ -516,13 +516,13 @@ impl Shell {
                 .child(
                     icon_button(
                         "tab-split",
-                        if in_other_pane.is_some() {
+                        if !in_other_pane.is_empty() {
                             "square"
                         } else {
                             "layout-two-column"
                         },
                         14.,
-                        if in_other_pane.is_some() {
+                        if !in_other_pane.is_empty() {
                             "Close split"
                         } else {
                             "Split right (Ctrl+D)"

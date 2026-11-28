@@ -1011,8 +1011,8 @@ impl Shell {
         self.send_prompt(out.text, now, window, cx);
     }
 
-    /// The tab the composer writes to: the active tab, or the session showing beside it
-    /// while the other pane (a page, a file) has the focus.
+    /// The tab the composer writes to: the active tab, or the nearest session showing
+    /// beside it while the focused pane (a page, a file) is not one.
     pub(super) fn composer_tab(&self) -> usize {
         let strip = &self.strip;
         let session = |i: usize| {
@@ -1027,15 +1027,19 @@ impl Shell {
             Some(TabKind::NewSession)
         );
         // The composer writes to the environment on screen, so a session of
-        // another environment in the other pane does not take it.
+        // another environment in another pane does not take it.
         let here = |i: usize| {
             self.try_env()
                 .is_some_and(|e| strip.tabs.get(i).is_some_and(|t| t.is_in(&e.path)))
         };
-        match self.split_other() {
-            Some(other) if !session(active) && !fresh && session(other) && here(other) => other,
-            _ => active,
+        if session(active) || fresh {
+            return active;
         }
+        self.strip
+            .split_others_near()
+            .into_iter()
+            .find(|o| session(*o) && here(*o))
+            .unwrap_or(active)
     }
 
     /// The chat the composer writes to; its raccoon sits on the composer.
@@ -1070,8 +1074,20 @@ impl Shell {
             [0., 1.]
         } else if chat.read(cx).focus_handle(cx).contains_focused(window, cx) {
             [0., -1.]
-        } else if let Some(split) = self.strip.split.filter(|_| window.focused(cx).is_some()) {
-            match (split.dir, split.focus_first) {
+        } else if let Some(split) = self
+            .strip
+            .split
+            .as_ref()
+            .filter(|_| window.focused(cx).is_some())
+        {
+            // Toward the focused pane from the composer's.
+            let composer = self.composer_tab();
+            let at = self.strip.panes().iter().position(|(i, _)| *i == composer);
+            let before = match at {
+                Some(at) if at != split.focus => split.focus < at,
+                _ => split.focus_first(),
+            };
+            match (split.dir, before) {
                 (crate::model::SplitDir::Right, true) => [-1., 0.],
                 (crate::model::SplitDir::Right, false) => [1., 0.],
                 (crate::model::SplitDir::Down, true) => [0., -1.],

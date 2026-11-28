@@ -184,17 +184,17 @@ impl Shell {
         }
     }
 
-    /// The sessions in the panes on screen: the active tab and the split's other one.
+    /// The sessions in the panes on screen: the active tab and the split's other ones.
     pub(super) fn sessions_on_screen(&self) -> Vec<(PathBuf, SharedString)> {
-        let other = self
+        let others = self
             .strip
-            .split
-            .and_then(|s| self.strip.position(s.other))
-            .and_then(|i| self.strip.tabs.get(i));
+            .split_others()
+            .into_iter()
+            .filter_map(|i| self.strip.tabs.get(i));
         self.strip
             .active()
             .into_iter()
-            .chain(other)
+            .chain(others)
             .filter_map(|t| match (&t.kind, &t.env) {
                 (TabKind::Session { id, .. }, Some(env)) => Some((env.clone(), id.clone())),
                 _ => None,

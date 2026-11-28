@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::watch::{Look, Looked, Watch};
 use crate::phone::linear::GuidanceRule;
 
 /// Delegated sessions at work at once, unless the person chose another
@@ -112,6 +113,10 @@ pub struct Run {
     /// once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<String>,
+    /// What is known of the `linked` pull request once the run is done, so
+    /// a failed check or a review is told once, across restarts too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<Watch>,
     /// Replies that came in Linear while the run waited for a slot, as the
     /// ids of their agent activities, oldest first. Never their text: it is
     /// read from Linear when the session starts.
@@ -190,6 +195,7 @@ impl std::fmt::Debug for Run {
             .field("progress", &self.progress.as_ref().map(|p| p.at))
             .field("plan", &self.plan.as_ref().map(|(at, _)| at))
             .field("linked", &self.linked.is_some())
+            .field("watch", &self.watch)
             .field("kept", &self.kept.len())
             .field("comment", &self.comment)
             .field("guidance", &self.guidance.len())
@@ -609,12 +615,94 @@ impl Runs {
     /// `arakun_session`, when Linear has not been sent it yet. Only a web
     /// address, and only for a run that has started.
     pub fn link(&mut self, arakun_session: &str, url: &str) -> Option<String> {
+        self.link_at(arakun_session, url, crate::model::unix_now())
+    }
+
+    /// [`Runs::link`] at a given time. Watching the pull request starts
+    /// here: reviews from before are not news.
+    pub fn link_at(&mut self, arakun_session: &str, url: &str, now: u64) -> Option<String> {
         let run = self.by_session(arakun_session)?;
         if !url.starts_with("https://") || run.linked.as_deref() == Some(url) {
             return None;
         }
         run.linked = Some(url.to_string());
+        run.watch = Some(Watch::new(now));
         Some(run.agent_session.clone())
+    }
+
+    /// Whether a finished run's pull request is still watched, so the timer
+    /// must go on.
+    pub fn watching(&self, now: u64) -> bool {
+        self.runs.iter().any(|r| {
+            r.state == RunState::Done
+                && r.linked.is_some()
+                && r.watch.as_ref().is_none_or(|w| w.live(now))
+        })
+    }
+
+    /// The pull requests of finished runs to read now, each marked as read.
+    /// A run at work again is left alone: its session sees GitHub itself.
+    pub fn to_watch(&mut self, now: u64) -> Vec<Look> {
+        let mut out = Vec::new();
+        for r in &mut self.runs {
+            if r.state != RunState::Done {
+                continue;
+            }
+            let Some(url) = r.linked.clone() else {
+                continue;
+            };
+            // A run recorded before watching existed starts now.
+            let w = r.watch.get_or_insert_with(|| Watch::new(now));
+            if !w.live(now) {
+                w.ended = true;
+                continue;
+            }
+            if !w.due(now) {
+                continue;
+            }
+            w.looked_at = now;
+            out.push(Look {
+                agent_session: r.agent_session.clone(),
+                organization: r.organization.clone(),
+                issue: r.issue.clone(),
+                dir: r
+                    .environment
+                    .clone()
+                    .filter(|e| e.is_dir())
+                    .unwrap_or_else(|| r.project.clone()),
+                url,
+                watch: w.clone(),
+            });
+        }
+        out
+    }
+
+    /// Applies what reading a run's pull request gave, and gives the lines
+    /// its issue hears with the link. A rate limit holds every read back.
+    pub fn looked(&mut self, looked: &[Looked], now: u64) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for l in looked {
+            if l.read == super::watch::Read::Limited {
+                let until = now + super::watch::LIMITED_SECS;
+                for w in self.runs.iter_mut().filter_map(|r| r.watch.as_mut()) {
+                    w.not_before = w.not_before.max(until);
+                }
+            }
+            let Some(run) = self.by_agent_session(&l.agent_session) else {
+                continue;
+            };
+            // It went back to work while GitHub was read.
+            if run.state != RunState::Done {
+                continue;
+            }
+            let (Some(url), Some(w)) = (run.linked.clone(), run.watch.as_mut()) else {
+                continue;
+            };
+            for line in super::watch::apply(w, l, now) {
+                out.push((run.agent_session.clone(), line, url.clone()));
+            }
+        }
+        out
     }
 
     /// The started runs Linear has no pull request link for yet: their
@@ -769,6 +857,7 @@ mod tests {
             progress: None,
             plan: None,
             linked: None,
+            watch: None,
             kept: Vec::new(),
             comment: None,
             guidance: Vec::new(),
@@ -830,6 +919,62 @@ mod tests {
         let saved = serde_json::to_string(&r).unwrap();
         let mut back: Runs = serde_json::from_str(&saved).unwrap();
         assert_eq!(back.link("s1", next), None);
+    }
+
+    #[test]
+    fn a_finished_runs_pull_request_is_watched_and_news_told_once() {
+        use crate::linear::watch::{Check, IDLE_SECS, LOOK_SECS, Looked, Outcome, Read, Snapshot};
+        let mut r = Runs::default();
+        r.add(
+            Run {
+                session: Some("s1".into()),
+                state: RunState::Running,
+                ..run("a")
+            },
+            SLOTS,
+        );
+        let pr = "https://github.com/a/b/pull/7";
+        assert!(!r.watching(0), "no link yet");
+        assert_eq!(r.link_at("s1", pr, 100).as_deref(), Some("a"));
+        // A run at work reads GitHub itself.
+        assert!(!r.watching(200) && r.to_watch(200).is_empty());
+        r.by_session("s1").unwrap().state = RunState::Done;
+        assert!(r.watching(200));
+        let looks = r.to_watch(200);
+        assert_eq!(looks.len(), 1);
+        assert_eq!((looks[0].url.as_str(), looks[0].watch.since), (pr, 100));
+        assert!(r.to_watch(200 + LOOK_SECS - 1).is_empty(), "read just now");
+        let failed = Looked {
+            agent_session: "a".into(),
+            read: Read::Seen(Snapshot {
+                number: 7,
+                head: "h1".into(),
+                checks: vec![Check {
+                    name: "test".into(),
+                    required: true,
+                    outcome: Outcome::Failed,
+                    run: true,
+                }],
+                ..Snapshot::default()
+            }),
+            issue_closed: false,
+        };
+        let told = r.looked(std::slice::from_ref(&failed), 300);
+        assert_eq!(told.len(), 1);
+        assert_eq!((told[0].0.as_str(), told[0].2.as_str()), ("a", pr));
+        // Saved and loaded again, it is not told twice.
+        let saved = serde_json::to_string(&r).unwrap();
+        let mut back: Runs = serde_json::from_str(&saved).unwrap();
+        assert!(back.looked(std::slice::from_ref(&failed), 400).is_empty());
+        // A rate limit holds every read back.
+        let limited = Looked {
+            read: Read::Limited,
+            ..failed.clone()
+        };
+        back.looked(&[limited], 500);
+        assert!(back.to_watch(500 + LOOK_SECS).is_empty());
+        // A week with no change ends it.
+        assert!(!back.watching(300 + IDLE_SECS));
     }
 
     #[test]

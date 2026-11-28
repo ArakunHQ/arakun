@@ -66,6 +66,8 @@ pub(super) struct Runner {
     flushing: bool,
     flush_owed: bool,
     watching: bool,
+    /// A read of finished runs' pull requests is under way.
+    looking: bool,
 }
 
 impl Runner {
@@ -306,6 +308,7 @@ impl Daemon {
                 progress: None,
                 plan: None,
                 linked: None,
+                watch: None,
                 kept: Vec::new(),
                 comment: start.comment.clone(),
                 guidance: start.guidance.clone(),
@@ -1265,7 +1268,56 @@ impl Daemon {
     }
 
     fn linear_needs_watch(&self) -> bool {
-        self.linear_run.runs.any_running() || self.linear_run.runs.unsent()
+        self.linear_run.runs.any_running()
+            || self.linear_run.runs.unsent()
+            || self.linear_run.runs.watching(unix_now())
+    }
+
+    /// Reads the pull requests of finished runs off the UI thread, and tells
+    /// their issues what failed or who reviewed. One read at a time.
+    fn linear_look_at_prs(&mut self, now: u64, cx: &mut Context<Self>) {
+        if self.linear_run.looking {
+            return;
+        }
+        let looks = self.linear_run.runs.to_watch(now);
+        if looks.is_empty() {
+            return;
+        }
+        self.linear_run.looking = true;
+        let keys: HashMap<String, String> = looks
+            .iter()
+            .filter_map(|l| Some((l.organization.clone(), self.linear_key(&l.organization)?)))
+            .collect();
+        cx.spawn(async move |this, cx| {
+            let looked = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        looks
+                            .iter()
+                            .map(|l| {
+                                crate::linear::watch::look(l, |org, issue| {
+                                    let key = keys.get(org)?;
+                                    issues::closed(|q, v| crate::linear::call(key, q, v), issue)
+                                        .ok()
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    |_| Vec::new(),
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.linear_run.looking = false;
+                let lines = this.linear_run.runs.looked(&looked, unix_now());
+                if lines.is_empty() {
+                    return this.linear_save_runs();
+                }
+                for (agent_session, line, url) in lines {
+                    this.linear_report(&agent_session, ReportKind::Thought, line, Some(url), cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn linear_tick(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1302,6 +1354,9 @@ impl Daemon {
         }
         if freed {
             self.linear_start_waiting(cx);
+        }
+        if self.linear_gate().is_some() {
+            self.linear_look_at_prs(now, cx);
         }
         // Reports older than a day go, so a signed-out outbox ends the timer.
         self.linear_run.runs.due(now);

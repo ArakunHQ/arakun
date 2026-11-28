@@ -29,6 +29,11 @@ pub fn prompt_text(
     shared::prompt_text(|q, v| graphql(s, q, v), activity_id, agent_session)
 }
 
+/// Whether the issue is done or canceled, read with the person's own key.
+pub fn closed(s: &Session, id: &str) -> Result<bool, ApiError> {
+    shared::closed(|q, v| graphql(s, q, v), id)
+}
+
 /// Downloads the issue's uploads into the environment at `env` with the
 /// person's own key, and puts the files' paths in `d` in place of the links.
 pub fn fetch_uploads(s: &Session, env: &Path, d: &mut Detail) -> Fetched {

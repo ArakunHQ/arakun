@@ -738,6 +738,7 @@ mod tests {
             progress: None,
             plan: None,
             linked: None,
+            watch: None,
             kept: Vec::new(),
             comment: None,
             guidance: Vec::new(),

@@ -674,6 +674,22 @@ again after a week) in its [data folder](storage-and-env.md).
   agents get none. Turn it off with **Mark pull requests as written by the agent**
   under **Pull requests** in the Linear tab; a paired server follows the same switch.
 
+  *After the pull request is open.* Once the session is done, Arakun keeps an eye
+  on its pull request with `gh`, about every five minutes, so you hear about it in
+  Linear and not only on GitHub. When the required check runs of the newest commit
+  have finished and some failed (every check counts when the repository marks
+  none as required; a pending status such as a human approval is not waited for), the issue hears ``Required checks failed on pull request
+  #{number}: {checks}. Reply `fix checks` to let Arakun fix it.`` When someone other
+  than the pull request's author asks for changes or leaves review comments, it
+  hears ``{reviewers} asked for changes on pull request #{number}. {n} review
+  threads are open. Reply `fix comments` to let Arakun work through them.`` Each
+  commit's checks and each review are told once, also after a restart. Only the
+  names of checks and reviewers, the count of open threads and the link go to
+  Linear, never a check's log or a comment's text. Watching stops when the pull
+  request merges or closes, when the issue is done or canceled, or after seven days
+  with no change; GitHub's rate limit pauses it for half an hour. `arakun server`
+  does the same.
+
   *Talking to the session.* A reply in Linear from the person who delegated goes to
   the session as a new message, and the issue hears at once that it was passed on
   and what it waits behind (the current turn, a permission or a secret), so Linear

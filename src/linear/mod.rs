@@ -14,7 +14,7 @@ pub mod places;
 // them too.
 pub use arakun_core::linear::{
     ApiError, answer, attribution, delegation, env, events, follow, outbox, pr, prompt, remote,
-    runs, start, uploads,
+    runs, start, uploads, watch,
 };
 
 use std::path::{Path, PathBuf};

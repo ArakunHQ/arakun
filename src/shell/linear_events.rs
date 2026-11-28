@@ -1,6 +1,7 @@
 //! Telling a Linear issue what its delegated session does: a question, a
 //! permission it waits for, the result, a failure, that it still works, and
-//! that Arakun was closed while it ran.
+//! that Arakun was closed while it ran. Once it is done, its pull request's
+//! failed checks and reviews (`crate::linear::watch`).
 //!
 //! A session event only updates the run and queues a report; the outbox
 //! sends it. Only the last reply, a question's text and a short name of what
@@ -347,7 +348,54 @@ impl Shell {
     }
 
     fn linear_needs_watch(&self) -> bool {
-        self.linear_runs.any_running() || self.linear_runs.unsent()
+        self.linear_runs.any_running()
+            || self.linear_runs.unsent()
+            || self.linear_runs.watching(unix_now())
+    }
+
+    /// Reads the pull requests of finished runs off the UI thread, and tells
+    /// their issues what failed or who reviewed. One read at a time, so a
+    /// slow `gh` never stacks them up.
+    fn linear_look_at_prs(&mut self, now: u64, cx: &mut Context<Self>) {
+        if self.linear_looking {
+            return;
+        }
+        let looks = self.linear_runs.to_watch(now);
+        if looks.is_empty() {
+            return;
+        }
+        self.linear_looking = true;
+        let sessions = crate::linear::sessions();
+        cx.spawn(async move |this, cx| {
+            let looked = cx
+                .background_spawn(crate::guard::task_or(
+                    async move {
+                        looks
+                            .iter()
+                            .map(|l| {
+                                crate::linear::watch::look(l, |org, issue| {
+                                    let s = crate::linear::session_for(&sessions, org)?;
+                                    crate::linear::issues::closed(s, issue).ok()
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    |_| Vec::new(),
+                ))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.linear_looking = false;
+                let lines = this.linear_runs.looked(&looked, unix_now());
+                if lines.is_empty() {
+                    return this.linear_save();
+                }
+                for (agent_session, line, url) in lines {
+                    // Queued and saved with the watch's new state.
+                    this.linear_report(&agent_session, ReportKind::Thought, line, Some(url), cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn linear_tick(&mut self, cx: &mut Context<Self>) -> bool {
@@ -383,6 +431,9 @@ impl Shell {
                 held.link,
                 cx,
             );
+        }
+        if self.linear_gate(cx).is_some() {
+            self.linear_look_at_prs(now, cx);
         }
         // Reports older than a day go, so a signed-out outbox ends the timer.
         self.linear_runs.due(now);

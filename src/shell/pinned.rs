@@ -278,8 +278,8 @@ impl Shell {
         if self.strip.tabs.iter().any(|t| t.pinned) {
             self.pins_seeded = true;
         }
-        let keep = self.split_other().map(|i| self.strip.tabs[i].id);
-        let strays = self.strip.strays(keep);
+        let keep = self.split_other_ids();
+        let strays = self.strip.strays(&keep);
         if !strays.is_empty() {
             let gone = self.strip.remove_where(|t| strays.contains(&t.id));
             for tab in gone {
@@ -300,13 +300,13 @@ impl Shell {
         if !self.has_projects() || !crate::tab_layout::current().pinned_bar() {
             return false;
         }
-        let keep = self.split_other().map(|i| self.strip.tabs[i].id);
+        let keep = self.split_other_ids();
         let any_pinned = self.strip.tabs.iter().any(|t| t.pinned);
         let lone = self
             .strip
             .active()
             .is_some_and(|t| t.session_id().is_some());
-        !self.strip.strays(keep).is_empty() || (!self.pins_seeded && (any_pinned || lone))
+        !self.strip.strays(&keep).is_empty() || (!self.pins_seeded && (any_pinned || lone))
     }
 
     /// A tab's state, for the mark a pinned tab shows.

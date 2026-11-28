@@ -89,13 +89,13 @@ impl Shell {
         Some(id)
     }
 
-    /// Indices of the tabs on screen: the active one and the other pane's, if split.
+    /// Indices of the tabs on screen: the active one and the other panes', if split.
     pub(super) fn visible_tabs(&self) -> Vec<usize> {
         if !self.has_projects() {
             return Vec::new();
         }
         std::iter::once(self.strip.active_tab)
-            .chain(self.split_other())
+            .chain(self.strip.split_others())
             .collect()
     }
 

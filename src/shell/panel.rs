@@ -367,17 +367,18 @@ impl Shell {
                 && (query.is_empty() || s.title.to_lowercase().contains(query.trim()))
         };
         let active_id = self.active_session_id();
-        // The session in the other pane of a split shows too.
-        let other_id = self
+        // The sessions in the other panes of a split show too.
+        let other_ids: Vec<SharedString> = self
             .strip
-            .split_other()
-            .and_then(|i| match &self.strip.tabs[i].kind {
+            .split_others()
+            .into_iter()
+            .filter_map(|i| match &self.strip.tabs[i].kind {
                 TabKind::Session { id, .. } => Some(id.clone()),
                 _ => None,
-            });
-        let on_screen = |s: &model::Session| {
-            active_id.as_ref() == Some(&s.id) || other_id.as_ref() == Some(&s.id)
-        };
+            })
+            .collect();
+        let on_screen =
+            |s: &model::Session| active_id.as_ref() == Some(&s.id) || other_ids.contains(&s.id);
         // A search looks through archived sessions too.
         let show_settled = self.show_settled || !query.trim().is_empty();
         let listed =

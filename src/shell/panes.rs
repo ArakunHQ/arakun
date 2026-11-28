@@ -1,11 +1,11 @@
 //! Split panes and tab shortcuts. The focused pane always shows the active tab
-//! (see `model::Split`); the other pane shows one more tab of the same environment,
+//! (see `model::Split`); each other pane shows one more tab, of any environment,
 //! or a view.
 
 use gpui::{AnyElement, Context, IntoElement, MouseButton, Window, canvas, div, px, relative};
 
 use super::*;
-use crate::model::{Split, SplitDir};
+use crate::model::{MAX_PANES, Split, SplitDir};
 
 impl Shell {
     /// Registers the pane and tab actions, and the divider drag, on the window root.
@@ -16,9 +16,9 @@ impl Shell {
     ) -> gpui::Stateful<gpui::Div> {
         let dir = self
             .has_projects()
-            .then(|| self.strip.split.map(|s| s.dir))
+            .then(|| self.strip.split.as_ref().map(|s| s.dir))
             .flatten();
-        root.when(self.split_drag, |d| {
+        root.when(self.split_drag.is_some(), |d| {
             d.when(dir == Some(SplitDir::Right), |d| d.cursor_col_resize())
                 .when(dir == Some(SplitDir::Down), |d| d.cursor_row_resize())
                 .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, _, cx| {
@@ -27,7 +27,7 @@ impl Shell {
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
-                        this.split_drag = false;
+                        this.split_drag = None;
                         this.save(cx);
                         cx.notify();
                     }),
@@ -68,9 +68,12 @@ impl Shell {
         .on_action(cx.listener(|this, _: &SplitDown, window, cx| {
             this.toggle_split(SplitDir::Down, window, cx)
         }))
-        .on_action(cx.listener(|this, _: &FocusOtherPane, window, cx| {
-            this.focus_other_pane(true, window, cx)
-        }))
+        .on_action(
+            cx.listener(|this, _: &FocusPrevPane, window, cx| this.focus_next_pane(-1, window, cx)),
+        )
+        .on_action(
+            cx.listener(|this, _: &FocusNextPane, window, cx| this.focus_next_pane(1, window, cx)),
+        )
         .on_action(cx.listener(|this, _: &SwapPanes, _, cx| this.swap_panes(cx)))
         .on_action(
             cx.listener(|this, _: &ReopenClosedTab, window, cx| this.reopen_closed_tab(window, cx)),
@@ -173,15 +176,20 @@ impl Shell {
         }
     }
 
-    /// Ctrl+D / Ctrl+Shift+D: splits, turns an existing split the other way, or
-    /// unsplits when it already goes that way.
+    /// Ctrl+D / Ctrl+Shift+D: splits, turns an existing split the other way,
+    /// adds a pane when it already goes that way, or unsplits when it has no
+    /// room for one more.
     fn toggle_split(&mut self, dir: SplitDir, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        let current = self.split_other().and(self.strip.split).map(|s| s.dir);
+        let current = self
+            .split_other()
+            .and(self.strip.split.as_ref())
+            .map(|s| (s.dir, s.pane_count()));
         match current {
-            Some(d) if d == dir => self.close_split(cx),
+            Some((d, n)) if d == dir && n >= MAX_PANES => self.close_split(cx),
+            Some((d, _)) if d == dir => self.split_with(None, dir, window, cx),
             Some(_) => {
                 if let Some(split) = self.strip.split.as_mut() {
                     split.dir = dir;
@@ -194,7 +202,8 @@ impl Shell {
     }
 
     /// Shows tab `target` (or, without one, another recent tab) in a focused pane
-    /// to the right of or below the active tab.
+    /// to the right of or below the active tab: a new pane while the split has
+    /// room, else the one beside the focused pane.
     pub(super) fn split_with(
         &mut self,
         target: Option<usize>,
@@ -209,40 +218,23 @@ impl Shell {
         // split then belongs to its environment (`claim_split`).
         let here = self.env().path.clone();
         let strip = &mut self.strip;
-        let Some(active_id) = strip.active().map(|t| t.id) else {
+        if strip.active().is_none() {
             return;
-        };
-        let ratio = strip.split.map_or(0.5, |s| s.ratio);
-        match target.filter(|t| *t < strip.tabs.len()) {
-            Some(t) if t == strip.active_tab => {
-                let other = companion(strip, &here);
-                let other_id = strip.tabs[other].id;
-                strip.split = Some(Split {
-                    other: other_id,
-                    dir,
-                    ratio,
-                    focus_first: false,
-                });
-            }
-            target => {
-                let next_id = match target {
-                    Some(t) => strip.tabs[t].id,
-                    None => {
-                        let other = companion(strip, &here);
-                        strip.tabs[other].id
-                    }
-                };
-                strip.split = Some(Split {
-                    other: active_id,
-                    dir,
-                    ratio,
-                    focus_first: false,
-                });
-                // By id: the companion may be a new tab, added before the active one.
-                strip.active_tab = strip.position(next_id).unwrap_or(strip.active_tab);
-            }
         }
-        strip.claim_split();
+        let first_share = strip.split.as_ref().map_or(0.5, |s| s.shares[0]);
+        let target = target.filter(|t| *t < strip.tabs.len());
+        if !strip.split_others().is_empty() {
+            let id = match target {
+                Some(t) => strip.tabs[t].id,
+                None => {
+                    let other = companion(strip, &here);
+                    strip.tabs[other].id
+                }
+            };
+            strip.open_pane(id, dir);
+        } else {
+            self.split_alone(target, dir, first_share, &here);
+        }
         self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
@@ -251,7 +243,43 @@ impl Shell {
         cx.notify();
     }
 
-    /// Ctrl+Alt+Shift+arrow: the two panes trade places.
+    /// Splits the active tab, alone on screen, in two: `target` goes beside it
+    /// and gets the focus. The active tab itself as `target` goes in the second
+    /// pane, beside another recent tab.
+    fn split_alone(
+        &mut self,
+        target: Option<usize>,
+        dir: SplitDir,
+        first_share: f32,
+        here: &std::path::Path,
+    ) {
+        let strip = &mut self.strip;
+        let Some(active_id) = strip.active().map(|t| t.id) else {
+            return;
+        };
+        match target {
+            Some(t) if t == strip.active_tab => {
+                let other = companion(strip, here);
+                let other_id = strip.tabs[other].id;
+                strip.split = Some(Split::pair(other_id, dir, false, first_share));
+            }
+            target => {
+                let next_id = match target {
+                    Some(t) => strip.tabs[t].id,
+                    None => {
+                        let other = companion(strip, here);
+                        strip.tabs[other].id
+                    }
+                };
+                strip.split = Some(Split::pair(active_id, dir, false, first_share));
+                // By id: the companion may be a new tab, added before the active one.
+                strip.active_tab = strip.position(next_id).unwrap_or(strip.active_tab);
+            }
+        }
+        strip.claim_split();
+    }
+
+    /// Ctrl+Alt+Shift+arrow: the focused pane trades places with the next one.
     pub(super) fn swap_panes(&mut self, cx: &mut Context<Self>) {
         if !self.has_projects() || self.split_other().is_none() {
             return;
@@ -263,12 +291,12 @@ impl Shell {
         cx.notify();
     }
 
-    /// Shows the tab `id` in the first (left or top) pane or the second, splitting if needed.
-    /// Dropping the other pane's tab, or the focused one, on the opposite side swaps them.
+    /// Shows the tab `id` in the pane at `pane` (screen order), splitting if needed.
+    /// Dropping a tab on screen on another pane swaps the two.
     pub(super) fn place_tab(
         &mut self,
         id: u64,
-        first: bool,
+        pane: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -282,7 +310,7 @@ impl Shell {
         let here = self.env().path.clone();
         if !self
             .strip
-            .place_tab(id, first, |strip| companion(strip, &here))
+            .place_tab(id, pane, |strip| companion(strip, &here))
         {
             cx.notify();
             return;
@@ -295,23 +323,24 @@ impl Shell {
         cx.notify();
     }
 
-    /// While a tab is dragged: the two halves of the content (or the two panes) to drop it on.
+    /// While a tab is dragged: the panes to drop it on, or the two halves of
+    /// the content when it is not split.
     pub(super) fn render_tab_drop_zones(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.lifted_tab(cx)?;
-        let split = self.split_other().and(self.strip.split);
+        let split = self.split_other().and(self.strip.split.as_ref());
         let row = split.is_none_or(|s| s.dir == SplitDir::Right);
-        let ratio = split.map_or(0.5, |s| s.ratio);
+        let shares: Vec<f32> = match split {
+            Some(_) => self.strip.panes().into_iter().map(|(_, s)| s).collect(),
+            None => vec![0.5, 0.5],
+        };
+        let last = shares.len().saturating_sub(1);
         // Each zone owns its share of the content exactly (a margin would add
         // to the share and push the zones past the middle and the bottom);
         // the inset preview, which takes the drop, sits inside its padding.
-        let zone = |first: bool, cx: &mut Context<Self>| {
+        let zone = |pane: usize, cx: &mut Context<Self>| {
             div().p(crate::ui::sp(6.)).child(
                 div()
-                    .id(if first {
-                        "tab-drop-first"
-                    } else {
-                        "tab-drop-second"
-                    })
+                    .id(("tab-drop", pane))
                     .size_full()
                     .rounded(crate::ui::rad(ui::RADIUS_LG))
                     .border_2()
@@ -321,30 +350,39 @@ impl Shell {
                             .border_color(theme::active().opacity(0.55))
                     })
                     .on_drop(cx.listener(move |this, d: &drag::DraggedTab, window, cx| {
-                        this.place_tab(d.id, first, window, cx)
+                        this.place_tab(d.id, pane, window, cx)
                     })),
             )
         };
-        let first = zone(true, cx).flex_none().map(|d| {
-            if row {
-                d.h_full().w(relative(ratio))
-            } else {
-                d.w_full().h(relative(ratio))
-            }
-        });
-        let second = zone(false, cx)
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .map(|d| if row { d.h_full() } else { d.w_full() });
+        // The last zone takes what is left, so rounding leaves no gap.
+        let zones: Vec<_> = shares
+            .iter()
+            .enumerate()
+            .map(|(pane, share)| {
+                let zone = zone(pane, cx);
+                if pane == last {
+                    zone.flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .map(|d| if row { d.h_full() } else { d.w_full() })
+                } else {
+                    zone.flex_none().map(|d| {
+                        if row {
+                            d.h_full().w(relative(*share))
+                        } else {
+                            d.w_full().h(relative(*share))
+                        }
+                    })
+                }
+            })
+            .collect();
         Some(
             div()
                 .absolute()
                 .inset_0()
                 .flex()
                 .when(!row, |d| d.flex_col())
-                .child(first)
-                .child(second)
+                .children(zones)
                 .into_any_element(),
         )
     }
@@ -401,15 +439,33 @@ impl Shell {
         cx.notify();
     }
 
-    /// Makes the other pane the focused one; `keyboard` also moves keyboard focus there.
-    fn focus_other_pane(&mut self, keyboard: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_projects() {
+    /// Ctrl+Alt+arrows: moves the focus to the previous (`-1`) or next (`1`)
+    /// pane, the last one going around to the first.
+    fn focus_next_pane(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() || self.split_other().is_none() {
             return;
         }
-        let Some(other) = self.split_other() else {
+        let panes = self.strip.panes();
+        let Some(at) = panes.iter().position(|(i, _)| *i == self.strip.active_tab) else {
             return;
         };
-        // Activating the other pane's tab swaps the panes' roles (`settle_split`).
+        let next = (at as isize + delta).rem_euclid(panes.len() as isize) as usize;
+        self.focus_pane(panes[next].0, true, window, cx);
+    }
+
+    /// Makes the pane showing tab `other` the focused one; `keyboard` also
+    /// moves keyboard focus there.
+    fn focus_pane(
+        &mut self,
+        other: usize,
+        keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_projects() || !self.strip.split_others().contains(&other) {
+            return;
+        }
+        // Activating another pane's tab swaps the two panes' roles (`settle_split`).
         self.select_tab(other, window, cx);
         // A click lands on whatever it hit, except the New session placeholder,
         // which turns into the composer and should take the typing.
@@ -427,9 +483,15 @@ impl Shell {
             return;
         }
         let b = self.split_bounds.get();
-        let Some(split) = self.strip.split.as_mut() else {
+        // A pane whose tab is gone would put the dividers on screen out of
+        // line with the shares; `settle_split` closes it first.
+        let whole = self.strip.panes().len();
+        let (Some(handle), Some(split)) = (self.split_drag, self.strip.split.as_mut()) else {
             return;
         };
+        if whole != split.pane_count() {
+            return;
+        }
         let (pos, origin, len) = match split.dir {
             SplitDir::Right => (at.x, b.origin.x, b.size.width),
             SplitDir::Down => (at.y, b.origin.y, b.size.height),
@@ -437,8 +499,7 @@ impl Shell {
         if len.as_f32() <= 0. {
             return;
         }
-        split.ratio =
-            ((pos - origin).as_f32() / len.as_f32()).clamp(Split::MIN_RATIO, Split::MAX_RATIO);
+        split.drag(handle, (pos - origin).as_f32() / len.as_f32());
         cx.notify();
     }
 
@@ -594,9 +655,12 @@ impl Shell {
     }
 
     /// The corners of the main card that the pane showing tab `index`
-    /// touches: all of them alone, the two on its side in a split.
+    /// touches: all of them alone, the two on its side for the first and the
+    /// last pane of a split, none for the one in the middle.
     pub(super) fn pane_card_corners(&self, index: usize) -> gpui::Corners<bool> {
-        let (Some(other), Some(split)) = (self.split_other(), self.strip.split) else {
+        let panes = self.strip.panes();
+        let dir = self.strip.split.as_ref().map(|s| s.dir);
+        let (Some(dir), true) = (dir, panes.len() > 1) else {
             return gpui::Corners {
                 top_left: true,
                 top_right: true,
@@ -604,13 +668,9 @@ impl Shell {
                 bottom_left: true,
             };
         };
-        let first = if split.focus_first {
-            self.strip.active_tab
-        } else {
-            other
-        };
-        let (a, b) = (index == first, index != first);
-        match split.dir {
+        let at = panes.iter().position(|(i, _)| *i == index);
+        let (a, b) = (at == Some(0), at == Some(panes.len() - 1));
+        match dir {
             SplitDir::Right => gpui::Corners {
                 top_left: a,
                 bottom_left: a,
@@ -626,22 +686,13 @@ impl Shell {
         }
     }
 
-    pub(super) fn render_split(
-        &self,
-        other: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn render_split(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let active = self.strip.active_tab;
-        let Some(split) = self.strip.split else {
+        let Some(split) = self.strip.split.as_ref() else {
             return self.render_pane(active, true, window, cx);
         };
+        let panes = self.strip.panes();
         let row = split.dir == SplitDir::Right;
-        let (first, second) = if split.focus_first {
-            (active, other)
-        } else {
-            (other, active)
-        };
         let bounds = self.split_bounds.clone();
 
         let mut pane = |index: usize, cx: &mut Context<Self>| {
@@ -667,69 +718,92 @@ impl Shell {
                     )
                 })
                 .when(!focused, |d| {
-                    d.capture_any_mouse_down(
-                        cx.listener(|this, _, window, cx| this.focus_other_pane(false, window, cx)),
-                    )
+                    d.capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
+                        this.focus_pane(index, false, window, cx)
+                    }))
                 })
         };
-        let first_pane = pane(first, cx).flex_none().map(|d| {
-            if row {
-                d.h_full().w(relative(split.ratio))
+        let line = |handle: usize| {
+            let color = if self.split_drag == Some(handle) {
+                theme::active()
             } else {
-                d.w_full().h(relative(split.ratio))
-            }
-        });
-        let second_pane = pane(second, cx)
-            .flex_1()
-            .map(|d| if row { d.h_full() } else { d.w_full() });
-        let line_color = if self.split_drag {
-            theme::active()
-        } else {
-            theme::stroke()
-        };
-        let line = div().flex_none().bg(line_color).map(|d| {
-            if row {
-                d.w(px(1.)).h_full()
-            } else {
-                d.h(px(1.)).w_full()
-            }
-        });
-        // Last child, so it sits above both panes and wins the hit test.
-        let handle = div()
-            .id("split-resize")
-            .absolute()
-            .map(|d| {
+                theme::stroke()
+            };
+            div().flex_none().bg(color).map(|d| {
                 if row {
-                    d.top_0()
-                        .bottom_0()
-                        .left(relative(split.ratio))
-                        .ml(px(-3.))
-                        .w(px(7.))
-                        .cursor_col_resize()
+                    d.w(px(1.)).h_full()
                 } else {
-                    d.left_0()
-                        .right_0()
-                        .top(relative(split.ratio))
-                        .mt(px(-3.))
-                        .h(px(7.))
-                        .cursor_row_resize()
+                    d.h(px(1.)).w_full()
                 }
             })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    if ev.click_count >= 2 {
-                        if let Some(s) = this.strip.split.as_mut() {
-                            s.ratio = 0.5;
-                        }
-                        this.save(cx);
+        };
+        let last = panes.len() - 1;
+        let mut children: Vec<AnyElement> = Vec::new();
+        for (at, (index, share)) in panes.iter().copied().enumerate() {
+            // The last pane takes what is left after the others and the lines.
+            let el = if at == last {
+                pane(index, cx)
+                    .flex_1()
+                    .map(|d| if row { d.h_full() } else { d.w_full() })
+            } else {
+                pane(index, cx).flex_none().map(|d| {
+                    if row {
+                        d.h_full().w(relative(share))
                     } else {
-                        this.split_drag = true;
+                        d.w_full().h(relative(share))
                     }
-                    cx.notify();
-                }),
-            );
+                })
+            };
+            children.push(el.into_any_element());
+            if at < last {
+                children.push(line(at).into_any_element());
+            }
+        }
+        // Each handle drags only the two panes beside it.
+        let mut edge = 0.;
+        let handles: Vec<AnyElement> = panes[..last]
+            .iter()
+            .enumerate()
+            .map(|(handle, (_, share))| {
+                edge += share;
+                div()
+                    .id(("split-resize", handle))
+                    .absolute()
+                    .map(|d| {
+                        if row {
+                            d.top_0()
+                                .bottom_0()
+                                .left(relative(edge))
+                                .ml(px(-3.))
+                                .w(px(7.))
+                                .cursor_col_resize()
+                        } else {
+                            d.left_0()
+                                .right_0()
+                                .top(relative(edge))
+                                .mt(px(-3.))
+                                .h(px(7.))
+                                .cursor_row_resize()
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            if ev.click_count >= 2 {
+                                if let Some(s) = this.strip.split.as_mut() {
+                                    s.equalize();
+                                }
+                                this.save(cx);
+                            } else {
+                                this.split_drag = Some(handle);
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
 
         div()
             .id("split")
@@ -742,10 +816,9 @@ impl Shell {
                     .absolute()
                     .size_full(),
             )
-            .child(first_pane)
-            .child(line)
-            .child(second_pane)
-            .child(handle)
+            .children(children)
+            // Last, so they sit above the panes and win the hit test.
+            .children(handles)
             .into_any_element()
     }
 
@@ -816,7 +889,7 @@ impl Shell {
                     ),
                 )
                 .when(split_open, |d| {
-                    let icon = match self.strip.split.map(|s| s.dir) {
+                    let icon = match self.strip.split.as_ref().map(|s| s.dir) {
                         Some(SplitDir::Down) => "arrow-data-transfer-vertical",
                         _ => "arrow-data-transfer-horizontal",
                     };
@@ -914,12 +987,14 @@ fn same_env_as(strip: &model::TabStrip, index: usize) -> Vec<bool> {
     strip.tabs.iter().map(|t| Some(&t.env) == env).collect()
 }
 
-/// The tab to pair with the active one: the most recently visited other tab of
-/// the environment `here` (or a view), else any such tab, else a fresh New session tab.
+/// The tab to show beside the ones on screen: the most recently visited other
+/// tab of the environment `here` (or a view), else any such tab, else a fresh
+/// New session tab.
 fn companion(strip: &mut model::TabStrip, here: &std::path::Path) -> usize {
-    let active = strip.active_tab;
+    let mut shown = strip.split_others();
+    shown.push(strip.active_tab);
     let fits = |strip: &model::TabStrip, i: usize| {
-        i != active && strip.tabs[i].env.as_deref().is_none_or(|e| e == here)
+        !shown.contains(&i) && strip.tabs[i].env.as_deref().is_none_or(|e| e == here)
     };
     let recent = strip
         .tab_back

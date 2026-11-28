@@ -170,7 +170,8 @@ gpui::actions!(
         ProjectSessions9,
         SplitRight,
         SplitDown,
-        FocusOtherPane,
+        FocusPrevPane,
+        FocusNextPane,
         SwapPanes,
         ReopenClosedTab,
         MoveTabLeft,
@@ -440,8 +441,9 @@ pub struct Shell {
     /// Merges seen and settled (`settle`).
     settle: settle::Watch,
     cleanup: cleanup::Watch,
-    /// Set while the divider between split panes is being dragged.
-    split_drag: bool,
+    /// The divider between split panes being dragged: the one after the
+    /// pane at that place on screen.
+    split_drag: Option<usize>,
     /// Bounds of the split panes as last painted, for dragging the divider.
     split_bounds: Rc<Cell<Bounds<Pixels>>>,
     browsers_dirty: bool,
@@ -950,7 +952,7 @@ impl Shell {
             _scheduler: None,
             settle: settle::Watch::default(),
             cleanup: cleanup::Watch::default(),
-            split_drag: false,
+            split_drag: None,
             split_bounds: Rc::default(),
             browsers_dirty: false,
             account,
@@ -1167,9 +1169,18 @@ impl Shell {
             .unwrap_or_else(|| self.env())
     }
 
-    /// The other pane's tab, while the split shows.
+    /// The tab of the other pane nearest the focused one, while the split shows.
     fn split_other(&self) -> Option<usize> {
         self.strip.split_other()
+    }
+
+    /// The ids of the tabs in the panes that are not focused.
+    fn split_other_ids(&self) -> Vec<u64> {
+        self.strip
+            .split_others()
+            .into_iter()
+            .map(|i| self.strip.tabs[i].id)
+            .collect()
     }
 
     /// Makes the active tab one of the environment on screen: the tab it showed
@@ -2347,20 +2358,20 @@ impl Shell {
         };
         // With no project the tab shows in the welcome's place.
         let on_screen = if self.has_projects() {
-            is_teams(self.strip.active_tab) || self.split_other().is_some_and(is_teams)
+            is_teams(self.strip.active_tab) || self.strip.split_others().into_iter().any(is_teams)
         } else {
             self.alone == Some(home::Alone::Teams)
         };
         window.is_window_active() && on_screen
     }
 
-    /// Whether a tab `is` picks is on screen, in either pane of a split, in a
+    /// Whether a tab `is` picks is on screen, in any pane of a split, in a
     /// window in front.
     fn tab_shown(&self, window: &Window, is: impl Fn(&TabKind) -> bool) -> bool {
         let at = |i: usize| self.strip.tabs.get(i).is_some_and(|t| is(&t.kind));
         window.is_window_active()
             && self.has_projects()
-            && (at(self.strip.active_tab) || self.split_other().is_some_and(at))
+            && (at(self.strip.active_tab) || self.strip.split_others().into_iter().any(at))
     }
 
     fn cloudflare_shown(&self, window: &Window) -> bool {
@@ -4048,9 +4059,10 @@ impl Shell {
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        match self.split_other() {
-            Some(other) => self.render_split(other, window, cx),
-            None => self.render_pane(self.strip.active_tab, true, window, cx),
+        if self.split_other().is_some() {
+            self.render_split(window, cx)
+        } else {
+            self.render_pane(self.strip.active_tab, true, window, cx)
         }
     }
 

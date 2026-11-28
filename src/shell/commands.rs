@@ -10,7 +10,7 @@ use gpui::{App, Context, Window};
 use super::Shell;
 use crate::control::{self, Reply, Request};
 use crate::island::AlertKind;
-use crate::model::{Split, SplitDir, Status, TabKind};
+use crate::model::{Status, TabKind};
 
 impl Shell {
     /// Answers commands from the control socket for as long as the window lives.
@@ -521,7 +521,8 @@ impl Shell {
             .unwrap_or_else(|| env_path.display().to_string())
     }
 
-    /// Puts tab `id` in the pane beside the active tab without moving the focus.
+    /// Puts tab `id` in the pane beside the active tab without moving the focus:
+    /// a new split, or in place of the pane next to the focused one.
     pub(super) fn show_beside(
         &mut self,
         env_path: &Path,
@@ -533,19 +534,9 @@ impl Shell {
         if !self.has_projects() || self.env().path != env_path {
             return;
         }
-        let strip = &mut self.strip;
-        if strip.active().is_some_and(|t| t.id == id) {
+        if !self.strip.show_beside(id) {
             return;
         }
-        let (dir, ratio, focus_first) = strip.split.map_or((SplitDir::Right, 0.5, true), |s| {
-            (s.dir, s.ratio, s.focus_first)
-        });
-        strip.split = Some(Split {
-            other: id,
-            dir,
-            ratio,
-            focus_first,
-        });
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
         self.save(cx);

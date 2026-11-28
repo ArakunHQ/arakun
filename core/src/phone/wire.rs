@@ -806,7 +806,7 @@ pub struct EntryStream {
 /// message (built once, when a client needs it) otherwise.
 pub struct EntryFlush<'a> {
     id: &'a str,
-    all: &'a [Entry],
+    all: &'a [Arc<Entry>],
     from: usize,
     scope: &'a Scope,
     /// `Some(None)`: the words are as they were, so an appender gets nothing.
@@ -841,7 +841,7 @@ impl EntryStream {
     pub fn flush<'a>(
         &mut self,
         id: &'a str,
-        all: &'a [Entry],
+        all: &'a [Arc<Entry>],
         from: usize,
         scope: &'a Scope,
     ) -> EntryFlush<'a> {
@@ -1984,8 +1984,8 @@ mod tests {
         );
     }
 
-    fn agent(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn agent(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
     fn sent(stream: &EntryStream, client: ClientId, flush: &EntryFlush) -> Option<Value> {
@@ -2051,7 +2051,7 @@ mod tests {
         let f = stream.flush("s", &all, 0, &scope);
         assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
         // A thought in place of the words: another kind.
-        all[1] = Entry::Thought { text: "b2".into() };
+        all[1] = Arc::new(Entry::Thought { text: "b2".into() });
         let f = stream.flush("s", &all, 1, &scope);
         assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
         // Opened again: whole, since what it got on opening may be newer.

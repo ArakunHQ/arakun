@@ -139,7 +139,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 |---|---|
 | Sessions and their transcripts | `%LOCALAPPDATA%\arakun\sessions\` |
 | Sessions written out as Markdown for another agent to read | `%LOCALAPPDATA%\arakun\linked\` |
-| Images pasted into the composer or sent from the phone | `%LOCALAPPDATA%\arakun\pastes\` |
+| Images pasted into the composer, sent from the phone, or returned by a tool | `%LOCALAPPDATA%\arakun\pastes\` |
 | Sessions that run without a window | `%LOCALAPPDATA%\arakun\headless\` |
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `%LOCALAPPDATA%\arakun\memory\` |
 | Your settings from Settings › General, Privacy and Branches | `%LOCALAPPDATA%\arakun\settings.json` |

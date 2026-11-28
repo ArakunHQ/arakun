@@ -435,6 +435,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         }
     }
 

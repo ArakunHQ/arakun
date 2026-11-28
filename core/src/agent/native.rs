@@ -667,6 +667,7 @@ fn new_tool(id: &str) -> ToolCall {
         parent: None,
         tool_name: None,
         secret: None,
+        images: Vec::new(),
     }
 }
 

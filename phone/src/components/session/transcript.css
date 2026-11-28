@@ -39,6 +39,8 @@
 .entry.user .text + .pics, .entry.user .text + .paste, .entry.user .pics + .paste { margin-top: 8px; }
 .entry.user .pics img { display: block; height: 120px; max-width: 48%; border-radius: var(--radius-lg); overflow: hidden; object-fit: cover; }
 .entry.user .pics.one img { height: 220px; max-width: 100%; }
+.entry.tool .tpics { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.entry.tool .tpics img { display: block; height: 120px; max-width: 100%; border-radius: var(--radius-lg); overflow: hidden; object-fit: contain; }
 
 .entry.user .paste { white-space: normal; font-size: var(--text-sm); }
 .entry.user .paste summary { cursor: pointer; color: var(--color-text-muted); padding: 4px 0; list-style: none; }

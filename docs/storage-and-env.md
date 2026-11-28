@@ -47,7 +47,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 |---|---|
 | Sessions and their transcripts | `~/.local/share/arakun/sessions/` |
 | Sessions written out as Markdown for another agent to read | `~/.local/share/arakun/linked/` |
-| Images pasted into the composer or sent from the phone | `~/.local/share/arakun/pastes/` |
+| Images pasted into the composer, sent from the phone, or returned by a tool | `~/.local/share/arakun/pastes/` |
 | Sessions that run without a window | `~/.local/share/arakun/headless/` |
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `~/.local/share/arakun/memory/` |
 | Your settings from Settings › General, Privacy and Branches | `~/.local/share/arakun/settings.json` |

@@ -201,6 +201,7 @@ fn marker_call(id: &str, name: &str, task: &str) -> ToolCall {
         parent: None,
         tool_name: Some("Agent".into()),
         secret: None,
+        images: Vec::new(),
     }
 }
 

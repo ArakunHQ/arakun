@@ -79,6 +79,8 @@ fn help_text(workspace: &str) -> String {
 
 /// Under the switch while it is on: how to reach a session from Linear.
 const SLOTS_TEXT: &str = "How many sessions from Linear work at once on each machine. More wait their turn. A session waiting on your answer, or on work it left running, does not count.";
+const ATTRIBUTE_LABEL: &str = "Mark pull requests as written by the agent";
+const ATTRIBUTE_TEXT: &str = "A session's pull request is opened with your GitHub account. This adds a hidden note to its description, so Linear Reviews shows which agent and model wrote it. GitHub does not show the note.";
 const TALK_TEXT: &str = "Reply in the issue to send its session a message. It waits for the current turn, unless it starts with ! (or /interrupt): then the turn stops and the session works on your message at once. Stop in Linear ends the session's work.";
 
 fn connect_text(workspace: &str) -> String {
@@ -434,6 +436,45 @@ impl LinearView {
             .child(card)
             .child(list)
             .when(on, |d| d.child(self.render_slots(cx)))
+            .when(on, |d| d.child(self.render_attribution(cx)))
+            .into_any_element()
+    }
+
+    /// Whether pull requests a session opened say an agent wrote them, for
+    /// Linear Reviews.
+    fn render_attribution(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.delegation.attribute;
+        let switch = ui::labelled(
+            div().id("lin-attribute-switch"),
+            Role::Switch,
+            ATTRIBUTE_LABEL,
+        )
+        .aria_toggled(ui::toggled(on))
+        .child(ui::switch(on))
+        .cursor_pointer()
+        .map(ui::focusable)
+        .on_click(
+            cx.listener(move |this, _, _, cx| this.change_delegation(|d| d.attribute = !on, cx)),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .max_w(px(720.))
+            .child(ui::heading("Pull requests"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(12.))
+                    .child(
+                        ui::text(Type::Body, theme::text(), ATTRIBUTE_LABEL)
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .child(switch),
+            )
+            .child(ui::text(Type::Body, theme::text_muted(), ATTRIBUTE_TEXT))
             .into_any_element()
     }
 

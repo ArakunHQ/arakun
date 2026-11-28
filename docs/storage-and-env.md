@@ -92,7 +92,7 @@ These stay in `~/.local/share/arakun/` whatever `ARAKUN_STATE` says.
 | Each sandboxed agent's folder while it runs | `~/.local/share/arakun/sandboxes/` |
 | The socket sandboxed agents reach Arakun through | `~/.local/share/arakun/sandbox/control.sock` |
 | Linear sign-ins (who signed in; the API keys are in the keyring) | `~/.local/share/arakun/linear/sessions.json` |
-| Linear: the switch for starting sessions, its mappings and how many run at once on each machine (no keys) | `~/.local/share/arakun/linear/delegation.json` |
+| Linear: the switch for starting sessions, its mappings, how many run at once on each machine and whether pull requests are marked as the agent's (no keys) | `~/.local/share/arakun/linear/delegation.json` |
 | Linear: the servers that hold Linear settings | `~/.local/share/arakun/linear/servers.json` |
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `~/.local/share/arakun/linear/runs.json` |
 | Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`) | `~/.local/share/arakun/doop/` |

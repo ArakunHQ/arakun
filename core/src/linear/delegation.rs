@@ -35,7 +35,7 @@ pub struct Mapping {
 
 /// Each field defaults, so a file from an older or newer Arakun still loads
 /// what it can.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Delegation {
     #[serde(default)]
     pub enabled: bool,
@@ -53,6 +53,31 @@ pub struct Delegation {
     /// The same, for each paired server that has its own number.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub server_slots: BTreeMap<String, usize>,
+    /// Whether pull requests a delegated session opened say an agent wrote
+    /// them, for Linear Reviews (`attribution`). On unless turned off.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub attribute: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
+}
+
+impl Default for Delegation {
+    fn default() -> Delegation {
+        Delegation {
+            enabled: false,
+            mappings: Vec::new(),
+            consented: Vec::new(),
+            slots: None,
+            server_slots: BTreeMap::new(),
+            attribute: true,
+        }
+    }
 }
 
 fn file() -> PathBuf {
@@ -150,6 +175,7 @@ impl Delegation {
             consented: self.consented.clone(),
             slots: self.chosen_slots(server),
             server_slots: BTreeMap::new(),
+            attribute: self.attribute,
         }
     }
 
@@ -281,6 +307,19 @@ mod tests {
     }
     fn p(path: &str) -> PathBuf {
         PathBuf::from(path)
+    }
+
+    #[test]
+    fn attribution_is_on_unless_turned_off() {
+        assert!(Delegation::default().attribute);
+        let old: Delegation = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(old.attribute);
+        let off = Delegation {
+            attribute: false,
+            ..Default::default()
+        };
+        let back: Delegation = serde_json::from_slice(&serde_json::to_vec(&off).unwrap()).unwrap();
+        assert!(!back.attribute && !back.on(Some("s")).attribute);
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod fetch;
 pub mod frame_timer;
 pub mod git;
 pub mod git_call;
+pub mod github;
 pub mod guard;
 pub mod headless;
 pub mod highlight;

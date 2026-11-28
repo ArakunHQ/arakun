@@ -344,6 +344,19 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
 const PHONE_PROMPT_LOST: &str =
     "the server was not connected, so your message did not reach it. Send it again once it is back";
 
+/// What a phone hears when its prompt for session `pid` did not reach the
+/// server: an `unsent` naming the prompt when the phone gave it an id, so it
+/// can mark that message, or a plain error for a phone that did not.
+fn phone_prompt_lost(pid: &str, sent: Option<&str>) -> String {
+    match sent.filter(|s| !s.is_empty()) {
+        Some(sent) => wire::unsent(pid, sent, PHONE_UNSENT),
+        None => wire::error(PHONE_PROMPT_LOST),
+    }
+}
+
+/// Shown under a phone's message that did not reach the server.
+const PHONE_UNSENT: &str = "The server was not connected, so this did not reach it.";
+
 /// What the place of an older server's session starts with, whose folder is
 /// known by name only. Not an absolute path, so it never names a folder there.
 const GONE: &str = "gone:";
@@ -2192,6 +2205,7 @@ impl Shell {
         text: &str,
         now: bool,
         client: ClientId,
+        sent: Option<String>,
         cx: &mut Context<Self>,
     ) {
         let text = text.trim();
@@ -2204,7 +2218,8 @@ impl Shell {
             .and_then(|l| l.conns.get(server))
             .is_some_and(|c| c.reach == Reach::Connected);
         if !connected {
-            self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
+            let pid = phone_session_id(server, id);
+            self.phone_send(client, phone_prompt_lost(&pid, sent.as_deref()));
         }
         // A photo the phone sent here is a file here: it goes on to the server.
         let (text, uploads) = match &mut self.servers {
@@ -2214,9 +2229,10 @@ impl Shell {
         if let Some(notice) = self.servers_too_large() {
             self.phone_send(client, wire::error(&notice));
         }
-        // `phone` is this app's own: the server reads past it.
+        // `phone` and `sent` are this app's own: the server reads past them.
         let msg = json!({
             "type": "send", "text": text, "uploads": uploads, "now": now, "phone": client,
+            "sent": sent,
         });
         self.servers_send(server, id, msg, cx);
     }
@@ -2532,8 +2548,9 @@ impl Shell {
                 let session = text(msg, "session");
                 // A phone's: told to that phone if it still looks at the session.
                 if let Some(client) = msg["phone"].as_u64() {
-                    if self.phone_looks_at(client, &phone_session_id(server, &session)) {
-                        self.phone_send(client, wire::error(PHONE_PROMPT_LOST));
+                    let pid = phone_session_id(server, &session);
+                    if self.phone_looks_at(client, &pid) {
+                        self.phone_send(client, phone_prompt_lost(&pid, msg["sent"].as_str()));
                     }
                     return;
                 }
@@ -4807,6 +4824,22 @@ mod tests {
         assert_eq!(split_phone_id(&b), ("s19a-0", Some("srv2")));
         // This computer's sessions keep their own ids.
         assert_eq!(split_phone_id("h19a2b"), ("h19a2b", None));
+    }
+
+    #[test]
+    fn a_lost_prompt_names_the_phones_message() {
+        let pid = phone_session_id("srv1", "s1");
+        let named: Value = serde_json::from_str(&phone_prompt_lost(&pid, Some("p7"))).unwrap();
+        assert_eq!(named["type"], "unsent");
+        assert_eq!(named["id"], "s1@srv1");
+        assert_eq!(named["sent"], "p7");
+        assert_eq!(named["message"], PHONE_UNSENT);
+        // A phone that gave no id hears the error it always did.
+        for sent in [None, Some("")] {
+            let plain: Value = serde_json::from_str(&phone_prompt_lost(&pid, sent)).unwrap();
+            assert_eq!(plain["type"], "error");
+            assert_eq!(plain["message"], PHONE_PROMPT_LOST);
+        }
     }
 
     #[test]

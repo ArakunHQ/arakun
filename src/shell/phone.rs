@@ -1519,6 +1519,7 @@ impl Shell {
                 text,
                 uploads,
                 now,
+                sent,
             } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
@@ -1540,7 +1541,7 @@ impl Shell {
                 // that does not get there is said to this phone, not put in
                 // the desktop's composer.
                 if let Some(server) = server {
-                    self.servers_phone_send(&server, &sid, &text, now, client, cx);
+                    self.servers_phone_send(&server, &sid, &text, now, client, sent, cx);
                     if let Some(s) = self.session_mut(&env_path, &sid) {
                         s.updated = crate::model::unix_now();
                     }

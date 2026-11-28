@@ -94,6 +94,12 @@ pub fn error(message: &str) -> String {
     json!({ "type": "error", "message": message }).to_string()
 }
 
+/// The prompt the phone sent as `sent` in `session` did not get there, and
+/// `message` says why. The phone marks that message and offers to send it again.
+pub fn unsent(session: &str, sent: &str, message: &str) -> String {
+    json!({ "type": "unsent", "id": session, "sent": sent, "message": message }).to_string()
+}
+
 /// The answer to a page's `ping`, so it knows the computer is still there.
 pub fn pong() -> String {
     json!({ "type": "pong" }).to_string()

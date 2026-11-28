@@ -118,6 +118,8 @@ export type ServerMessage =
   | { type: "settings"; id: string; settings: Setting[] }
   | { type: "options"; env: string; agent: string; settings: Setting[] }
   | { type: "started"; id: string }
+  /** The prompt this phone sent as `sent` did not reach session `id`. */
+  | { type: "unsent"; id: string; sent: string; message: string }
   | { type: "error"; message: string };
 
 export type UsageMessage = Extract<ServerMessage, { type: "usage" }>;
@@ -162,6 +164,7 @@ export interface LinkState {
  *   computer; the link has closed it, the screen goes back to the inbox.
  * - `started`: a session the New session form asked for began and is open.
  * - `error`: the computer refused something, such as a start.
+ * - `unsent`: a prompt this phone sent (`sent`, its id) did not reach `session`.
  * - `linked`: the computer answered; the screen sends what it needs again.
  * - `unpaired`: no token, or the computer refused it; `message` says why ("" for none).
  * - `closed`: the relay ended the link for good (`signed_out`, `refused`,
@@ -172,6 +175,7 @@ export type LinkEvent =
   | { type: "session-elsewhere"; id: string }
   | { type: "started"; id: string }
   | { type: "error"; message: string }
+  | { type: "unsent"; session: string; sent: string; message: string }
   | { type: "linked" }
   | { type: "unpaired"; message: string }
   | { type: "closed"; kind: string; detail: string };

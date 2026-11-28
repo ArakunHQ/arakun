@@ -142,6 +142,12 @@ pub enum ClientMsg {
         /// A server without it queues the prompt, as before.
         #[serde(default)]
         now: bool,
+        /// The phone's own id for this prompt. When it does not reach a
+        /// server's session, the answer is an `unsent` that names it, so the
+        /// phone can mark that message and offer to send it again. Without
+        /// one the phone hears a plain `error`, as before.
+        #[serde(default)]
+        sent: Option<String>,
     },
     /// A piece of a photo the phone is sending: `data` is base64, piece `part`
     /// of `of` under `upload`'s id. Kept apart because a relay frame is small;
@@ -2828,6 +2834,7 @@ mod tests {
                 text: "hi".into(),
                 uploads: vec![],
                 now: false,
+                sent: None,
             }
         );
         let with: ClientMsg = serde_json::from_str(
@@ -2841,11 +2848,13 @@ mod tests {
                 text: "mira".into(),
                 uploads: vec!["u1".into(), "u2".into()],
                 now: false,
+                sent: None,
             }
         );
-        let now: ClientMsg =
-            serde_json::from_str(r#"{"type":"send","session":"s1","text":"no","now":true}"#)
-                .unwrap();
+        let now: ClientMsg = serde_json::from_str(
+            r#"{"type":"send","session":"s1","text":"no","now":true,"sent":"p1"}"#,
+        )
+        .unwrap();
         assert_eq!(
             now,
             ClientMsg::Send {
@@ -2853,6 +2862,7 @@ mod tests {
                 text: "no".into(),
                 uploads: vec![],
                 now: true,
+                sent: Some("p1".into()),
             }
         );
         let piece: ClientMsg = serde_json::from_str(

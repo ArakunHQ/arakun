@@ -16,8 +16,8 @@ impl Shell {
             self.pick_project_for("The Marketplace tab", Self::open_extensions_tab, window, cx);
             return;
         }
-        self.show_view_tab("Marketplace", TabKind::Extensions, |k| {
-            matches!(k, TabKind::Extensions)
+        self.show_view_tab("Marketplace", TabKind::Marketplace, |k| {
+            matches!(k, TabKind::Marketplace)
         });
         self.note_active_tab(cx);
         let dir = self.env().path.clone();

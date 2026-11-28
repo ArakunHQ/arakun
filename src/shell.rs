@@ -914,7 +914,7 @@ impl Shell {
             },
         );
         let sidebar = crate::sidebar::Sidebar::load();
-        let views = crate::sidebar::Extensions::load(&sidebar);
+        let views = crate::sidebar::OptionalTabs::load(&sidebar);
         let github = cx.new(GitHub::new);
         let pilot = cx.new(crate::github::pilot::Pilot::new);
         let tab_views = tab_views::TabViews::new(&ci, &github, &pilot, views, window, cx);
@@ -2475,6 +2475,17 @@ impl Shell {
         self.open_sign_in(true, window, cx);
     }
 
+    /// Opens Settings on Tabs, where the sidebar's optional tabs are turned on.
+    pub(super) fn open_tab_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An open dialog stays, with what was typed in it.
+        if let Some((Modal::Settings(dialog), _)) = &self.modal {
+            dialog.update(cx, |d, cx| d.show_tabs(cx));
+        } else {
+            crate::settings_view::start_on_tabs();
+            self.open_settings(window, cx);
+        }
+    }
+
     /// Opens Settings on Account, where a GitHub account is linked: what
     /// cloud access and Linear delegation ask for.
     pub(super) fn open_link_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2998,7 +3009,7 @@ impl Shell {
         };
         let views_on = {
             let ext = self.views.extensions.read(cx);
-            crate::sidebar::View::EXTENSIONS
+            crate::sidebar::View::OPTIONAL
                 .iter()
                 .copied()
                 .filter(|v| ext.shows(*v))
@@ -3159,10 +3170,6 @@ impl Shell {
                     this.survey.pending = None;
                     this.close_modal(window, cx);
                     this.send_feedback(window, cx);
-                }
-                SettingsEvent::OpenExtensions => {
-                    this.close_modal(window, cx);
-                    this.open_extensions_tab(window, cx);
                 }
                 #[cfg(feature = "coderlabs")]
                 SettingsEvent::OpenTasks => {
@@ -4292,7 +4299,7 @@ impl Shell {
                     .update(cx, |v, cx| v.set_card_corners(corners, cx));
                 self.views.github.clone().into_any_element()
             }
-            Some(TabKind::Extensions) => {
+            Some(TabKind::Marketplace) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();
                 self.views.extensions.update(cx, |v, cx| {

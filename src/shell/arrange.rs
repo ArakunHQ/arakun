@@ -380,14 +380,12 @@ impl Shell {
             );
         }
         chips = chips.child(
-            chip("arr-more".into(), "store01", "More in Marketplace…".into()).on_click(
-                cx.listener(|this, _, window, cx| {
-                    this.open_extensions_tab(window, cx);
-                    this.views
-                        .extensions
-                        .update(cx, |v, cx| v.show_extensions(cx));
-                }),
-            ),
+            chip(
+                "arr-more".into(),
+                "dashboard-square01",
+                "More in Settings › Tabs…".into(),
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.open_tab_settings(window, cx))),
         );
         let target = self
             .add_target()

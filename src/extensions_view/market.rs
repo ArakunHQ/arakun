@@ -1,4 +1,4 @@
-//! Discover, the store half of the Marketplace tab: Claude Code plugins its
+//! Browse, the store half of the Marketplace tab: Claude Code plugins its
 //! marketplaces offer, and the official MCP Registry with an install form for
 //! what a server needs.
 
@@ -16,7 +16,7 @@ use crate::agent::mirror::{self, ItemKind, RepoHas, RepoItem, Where};
 use crate::agent::publishers;
 use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
-/// Why Droid can't use what Discover installs.
+/// Why Droid can't use what Browse installs.
 const DISCOVER_NOT_FOR_DROID: &str = "Arakun installs it for Claude Code; Droid doesn't read it";
 
 /// Wait this long after the last keystroke before asking the registry.
@@ -720,7 +720,7 @@ impl ExtensionsView {
         items
     }
 
-    /// The MCP servers Discover shows, before any filter: the registry's (all
+    /// The MCP servers Browse shows, before any filter: the registry's (all
     /// of it, or what companies publish), then Arakun's own picks it lacks,
     /// one entry per server. Empty until the registry answers.
     fn server_list(&self) -> Vec<RegistryServer> {
@@ -909,8 +909,8 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// How many plugins or servers Discover has for `m`, as the scope shows them.
-    pub(super) fn discover_count(&self, m: Market) -> Option<usize> {
+    /// How many plugins or servers Browse has for `m`, as the scope shows them.
+    pub(super) fn browse_count(&self, m: Market) -> Option<usize> {
         match m {
             Market::Plugins => self.plugin_catalog().map(|c| {
                 c.iter()
@@ -928,7 +928,7 @@ impl ExtensionsView {
         }
     }
 
-    /// Opens Discover on plugins or on MCP servers.
+    /// Opens Browse on plugins or on MCP servers.
     pub(super) fn show_market(&mut self, m: Market, cx: &mut Context<Self>) {
         self.set_kind(Kind::Marketplace, cx);
         self.market = m;
@@ -944,7 +944,7 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// Discover's categories for plugins, or the companies of official servers,
+    /// Browse's categories for plugins, or the companies of official servers,
     /// for the sidebar.
     pub(super) fn category_lines(&self) -> Vec<Line> {
         let mut groups: Vec<(String, usize)> = Vec::new();
@@ -986,7 +986,7 @@ impl ExtensionsView {
             return Vec::new();
         }
         groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        let total = self.discover_count(self.market).unwrap_or(0);
+        let total = self.browse_count(self.market).unwrap_or(0);
         let mut out = vec![
             Line::Heading(heading.into()),
             Line::Entry(
@@ -1017,14 +1017,14 @@ impl ExtensionsView {
         out
     }
 
-    /// Shows one category (or company) of Discover, or all of them.
+    /// Shows one category (or company) of Browse, or all of them.
     pub(super) fn pick_category(&mut self, category: Option<String>, cx: &mut Context<Self>) {
         self.ms.category = category;
         self.ms.rows.top();
         cx.notify();
     }
 
-    /// Discover: what needs you, the featured strip, the heading with its
+    /// Browse: what needs you, the featured strip, the heading with its
     /// filters, then a virtual list of card lines (only the visible ones are
     /// laid out, however many there are), and the picked item on the right.
     pub(super) fn render_market(&self, cx: &mut Context<Self>) -> Div {
@@ -1296,7 +1296,7 @@ impl ExtensionsView {
     }
 
     /// Claude Code's MCP servers that need you, as last read.
-    /// Only while Discover is on this computer: they are this computer's.
+    /// Only while Browse is on this computer: they are this computer's.
     fn needy(&self) -> impl Iterator<Item = &Server> {
         let here = self.targets.target.is_none();
         self.claude.data.iter().filter(move |_| here).flat_map(|x| {
@@ -1380,7 +1380,7 @@ impl ExtensionsView {
                         )
                         .child(icon("arrow-right01", 12.).text_color(theme::text_subtle()))
                         .on_click(cx.listener(|this, _, _, cx| {
-                            // A search from Discover would filter out the server it names.
+                            // A search from Browse would filter out the server it names.
                             this.query.update(cx, |q, cx| q.set_text("", cx));
                             this.set_kind(Kind::Servers, cx);
                         })),
@@ -1527,7 +1527,7 @@ impl ExtensionsView {
                 .flex_none()
                 .into_any_element();
         }
-        // Discover installs for Claude Code: with Droid picked, the card stays
+        // Browse installs for Claude Code: with Droid picked, the card stays
         // and says so instead of offering an install Droid won't see.
         if self.show == Show::Only(Agent::Droid) {
             return div()
@@ -2646,7 +2646,7 @@ fn looks_secret(input: &Input) -> bool {
 }
 
 /// Lines in the virtual list: the featured strip, the lines of cards, "Load more".
-/// One row of Discover's list.
+/// One row of Browse's list.
 #[derive(Clone, Copy)]
 enum Row {
     /// The last error or notice, and a server that needs you.
@@ -2711,7 +2711,7 @@ fn forget_rows(last: &mut Synced) {
     *last = None;
 }
 
-/// Discover's list, its rows of different heights laid out only when in view.
+/// Browse's list, its rows of different heights laid out only when in view.
 pub(super) struct Rows(pub(super) ListState);
 
 impl Default for Rows {

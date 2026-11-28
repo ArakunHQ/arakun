@@ -90,7 +90,7 @@ files! {
     own folder MEMORY = "memory", "Memory (or the folder `ARAKUN_MEMORY_DIR` names)";
     own file SETTINGS = "settings.json", "Your settings from Settings › General, Privacy and Branches";
     own file SIDEBAR = "sidebar.json", "The sidebar's layout";
-    own file EXTENSIONS = "extensions.json", "The extension views turned on in the Marketplace";
+    own file EXTENSIONS = "extensions.json", "The optional tabs turned on in Settings › Tabs";
     own file HISTORY = "history.json", "Prompts sent from the composer, for ↑ and ↓";
     own file PROMPTS = "prompts.json", "Saved prompts";
     own file NOTICES = "notices.json", "Notice history";
@@ -139,7 +139,7 @@ files! {
     shared file LINEAR_RUNS = "linear/runs.json", "Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent)";
     shared folder DOOP = "doop", "Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`)";
     shared folder POSTHOG = "posthog", "PostHog sign-ins (`sessions.json`; the keys are in the keyring) and links (`links.json`)";
-    shared folder CACHE = "cache", "Caches: Doop renders, PostHog answers, favicons, marketplaces, extensions";
+    shared folder CACHE = "cache", "Caches: Doop renders, PostHog answers, favicons, marketplaces, Marketplace items";
     shared folder SERVER = "server", "`arakun server`: its settings, sign-in, Linear settings and runs, sessions and socket (or the folder `ARAKUN_SERVER_DIR` names)";
     shared file UPDATE = "update.json", "Updates: the version waiting";
     shared file UPDATE_LOCK = "update.lock", "Held while an update downloads";

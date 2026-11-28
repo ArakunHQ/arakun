@@ -127,7 +127,7 @@ reach each other this way. There are two ways to use it:
   In a server's environment, the model menu lists the models and reasoning levels that
   server offers. A new session starts with what you pick there, and picking in a running
   session changes it on the server. The permission mode and fast mode are the server's
-  own. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  own. In the Marketplace, "Install on" picks a paired server: Browse then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.

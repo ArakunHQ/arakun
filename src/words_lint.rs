@@ -21,6 +21,15 @@ const RETIRED: &[(&str, &str)] = &[
     ("go to…", "the palette"),
     ("find anything", "the palette"),
     ("servers tab", "Computers tab"),
+    (
+        "extension",
+        "item (MCP server, plugin, skill or widget), or tab",
+    ),
+    (
+        "extensions",
+        "items (MCP servers, plugins, skills and widgets), or tabs",
+    ),
+    ("toolkit", "Marketplace"),
 ];
 
 /// Phrases that keep a retired word on purpose, because they name something
@@ -32,6 +41,8 @@ const ALLOWED_PHRASES: &[&str] = &[
     "github notification",
     // Search keywords list the old word beside the new one, so it still finds.
     "environment worktree",
+    // Linear's marker in an issue body, stored in Linear, not read.
+    "linear:extension",
 ];
 
 /// Files whose strings are not the interface: prompts and requests to an

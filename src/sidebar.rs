@@ -22,7 +22,9 @@ pub enum View {
     Notes,
     Memory,
     Usage,
-    Extensions,
+    /// Stored as "extensions", its name before the Marketplace.
+    #[serde(rename = "extensions")]
+    Marketplace,
     Cloudflare,
     PostHog,
     Linear,
@@ -54,7 +56,7 @@ impl View {
         View::Notes,
         View::Memory,
         View::Usage,
-        View::Extensions,
+        View::Marketplace,
         View::Cloudflare,
         View::PostHog,
         View::Linear,
@@ -72,9 +74,9 @@ impl View {
         View::Team,
     ];
 
-    /// Views that stay out of the rail until turned on in the Marketplace.
+    /// Views that stay out of the rail until turned on in Settings › Tabs.
     /// The rest are the core every sidebar can hold.
-    pub const EXTENSIONS: &[View] = &[
+    pub const OPTIONAL: &[View] = &[
         View::GitHub,
         View::Notes,
         View::Memory,
@@ -89,8 +91,8 @@ impl View {
         View::Automations,
     ];
 
-    pub fn is_extension(self) -> bool {
-        View::EXTENSIONS.contains(&self)
+    pub fn is_optional(self) -> bool {
+        View::OPTIONAL.contains(&self)
     }
 
     pub fn label(self) -> &'static str {
@@ -104,7 +106,7 @@ impl View {
             View::Notes => "Notes",
             View::Memory => "Memory",
             View::Usage => "Usage",
-            View::Extensions => "Marketplace",
+            View::Marketplace => "Marketplace",
             View::Cloudflare => "Cloudflare",
             View::PostHog => "PostHog",
             View::Linear => "Linear",
@@ -134,7 +136,7 @@ impl View {
             View::Notes => "file01",
             View::Memory => "ai-idea",
             View::Usage => "dashboard-square01",
-            View::Extensions => "store01",
+            View::Marketplace => "store01",
             View::Cloudflare => "internet",
             View::PostHog => "chart-breakout-square",
             View::Linear => "check-list",
@@ -165,7 +167,7 @@ impl View {
             View::Notes => "Project notes",
             View::Memory => "What agents remember here",
             View::Usage => "Plan limits and spend",
-            View::Extensions => "Plugins, MCP servers and skills",
+            View::Marketplace => "Plugins, MCP servers and skills",
             View::Cloudflare => "Workers, tunnels and DNS",
             View::PostHog => "Product analytics for each repo",
             View::Linear => "Your Linear issues",
@@ -723,7 +725,7 @@ impl Preset {
             View::Notes,
             View::Memory,
             View::Usage,
-            View::Extensions,
+            View::Marketplace,
             View::Cloudflare,
             View::PostHog,
             View::Linear,
@@ -1041,7 +1043,7 @@ fn icon_grid_switcher() -> Vec<Section> {
         View::Notes,
         View::Memory,
         View::Usage,
-        View::Extensions,
+        View::Marketplace,
         View::Cloudflare,
         View::PostHog,
         View::Linear,
@@ -1093,11 +1095,11 @@ fn icon_grid_switcher() -> Vec<Section> {
                     &more
                         .iter()
                         .copied()
-                        .filter(|v| *v != View::Extensions)
+                        .filter(|v| *v != View::Marketplace)
                         .collect::<Vec<_>>(),
                 ),
                 vec![
-                    Piece::view(View::Extensions),
+                    Piece::view(View::Marketplace),
                     Piece::Spacer,
                     Piece::Help,
                     Piece::Settings,
@@ -1616,15 +1618,15 @@ fn file() -> PathBuf {
     crate::paths::store(crate::paths::SIDEBAR)
 }
 
-/// The extension views turned on in the Marketplace. Kept apart from the
+/// The optional tabs turned on in Settings › Tabs. Kept apart from the
 /// layout, so a template or an undo in the builder leaves them as they are.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Extensions {
+pub struct OptionalTabs {
     #[serde(default)]
     pub on: Vec<View>,
 }
 
-impl Extensions {
+impl OptionalTabs {
     /// The saved choice. The first time, it keeps what `layout` already
     /// shows for someone who used Arakun before, so an update hides nothing,
     /// and starts with none on a new install. The choice is saved at once.
@@ -1634,7 +1636,7 @@ impl Extensions {
 
     fn load_from(path: &std::path::Path, layout: &Sidebar, used_before: bool) -> Self {
         let saved = crate::stored::load_with(path, |b| {
-            Self::parse(b).ok_or_else(|| "not a list of extensions".to_string())
+            Self::parse(b).ok_or_else(|| "not a list of tabs".to_string())
         });
         if let Some(saved) = saved {
             return saved;
@@ -1650,7 +1652,7 @@ impl Extensions {
 
     fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            crate::stored::write_soon(path, bytes, "could not save the extensions");
+            crate::stored::write_soon(path, bytes, "could not save the tabs");
         }
     }
 
@@ -1662,14 +1664,14 @@ impl Extensions {
             .as_array()?
             .iter()
             .filter_map(|x| serde_json::from_value::<View>(x.clone()).ok())
-            .filter(|v| v.is_extension())
+            .filter(|v| v.is_optional())
             .collect();
-        Some(Extensions { on })
+        Some(OptionalTabs { on })
     }
 
     fn first(layout: &Sidebar, used_before: bool) -> Self {
         let on = if used_before {
-            View::EXTENSIONS
+            View::OPTIONAL
                 .iter()
                 .copied()
                 // More views reaches every view without a row of its own.
@@ -1678,18 +1680,18 @@ impl Extensions {
         } else {
             Vec::new()
         };
-        Extensions { on }
+        OptionalTabs { on }
     }
 
     /// Whether the rail shows `view`: always for the core, and for an
-    /// extension once it is on.
+    /// optional tab once it is on.
     pub fn shows(&self, view: View) -> bool {
-        !view.is_extension() || self.on.contains(&view)
+        !view.is_optional() || self.on.contains(&view)
     }
 
-    /// Turns an extension on or off. False when nothing changed.
+    /// Turns an optional tab on or off. False when nothing changed.
     pub fn set(&mut self, view: View, on: bool) -> bool {
-        if !view.is_extension() || self.on.contains(&view) == on {
+        if !view.is_optional() || self.on.contains(&view) == on {
             return false;
         }
         if on {
@@ -1769,9 +1771,9 @@ mod tests {
                 "More views",
             ]
         );
-        // An extension turned on in the Marketplace shows without a trip to
+        // An optional tab turned on in Settings › Tabs shows without a trip to
         // the builder: in More views.
-        for v in [View::Notes, View::Extensions, View::Linear, View::Usage] {
+        for v in [View::Notes, View::Marketplace, View::Linear, View::Usage] {
             assert!(s.hidden_views().contains(&v), "{v:?}");
         }
         assert!(!s.hidden_views().contains(&View::Runs));
@@ -2153,18 +2155,18 @@ mod tests {
     }
 
     #[test]
-    fn the_core_views_are_not_extensions() {
-        for v in [View::Inbox, View::Runs, View::Branches, View::Extensions] {
-            assert!(!v.is_extension(), "{}", v.label());
+    fn the_core_views_are_not_optional() {
+        for v in [View::Inbox, View::Runs, View::Branches, View::Marketplace] {
+            assert!(!v.is_optional(), "{}", v.label());
         }
-        assert!(View::EXTENSIONS.iter().all(|v| View::ALL.contains(v)));
+        assert!(View::OPTIONAL.iter().all(|v| View::ALL.contains(v)));
     }
 
     #[test]
-    fn an_update_keeps_the_extensions_a_rail_had() {
+    fn an_update_keeps_the_tabs_a_rail_had() {
         let mut layout = small();
         layout.insert(Item::new(Piece::view(View::Cloudflare)), (1, 0));
-        let before = Extensions::first(&layout, true);
+        let before = OptionalTabs::first(&layout, true);
         assert_eq!(before.on, [View::Cloudflare]);
         assert!(before.shows(View::Cloudflare));
         assert!(!before.shows(View::PostHog));
@@ -2172,41 +2174,41 @@ mod tests {
         assert!(before.shows(View::Runs));
 
         // More views holds every view: the default from before kept them all.
-        let kept = Extensions::first(&Sidebar::default(), true);
-        assert_eq!(kept.on, View::EXTENSIONS);
+        let kept = OptionalTabs::first(&Sidebar::default(), true);
+        assert_eq!(kept.on, View::OPTIONAL);
 
-        let new = Extensions::first(&Sidebar::default(), false);
+        let new = OptionalTabs::first(&Sidebar::default(), false);
         assert!(new.on.is_empty());
-        assert!(View::EXTENSIONS.iter().all(|v| !new.shows(*v)));
-        assert!(new.shows(View::Extensions));
+        assert!(View::OPTIONAL.iter().all(|v| !new.shows(*v)));
+        assert!(new.shows(View::Marketplace));
     }
 
     #[test]
     fn linear_is_a_view_you_turn_on() {
-        assert!(View::EXTENSIONS.contains(&View::Linear));
+        assert!(View::OPTIONAL.contains(&View::Linear));
         assert_eq!(View::Linear.label(), "Linear");
     }
 
     #[test]
-    fn extensions_turn_on_and_off_once() {
-        let mut e = Extensions::default();
+    fn optional_tabs_turn_on_and_off_once() {
+        let mut e = OptionalTabs::default();
         assert!(e.set(View::PostHog, true));
         assert!(!e.set(View::PostHog, true));
-        assert!(!e.set(View::Runs, true), "the core is not an extension");
+        assert!(!e.set(View::Runs, true), "the core is not optional");
         assert_eq!(e.on, [View::PostHog]);
         assert!(e.set(View::PostHog, false));
         assert!(e.on.is_empty());
     }
 
     #[test]
-    fn saved_extensions_skip_what_this_version_lacks() {
-        let e = Extensions::parse(br#"{"on":["cloudflare","teleporter","runs"]}"#).unwrap();
+    fn saved_tabs_skip_what_this_version_lacks() {
+        let e = OptionalTabs::parse(br#"{"on":["cloudflare","teleporter","runs"]}"#).unwrap();
         assert_eq!(e.on, [View::Cloudflare]);
         assert_eq!(
-            Extensions::parse(br#"{"on":[]}"#),
-            Some(Extensions::default())
+            OptionalTabs::parse(br#"{"on":[]}"#),
+            Some(OptionalTabs::default())
         );
-        assert_eq!(Extensions::parse(b"{}"), None);
+        assert_eq!(OptionalTabs::parse(b"{}"), None);
     }
 
     #[test]
@@ -2340,13 +2342,13 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_extensions_are_kept_when_the_first_choice_is_saved() {
+    fn unreadable_tabs_are_kept_when_the_first_choice_is_saved() {
         let dir = crate::stored::tests::scratch("extensions");
         let path = dir.join("extensions.json");
         std::fs::write(&path, "{}").unwrap();
-        let e = Extensions::load_from(&path, &Sidebar::default(), false);
+        let e = OptionalTabs::load_from(&path, &Sidebar::default(), false);
         assert!(e.on.is_empty());
-        assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
+        assert_eq!(OptionalTabs::load_from(&path, &Sidebar::default(), true), e);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
         crate::durable::flush();
         let _ = std::fs::remove_dir_all(dir);

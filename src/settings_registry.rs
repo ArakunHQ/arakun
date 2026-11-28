@@ -27,6 +27,7 @@ impl Group {
 pub enum Section {
     General,
     Appearance,
+    Tabs,
     Project,
     Branches,
     Privacy,
@@ -48,6 +49,7 @@ impl Section {
     pub const ALL: &[Section] = &[
         Section::General,
         Section::Appearance,
+        Section::Tabs,
         Section::Project,
         Section::Branches,
         Section::Privacy,
@@ -90,6 +92,7 @@ impl Section {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
+            Section::Tabs => "Tabs",
             Section::Project => "Project",
             Section::Branches => "Branches",
             Section::Privacy => "Privacy",
@@ -112,6 +115,7 @@ impl Section {
         match self {
             Section::General => "settings01",
             Section::Appearance => "paint-board",
+            Section::Tabs => "dashboard-square01",
             Section::Project => "folder01",
             Section::Branches => "git-branch",
             Section::Privacy => "shield-alert",
@@ -134,6 +138,9 @@ impl Section {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
                 "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
+            }
+            Section::Tabs => {
+                "Which tabs show in the sidebar. Runs, Branches and the Marketplace always show."
             }
             Section::Project => {
                 "The open project's commands, base branch, sandbox, saved secrets and what its agents get, on this computer."
@@ -176,9 +183,7 @@ impl Section {
                 "claude code anthropic plan usage limits weekly monthly window sign in logout"
             }
             Section::Codex => "codex openai chatgpt gpt api key sign in logout",
-            Section::Droid => {
-                "factory account plan usage api key credits skills mcp servers extensions plugins"
-            }
+            Section::Droid => "factory account plan usage api key credits",
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
             Section::Devin => "devin cognition windsurf api key sign in logout",
             Section::Cursor => "cursor cursor-agent api key sign in logout",
@@ -396,16 +401,6 @@ pub static ALL: &[Entry] = &[
         switch: sw(background_on, set_background),
     },
     Entry {
-        id: Id::SidebarViews,
-        key: "set-sidebar-view",
-        label: "Views",
-        hint: "The extra views the sidebar shows. The Marketplace has the same switches, with what each view does.",
-        section: S::General,
-        card: "Sidebar",
-        keywords: "sidebar extensions rail github notes memory usage cloudflare posthog linear doop isometric phone servers automations",
-        switch: None,
-    },
-    Entry {
         id: Id::UsageCard,
         key: "set-rail-usage",
         label: "Usage card",
@@ -602,6 +597,16 @@ pub static ALL: &[Entry] = &[
         switch: None,
     },
     // Project
+    Entry {
+        id: Id::SidebarViews,
+        key: "set-sidebar-view",
+        label: "Optional tabs",
+        hint: "Tabs the sidebar shows once they are on, in every project.",
+        section: S::Tabs,
+        card: "Arakun",
+        keywords: "sidebar views rail github notes memory usage cloudflare posthog linear doop isometric phone servers automations",
+        switch: None,
+    },
     Entry {
         id: Id::SetupScript,
         key: "set-project-setup",
@@ -909,6 +914,9 @@ mod tests {
         assert!(found("gh_token").contains(&Section::Project));
         assert!(found("replace").contains(&Section::Project));
         assert!(found("island").contains(&Section::General));
+        assert!(found("posthog").contains(&Section::Tabs));
+        assert!(found("optional tabs").contains(&Section::Tabs));
+        assert!(!found("optional tabs").contains(&Section::General));
         assert_eq!(found("").len(), Section::ALL.len());
         assert!(found("zzz-nothing").is_empty());
     }

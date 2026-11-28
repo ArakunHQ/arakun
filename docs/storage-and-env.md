@@ -52,7 +52,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `~/.local/share/arakun/memory/` |
 | Your settings from Settings › General, Privacy and Branches | `~/.local/share/arakun/settings.json` |
 | The sidebar's layout | `~/.local/share/arakun/sidebar.json` |
-| The extension views turned on in the Marketplace | `~/.local/share/arakun/extensions.json` |
+| The optional tabs turned on in Settings › Tabs | `~/.local/share/arakun/extensions.json` |
 | Prompts sent from the composer, for ↑ and ↓ | `~/.local/share/arakun/history.json` |
 | Saved prompts | `~/.local/share/arakun/prompts.json` |
 | Notice history | `~/.local/share/arakun/notices.json` |
@@ -108,7 +108,7 @@ These stay in `~/.local/share/arakun/` whatever `ARAKUN_STATE` says.
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `~/.local/share/arakun/linear/runs.json` |
 | Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`) | `~/.local/share/arakun/doop/` |
 | PostHog sign-ins (`sessions.json`; the keys are in the keyring) and links (`links.json`) | `~/.local/share/arakun/posthog/` |
-| Caches: Doop renders, PostHog answers, favicons, marketplaces, extensions | `~/.local/share/arakun/cache/` |
+| Caches: Doop renders, PostHog answers, favicons, marketplaces, Marketplace items | `~/.local/share/arakun/cache/` |
 | `arakun server`: its settings, sign-in, Linear settings and runs, sessions and socket (or the folder `ARAKUN_SERVER_DIR` names) | `~/.local/share/arakun/server/` |
 | Updates: the version waiting | `~/.local/share/arakun/update.json` |
 | Held while an update downloads | `~/.local/share/arakun/update.lock` |

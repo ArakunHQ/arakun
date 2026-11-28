@@ -19,7 +19,7 @@ impl Shell {
 
     pub(super) fn subnav_lines(&self, view: View, cx: &App) -> Vec<Line> {
         match view {
-            View::Extensions => self.views.extensions.read(cx).nav(),
+            View::Marketplace => self.views.extensions.read(cx).nav(),
             View::Cloudflare => self.views.cloudflare.read(cx).nav(),
             _ => Vec::new(),
         }
@@ -28,7 +28,7 @@ impl Shell {
     /// What narrows the page of `view`, in a row under its tabs.
     pub(super) fn subnav_filters(&self, view: View, cx: &App) -> Vec<Line> {
         match view {
-            View::Extensions => self.views.extensions.read(cx).filters(),
+            View::Marketplace => self.views.extensions.read(cx).filters(),
             _ => Vec::new(),
         }
     }
@@ -40,7 +40,7 @@ impl Shell {
         Rc::new(move |key: &SharedString, _, cx: &mut App| {
             let key = key.to_string();
             match view {
-                View::Extensions => {
+                View::Marketplace => {
                     let _ = extensions.update(cx, |v, cx| v.pick_nav(&key, cx));
                 }
                 View::Cloudflare => {
@@ -107,7 +107,7 @@ impl Shell {
 /// The view a tab shows, when that view has pages of its own.
 fn tab_subnav_view(kind: &TabKind) -> Option<View> {
     match kind {
-        TabKind::Extensions => Some(View::Extensions),
+        TabKind::Marketplace => Some(View::Marketplace),
         TabKind::Cloudflare => Some(View::Cloudflare),
         _ => None,
     }

@@ -106,7 +106,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         View::Notes => "nav-notes",
         View::Memory => "nav-memory",
         View::Usage => "nav-usage",
-        View::Extensions => "nav-extensions",
+        View::Marketplace => "nav-extensions",
         View::Cloudflare => "nav-cloudflare",
         View::PostHog => "nav-posthog",
         View::Linear => "nav-linear",
@@ -302,7 +302,7 @@ impl Shell {
                     quiet(n)
                 }
             }),
-            View::Extensions => Some(self.views.extensions.read(cx).problems())
+            View::Marketplace => Some(self.views.extensions.read(cx).problems())
                 .filter(|n| *n > 0)
                 .map(|n| loud(n, theme::attention().into())),
             #[cfg(feature = "team")]
@@ -336,7 +336,7 @@ impl Shell {
             View::Notes => self.open_notes_tab(window, cx),
             View::Memory => self.open_memory_tab(window, cx),
             View::Usage => self.open_usage_tab(window, cx),
-            View::Extensions => self.open_extensions_tab(window, cx),
+            View::Marketplace => self.open_extensions_tab(window, cx),
             View::Cloudflare => self.open_cloudflare_tab(window, cx),
             View::PostHog => self.open_posthog_tab(window, cx),
             View::Linear => self.open_linear_tab(window, cx),

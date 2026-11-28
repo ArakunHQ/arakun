@@ -88,7 +88,7 @@ pub enum TabKind {
     #[cfg(feature = "coderlabs")]
     Canvas,
     /// MCP servers, plugins, skills and permissions of the agents (`extensions_view`).
-    Extensions,
+    Marketplace,
     /// Arakun Teams, for accounts the Teams server lets in (`arakun_teams::view`).
     Teams,
     /// What the team hub holds, to read with time (`team_view`).

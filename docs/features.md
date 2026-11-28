@@ -844,22 +844,22 @@ again after a week) in its [data folder](storage-and-env.md).
   so, sessions start as before, and one that was on a seat says so. The same goes
   while Claude Code runs on an API key, a gateway or a cloud provider, which win over
   any seat's token. Without a saved seat nothing changes.
-- **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
-  skills and permission rules the agents load now. The page has one layout for every
+- **Marketplace.** Plugins, MCP servers and skills to add (Browse), and the MCP servers,
+  plugins, skills and permission rules the agents load now (Installed). The page has one layout for every
   agent: **Show for** in its header (All agents, Claude Code, Droid) changes only what
   the cells say. Installed lists each item once, and its Agents column shows which agents
   have it ("Off for Droid", "Claude Code only"). With one agent picked, an item that agent
   can't use stays in the list as "Not for Droid", with the reason. An item's details have
   an Agents card: one row per agent with the file it reads and, where Arakun can change
-  it, a switch that turns the item off for that agent only. Discover installs for Claude
+  it, a switch that turns the item off for that agent only. Browse installs for Claude
   Code. Each item there has one card and one details pane, whether you have it or not.
   The card ends with Install or the item's state, a dot and a word: Ready, Needs
   sign-in, Needs approval, Off, or Broken with the reason ("Broken: can't be reached").
   It shows the worst state of the item's servers. The details pane says the same state
-  and holds the fix, with the buttons the MCP servers list has. Discover › MCP servers
+  and holds the fix, with the buttons the MCP servers list has. Browse › MCP servers
   also lists Arakun's own picks (Linear, Notion, Sentry and others), and a server found
   both there and in the MCP Registry, or added under another name for the same URL,
-  shows once. Discover › Skills searches
+  shows once. Browse › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
   repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
   the repo's `.claude/skills` when Where (below) picks everyone in the project. A repository
@@ -878,8 +878,7 @@ again after a week) in its [data folder](storage-and-env.md).
   same place. With a paired server picked under "Install on", Where says the item goes
   on that server for every project there, and a skill can't be installed. An MCP server that signs in gets the repo in its name when it is
   installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
-  get what you install by the mirror (see [Server](server.md)). Under Arakun › Extensions (or Settings ›
-  General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
+  get what you install by the mirror (see [Server](server.md)). In Settings › Tabs you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Linear, Doop, Isometric, Phone, Computers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. Every tab that is on
   and has no row of its own in the sidebar is in **More views**, a row that opens them

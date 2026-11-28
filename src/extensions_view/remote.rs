@@ -1,4 +1,4 @@
-//! Discover on a paired server (`crate::servers`): the plugins its
+//! Browse on a paired server (`crate::servers`): the plugins its
 //! marketplaces offer and the MCP servers Claude has there, with Install
 //! doing its work over there. The view asks through the shell, which holds
 //! the connections (`ExtensionsEvent::Server`), and hears back in
@@ -13,7 +13,7 @@ use super::*;
 use crate::agent::marketplace::PluginEntry;
 use crate::servers_view::Reach;
 
-/// A paired server Discover can install on.
+/// A paired server Browse can install on.
 #[derive(Clone, PartialEq)]
 pub struct ServerTarget {
     pub id: String,
@@ -36,7 +36,7 @@ pub(super) struct RemoteMarket {
     outdated: bool,
     at: Option<Instant>,
     pub(super) error: Option<SharedString>,
-    /// Why it turned down what Discover asked, such as an older server not
+    /// Why it turned down what Browse asked, such as an older server not
     /// knowing the message. About the server, so the MCP list shows it too.
     refused: Option<SharedString>,
     /// The install it is doing for us.
@@ -89,7 +89,7 @@ struct Pending {
 /// The parts of `ExtensionsView` this module keeps.
 #[derive(Default)]
 pub(super) struct Targets {
-    /// Where Discover installs: this computer, or a paired server's id.
+    /// Where Browse installs: this computer, or a paired server's id.
     pub(super) target: Option<String>,
     /// The paired servers, as the shell last told.
     pub(super) servers: Vec<ServerTarget>,
@@ -121,7 +121,7 @@ impl Targets {
     }
 }
 
-/// Whether a server's `error` is about what Discover asked. The server answers
+/// Whether a server's `error` is about what Browse asked. The server answers
 /// those with `market` and `market_done`; only one that cannot read the
 /// message says `error`, without saying what about. Errors about sessions and
 /// the rest stay with the shell.
@@ -139,7 +139,7 @@ fn about_market(msg: &Value) -> bool {
 }
 
 impl ExtensionsView {
-    /// The paired servers and how each is reached: Discover offers to install on them.
+    /// The paired servers and how each is reached: Browse offers to install on them.
     pub fn set_servers(&mut self, servers: Vec<ServerTarget>, cx: &mut Context<Self>) {
         if self.targets.servers == servers {
             return;
@@ -183,7 +183,7 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// The server Discover installs on, when it is not this computer.
+    /// The server Browse installs on, when it is not this computer.
     pub(super) fn target_server(&self) -> Option<&ServerTarget> {
         let id = self.targets.target.as_ref()?;
         self.targets.servers.iter().find(|s| s.id == *id)
@@ -200,7 +200,7 @@ impl ExtensionsView {
             .unwrap_or_default()
     }
 
-    /// The plugins Discover lists: this computer's, or the picked server's.
+    /// The plugins Browse lists: this computer's, or the picked server's.
     pub(super) fn plugin_catalog(&self) -> Option<&Vec<PluginEntry>> {
         match &self.targets.target {
             None => self.ms.catalog.data.as_ref(),
@@ -224,7 +224,7 @@ impl ExtensionsView {
             .or_else(|| self.target_market().and_then(|r| r.error.clone()))
     }
 
-    /// Why the picked server cannot do what Discover asks: it is out of
+    /// Why the picked server cannot do what Browse asks: it is out of
     /// reach, or turned the request down.
     pub(super) fn server_refused(&self) -> Option<SharedString> {
         self.reach_error()
@@ -262,7 +262,7 @@ impl ExtensionsView {
         )
     }
 
-    /// Discover installs on this computer (None) or on a paired server.
+    /// Browse installs on this computer (None) or on a paired server.
     pub(super) fn pick_target(&mut self, target: Option<String>, cx: &mut Context<Self>) {
         if self.kind != Kind::Marketplace {
             self.show_market(self.market, cx);
@@ -337,7 +337,7 @@ impl ExtensionsView {
         true
     }
 
-    /// A server's answer to what Discover asked of it.
+    /// A server's answer to what Browse asked of it.
     pub fn server_said(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) {
         let Some(r) = self.targets.remote.get_mut(server) else {
             return;
@@ -382,8 +382,8 @@ impl ExtensionsView {
         }
     }
 
-    /// An error a server sent. Taken (true) when it is about what Discover
-    /// asked and Discover was waiting on that server.
+    /// An error a server sent. Taken (true) when it is about what Browse
+    /// asked and Browse was waiting on that server.
     pub fn server_error(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) -> bool {
         if !about_market(msg) {
             return false;
@@ -424,7 +424,7 @@ impl ExtensionsView {
         true
     }
 
-    /// Above Discover's sources, when servers are paired: where Install goes.
+    /// Above Browse's sources, when servers are paired: where Install goes.
     pub(super) fn target_lines(&self) -> Vec<Line> {
         if self.targets.servers.is_empty() {
             return Vec::new();

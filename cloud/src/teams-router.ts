@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
-// The account host: sign-in with GitHub or an emailed code, sessions, per-user feature flags, the
+// The account host: sign-in with GitHub or an emailed code and the account's
+// sign-in methods, sessions, per-user feature flags, the
 // account's machines and their relay sockets, and the teams of PROTOCOL.md.
 // There is no CORS: the app and the page on this same host call it. Every
 // error is JSON: { "error": "..." }. A GET outside the API is the phone page.
@@ -12,6 +13,7 @@ import { feedback } from "./feedback";
 import { emailAuth } from "./email_auth";
 import { authConfig, deleteSession, ForeignOrigin, listSessions, logout, me, signIn } from "./auth";
 import { linear } from "./linear";
+import { signInMethods } from "./sign_in_methods";
 import { machines } from "./machines";
 import { notices } from "./notices";
 import { push } from "./push";
@@ -103,6 +105,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (answer) return answer;
     const emailed = await emailAuth(request, env, url);
     if (emailed) return emailed;
+    const methods = await signInMethods(request, env, url);
+    if (methods) return methods;
     switch (`${request.method} ${pathname}`) {
       case "GET /healthz":
         return Response.json({ ok: true });

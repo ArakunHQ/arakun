@@ -39,6 +39,9 @@ cloud/
   src/auth.ts           POST /auth/github, GET /me, POST /auth/logout, sessions
   src/email_auth.ts     POST /auth/email, /auth/email/verify and /auth/email/web: sign-in
                         with a code mailed to the address
+  src/sign_in_methods.ts  GET /me/sign-in, POST /me/sign-in/github, /me/sign-in/email
+                        and /me/sign-in/email/verify, DELETE /me/sign-in/<provider>:
+                        the account's sign-in methods, added and removed while signed in
   src/disposable.ts     the throwaway mail domains that get no code
   src/admin.ts          PUT /admin/github/<github_id>,
                         PUT|DELETE /admin/users/<account_id>/flags/<flag>,
@@ -201,6 +204,28 @@ account has yet signs in to the one account whose verified GitHub address it is,
 exactly one has it and has no other address linked; otherwise it makes an account whose
 login is the address. GitHub sign-in never joins an email account: someone who made
 an account by email and then signs in with GitHub gets a second one.
+
+### Sign-in methods
+
+A signed-in person adds GitHub or an address to their account, and removes one, in the
+app's Settings (Account). Accounts are never joined: a GitHub account or an address
+that signs in to another account gets a `409`, and the account keeps at most one of
+each.
+
+- `GET /me/sign-in` answers `{"methods": [{"provider", "name", "linked_at"}]}`, where
+  `name` is the GitHub login or the address.
+- `POST /me/sign-in/github` with `{"access_token"}` from the app's device flow checks
+  and revokes the token as sign-in does, then links that GitHub user.
+- `POST /me/sign-in/email` with `{"email"}` mails a code as `POST /auth/email` does,
+  under the same limits. That code adds the address to this account only, and does not
+  sign in; a sign-in code does not add an address. `POST /me/sign-in/email/verify`
+  with `{"email", "code"}` links it.
+- `DELETE /me/sign-in/github` or `/me/sign-in/email` removes it, unless it is the
+  last (`409`). Without GitHub, the account shows its address as its login.
+
+Each change answers the new list, is a row in `sign_in_changes` with the session that
+made it, and is mailed to every address the account had before or has after it: the
+linked address and GitHub's verified one. A blocked account gets a `403`.
 
 An account has an ID of its own, a number. GitHub is one identity linked to it, by the
 numeric GitHub ID, which stays when the person renames their GitHub account: a sign-in

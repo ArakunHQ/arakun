@@ -841,7 +841,7 @@ again after a week) in its [data folder](storage-and-env.md).
   asks GitHub only to read your email addresses (`user:email`) and hands the token once
   to the server. The server does not keep that token: it stores your GitHub user name
   and ID, your primary verified email address (so the operator can reach you about your
-  account; the only mail it sends is a sign-in code you ask for), and a hash of each session with the name and kind of
+  account; it mails only a code you ask for and a note when a sign-in method is added or removed), and a hash of each session with the name and kind of
   the device it is on. A server other than the default (`ARAKUN_TEAMS_URL`) names its
   own GitHub app, which Arakun asks it for. Arakun drops the GitHub token and keeps the
   session the server answers with in the system keyring: the Keychain on macOS, the
@@ -860,6 +860,15 @@ again after a week) in its [data folder](storage-and-env.md).
   plain `http://` works only for `localhost`, `127.0.0.1` and `[::1]`. Each server
   keeps its own session in the keyring, so signing in to a local server leaves the one
   for `app.arakun.dev` alone.
+
+  Settings › Account lists how the account signs in: GitHub, an email address, or both.
+  **Add GitHub** runs the same device flow; **Add address** mails a code to the
+  address, which you type there. A GitHub account or address that already signs in to
+  another Arakun account is refused: two accounts are never joined, even when their
+  addresses match. **Remove** takes a method off the account, after you confirm, as
+  long as another is left. Each change is mailed to the account's addresses (the one it
+  signs in with and GitHub's), so a change you did not make does not go unseen.
+  Without GitHub, the account shows its address instead of a GitHub user name.
 
   The Team tab is an end-to-end encrypted team chat. Each account on this
   profile has its own device key pairs in the system keyring. Messages and

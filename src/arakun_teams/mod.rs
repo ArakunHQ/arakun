@@ -15,6 +15,7 @@ mod coord;
 pub mod crypto;
 pub mod decisions;
 pub mod hub;
+pub mod methods;
 pub mod sign_in;
 pub mod socket;
 pub mod store;

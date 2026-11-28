@@ -15,6 +15,7 @@ ios/
     Sources/ArakunKit/RelayLink.swift  the WebSocket to the relay, pings, {part}, {req} (phone/relay.js)
     Sources/ArakunKit/WebPush.swift    push keys, RFC 8291 decryption of notices (core/src/phone/push.rs)
     Sources/ArakunKit/Models.swift     inbox, session, entries, state, changes, diffs (core/src/phone/wire.rs)
+    Sources/ArakunKit/Settings.swift   model and reasoning, new-session options, plan limits (wire.rs)
 ```
 
 ## Building
@@ -35,7 +36,8 @@ keychain.
 Without an account or a computer, launch with `-demo` (Debug builds only): a
 signed-in sample account and sample sessions fill the app. `-demoOpen s1` opens a
 session, `-demoNew YES` the New session sheet, `-demoSignIn YES` the sign-in screen,
-`-demoMachines YES` the list of computers, `-demoSecret private` (or `clear`, for a
+`-demoMachines YES` the list of computers, `-demoSettings YES` (with `-demoOpen`)
+the session's model and reasoning, `-demoLimits YES` the plan limits, `-demoSecret private` (or `clear`, for a
 connection that is not encrypted) the secret card in the open session, and
 `-demoMoods YES` every mood of the raccoon side by side:
 
@@ -140,11 +142,20 @@ A pairing link opened from another app asks before it opens anything.
   full screen, zoom in and share it.
 - Send a prompt (queued while the agent works), Stop, allow or deny a permission,
   answer the agent's questions, load older entries.
-- Start a session in any place the computer offers.
+- Start a session in any place the computer offers, with the agent, model and
+  reasoning you pick. The models and reasoning on offer are the ones the computer
+  says that agent has there.
+- Change a session's model and reasoning (the slider button over it), from its
+  next message on.
+- The context use and tokens of a session, over its first entry: a bar turns amber
+  at 70% of the context window and red at 90%.
+- **Plan limits**, in the menu over the inbox: how much of each window of Claude
+  Code's and Droid's plans is used and when it resets, as the computer reads them,
+  read again every minute while it is open.
+- The files a session changed, turn by turn, and each diff.
 - Attach photos to a prompt or a new session, from the library or the camera.
   Each is sent at 1568 pixels on its longest side, as JPEG; up to 10 a prompt.
 
-Not yet: diffs, session settings and plan limits.
 
 ## Notifications
 

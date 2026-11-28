@@ -14,6 +14,8 @@ struct SessionView: View {
     @State private var unseen = false
     /// The files the session changed and their diffs, in a sheet over it.
     @State private var showingChanges = false
+    /// The session's model and reasoning, in a sheet over it.
+    @State private var showingSettings = false
     @Environment(\.accessibilityReduceMotion) private var still
 
     var body: some View {
@@ -128,6 +130,14 @@ struct SessionView: View {
                 }
                 .frame(maxWidth: 260)
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingSettings = true } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .foregroundStyle(Color.text)
+                .disabled(s == nil)
+                .accessibilityLabel("Model and reasoning")
+            }
             // A computer from before muting has no `/mute`: no switch for it.
             if model.canMute {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -142,6 +152,10 @@ struct SessionView: View {
             }
         }
         .sheet(isPresented: $showingChanges) { ChangesView(id: id) }
+        .sheet(isPresented: $showingSettings) { SessionSettingsView(id: id) }
+        #if DEBUG
+        .onAppear { if AppModel.isDemo, UserDefaults.standard.bool(forKey: "demoSettings") { showingSettings = true } }
+        #endif
         .onAppear { if model.session?.id != id { model.open(id) } }
         .onDisappear { if model.session?.id == id { model.close() } }
     }
@@ -185,7 +199,7 @@ private struct SessionHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                if let u = session.usage {
+                if let u = used {
                     Text(u).font(.mono(11.5)).foregroundStyle(Color.textFaint)
                 }
                 Spacer(minLength: 0)
@@ -209,8 +223,47 @@ private struct SessionHeader: View {
                     .accessibilityLabel("Show changes")
                 }
             }
+            if let p = session.contextPercent {
+                ContextMeter(percent: p)
+            }
         }
         .padding(.bottom, 4)
+    }
+
+    /// The computer's line, else the tokens alone from an older one.
+    private var used: String? {
+        if let u = session.usage { return u }
+        return session.tokens.map { "\($0.formatted(.number.notation(.compactName))) tokens" }
+    }
+}
+
+/// How full the agent's context window is: a thin bar that turns amber, then
+/// red, as it fills. Compacting the session frees it.
+private struct ContextMeter: View {
+    let percent: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.line)
+                    Capsule().fill(tone).frame(width: g.size.width * CGFloat(percent) / 100)
+                }
+            }
+            .frame(height: 4)
+            Text("\(percent)% context")
+                .font(.mono(11.5))
+                .foregroundStyle(percent >= 90 ? Color.failure : Color.textFaint)
+                .fixedSize()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context \(percent) percent full")
+    }
+
+    private var tone: Color {
+        if percent >= 90 { return .failure }
+        if percent >= 70 { return .attention }
+        return .textFaint
     }
 }
 

@@ -76,6 +76,7 @@ cloud/
   machine/              the cloud machine's image: Dockerfile, entrypoint and the
                         wrapper that runs agents as their own user
   src/feedback.ts       feedback from the app as Linear customer requests: POST /feedback
+  src/widgets.ts        the community widget index, reports and install counts: GET /widgets, POST /widgets/report, POST /widgets/installed; the operator's /admin/widgets routes
   src/notices.ts        notices: POST /notices/<id>/read, and what /me carries
   src/linear.ts         Linear delegation: the /linear gate (secrets, session and flag), the
                         install, the links, the routes, the delivery accept and the

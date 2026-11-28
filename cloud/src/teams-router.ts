@@ -19,11 +19,12 @@ import { notices } from "./notices";
 import { push } from "./push";
 import { teams } from "./teams";
 import { webAuthCallback, webAuthStart } from "./web_auth";
+import { widgets } from "./widgets";
 import { error, type Env } from "./util";
 
 /// The API's paths: the first segment of each route, so an unknown path under
 /// one stays a JSON 404 and never turns into the page.
-const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "cloud", "beta", "healthz", "devices", "users", "teams", "invites", "pending", "_relay", "push", "feedback", "linear"]);
+const API = new Set(["auth", "me", "sessions", "machines", "notices", "admin", "cloud", "beta", "healthz", "devices", "users", "teams", "invites", "pending", "_relay", "push", "feedback", "linear", "widgets"]);
 
 export async function teamsFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   // The page and its files are the same for every account, so the assets'
@@ -93,6 +94,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (signup) return signup;
     const sent = await feedback(request, env, url, ctx);
     if (sent) return sent;
+    const widget = await widgets(request, env, url);
+    if (widget) return widget;
     const machine = await machines(request, env, url, ctx);
     if (machine) return machine;
     const notice = await notices(request, env, url);

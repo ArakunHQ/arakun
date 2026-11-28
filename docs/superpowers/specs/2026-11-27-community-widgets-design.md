@@ -304,6 +304,40 @@ The runtime is `core/src/widget/`. Where this spec left room, it decides:
   waits as Update available. Its files are kept, and the old version keeps
   running until the user allows it.
 
+## The Marketplace (ARAKUN-271)
+
+Where the spec left room, the Marketplace decides:
+
+- **The catalog lives in the cloud Worker**, in its D1 database
+  (`cloud/src/widgets.ts`, `cloud/migrations/0023_widgets.sql`).
+  `GET /widgets` answers every listing with its versions, newest first. The
+  newest version that is not pulled carries the text of `widget.toml`,
+  `main.rhai` and `sample.json`, so the Marketplace shows the needs and the
+  preview without fetching the repository. A pulled version stays in the
+  answer with its reason.
+- **A person at Arakun reviews each listing.** They list a version, and sign
+  the ones they reviewed, through `PUT /admin/widgets/<id>/<version>` with the
+  admin secret. They pull a version or a widget with `PUT …/pull`, read reports
+  with `GET /admin/widgets/reports` and close each one they decided. Every
+  change goes in the admin log. A Publish form for authors is later work.
+- **The signature** is minisign over
+  `arakun-widget-v1\n<id>\n<version>\n<commit>\n<hash>\n`. The needs are in
+  `widget.toml`, so the file hash covers them. The app checks it against the
+  widget keys built into it (`WIDGET_KEYS` in
+  `src/extensions_view/widget_index.rs`); the Worker never says Verified. Until
+  Arakun makes its widget key, that list is empty and every widget is Not
+  verified.
+- **Report** sends the id, the version and one of a few reasons to
+  `POST /widgets/report`. No sign-in, so each address gets a few a minute.
+- **Installs** are counted by `POST /widgets/installed` after Allow and add.
+  It is a guide, not a proof.
+- **Allow and add** downloads the files at the pinned commit, refuses them
+  when their hash differs from the index or their `widget.toml` differs from
+  the one the user was shown, then installs with exactly those needs.
+- **"Fits this project"** means the project has a file the widget reads
+  (`[[needs.file]]`). Those come first, under "Suggested for <project>", with
+  the file as the evidence.
+
 ## Code this builds on
 
 - `src/iso/script.rs`: the Rhai engine and `set_max_operations`.
@@ -333,3 +367,5 @@ The runtime is `core/src/widget/`. Where this spec left room, it decides:
 3. Is `git` (branch, commit, remote) enough, or do widgets need CI checks from
    Arakun too, rather than calling `api.github.com` with their own token?
 4. Who reviews for Verified, and how fast do we promise to answer a report?
+   A person at Arakun reviews, through the admin routes (see "The
+   Marketplace"). How fast is still open.

@@ -150,6 +150,7 @@ namespace_id = "1013"
 
 # Feedback from the app, which needs no sign-in, so per client IP: a person
 # sends one now and then; 5 a minute leaves room for that and none for a script.
+# Widget reports and install counts use it too, under keys of their own (widgets.ts).
 [[ratelimits]]
 name = "FEEDBACK_LIMIT"
 namespace_id = "1015"

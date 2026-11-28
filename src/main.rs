@@ -11,7 +11,6 @@ mod account_view;
 mod app_menu;
 mod arakun_teams;
 mod ascii_face;
-mod attach_picker;
 mod automations_view;
 mod background;
 mod branch_history;

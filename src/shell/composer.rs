@@ -930,30 +930,49 @@ impl Shell {
             .update(cx, |c, _| f(&mut c.draft_mut(env).text))
     }
 
-    /// Opens arakun's file picker; the picked files go into the draft as `@`
-    /// mentions, and images among them are sent along with the prompt.
-    fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the system's file picker; the picked files go into the draft as
+    /// `@` mentions, and images among them are sent along with the prompt.
+    fn attach_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.composer.update(cx, |c, _| c.close_completion());
         let env_path = self.env().path.clone();
-        let picker = cx.new(|cx| AttachPicker::new(env_path.clone(), window, cx));
-        let sub = cx.subscribe_in(
-            &picker,
-            window,
-            move |this, _, ev: &AttachEvent, window, cx| {
-                if let AttachEvent::Attach(paths) = ev
-                    && this.env().path == env_path
-                {
-                    this.composer.update(cx, |c, cx| {
-                        c.push_mentions(paths);
-                        c.changed(cx);
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = match rx.await {
+                Ok(Ok(picked)) => picked.unwrap_or_default(),
+                // Linux without an XDG desktop portal has no file picker.
+                Ok(Err(err)) => {
+                    eprintln!("arakun: file picker: {err:#}");
+                    let _ = this.update(cx, |this, cx| {
+                        this.flash(
+                            "This system has no file picker. Drag files in or paste them instead.",
+                            cx,
+                        );
                     });
+                    return;
                 }
-                this.close_modal(window, cx);
-            },
-        );
-        self.modal = Some((Modal::Attach(picker), sub));
-        cx.notify();
+                Err(_) => return,
+            };
+            if picked.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                // The picker may stay open while someone switches environments.
+                if this.env().path != env_path {
+                    return;
+                }
+                this.composer.update(cx, |c, cx| {
+                    c.push_mentions(&picked);
+                    c.changed(cx);
+                });
+            });
+        })
+        .detach();
     }
 
     /// Sends the draft; with `now`, a running turn is stopped for it instead of

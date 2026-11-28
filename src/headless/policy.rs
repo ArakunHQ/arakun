@@ -1604,7 +1604,10 @@ fn simple(
         "cp" | "install" | "ln" | "rsync" | "scp" | "sftp" | "rclone" => copy(&c, out),
         "tee" | "touch" | "mkdir" | "truncate" | "mkfifo" | "split" | "csplit" => create(&c, out),
         "chmod" | "chown" | "chgrp" | "setfacl" | "chattr" => {
-            for t in operands(&args, &["--reference"]).iter().skip(1) {
+            // The mode or owner comes first, unless `--reference` gives it.
+            let by_reference = args.iter().any(|a| a.starts_with("--reference"));
+            let first = usize::from(!by_reference);
+            for t in operands(&args, &["--reference"]).iter().skip(first) {
                 write_target(t, cwd.as_deref(), cx, out, "changes permissions of");
             }
         }
@@ -3546,6 +3549,494 @@ mod tests {
         std::os::unix::fs::symlink("/etc", ws.join("sub")).unwrap();
         assert_eq!(lvl("sub/../real.md"), X);
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    /// One rule's verdicts under readonly, workspace and full, per command.
+    type Row = (&'static str, &'static str, [Level; 3]);
+
+    /// One row per rule in `simple` and the rules it calls, in that order: what
+    /// each allows, what each asks, and the edge it draws between them.
+    const RULES: &[Row] = &[
+        // Wrappers run what follows them; the root ones always ask.
+        ("sudo", "sudo -u bob ls", [X, X, X]),
+        ("doas", "doas ls", [X, X, X]),
+        ("nice", "nice -n 10 git push", [X, X, X]),
+        ("timeout", "timeout -s KILL 5 git push", [X, X, X]),
+        ("watch", "watch -n 1 git push", [X, X, X]),
+        ("stdbuf", "stdbuf -oL git push", [X, X, X]),
+        ("xargs", "xargs -I{} git push", [X, X, X]),
+        ("env -C", "env -C /opt/x touch a", [C, C, A]),
+        ("env -C", "env -C sub touch a", [C, A, A]),
+        ("env", "env FOO=1 ls", [A, A, A]),
+        // cd moves where the rest of the line lands.
+        ("cd", "cd /opt/x && make", [C, C, A]),
+        ("cd", "cd /tmp && make", [C, A, A]),
+        ("cd", "cd && make", [C, C, A]),
+        ("cd", "cd $DIR && make", [C, C, A]),
+        ("cd", "cd src && make", [C, A, A]),
+        ("pushd", "pushd /opt/x && make", [C, C, A]),
+        // Where popd returns to is not known here.
+        ("popd", "cd /opt/x; popd; make", [C, C, A]),
+        ("eval", "eval ls", [A, A, A]),
+        ("alias", "alias l='ls -la'", [A, A, A]),
+        ("alias", "alias r='rm -rf ~'", [X, X, X]),
+        ("variable", "$TOOL --run", [C, C, A]),
+        ("source", "source env.sh", [C, A, A]),
+        ("source", ". ./env.sh", [C, A, A]),
+        // Shells judge what they run.
+        ("shell", "bash -c 'ls'", [A, A, A]),
+        ("shell", "bash -lc 'rm -rf ../x'", [X, X, X]),
+        ("shell", "sh missing.sh", [C, C, A]),
+        ("interpreter", "python3 -c 'print(1)'", [C, A, A]),
+        ("interpreter", "python3.12 x.py", [C, A, A]),
+        ("interpreter", "node script.js ~/other/data.json", [C, C, A]),
+        ("interpreter", "ruby -e 'system(\"git push\")'", [X, X, X]),
+        // git
+        ("git", "git branch -a", [A, A, A]),
+        ("git", "git branch -D old", [C, C, A]),
+        ("git", "git branch new", [C, A, A]),
+        ("git", "git tag", [A, A, A]),
+        ("git", "git tag -l", [A, A, A]),
+        ("git", "git tag v1", [C, A, A]),
+        ("git", "git stash list", [A, A, A]),
+        ("git", "git stash", [C, A, A]),
+        ("git", "git stash drop", [C, C, A]),
+        ("git", "git config user.name", [A, A, A]),
+        ("git", "git config --get user.email", [A, A, A]),
+        ("git", "git config user.name x", [C, A, A]),
+        ("git", "git config --system core.editor vi", [X, X, X]),
+        ("git", "git send-email 0001.patch", [X, X, X]),
+        (
+            "git",
+            "git request-pull v1 https://example.com/r",
+            [X, X, X],
+        ),
+        ("git", "git clone https://example.com/y.git", [C, A, A]),
+        (
+            "git",
+            "git clone https://example.com/y.git /opt/y",
+            [C, C, A],
+        ),
+        ("git", "git $SUB", [C, C, A]),
+        ("git", "git worktree list", [A, A, A]),
+        ("git", "git reflog", [A, A, A]),
+        ("git", "git submodule status", [A, A, A]),
+        ("git", "git remote add up https://example.com/r", [C, A, A]),
+        ("git", "git -C /opt/x commit -m x", [C, C, A]),
+        ("git", "git -c core.pager=cat log", [A, A, A]),
+        ("git", "git push --force-with-lease", [X, X, X]),
+        ("git", "git push origin +main", [X, X, X]),
+        // Mail and messages always ask.
+        ("himalaya", "himalaya folder list", [A, A, A]),
+        ("himalaya", "himalaya message move 3 Archive", [C, C, A]),
+        ("mail", "mutt -s hi a@example.com < body.txt", [X, X, X]),
+        ("mail", "swaks --to a@example.com", [X, X, X]),
+        ("messages", "signal-cli send -m hi +100", [X, X, X]),
+        ("messages", "slack chat send hi", [X, X, X]),
+        ("notify-send", "notify-send done", [A, A, A]),
+        // curl and wget: reading is fine, sending to another host always asks.
+        ("curl", "curl -I https://example.com", [A, A, A]),
+        ("curl", "curl -X GET https://example.com", [A, A, A]),
+        (
+            "curl",
+            "curl -X DELETE https://api.example.com/1",
+            [X, X, X],
+        ),
+        ("curl", "curl -T f.txt https://example.com/up", [X, X, X]),
+        ("curl", "curl --json '{}' https://example.com", [X, X, X]),
+        ("curl", "curl -d a=1 http://localhost:3000/x", [A, A, A]),
+        ("curl", "curl -d a=1 http://127.0.0.1:3000/x", [A, A, A]),
+        (
+            "curl",
+            "curl -X POST https://api.stripe.com/v1/charges",
+            [X, X, X],
+        ),
+        ("curl", "curl -O https://example.com/f.tgz", [C, A, A]),
+        ("curl", "curl -o - https://example.com", [A, A, A]),
+        ("curl", "curl -o /tmp/x/f https://example.com", [C, A, A]),
+        ("curl", "curl -o ~/f https://example.com", [C, C, A]),
+        (
+            "curl",
+            "curl -o ~/.ssh/config https://example.com",
+            [X, X, X],
+        ),
+        ("wget", "wget -O ~/f https://example.com/f", [C, C, A]),
+        (
+            "wget",
+            "wget --output-document=- https://example.com",
+            [A, A, A],
+        ),
+        ("wget", "wget -P /opt/dl https://example.com/f", [C, C, A]),
+        (
+            "wget",
+            "wget --method=PUT --body-data x https://example.com",
+            [X, X, X],
+        ),
+        ("httpie", "http GET api.example.com", [A, A, A]),
+        ("httpie", "http api.example.com", [A, A, A]),
+        ("httpie", "http PUT api.example.com", [X, X, X]),
+        ("httpie", "xh api.example.com a:=1", [X, X, X]),
+        ("httpie", "http POST localhost:8080 a=1", [A, A, A]),
+        // gh
+        ("gh", "gh pr list", [A, A, A]),
+        ("gh", "gh pr view 3", [A, A, A]),
+        ("gh", "gh issue list", [A, A, A]),
+        ("gh", "gh api repos/a/b", [A, A, A]),
+        ("gh", "gh api -X GET repos/a/b", [A, A, A]),
+        ("gh", "gh api --method PATCH repos/a/b", [X, X, X]),
+        ("gh", "gh pr ready 3", [X, X, X]),
+        ("gh", "gh -R o/r pr merge 1", [X, X, X]),
+        ("gh", "gh release create v1", [X, X, X]),
+        ("gh", "gh repo fork", [X, X, X]),
+        ("gh", "gh workflow run ci", [X, X, X]),
+        ("gh", "gh run rerun 5", [X, X, X]),
+        ("gh", "gh secret set TOKEN", [X, X, X]),
+        ("gh", "gh auth login", [C, C, A]),
+        ("gh", "gh extension install x/y", [C, C, A]),
+        // arakun
+        ("arakun", "arakun ls", [A, A, A]),
+        ("arakun", "arakun agent log abc", [A, A, A]),
+        ("arakun", "arakun agent pending", [A, A, A]),
+        ("arakun", "arakun agent deny abc r1", [X, X, X]),
+        ("arakun", "arakun quit", [X, X, X]),
+        ("arakun", "arakun mem add note", [C, A, A]),
+        ("arakun", "arakun agent run go", [C, A, A]),
+        // The system
+        ("systemctl", "systemctl status nginx", [A, A, A]),
+        ("systemctl", "systemctl is-active foo", [A, A, A]),
+        ("systemctl", "systemctl --user list-units", [A, A, A]),
+        ("systemctl", "systemctl -t service list-units", [A, A, A]),
+        ("systemctl", "systemctl stop foo", [X, X, X]),
+        ("system", "mount /dev/sdb1 /mnt", [X, X, X]),
+        ("system", "mkfs.ext4 /dev/sdb1", [X, X, X]),
+        ("system", "passwd", [X, X, X]),
+        ("system", "ufw allow 22", [X, X, X]),
+        // Its reads are not on the read-only list: they ask under readonly.
+        ("loginctl", "loginctl list-sessions", [C, A, A]),
+        ("loginctl", "loginctl show-session 2", [C, A, A]),
+        ("loginctl", "loginctl lock-session", [X, X, X]),
+        ("crontab", "crontab -l", [A, A, A]),
+        ("crontab", "crontab jobs.txt", [X, X, X]),
+        // Deleting
+        ("gio", "gio open notes.md", [C, A, A]),
+        ("gio", "gio trash old.txt", [C, A, A]),
+        ("gio", "gio trash ~/old.txt", [X, X, X]),
+        ("rm", "rm notes.txt", [C, A, A]),
+        ("rm", "rm /tmp/x/y", [C, A, A]),
+        ("rm", "rm", [C, C, A]),
+        ("rm", "unlink ~/x", [X, X, X]),
+        ("rm", "shred -u /etc/x", [X, X, X]),
+        ("rm", "rm -rf $X", [X, X, X]),
+        ("rm", "find . -name '*.o' | xargs rm -f", [C, C, A]),
+        ("mv", "mv a.txt b.txt", [C, A, A]),
+        ("mv", "mv a.txt ../b.txt", [C, C, A]),
+        ("mv", "mv ../x.txt .", [X, X, X]),
+        ("mv", "mv a.txt ~/.bashrc", [X, X, X]),
+        ("mv", "mv -t dest a b", [C, A, A]),
+        ("mv", "mv -t /opt/x a", [C, C, A]),
+        // Copying
+        ("cp", "cp a ~/.ssh/config", [X, X, X]),
+        ("cp", "cp -t /opt/x a", [C, C, A]),
+        ("cp", "ln -s a b", [C, A, A]),
+        ("cp", "install -m 755 bin /usr/local/bin/x", [X, X, X]),
+        ("cp", "rsync -av dist/ ../backup/", [C, C, A]),
+        ("cp", "scp host:/f .", [C, C, A]),
+        ("cp", "rclone copy a remote:b", [X, X, X]),
+        ("cp", "sftp host", [X, X, X]),
+        ("cp", "rsync -e ssh dist/ host:/srv/", [X, X, X]),
+        // Creating
+        ("create", "touch a", [C, A, A]),
+        ("create", "truncate -s 0 log.txt", [C, A, A]),
+        ("create", "mkdir ~/x", [C, C, A]),
+        ("create", "touch /etc/x", [X, X, X]),
+        ("create", "echo x | tee", [A, A, A]),
+        ("create", "echo x | tee -a ../log", [C, C, A]),
+        ("create", "mkdir", [C, A, A]),
+        ("chmod", "chmod +x run.sh", [C, A, A]),
+        ("chmod", "chmod 600 ~/.ssh/id_ed25519", [X, X, X]),
+        ("chmod", "chown u ../x", [C, C, A]),
+        ("chmod", "chmod --reference=a b", [C, A, A]),
+        ("chmod", "chmod --reference a ../b", [C, C, A]),
+        (
+            "chmod",
+            "chmod --reference=a ~/.ssh/authorized_keys",
+            [X, X, X],
+        ),
+        ("chmod", "chown --reference=a ../b", [C, C, A]),
+        ("dd", "dd if=/dev/zero of=out.img bs=1M count=1", [C, A, A]),
+        ("dd", "dd if=x of=/dev/null", [A, A, A]),
+        ("dd", "dd if=x.iso of=/dev/nvme0n1", [X, X, X]),
+        ("dd", "dd if=x of=../y", [C, C, A]),
+        // Editing in place
+        ("sed", "sed s/a/b/ f.txt", [A, A, A]),
+        ("sed", "sed -i.bak s/a/b/ f.txt", [C, A, A]),
+        ("sed", "sed -i -e s/a/b/ ../x.txt", [C, C, A]),
+        ("sed", "sed --in-place s/a/b/ /etc/hosts", [X, X, X]),
+        ("awk", "awk '{print $1}' f", [A, A, A]),
+        ("awk", "awk '{ system(\"git push\") }' f", [X, X, X]),
+        ("awk", "awk -i inplace '{print}' f", [C, A, A]),
+        ("awk", "awk '{ print > \"out.txt\" }' f", [C, C, A]),
+        // Not on the read-only list, so `--output=f` can't slip through it.
+        ("sort", "sort in.txt", [C, A, A]),
+        ("sort", "sort --output=../x in.txt", [C, C, A]),
+        ("sort", "sort -o sorted.txt in.txt", [C, A, A]),
+        ("sort", "sort -o ~/x in.txt", [C, C, A]),
+        ("yq", "yq -i '.a = 1' c.yaml", [C, A, A]),
+        // find
+        ("find", "find . -name '*.rs'", [A, A, A]),
+        ("find", "find build -name '*.o' -delete", [C, A, A]),
+        ("find", "find . -delete", [X, X, X]),
+        ("find", "find . -exec cat {} \\;", [A, A, A]),
+        ("find", "find . -exec chmod +x {} +", [C, A, A]),
+        ("find", "find /opt/x -exec touch {} \\;", [C, C, A]),
+        ("find", "find . -execdir shred {} \\;", [X, X, X]),
+        ("find", "find . -fprint ../list.txt", [C, C, A]),
+        // Processes and other machines
+        ("kill", "killall node", [C, C, A]),
+        ("net", "nc example.com 80", [C, C, A]),
+        ("net", "telnet example.com", [C, C, A]),
+        // Packages
+        ("language", "pip list", [C, A, A]),
+        ("language", "uv add requests", [C, A, A]),
+        ("language", "uv run pytest", [C, A, A]),
+        ("language", "uv tool install ruff", [C, C, A]),
+        ("language", "go build ./...", [C, A, A]),
+        (
+            "language",
+            "go install golang.org/x/tools@latest",
+            [C, C, A],
+        ),
+        ("language", "rustup update", [C, C, A]),
+        ("project", "npm ci", [C, A, A]),
+        ("project", "npm i -g typescript", [C, C, A]),
+        ("project", "yarn global add x", [C, C, A]),
+        ("project", "cargo uninstall x", [C, C, A]),
+        ("project", "npm login", [X, X, X]),
+        ("project", "twine upload dist/x.whl", [X, X, X]),
+        ("project", "cargo yank --version 1.0.0", [X, X, X]),
+        ("project", "npm run build -- --out ../x/out", [C, C, A]),
+        ("system packages", "apt list --installed", [A, A, A]),
+        ("system packages", "pacman -Qi x", [A, A, A]),
+        ("system packages", "pacman -Ss foo", [A, A, A]),
+        ("system packages", "brew search x", [A, A, A]),
+        ("system packages", "brew install x", [C, C, A]),
+        ("system packages", "apt-get install -y x", [C, C, A]),
+        // Containers and the cloud
+        ("containers", "docker ps", [A, A, A]),
+        ("containers", "docker logs web", [A, A, A]),
+        ("containers", "docker run img", [C, C, A]),
+        ("containers", "docker login", [X, X, X]),
+        ("containers", "podman push img", [X, X, X]),
+        ("cloud", "wrangler dev", [A, A, A]),
+        ("cloud", "wrangler tail", [A, A, A]),
+        ("cloud", "terraform plan", [A, A, A]),
+        ("cloud", "kubectl get pods", [C, A, A]),
+        ("cloud", "kubectl apply -f x.yaml", [X, X, X]),
+        ("cloud", "vercel", [X, X, X]),
+        ("cloud", "vercel --prod", [X, X, X]),
+        ("cloud", "aws s3 ls", [C, A, A]),
+        ("cloud", "aws s3 cp a s3://b", [X, X, X]),
+        ("cloud", "fly secrets set A=1", [X, X, X]),
+        // Programs with no rule of their own.
+        ("unknown", "mytool", [C, A, A]),
+        ("unknown", "mytool --out ~/other/x", [C, C, A]),
+        ("unknown", "mytool --config=~/.ssh/config", [X, X, X]),
+        ("unknown", "mytool /usr/share/x", [C, A, A]),
+        ("unknown", "mytool $OUT", [C, C, A]),
+        ("unknown", "mytool <<EOF\ngit push\nEOF", [X, X, X]),
+        // Redirects write where they point.
+        ("redirect", "ls > /dev/null", [A, A, A]),
+        ("redirect", "ls 2>&1", [A, A, A]),
+        ("redirect", "ls >&2", [A, A, A]),
+        ("redirect", "echo x >> /tmp/s/log", [C, A, A]),
+        ("redirect", "echo x > ~/notes.txt", [C, C, A]),
+        ("redirect", "ls > ~/.bashrc", [X, X, X]),
+        ("redirect", "echo x > ~/.gitconfig", [X, X, X]),
+        ("redirect", "echo x > ~/.npmrc", [X, X, X]),
+        ("redirect", "echo x > ~/.local/bin/tool", [X, X, X]),
+        ("redirect", "echo x > ~/.claude/settings.json", [X, X, X]),
+        ("redirect", "echo x > /boot/x", [X, X, X]),
+        ("redirect", "echo x > /tmp/x", [C, A, A]),
+        ("redirect", "echo x > /var/tmp/x", [C, A, A]),
+    ];
+
+    #[test]
+    fn every_rule_allows_and_asks_as_its_table_says() {
+        let mut wrong = Vec::new();
+        for (rule, cmd, want) in RULES {
+            let got = [Policy::ReadOnly, Policy::Workspace, Policy::Full]
+                .map(|p| judge(p, &cx(), cmd).level);
+            if got != *want {
+                wrong.push(format!("{rule}: {cmd:?}: got {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+    }
+
+    /// Lines a naive split would get wrong. The always-ask action must be
+    /// found however the line hides it, and text that only looks like one
+    /// must not ask.
+    const SHELL_PARSING: &[(&str, [Level; 3])] = &[
+        ("echo 'git push'", [A, A, A]),
+        ("echo '$(git push)'", [A, A, A]),
+        ("echo \"$(git push)\"", [X, X, X]),
+        ("echo \"`git push`\"", [X, X, X]),
+        ("echo a\\; git push", [A, A, A]),
+        ("# git push", [A, A, A]),
+        ("ls # ; git push", [A, A, A]),
+        ("git push # done", [X, X, X]),
+        ("ls; git push", [X, X, X]),
+        ("ls&&git push", [X, X, X]),
+        ("false||git push", [X, X, X]),
+        ("ls|git push", [X, X, X]),
+        ("ls & git push", [X, X, X]),
+        ("ls\ngit push", [X, X, X]),
+        ("ls \\\n && git push", [X, X, X]),
+        ("(git push)", [X, X, X]),
+        ("{ git push; }", [X, X, X]),
+        ("! git push", [X, X, X]),
+        ("time git push", [X, X, X]),
+        ("while true; do git push; done", [X, X, X]),
+        ("until false; do ls; done", [A, A, A]),
+        ("x=$(git push)", [X, X, X]),
+        ("echo ${x:-$(git push)}", [X, X, X]),
+        ("cat <(git push)", [X, X, X]),
+        ("g'i't push", [X, X, X]),
+        ("gi\"\"t push", [X, X, X]),
+        ("'git' 'push'", [X, X, X]),
+        ("echo hi > 'a b.txt'", [C, A, A]),
+        ("echo \"a > b\"", [A, A, A]),
+        ("echo 'a | rm -rf ~'", [A, A, A]),
+        ("echo $(echo $(echo $(git push)))", [X, X, X]),
+        ("X=git; Y=push; $X $Y", [X, X, X]),
+        ("read X; $X push", [X, X, X]),
+        // A name from the environment, not the line, may be any program.
+        ("$EDITOR notes.md", [C, C, A]),
+        ("IFS=,; X=git,push; $X", [X, X, X]),
+        ("cat <<'EOF'\n$(git push)\nEOF", [A, A, A]),
+        ("cat <<EOF | bash\nls\nEOF", [A, A, A]),
+        ("cat <<EOF | bash\nrm -rf ~\nEOF", [X, X, X]),
+    ];
+
+    #[test]
+    fn tricky_lines_are_split_the_way_a_shell_would() {
+        let mut wrong = Vec::new();
+        for (cmd, want) in SHELL_PARSING {
+            let got = [Policy::ReadOnly, Policy::Workspace, Policy::Full]
+                .map(|p| judge(p, &cx(), cmd).level);
+            if got != *want {
+                wrong.push(format!("{cmd:?}: got {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "\n{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_workspace_in_a_guarded_folder_may_change_itself() {
+        let mut c = cx();
+        c.workspace = PathBuf::from("/home/u/.config/nvim");
+        let at = |cmd: &str| judge(Policy::Workspace, &c, cmd).level;
+        assert_eq!(at("echo x > init.lua"), A);
+        assert_eq!(at("rm -rf lua/old"), A);
+        // The rest of the guarded folder is still guarded.
+        assert_eq!(at("echo x > ../hypr/hyprland.conf"), X);
+        assert_eq!(at("echo x > ~/.bashrc"), X);
+    }
+
+    #[test]
+    fn the_sandbox_lets_through_only_writes() {
+        let mut c = cx();
+        c.jailed = true;
+        // Outside the workspace a write can't land there, so it doesn't ask;
+        // what reaches past this machine still does, and the always list too.
+        for (cmd, want) in [
+            ("touch ../sibling/file", A),
+            ("cd /opt/x && make", A),
+            ("pip install requests", C),
+            ("kill 1234", C),
+            ("ssh host uptime", C),
+            ("echo x > ~/.bashrc", X),
+            ("rm -rf ~", X),
+            ("git push", X),
+        ] {
+            assert_eq!(judge(Policy::Workspace, &c, cmd).level, want, "{cmd}");
+            // The policy still decides under readonly and full.
+            assert_ne!(judge(Policy::ReadOnly, &c, cmd).level, A, "{cmd}");
+        }
+        assert_eq!(judge(Policy::Full, &c, "touch ../x").level, A);
+    }
+
+    #[test]
+    fn nesting_past_the_limit_asks() {
+        let mut cmd = "ls".to_string();
+        for _ in 0..8 {
+            cmd = format!("bash -c {}", shell_quote(&cmd));
+        }
+        assert_eq!(judge(Policy::Full, &cx(), &cmd).level, A);
+        assert_eq!(judge(Policy::Workspace, &cx(), &cmd).level, C);
+    }
+
+    fn shell_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    #[test]
+    fn the_verdict_names_every_reason_once_and_the_worst_decides() {
+        let v = judge(
+            Policy::Workspace,
+            &cx(),
+            "echo x > ../a.txt; echo y > ../a.txt; git push origin main",
+        );
+        assert_eq!(v.level, Level::Always);
+        assert_eq!(v.summary, "Push main to origin");
+        assert_eq!(
+            v.why,
+            "git push publishes commits to the remote; writes to ~/a.txt, outside the project"
+        );
+        // Without the always-ask action, the policy's own reason is the only one.
+        let v = judge(Policy::Workspace, &cx(), "touch a; touch ../b");
+        assert_eq!(v.level, Level::Confirm);
+        assert_eq!(v.why, "writes to ~/b, outside the project");
+    }
+
+    #[test]
+    fn unknown_tools_ask_by_what_their_name_says() {
+        for (title, want) in [
+            ("slack_post_message", [X, X, X]),
+            ("stripe_purchase", [X, X, X]),
+            ("drive_delete_file", [X, X, X]),
+            ("calendar_list_events", [C, C, A]),
+        ] {
+            let got = [Policy::ReadOnly, Policy::Workspace, Policy::Full]
+                .map(|p| judge_tool(p, &cx(), "other", title, &json!({})).level);
+            assert_eq!(got, want, "{title}");
+        }
+        // Reading and thinking tools never ask.
+        for kind in ["read", "search", "think", "switch_mode"] {
+            assert_eq!(
+                judge_tool(Policy::ReadOnly, &cx(), kind, "x", &json!({})).level,
+                A,
+                "{kind}"
+            );
+        }
+        // A delete tool deletes: outside the workspace it always asks.
+        let del = |p: &str| {
+            judge_tool(Policy::Full, &cx(), "delete", "Delete", &json!({"path": p})).level
+        };
+        assert_eq!(del("src/a.rs"), A);
+        assert_eq!(del("/home/u/other/a.rs"), X);
+        // `cmd` is read like `command`.
+        assert_eq!(
+            judge_tool(
+                Policy::Full,
+                &cx(),
+                "execute",
+                "x",
+                &json!({"cmd": "git push"})
+            )
+            .level,
+            X
+        );
     }
 
     #[test]

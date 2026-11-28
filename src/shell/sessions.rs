@@ -154,6 +154,18 @@ impl QueuedPrompt {
     }
 }
 
+/// A session's new title from what the user typed: `None` leaves it as it was.
+fn session_title(typed: &str) -> Option<SharedString> {
+    let t = typed.trim();
+    (!t.is_empty()).then(|| t.to_string().into())
+}
+
+/// Whether a session restored under `agent`'s title still has to pass on
+/// `saved`, a rename made while its agent was not running.
+fn rename_due(saved: &str, agent: &str) -> bool {
+    !saved.is_empty() && saved != agent
+}
+
 pub(super) fn summary(text: &str) -> SharedString {
     crate::agent::attach::title(text, 80).into()
 }
@@ -400,7 +412,7 @@ impl Shell {
             }
         };
         // A rename made while the agent was not running reaches it now.
-        if !title.is_empty() && thread.read(cx).title() != title {
+        if rename_due(&title, &thread.read(cx).title()) {
             thread.update(cx, |t, cx| t.rename(&title, cx));
         }
         // Counts saved by older versions may be off; the transcript has the truth.
@@ -2339,11 +2351,10 @@ impl Shell {
     }
 
     pub(super) fn rename_session(&mut self, id: &str, title: &str, cx: &mut Context<Self>) {
-        let title = title.trim();
-        if title.is_empty() || !self.has_projects() {
+        let Some(new_title) = session_title(title).filter(|_| self.has_projects()) else {
             return;
-        }
-        let new_title: SharedString = title.to_string().into();
+        };
+        let title: &str = &new_title;
         let env = self.env_mut();
         let Some(i) = env.session_index(id) else {
             return;
@@ -2445,15 +2456,7 @@ impl Shell {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        let own = removed
-            .into_iter()
-            .filter(|id| !kept.contains(id))
-            .collect();
-        let ids = sessions
-            .iter()
-            .flat_map(session_file_ids)
-            .filter(|id| !kept.contains(id))
-            .collect();
+        let (own, ids) = files_to_forget(&sessions, kept);
         discard_session_files(own, ids, cx);
     }
 
@@ -2712,6 +2715,23 @@ static REMOVED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default)
 /// of the sessions it continues.
 pub(super) fn session_file_ids(s: &Session) -> impl Iterator<Item = String> + '_ {
     std::iter::once(s.id.to_string()).chain(s.continues.iter().map(|e| e.id.clone()))
+}
+
+/// What removed `sessions` leave to delete, less what `kept` still uses: their
+/// own ids, and every id whose files are theirs (their own and those of the
+/// sessions they continue).
+fn files_to_forget(sessions: &[Session], kept: &HashSet<String>) -> (Vec<String>, Vec<String>) {
+    let own = sessions
+        .iter()
+        .map(|s| s.id.to_string())
+        .filter(|id| !kept.contains(id))
+        .collect();
+    let ids = sessions
+        .iter()
+        .flat_map(session_file_ids)
+        .filter(|id| !kept.contains(id))
+        .collect();
+    (own, ids)
 }
 
 /// Deletes what removed sessions left on disk: `ids` are theirs (`own`) and
@@ -3034,5 +3054,135 @@ mod tests {
         assert!(value_changed(None, &draft, m, "sonnet"));
         let draft = vec![(m, "opus".to_string())];
         assert!(!value_changed(None, &draft, m, "opus"));
+    }
+
+    fn session(id: &str, continues: &[&str]) -> Session {
+        let mut s = Session::new(id.to_string().into(), "t".into(), AgentKind::Claude);
+        s.continues = continues
+            .iter()
+            .map(|id| model::Earlier {
+                id: id.to_string(),
+                agent_session: None,
+            })
+            .collect();
+        s
+    }
+
+    #[test]
+    fn a_removed_session_takes_the_files_of_those_it_continues() {
+        let gone = [session("b", &["a"]), session("c", &[])];
+        let (own, ids) = files_to_forget(&gone, &HashSet::new());
+        assert_eq!(own, ["b", "c"]);
+        assert_eq!(ids, ["b", "a", "c"]);
+        // Still listed, or continued by a session still listed: its files stay.
+        let kept = HashSet::from(["a".to_string(), "c".to_string()]);
+        let (own, ids) = files_to_forget(&gone, &kept);
+        assert_eq!(own, ["b"]);
+        assert_eq!(ids, ["b"]);
+        assert_eq!(files_to_forget(&[], &kept), (vec![], vec![]));
+    }
+
+    #[test]
+    fn a_rename_is_trimmed_and_a_blank_one_changes_nothing() {
+        assert_eq!(
+            session_title("  Fix the build \n").as_deref(),
+            Some("Fix the build")
+        );
+        assert_eq!(session_title("Ünïcode ✓").as_deref(), Some("Ünïcode ✓"));
+        assert_eq!(session_title(""), None);
+        assert_eq!(session_title(" \t\n"), None);
+    }
+
+    #[test]
+    fn a_rename_made_while_closed_reaches_the_agent_on_restore() {
+        assert!(rename_due("Fix the build", "New session"));
+        assert!(rename_due("Fix the build", "Old title"));
+        // Already the agent's title, or no title of its own: nothing to pass on.
+        assert!(!rename_due("Fix the build", "Fix the build"));
+        assert!(!rename_due("", "New session"));
+    }
+
+    fn transcript(title: &str) -> crate::agent::Transcript {
+        crate::agent::Transcript {
+            version: 1,
+            meta: crate::agent::SessionMeta {
+                agent: AgentKind::Claude,
+                session_id: None,
+                title: title.into(),
+                cwd: std::env::temp_dir(),
+                created: 0,
+                updated: 0,
+                pr: None,
+                seat: None,
+                seat_key: None,
+            },
+            entries: Vec::new(),
+            usage: Default::default(),
+            fork_point: None,
+            interrupted: false,
+            resume: false,
+            queue: Vec::new(),
+            handoff: None,
+            subagents: Vec::new(),
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "arakun-sessions-{name}-{}-{}",
+            std::process::id(),
+            new_session_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_session_restores_what_was_saved_and_starts_empty_without_it() {
+        let dir = scratch("restore");
+        let path = dir.join(format!("{}.json", new_session_id()));
+        // Never saved: it starts fresh.
+        assert!(read_restored(&path).unwrap().is_none());
+        write_transcript(&path, &transcript("Fix the build")).unwrap();
+        assert!(read_restored(&path).unwrap().is_some());
+        // A transcript that can't be read is an error, not an empty session.
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!(read_restored(&path).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_transcript_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("private");
+        let path = dir.join(format!("{}.json", new_session_id()));
+        write_transcript(&path, &transcript("x")).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_deleted_session_is_not_written_back_by_a_late_save() {
+        let dir = scratch("deleted");
+        let id = new_session_id().to_string();
+        let path = dir.join(format!("{id}.json"));
+        REMOVED.lock().unwrap().insert(id.clone());
+        // The save a closing tab queued runs after the files were deleted.
+        write_transcript(&path, &transcript("x")).unwrap();
+        assert!(!path.exists());
+        // Another session's save still lands.
+        let other = dir.join(format!("{}.json", new_session_id()));
+        write_transcript(&other, &transcript("y")).unwrap();
+        assert!(other.exists());
+        REMOVED.lock().unwrap().remove(&id);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_sessions_get_ids_of_their_own() {
+        let ids: HashSet<_> = (0..1000).map(|_| new_session_id()).collect();
+        assert_eq!(ids.len(), 1000);
     }
 }

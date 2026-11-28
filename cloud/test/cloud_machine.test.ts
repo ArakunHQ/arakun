@@ -168,6 +168,19 @@ describe("the cloud machine routes", () => {
     expect(n).toBe(0);
   });
 
+  it("refuse to make or wake one without a linked GitHub account", async () => {
+    const me = await owner();
+    const made = await (await post("/cloud/machines", me.session)).json<{ label: string }>();
+    await env.DB.prepare("DELETE FROM identities WHERE account_id = ? AND provider = 'github'").bind(me.account_id).run();
+    const wake = await post(`/cloud/machines/${made.label}/wake`, me.session);
+    expect(wake.status).toBe(403);
+    expect(await wake.json()).toEqual({ error: "github required" });
+    await call("DELETE", `/cloud/machines/${made.label}`, as(me.session));
+    const again = await post("/cloud/machines", me.session);
+    expect(again.status).toBe(403);
+    expect(await again.json()).toEqual({ error: "github required" });
+  });
+
   it("refuse a blocked account, flag or not", async () => {
     const me = await owner();
     expect((await call("PUT", `/admin/users/${me.account_id}/block`, ADMIN)).status).toBe(204);

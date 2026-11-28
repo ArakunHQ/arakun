@@ -17,7 +17,16 @@ export interface Access {
   decided_at: number | null;
   /** For "declined": when the account may ask again, in Unix seconds. */
   retry_at: number | null;
+  /** A GitHub account is linked, which asking and starting need. Left out by a service from before the rule. */
+  github?: boolean;
 }
+
+/** The service's `error` when the account has no GitHub account linked. */
+export const GITHUB_REQUIRED = "github required";
+
+/** Why an account without GitHub can't ask or start one, and where it links one. */
+export const GITHUB_TEXT =
+  "Cloud environments need a GitHub account linked to your Arakun account. We look at its age and activity when we decide a request. Link one in Arakun on your computer, in Settings › Account.";
 
 /** Why an environment sleeps and does not wake by itself. */
 export type Limit = "stopped_all" | "held" | "allowance_used" | "task_cap";
@@ -109,6 +118,7 @@ export function cloudRemoveQuestion(name: string): string {
 async function why(res: Response, fallback: string): Promise<string> {
   try {
     const body = (await res.json()) as { error?: string };
+    if (body.error === GITHUB_REQUIRED) return GITHUB_TEXT;
     if (body.error) return body.error;
   } catch {
     // No body to read.

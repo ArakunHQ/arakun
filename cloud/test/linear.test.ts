@@ -3,7 +3,7 @@ import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { linear, routeFor } from "../src/linear";
 import { open, seal } from "../src/linear_seal";
-import { ADMIN, FAKE_APP_USER, FAKE_ORG, as, call, dump, flagged, linearFake, signIn } from "./helpers";
+import { ADMIN, FAKE_APP_USER, FAKE_ORG, as, call, dump, flagged, linearFake, signIn, signInByEmail } from "./helpers";
 import { account, connectedComputer } from "./relay/helpers";
 
 describe("the /linear gate", () => {
@@ -224,6 +224,16 @@ describe("linking a Linear user and routing", () => {
     expect(await (await call("GET", "/linear/link", as(u.session))).json()).toEqual({
       links: [{ organization_id: ORG, linear_user_id: LU, installed: false }],
     });
+  });
+  it("refuses a link from an account without GitHub, and keeps its other routes", async () => {
+    const em = await signInByEmail("ada@example.com");
+    await call("PUT", `/admin/users/${em.account_id}/flags/linear`, ADMIN);
+    proves("lin_api_ada");
+    const res = await link(em.session, "lin_api_ada");
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "github required" });
+    expect(await links()).toEqual([]);
+    expect(await (await call("GET", "/linear/link", as(em.session))).json()).toEqual({ links: [] });
   });
   it("says whether the app is installed in the workspace", async () => {
     const u = await flagged(1, "ada");

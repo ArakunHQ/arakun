@@ -76,6 +76,20 @@ describe("CloudGroup", () => {
     expect(screen.queryByText("Ask for access")).toBeNull();
   });
 
+  it("says a GitHub account is needed instead of asking", async () => {
+    access = { ...access, github: false };
+    mount(false);
+    await screen.findByText(/need a GitHub account linked/);
+    expect(screen.queryByText("Ask for access")).toBeNull();
+  });
+
+  it("says a GitHub account is needed when making one is refused for it", async () => {
+    answer = Response.json({ error: "github required" }, { status: 403 });
+    mount(true);
+    fireEvent.click(await screen.findByText("Make one"));
+    await screen.findByText(/need a GitHub account linked/);
+  });
+
   it("makes a cloud environment and shows the hours left", async () => {
     mount(true);
     await screen.findByText("20 hours of 20 hours left this month");

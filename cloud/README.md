@@ -890,6 +890,14 @@ review. One request per GitHub account. A declined account may ask again after
 30 days (`DECLINE_COOLDOWN_DAYS` in `src/cloud_access.ts`). Revoking the `cloud`
 flag of a granted account lets it ask again; to keep someone out, block the account.
 
+Asking needs a GitHub account linked to the Arakun account, since the review reads
+its age and activity, and an account made with an address alone costs nothing to
+make again. Making or waking a cloud environment needs one too, and so does Linear
+delegation: linking a Linear account, and an issue reaching the delegator's computer.
+Without one the answer is a 403 with `{"error": "github required"}`, and
+`GET /cloud/access` says `"github": false`; the app then offers to link GitHub in
+Settings › Account. The phone, Teams and paid plans don't need it.
+
 With `CLOUD_REQUESTS_WEBHOOK` set, each new request is posted to that Discord
 webhook: the login, the GitHub ID, the account's age, public repositories and
 followers. Never the reason the person wrote, an email or a token.

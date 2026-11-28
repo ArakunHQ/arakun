@@ -4,7 +4,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import { CLOUD_FLAG, DECLINE_COOLDOWN_DAYS } from "../src/cloud_access";
 import worker from "../src/index";
-import { ADMIN, as, call, github, nowSeconds, roomInWindow, signIn, webhook } from "./helpers";
+import { ADMIN, as, call, github, nowSeconds, roomInWindow, signIn, signInByEmail, webhook } from "./helpers";
 
 const DAY = 24 * 60 * 60;
 const CREATED = Date.parse("2020-01-01T00:00:00Z") / 1000;
@@ -34,13 +34,13 @@ async function access(session: string): Promise<unknown> {
 describe("asking for cloud access", () => {
   it("starts at none, and a request is pending with what GitHub said", async () => {
     const me = await user(2001, "asker");
-    expect(await access(me.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null });
+    expect(await access(me.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null, github: true });
 
     const before = nowSeconds();
     const res = await ask(me.session, "  I want to try agents from my phone  ");
     expect(res.status).toBe(201);
     const body = (await res.json()) as { status: string; requested_at: number };
-    expect(body).toEqual({ status: "pending", requested_at: expect.any(Number), decided_at: null, retry_at: null });
+    expect(body).toEqual({ status: "pending", requested_at: expect.any(Number), decided_at: null, retry_at: null, github: true });
     expect(body.requested_at).toBeGreaterThanOrEqual(before);
     expect(await access(me.session)).toEqual(body);
 
@@ -83,6 +83,15 @@ describe("asking for cloud access", () => {
     const granted = await ask(me.session);
     expect(granted.status).toBe(409);
     expect(await granted.json()).toMatchObject({ error: "already granted", status: "granted" });
+  });
+
+  it("needs a linked GitHub account", async () => {
+    const em = await signInByEmail("asker@example.com");
+    expect(await access(em.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null, github: false });
+    const res = await ask(em.session, "please");
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "github required" });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM cloud_access_requests").first()).toEqual({ n: 0 });
   });
 
   it("checks the reason", async () => {
@@ -184,7 +193,7 @@ describe("a grant", () => {
     expect(await env.DB.prepare(decidedAt).bind(me.account_id).first()).toEqual({ ...first, decided_by: "karlo" });
 
     expect((await call("DELETE", `/admin/users/${me.account_id}/flags/${CLOUD_FLAG}`, ADMIN)).status).toBe(200);
-    expect(await access(me.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null });
+    expect(await access(me.session)).toEqual({ status: "none", requested_at: null, decided_at: null, retry_at: null, github: true });
     expect((await ask(me.session)).status).toBe(201);
   });
 

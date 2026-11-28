@@ -41,7 +41,9 @@ fn read(base: &str, token: &str) -> Result<CloudState, cloud::Error> {
         return Ok(fixture());
     }
     let access = cloud::cloud_access(base, token)?;
-    if access.status != "granted" {
+    // Granted without GitHub (unlinked since, or granted by hand): the
+    // environment won't start, so the tab offers the link instead.
+    if access.status != "granted" || !access.github {
         return Ok(CloudState::Ask(access));
     }
     let Some(list) = cloud::cloud_machines(base, token)? else {

@@ -49,7 +49,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { newCloudSession } from "./auth";
-import { CLOUD_FLAG } from "./cloud_access";
+import { CLOUD_FLAG, hasGitHub } from "./cloud_access";
 import { appConfigured, githubUserOf, installUrl, mintToken, TokenCache, GITHUB_HOST, type Access, type GitRequest } from "./cloud_github";
 import { addAwake, budgetOf, limitOf, msLeft, noticeStop, type Budget, type Limit } from "./cloud_meter";
 import { modelVars, replacedBy, seal, PROVIDERS, type Model, type Provider, type Stored } from "./cloud_model";
@@ -155,7 +155,9 @@ export type GitHandler = (label: string) => Fetcher;
 export type Store = Pick<DurableObjectStorage, "get" | "put" | "delete" | "deleteAll" | "setAlarm" | "deleteAlarm">;
 
 /// Why a start was refused.
-export type Refused = "no_machine" | "not_allowed" | "no_container" | Limit;
+/// `no_github`: the owner has no GitHub account linked (see
+/// cloud_access.ts), which starting a machine needs.
+export type Refused = "no_machine" | "not_allowed" | "no_github" | "no_container" | Limit;
 
 /// Who wakes the machine: a device at its door, or its owner asking for it.
 /// Only the owner starts a new task after the task cap.
@@ -333,6 +335,7 @@ export class MachineLife {
     // The account's limits before the container, so a refusal says why.
     const owner = await allowedOwner(this.env, m.githubId);
     if (!owner) return "not_allowed";
+    if (!(await hasGitHub(this.env, m.githubId))) return "no_github";
     if (origin === "door" && (await this.storage.get<number>("task_capped")) !== undefined) return "task_cap";
     // A new task: its clock starts at zero.
     const budget = await budgetOf(this.env, m.githubId, owner.plan, Date.now());

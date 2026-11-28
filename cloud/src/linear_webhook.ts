@@ -13,7 +13,7 @@
 import { routeFor, FLAG, UUID } from "./linear";
 import { issuePlace, issueStateType, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
 import { deliver, QueueFull, type Delivery, type GuidanceRule, type StopReason } from "./machines";
-import { bodyText, error, hex, isObject, now, sha256, type Env } from "./util";
+import { bodyText, error, GITHUB_ID_OF, hex, isObject, now, sha256, type Env } from "./util";
 
 const MAX_BODY = 1024 * 1024;
 /// How far Linear's clock may be from ours, so a captured webhook cannot be
@@ -25,6 +25,8 @@ const NO_CREATOR = "Arakun starts work only for a person. Delegate this issue yo
 const NO_ISSUE = "Arakun works on issues. Mention it on an issue instead.";
 const NOT_LINKED =
   'The person who delegated this has not connected Linear in Arakun. In Arakun, open the Linear tab and turn on "Let Linear start sessions on this computer".';
+const NO_GITHUB =
+  "The person who delegated this has no GitHub account linked to their Arakun account, which Linear delegation needs. In Arakun, open Settings › Account and link GitHub.";
 const NO_ROUTE = "No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer.";
 const NO_SESSION = "Arakun has no session for this. Delegate the issue again.";
 const NOT_DELEGATOR = "Only the person who delegated this can steer it.";
@@ -312,14 +314,17 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   if (!hook.issueId) return (await say("error", NO_ISSUE), ok());
   // A blocked account, or one that lost the flag, is as good as unlinked.
   const link = await env.DB.prepare(
-    `SELECT l.account_id AS account_id FROM linear_links l
+    `SELECT l.account_id AS account_id, ${GITHUB_ID_OF("l.account_id")} IS NOT NULL AS github FROM linear_links l
      JOIN accounts u ON u.id = l.account_id AND u.blocked_at IS NULL
      JOIN user_flags f ON f.account_id = l.account_id AND f.flag = ?3
      WHERE l.organization_id = ?1 AND l.linear_user_id = ?2`,
   )
     .bind(hook.organizationId, hook.creatorId, FLAG)
-    .first<{ account_id: number }>();
+    .first<{ account_id: number; github: number }>();
   if (!link) return (await say("error", NOT_LINKED), ok());
+  // Like asking for cloud access (cloud_access.ts): an account made with an
+  // address alone costs nothing to make again.
+  if (link.github !== 1) return (await say("error", NO_GITHUB), ok());
   let place: Awaited<ReturnType<typeof issuePlace>>;
   try {
     place = await issuePlace(env, hook.organizationId, hook.issueId);

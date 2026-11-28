@@ -4,7 +4,7 @@
 // get many allowances. An account asks here; the operator grants or declines
 // at /admin/cloud/requests (admin.ts calls the functions at the bottom).
 //
-//   GET  /cloud/access  → { status, requested_at, decided_at, retry_at }
+//   GET  /cloud/access  → { status, requested_at, decided_at, retry_at, github }
 //   POST /cloud/access  → 201 with the same, after asking, { reason? }
 //
 // `status` is "none", "pending", "granted" or "declined"; the times are null
@@ -13,6 +13,13 @@
 // request marked granted whose flag was revoked later reads as "none", and the
 // account may ask again. To keep someone out, block the account, or decline
 // the request they make next.
+//
+// Asking needs a GitHub account linked to the Arakun account (`github`), and
+// so do making and starting a cloud machine (cloud_machines.ts,
+// cloud_machine.ts) and Linear delegation (linear.ts). The review looks at
+// the GitHub account's age and activity, and one GitHub account is harder to
+// come by many times than an address. Without one the answer is a 403 whose
+// `error` is GITHUB_REQUIRED, for the app to offer linking.
 
 import { record, type Operator } from "./admin_log";
 import { githubHeaders, githubIdOf, GITHUB_TIMEOUT_MS, session } from "./auth";
@@ -33,6 +40,9 @@ const MAX_LIST = 500;
 const MAX_BODY = 4096;
 const STATUSES = ["pending", "granted", "declined"] as const;
 
+/// The `error` of a refusal for want of a linked GitHub account.
+export const GITHUB_REQUIRED = "github required";
+
 export type AccessStatus = "none" | (typeof STATUSES)[number];
 
 /// What GitHub says about an account, for the reviewer. Null fields when it did
@@ -51,6 +61,8 @@ export interface Access {
   requested_at: number | null;
   decided_at: number | null;
   retry_at: number | null;
+  /// A GitHub account is linked, which asking and starting need.
+  github: boolean;
 }
 
 /// The account's request, if any, and its flag. The request's fields are null
@@ -60,6 +72,7 @@ interface Row {
   requested_at: number | null;
   decided_at: number | null;
   flagged: number;
+  github: number;
 }
 
 /// The answer for a /cloud route, or null when the path is not one.
@@ -89,6 +102,7 @@ async function requestAccess(request: Request, env: Env, ctx: ExecutionContext):
     return error(503, "the server could not check the request: try again");
   }
   if (limited) return error(429, "too many requests, try again in a minute");
+  if (!(await hasGitHub(env, s.accountId))) return githubRequired();
   const body = request.headers.get("Content-Length") === "0" || !request.body ? {} : await jsonBody(request, MAX_BODY);
   if (!isObject(body)) return error(400, 'expected {"reason": "..."} or no body');
   const reason = body["reason"];
@@ -138,7 +152,7 @@ async function requestAccess(request: Request, env: Env, ctx: ExecutionContext):
   }
   // After the answer, so a slow or broken webhook never holds or fails it.
   if (env.CLOUD_REQUESTS_WEBHOOK) ctx.waitUntil(notify(env.CLOUD_REQUESTS_WEBHOOK, s.accountId, login, signals, t));
-  return Response.json(answer({ status: "pending", requested_at: t, decided_at: null, flagged: 0 }), { status: 201 });
+  return Response.json(answer({ status: "pending", requested_at: t, decided_at: null, flagged: 0, github: 1 }), { status: 201 });
 }
 
 /// 409 with the account's access, when it may not ask now: it has asked
@@ -159,7 +173,8 @@ async function readRow(env: Env, accountId: number): Promise<Row> {
   // One row even without a request, so the flag is read in the same query.
   const row = await env.DB.prepare(
     `SELECT r.status, r.requested_at, r.decided_at,
-            EXISTS (SELECT 1 FROM user_flags f WHERE f.account_id = ?1 AND f.flag = ?2) AS flagged
+            EXISTS (SELECT 1 FROM user_flags f WHERE f.account_id = ?1 AND f.flag = ?2) AS flagged,
+            ${GITHUB_ID_OF("?1")} IS NOT NULL AS github
      FROM (SELECT ?1 AS account_id) me LEFT JOIN cloud_access_requests r ON r.account_id = me.account_id`,
   )
     .bind(accountId, CLOUD_FLAG)
@@ -171,11 +186,22 @@ async function readRow(env: Env, accountId: number): Promise<Row> {
 /// granted by hand without a request is "granted", and a granted row whose
 /// flag was revoked is "none".
 function answer(row: Row): Access {
-  const times = { requested_at: row.requested_at, decided_at: row.decided_at, retry_at: null };
+  const github = row.github === 1;
+  const times = { requested_at: row.requested_at, decided_at: row.decided_at, retry_at: null, github };
   if (row.flagged) return { status: "granted", ...times };
-  if (row.status === null || row.status === "granted") return { status: "none", requested_at: null, decided_at: null, retry_at: null };
+  if (row.status === null || row.status === "granted") return { status: "none", requested_at: null, decided_at: null, retry_at: null, github };
   if (row.status === "declined") return { status: "declined", ...times, retry_at: retryAt(row.decided_at!) };
   return { status: row.status, ...times };
+}
+
+/// Whether the account has a GitHub account linked.
+export async function hasGitHub(env: Env, accountId: number): Promise<boolean> {
+  return (await githubIdOf(env, accountId)) !== null;
+}
+
+/// The 403 for an account without a linked GitHub account.
+export function githubRequired(): Response {
+  return error(403, GITHUB_REQUIRED);
 }
 
 function retryAt(decidedAt: number): number {

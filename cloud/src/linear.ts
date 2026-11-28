@@ -24,9 +24,13 @@
 // Without all four LINEAR_* secrets, or with a LINEAR_TOKEN_KEY that is not 32
 // bytes of base64url, every /linear path is a 404. All routes
 // but the webhook and the OAuth callback (which Linear calls) need a session
-// with the `linear` flag.
+// with the `linear` flag. Linking a Linear account also needs a GitHub
+// account linked to the Arakun account (cloud_access.ts says why); without
+// one it is a 403 whose `error` is GITHUB_REQUIRED. The webhook hands nothing
+// to an account without one.
 
 import { cookie, session, type Session } from "./auth";
+import { githubRequired, hasGitHub } from "./cloud_access";
 import { addLinks, exchangeCode, LinearRefused, postAction, postActivity, saveWorkspace, setPlan, startIssue, UUID, viewer, type PlanItem } from "./linear_api";
 import { keyUsable } from "./linear_seal";
 import { webhook } from "./linear_webhook";
@@ -67,6 +71,7 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
     case "GET /linear/link":
       return listLinks(env, who);
     case "POST /linear/link":
+      if (!(await hasGitHub(env, who.accountId))) return githubRequired();
       return addLink(request, env, who);
     case "PUT /linear/routes":
       return putRoutes(request, env, who);

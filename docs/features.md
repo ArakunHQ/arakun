@@ -889,6 +889,12 @@ again after a week) in its [data folder](storage-and-env.md).
   signs in with and GitHub's), so a change you did not make does not go unseen.
   Without GitHub, the account shows its address instead of a GitHub user name.
 
+  An account without GitHub can use the phone, Teams and paid plans. Asking for a
+  cloud environment, making or waking one, and letting Linear start sessions need a
+  GitHub account linked: the review of a cloud request reads its age and activity.
+  Until then the Computers tab and the Linear page say so and offer **Link GitHub**,
+  which opens Settings › Account.
+
   The Team tab is an end-to-end encrypted team chat. Each account on this
   profile has its own device key pairs in the system keyring. Messages and
   channel names are sealed on the device, and the server never sees them or the

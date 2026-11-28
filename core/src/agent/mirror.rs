@@ -131,22 +131,77 @@ impl Where {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Where::User => "Every repo",
-            Where::Shared => "This repo, shared",
-            Where::Mine => "This repo, just me",
+    /// The choices an item of `kind` can use, in the order they show.
+    /// A skill has no "just me" in a project: Claude Code reads a project's
+    /// skills from one folder, so it could only differ by being kept out of
+    /// git, which a teammate's checkout would not know.
+    pub fn choices(kind: ItemKind) -> &'static [Where] {
+        match kind {
+            ItemKind::Skill => &[Where::Shared, Where::User],
+            ItemKind::Plugin | ItemKind::Server => &[Where::Shared, Where::Mine, Where::User],
         }
     }
 
-    /// The end of a notice that it was installed.
-    pub fn done(self) -> &'static str {
-        match self {
-            Where::User => "for every project",
-            Where::Shared => "in this repo's files, for everyone who clones it",
-            Where::Mine => "in this repo, for you alone",
+    /// `self` if an item of `kind` can go there, else for the user, which
+    /// every kind can and which commits nothing.
+    pub fn for_kind(self, kind: ItemKind) -> Where {
+        if Where::choices(kind).contains(&self) {
+            self
+        } else {
+            Where::User
         }
     }
+
+    /// Its name in the picker, for the project `project`.
+    pub fn name(self, project: &str) -> String {
+        match self {
+            Where::Shared => format!("Everyone in {project}"),
+            Where::Mine => format!("Just me, in {project}"),
+            Where::User => "Me, in every project".to_string(),
+        }
+    }
+
+    /// The file or folder an item of `kind` is written to, as people know it.
+    pub fn file(self, kind: ItemKind) -> &'static str {
+        match (kind, self) {
+            (ItemKind::Server, Where::Shared) => ".mcp.json",
+            (ItemKind::Server, Where::Mine | Where::User) => "~/.claude.json",
+            (ItemKind::Plugin, Where::Shared) => ".claude/settings.json",
+            (ItemKind::Plugin, Where::Mine) => ".claude/settings.local.json",
+            (ItemKind::Plugin, Where::User) => "~/.claude/settings.json",
+            (ItemKind::Skill, Where::Shared | Where::Mine) => ".claude/skills",
+            (ItemKind::Skill, Where::User) => "~/.claude/skills",
+        }
+    }
+
+    /// What the file is to the project, after the file in the picker.
+    pub fn note(self, kind: ItemKind) -> &'static str {
+        match (kind, self) {
+            (_, Where::Shared) => "committed",
+            (ItemKind::Server, Where::Mine) => "this project",
+            (_, Where::Mine) => "kept out of git",
+            (_, Where::User) => "every project",
+        }
+    }
+
+    /// Where an item of `kind` went, for the notice that says it is done:
+    /// "in .mcp.json in arakun, for everyone who clones it".
+    pub fn done(self, kind: ItemKind, project: &str) -> String {
+        let file = self.file(kind);
+        match self {
+            Where::Shared => format!("in {file} in {project}, for everyone who clones it"),
+            Where::Mine => format!("in {file}, for you in {project}"),
+            Where::User => format!("in {file}, for you in every project"),
+        }
+    }
+}
+
+/// The kinds of Marketplace item, for where each can be installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemKind {
+    Server,
+    Plugin,
+    Skill,
 }
 
 impl Snapshot {
@@ -1311,5 +1366,39 @@ mod tests {
             "{shown}"
         );
         assert!(!shown.contains("s3cret"), "{shown}");
+    }
+
+    #[test]
+    fn a_skill_offers_only_the_project_or_you() {
+        assert_eq!(
+            Where::choices(ItemKind::Skill),
+            &[Where::Shared, Where::User]
+        );
+        // "Just me" picked for a server becomes yours alone for a skill, not
+        // a committed folder.
+        assert_eq!(Where::Mine.for_kind(ItemKind::Skill), Where::User);
+        assert_eq!(Where::Mine.for_kind(ItemKind::Server), Where::Mine);
+        assert_eq!(Where::Shared.for_kind(ItemKind::Skill), Where::Shared);
+    }
+
+    #[test]
+    fn each_choice_names_the_file_it_writes() {
+        assert_eq!(Where::Shared.file(ItemKind::Server), ".mcp.json");
+        assert_eq!(Where::Mine.file(ItemKind::Server), "~/.claude.json");
+        assert_eq!(Where::Shared.file(ItemKind::Skill), ".claude/skills");
+        assert_eq!(Where::User.file(ItemKind::Skill), "~/.claude/skills");
+        assert_eq!(
+            Where::Mine.file(ItemKind::Plugin),
+            ".claude/settings.local.json"
+        );
+        assert_eq!(Where::Shared.name("arakun"), "Everyone in arakun");
+        assert_eq!(
+            Where::Shared.done(ItemKind::Skill, "arakun"),
+            "in .claude/skills in arakun, for everyone who clones it"
+        );
+        assert_eq!(
+            Where::User.done(ItemKind::Skill, "arakun"),
+            "in ~/.claude/skills, for you in every project"
+        );
     }
 }

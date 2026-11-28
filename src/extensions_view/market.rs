@@ -12,7 +12,7 @@ use super::*;
 use serde_json::json;
 
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
-use crate::agent::mirror::{self, RepoHas, RepoItem, Where};
+use crate::agent::mirror::{self, ItemKind, RepoHas, RepoItem, Where};
 use crate::agent::publishers;
 use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
@@ -226,16 +226,10 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// Copies a skill from GitHub into `~/.claude/skills`, for every project here.
+    /// Copies a skill from GitHub where the Where step says.
     fn install_skill(&mut self, entry: &SkillEntry, cx: &mut Context<Self>) {
-        if let Some(s) = self.target_server() {
-            self.error = Some(
-                format!(
-                    "Skills from skills.sh install on this computer only, not on {} yet.",
-                    s.name
-                )
-                .into(),
-            );
+        if let Some(why) = self.cannot_install(ItemKind::Skill) {
+            self.error = Some(why.into());
             cx.notify();
             return;
         }
@@ -244,13 +238,13 @@ impl ExtensionsView {
             _ => None,
         };
         let e = entry.clone();
-        let at = self.ms.at;
+        let at = self.at(ItemKind::Skill);
         let Some(dir) = self.install_dir() else {
             return;
         };
         self.run_op(
             entry.name.clone(),
-            format!("is installed {}", at.done()),
+            format!("is installed {}", self.done_where(ItemKind::Skill)),
             move || {
                 let found = match found {
                     Some(f) => f,
@@ -266,18 +260,12 @@ impl ExtensionsView {
     /// Installs every skill in the repository `source`, as Install does one.
     /// Skills installed already stay as they are.
     fn install_package(&mut self, source: &str, cx: &mut Context<Self>) {
-        if let Some(s) = self.target_server() {
-            self.error = Some(
-                format!(
-                    "Skills install on this computer only, not on {} yet.",
-                    s.name
-                )
-                .into(),
-            );
+        if let Some(why) = self.cannot_install(ItemKind::Skill) {
+            self.error = Some(why.into());
             cx.notify();
             return;
         }
-        let at = self.ms.at;
+        let at = self.at(ItemKind::Skill);
         let Some(dir) = self.install_dir() else {
             return;
         };
@@ -285,7 +273,7 @@ impl ExtensionsView {
         let listed = self.listed_package(source);
         self.run_op(
             package_op(source),
-            format!("are installed {}", at.done()),
+            format!("are installed {}", self.done_where(ItemKind::Skill)),
             move || {
                 let pkg = match listed {
                     Some(p) => p,
@@ -455,10 +443,10 @@ impl ExtensionsView {
         let Some(cwd) = self.install_dir() else {
             return;
         };
-        let at = self.ms.at;
+        let at = self.at(ItemKind::Plugin);
         self.run_op(
             name,
-            format!("is installed and on {}", at.done()),
+            format!("is installed and on {}", self.done_where(ItemKind::Plugin)),
             move || {
                 marketplace::install_plugin_as(&cwd, &id, at.claude())?;
                 if at != Where::User {
@@ -570,7 +558,7 @@ impl ExtensionsView {
             return;
         }
         // A shared install writes them into the repo's .mcp.json, which is committed.
-        if self.targets.target.is_none() && self.ms.at == Where::Shared {
+        if self.targets.target.is_none() && self.at(ItemKind::Server) == Where::Shared {
             let keys: Vec<&str> = ins
                 .fields
                 .iter()
@@ -581,8 +569,11 @@ impl ExtensionsView {
             if !keys.is_empty() {
                 self.error = Some(
                     format!(
-                        "“This repo, shared” would commit {} to the repo. Pick “This repo, just me” or “Every repo” for a server that needs a key.",
-                        keys.join(", ")
+                        "“{}” would commit {} to the repo in .mcp.json. Pick “{}” or “{}” for a server that needs a key.",
+                        Where::Shared.name(&self.project()),
+                        keys.join(", "),
+                        Where::Mine.name(&self.project()),
+                        Where::User.name(&self.project()),
                     )
                     .into(),
                 );
@@ -608,13 +599,13 @@ impl ExtensionsView {
         let Some(cwd) = self.install_dir() else {
             return;
         };
-        let at = self.ms.at;
+        let at = self.at(ItemKind::Server);
         let n = self.server_name(&n, sign_in);
         let login = claude_ext::login_command(&n);
         self.ms.installing = None;
         self.run_op(
             n.clone(),
-            format!("was added {}", at.done()),
+            format!("was added {}", self.done_where(ItemKind::Server)),
             move || {
                 marketplace::install_server_as(&cwd, &n, &method, &values, at.claude())?;
                 if at != Where::User {
@@ -758,8 +749,8 @@ impl ExtensionsView {
 
     fn installed(&self, item: &Item) -> bool {
         // In a repository, what it has: its files, and Claude's list for it.
-        if self.targets.target.is_none() && self.ms.at != Where::User {
-            let at = self.ms.at;
+        let at = self.at(item.kind());
+        if self.targets.target.is_none() && at != Where::User {
             let Some(has) = &self.ms.repo_has else {
                 return false;
             };
@@ -801,7 +792,7 @@ impl ExtensionsView {
         if self.targets.target.is_some() {
             return false;
         }
-        if self.ms.at != Where::User {
+        if self.at(ItemKind::Skill) != Where::User {
             return self
                 .ms
                 .repo_has
@@ -1568,22 +1559,19 @@ impl ExtensionsView {
             return ui::spinner(14., theme::text_faint()).into_any_element();
         }
         let target = item.clone();
+        let refused = self.cannot_install(item.kind());
         ui::button(
             SharedString::from(format!("ext-card-install-{}", item.key())),
             "Install",
             kind,
-            self.op.is_none(),
+            self.op.is_none() && refused.is_none(),
         )
-        // A plugin goes on in every project, as the details say; a server
-        // asks how in the details first.
-        .when(matches!(item, Item::Plugin(_)), |b| {
-            b.tooltip(ui::tip_text(match self.target_server() {
-                Some(s) => format!("Install on {}, for every project", s.name),
-                None => "Install for every project".to_string(),
-            }))
-        })
-        .when(matches!(item, Item::Skill(_)), |b| {
-            b.tooltip(ui::tip("Install into ~/.claude/skills, for every project"))
+        // A plugin or a skill goes where the Where step says; a server asks
+        // how in the details first.
+        .when(!matches!(item, Item::Server(_)), |b| {
+            b.tooltip(ui::tip_text(
+                refused.unwrap_or_else(|| self.install_tip(item.kind())),
+            ))
         })
         .on_click(cx.listener(move |this, _, window, cx| {
             // The card under the button opens the details; Install alone installs.
@@ -1854,7 +1842,7 @@ impl ExtensionsView {
                     .child(description),
             )
         });
-        if let Some(picker) = self.render_where(cx) {
+        if let Some(picker) = self.render_where(item.kind(), cx) {
             panel = panel.child(picker);
         }
         panel = panel.children(self.render_sign_ins(&item, cx));
@@ -1894,8 +1882,10 @@ impl ExtensionsView {
                             .text_color(theme::text_subtle())
                             .child(match self.target_server() {
                                 Some(s) => format!("Installed on {} for its user.", s.name),
-                                None => "Installed for your user. Turn it on or off under Plugins."
-                                    .to_string(),
+                                None => format!(
+                                    "Installed {}. Turn it on or off under Plugins.",
+                                    self.done_where(ItemKind::Plugin)
+                                ),
                             })
                             .into_any_element()
                     } else if busy {
@@ -1904,13 +1894,11 @@ impl ExtensionsView {
                         ui::button_with(
                             "ext-detail-install",
                             Some("download04"),
-                            match self.target_server() {
-                                Some(s) => format!("Install on {}", s.name),
-                                None => self.install_label().to_string(),
-                            },
+                            self.install_label(ItemKind::Plugin),
                             ButtonKind::Primary,
                             self.op.is_none(),
                         )
+                        .tooltip(ui::tip_text(self.install_tip(ItemKind::Plugin)))
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.install_plugin(&entry, cx)),
                         )
@@ -2016,18 +2004,27 @@ impl ExtensionsView {
             div()
                 .ty(Type::Body)
                 .text_color(theme::text_subtle())
-                .child("Installed for your user. It shows under Skills.")
+                .child(format!(
+                    "Installed {}. It shows under Skills.",
+                    self.done_where(ItemKind::Skill)
+                ))
                 .into_any_element()
         } else if busy {
             busy_row("Installing…").into_any_element()
         } else {
+            let refused = self.cannot_install(ItemKind::Skill);
             ui::button_with(
                 "ext-detail-install",
                 Some("download04"),
-                self.install_label(),
+                self.install_label(ItemKind::Skill),
                 ButtonKind::Primary,
-                self.op.is_none() && !matches!(located, Some(Located::Failed(_))),
+                self.op.is_none()
+                    && refused.is_none()
+                    && !matches!(located, Some(Located::Failed(_))),
             )
+            .tooltip(ui::tip_text(
+                refused.unwrap_or_else(|| self.install_tip(ItemKind::Skill)),
+            ))
             .on_click(cx.listener(move |this, _, _, cx| this.install_skill(&entry, cx)))
             .into_any_element()
         };
@@ -2079,11 +2076,11 @@ impl ExtensionsView {
                             Some("download04"),
                             label,
                             ButtonKind::Outline,
-                            self.op.is_none(),
+                            self.op.is_none() && self.cannot_install(ItemKind::Skill).is_none(),
                         )
                         .tooltip(ui::tip_text(format!(
-                            "Install every skill in {source}, {}",
-                            self.ms.at.done()
+                            "Install every skill in {source} {}",
+                            self.done_where(ItemKind::Skill)
                         )))
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.install_package(&source, cx)),
@@ -2121,20 +2118,49 @@ impl ExtensionsView {
     /// repository has the repository after its name (`github-acme-web`), so
     /// its sign-in is its own: Claude keeps one per name and address.
     fn server_name(&self, name: &str, sign_in: bool) -> String {
-        if self.targets.target.is_some() || self.ms.at == Where::User || !sign_in {
+        if self.targets.target.is_some() || self.at(ItemKind::Server) == Where::User || !sign_in {
             return name.to_string();
         }
-        let slug = match &self.ms.repo_has {
-            Some(has) => has.slug.clone(),
+        mirror::suffixed(name, &self.project())
+    }
+
+    /// The environment's repository, as the Where step names it.
+    fn project(&self) -> String {
+        match &self.ms.repo_has {
+            Some(has) if !has.slug.is_empty() => has.slug.clone(),
             // Not read yet: the folder's name, without asking git here.
-            None => self
+            _ => self
                 .cwd
                 .as_ref()
                 .and_then(|d| d.file_name())
                 .map(|f| f.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        };
-        mirror::suffixed(name, &slug)
+                .unwrap_or_else(|| "this project".to_string()),
+        }
+    }
+
+    /// Where Install puts an item of `kind` on this computer: the pick, or
+    /// for the user when the pick is one the kind can't use.
+    fn at(&self, kind: ItemKind) -> Where {
+        self.ms.at.for_kind(kind)
+    }
+
+    /// Where an install of `kind` goes, for the notice that it is done.
+    fn done_where(&self, kind: ItemKind) -> String {
+        match self.target_server() {
+            Some(s) => format!("on {}, for every project there", s.name),
+            None => self.at(kind).done(kind, &self.project()),
+        }
+    }
+
+    /// Why an item of `kind` can't be installed where Install goes now.
+    fn cannot_install(&self, kind: ItemKind) -> Option<String> {
+        let s = self.target_server()?;
+        (kind == ItemKind::Skill).then(|| {
+            format!(
+                "Skills install on this computer only, not on {} yet. Pick This computer under Install on.",
+                s.name
+            )
+        })
     }
 
     /// Reads what the environment's repository has, when Install goes there.
@@ -2165,38 +2191,110 @@ impl ExtensionsView {
         self.cwd.clone()
     }
 
-    fn install_label(&self) -> &'static str {
-        match self.ms.at {
-            Where::User => "Install for every project",
-            Where::Shared | Where::Mine => "Install in this repo",
+    /// The Install button's words: who gets it, and where.
+    fn install_label(&self, kind: ItemKind) -> String {
+        if let Some(s) = self.target_server() {
+            return format!("Install on {}", s.name);
+        }
+        match self.at(kind) {
+            Where::Shared => format!("Install for everyone in {}", self.project()),
+            Where::Mine => format!("Install for me in {}", self.project()),
+            Where::User => "Install for me in every project".to_string(),
         }
     }
 
-    /// Picks where Install puts things on this computer.
-    fn render_where(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.targets.target.is_some() || self.cwd.is_none() {
+    /// The Install button's tooltip: the file it writes.
+    fn install_tip(&self, kind: ItemKind) -> String {
+        match self.target_server() {
+            Some(s) => format!("Install on {}, for every project there", s.name),
+            None => format!("Install {}", self.done_where(kind)),
+        }
+    }
+
+    /// The Where step's answer in one line: "Everyone in arakun · This computer".
+    fn where_summary(&self, kind: ItemKind) -> String {
+        match self.target_server() {
+            Some(s) => format!("{} · {}", Where::User.name(""), s.name),
+            None => format!("{} · This computer", self.at(kind).name(&self.project())),
+        }
+    }
+
+    /// Step 1 of an install, Where: who gets the item, each choice with the
+    /// file it writes. Only the choices the item's kind can use show.
+    fn render_where(&self, kind: ItemKind, cx: &mut Context<Self>) -> Option<Div> {
+        let cwd_known = self.cwd.is_some();
+        if !cwd_known && self.targets.target.is_none() {
             return None;
         }
-        let mut picker = ui::segmented();
-        for (i, at) in Where::ALL.into_iter().enumerate() {
-            picker = picker.child(
-                ui::segment(("ext-where", i), None, at.label(), self.ms.at == at).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.ms.at = at;
-                        this.load_repo_has(cx);
-                        cx.notify();
-                    }),
-                ),
+        let head = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(crate::ui::sp(8.))
+            .child(ui::overline("Where"))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child(self.where_summary(kind)),
             );
+        let mut out = div().flex().flex_col().gap(crate::ui::sp(6.)).child(head);
+        if let Some(why) = self.cannot_install(kind) {
+            return Some(out.child(note(why, Tone::Warning)));
         }
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .child(ui::overline("Install in"))
-                .child(div().flex().child(picker)),
-        )
+        // A paired server installs for its user, in every project there.
+        let choices: &[Where] = if self.targets.target.is_some() {
+            &[Where::User]
+        } else {
+            Where::choices(kind)
+        };
+        let picked = if self.targets.target.is_some() {
+            Where::User
+        } else {
+            self.at(kind)
+        };
+        let project = self.project();
+        let mut rows = div()
+            .flex()
+            .flex_col()
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .border_1()
+            .border_color(theme::border_subtle());
+        for (i, at) in choices.iter().copied().enumerate() {
+            let name = at.name(&project);
+            let file = match self.target_server() {
+                Some(s) => format!("{} · on {}", at.file(kind), s.name),
+                None => format!("{} · {}", at.file(kind), at.note(kind)),
+            };
+            let mut row = ui::choice_row(("ext-where", i), name.clone(), at == picked)
+                .role(gpui::Role::RadioButton)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(div().child(name))
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Mono)
+                                .text_color(theme::text_subtle())
+                                .child(file),
+                        ),
+                );
+            if self.targets.target.is_none() {
+                row = row.on_click(cx.listener(move |this, _, _, cx| {
+                    this.ms.at = at;
+                    this.load_repo_has(cx);
+                    cx.notify();
+                }));
+            }
+            rows = rows.child(row);
+        }
+        out = out.child(rows);
+        Some(out)
     }
 
     fn render_install_form(&self, installed: bool, cx: &mut Context<Self>) -> Option<Div> {
@@ -2328,13 +2426,9 @@ impl ExtensionsView {
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
                             .child(format!(
-                                "Added as “{}”{}, {}. It runs{}:",
+                                "Added as “{}” {}. It runs{}:",
                                 self.server_name(&s.short_name(), sign_in),
-                                self.on_target(),
-                                match self.targets.target {
-                                    Some(_) => Where::User.done(),
-                                    None => self.ms.at.done(),
-                                },
+                                self.done_where(ItemKind::Server),
                                 if self.targets.target.is_some() {
                                     " there"
                                 } else {
@@ -2355,7 +2449,7 @@ impl ExtensionsView {
                                 method,
                                 match self.targets.target {
                                     Some(_) => Where::User.claude(),
-                                    None => self.ms.at.claude(),
+                                    None => self.at(ItemKind::Server).claude(),
                                 },
                             )),
                     ),
@@ -2365,9 +2459,9 @@ impl ExtensionsView {
                     "ext-ri-go",
                     Some("download04"),
                     if sign_in && self.targets.target.is_none() {
-                        "Install and sign in"
+                        format!("{} and sign in", self.install_label(ItemKind::Server))
                     } else {
-                        "Install"
+                        self.install_label(ItemKind::Server)
                     },
                     ButtonKind::Primary,
                     !busy,
@@ -2542,6 +2636,14 @@ pub(super) enum Item {
 }
 
 impl Item {
+    fn kind(&self) -> ItemKind {
+        match self {
+            Item::Plugin(_) => ItemKind::Plugin,
+            Item::Server(_) => ItemKind::Server,
+            Item::Skill(_) => ItemKind::Skill,
+        }
+    }
+
     fn key(&self) -> &str {
         match self {
             Item::Plugin(p) => &p.id,

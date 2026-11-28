@@ -361,6 +361,11 @@ impl ThreadView {
                     asking.is_some(),
                     cx,
                 ));
+                // A secret file's call keeps its pictures hidden with its output.
+                let hidden = tool.secret.is_some() && !self.revealed.contains(&tool.id);
+                if asking.is_none() && !hidden {
+                    col = col.children(self.tool_images(ix, tool, cx));
+                }
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
                 } else if open || self.shutting(Fold::Row, ix, cx) {
@@ -402,6 +407,83 @@ impl ThreadView {
             Entry::User { .. } => div().into_any_element(),
         };
         self.arrive(ix, row, cx)
+    }
+
+    /// The pictures a tool returned, such as a screenshot, as thumbnails
+    /// under its row; a click opens one full size. A server's session shows
+    /// the copies that came, by the path the server named.
+    fn tool_images(&self, ix: usize, tool: &ToolCall, cx: &Context<Self>) -> Option<AnyElement> {
+        if tool.images.is_empty() {
+            return None;
+        }
+        let thread = self.thread.read(cx);
+        let files: Vec<PathBuf> = if thread.is_remote() {
+            let fetched = thread.fetched_images();
+            tool.images
+                .iter()
+                .filter_map(|p| fetched.get(p.to_string_lossy().as_ref()).cloned())
+                .collect()
+        } else {
+            tool.images.clone()
+        };
+        if files.is_empty() {
+            return None;
+        }
+        let count = files.len();
+        let thumbs = files.into_iter().enumerate().map(|(n, path)| {
+            let (max_w, max_h) = (240., 140.);
+            let name = if count == 1 {
+                "Open the image the tool returned".to_string()
+            } else {
+                format!("Open image {} of {count} the tool returned", n + 1)
+            };
+            let open = path.clone();
+            crate::ui::labelled(
+                div().id(("tool-image", ix * 64 + n)),
+                gpui::Role::Button,
+                name,
+            )
+            .map(|d| match thumb_size(&path, max_w, max_h) {
+                Some((w, h)) => d.w(px(w)).h(px(h)),
+                // Unknown size: a box the image fits inside.
+                None => d.h(px(max_h)).max_w(px(max_w)).min_w(px(48.)),
+            })
+            .flex_none()
+            .rounded(crate::ui::rad(8.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::fill_hover())
+            .cursor_pointer()
+            .hover(|s| s.border_color(theme::border_strong()))
+            .child(
+                gpui::img(path)
+                    .object_fit(gpui::ObjectFit::Contain)
+                    .size_full()
+                    .with_fallback(|| {
+                        div()
+                            .p(crate::ui::sp(8.))
+                            .text_size(px(crate::ui::TEXT_SM))
+                            .text_color(theme::text_subtle())
+                            .child("Image not found")
+                            .into_any_element()
+                    }),
+            )
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.emit(ThreadViewEvent::OpenFile(open.clone(), None));
+            }))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(crate::ui::sp(6.))
+                .pl(crate::ui::sp(20.))
+                .pb(crate::ui::sp(6.))
+                .children(thumbs)
+                .into_any_element(),
+        )
     }
 
     /// Stands for the output of a call that read a secret file, until the
@@ -717,7 +799,9 @@ pub(super) fn tool_details(tool: &ToolCall, cwd: &Path, reveal: &Reveal) -> AnyE
             _ => {}
         }
     }
+    // The raw output of an image is its bytes as base64.
     if !any_text
+        && tool.images.is_empty()
         && let Some(out) = tool.raw_output.as_ref().filter(|o| !o.trim().is_empty())
         && !tool
             .content

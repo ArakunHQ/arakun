@@ -44,7 +44,8 @@ use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
     AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, Subagent,
-    SubagentRecord, SubagentState, Thread, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost,
+    SubagentRecord, SubagentState, Thread, ToolCall, ToolContent, ToolStatus, Usage, attach, diff,
+    fmt_cost,
 };
 use crate::model::Status;
 
@@ -159,6 +160,22 @@ fn image_file(path: &str, scope: &Scope) -> Option<String> {
     (len <= attach::MAX_IMAGE_BYTES).then(|| super::image_link(key, &file))
 }
 
+/// The images a tool call returned that a phone may be shown, as
+/// `{ name, url }` with signed links. None for a secret file's call, or
+/// without a key.
+fn tool_images(t: &ToolCall, scope: &Scope) -> Vec<Value> {
+    let Some(key) = scope.key.as_deref().filter(|_| t.secret.is_none()) else {
+        return Vec::new();
+    };
+    t.images
+        .iter()
+        .filter(|p| {
+            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() <= attach::MAX_IMAGE_BYTES)
+        })
+        .map(|p| json!({ "name": file_name(p), "url": super::image_link(key, p) }))
+        .collect()
+}
+
 /// The file of an image a session names (`link`, as written), when its agent
 /// named it or a prompt mentioned it. Only those are sent, so asking cannot
 /// read any file the server can.
@@ -171,6 +188,16 @@ pub fn named_image(all: &[Arc<Entry>], cwd: &Path, link: &str) -> Option<PathBuf
     });
     if by_agent {
         return crate::agent::markdown::image_path(link, Some(cwd));
+    }
+    // A tool's image is named by its whole path, as the entry has it.
+    let by_tool = all.iter().find_map(|e| match &**e {
+        Entry::Tool(t) if t.secret.is_none() => {
+            t.images.iter().find(|p| p.to_string_lossy() == link)
+        }
+        _ => None,
+    });
+    if let Some(file) = by_tool {
+        return Some(file.clone());
     }
     let by_user = all.iter().any(|e| match &**e {
         Entry::User { text, .. } => attach::image_mentions(text).iter().any(|l| l == link),
@@ -311,6 +338,9 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
                 Some(tail(&t.terminal_output, CLIP))
             } else if !texts.is_empty() {
                 Some(tail(&texts.join("\n"), CLIP))
+            } else if !t.images.is_empty() {
+                // The raw output of an image is its bytes as base64.
+                None
             } else {
                 t.raw_output.as_deref().map(|o| tail(o, CLIP))
             };
@@ -332,6 +362,12 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
             // The subagent it ran under, so a phone can group it there.
             if let Some(parent) = &t.parent {
                 v["parent"] = json!(parent);
+            }
+            // What the tool returned as pictures, linked as a prompt's are.
+            // Only when there are some: an older phone reads no such field.
+            let images = tool_images(t, scope);
+            if !images.is_empty() {
+                v["images"] = json!(images);
             }
             v
         }
@@ -1667,6 +1703,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         };
         let v = entry(&Entry::Tool(tool), &scope(std::path::Path::new(".")));
         assert_eq!(v["type"], "tool");
@@ -1676,6 +1713,59 @@ mod tests {
         assert_eq!(v["status"], "completed");
         // Not made under a subagent: no parent at all, as older phones knew it.
         assert!(v.get("parent").is_none());
+        // No images: no field, as older phones knew it.
+        assert!(v.get("images").is_none());
+    }
+
+    #[test]
+    fn a_tools_images_go_as_signed_links_and_to_the_app_by_path() {
+        let dir =
+            std::env::temp_dir().join(format!("arakun-wire-tool-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("paste-7.png");
+        std::fs::write(&shot, b"png").unwrap();
+        let mut tool = ToolCall {
+            id: "t1".into(),
+            title: "Screenshot".into(),
+            kind: "other".into(),
+            status: ToolStatus::Completed,
+            content: vec![],
+            locations: vec![],
+            raw_input: None,
+            // What an agent sends as the raw output of an image: its base64.
+            raw_output: Some("[{\"type\":\"image\",\"data\":\"aGk=\"}]".into()),
+            added: 0,
+            removed: 0,
+            terminal_output: String::new(),
+            terminal_dropped_lines: 0,
+            exit_code: None,
+            parent: None,
+            tool_name: None,
+            secret: None,
+            images: vec![shot.clone(), dir.join("gone.png")],
+        };
+        let v = entry(&Entry::Tool(tool.clone()), &scope(&dir));
+        // Only the file that is there, linked as a prompt's image is.
+        assert_eq!(v["images"].as_array().unwrap().len(), 1);
+        assert_eq!(v["images"][0]["name"], "paste-7.png");
+        assert!(
+            v["images"][0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/image?s=")
+        );
+        assert!(v["output"].is_null());
+        let link = shot.to_string_lossy().into_owned();
+        let all = vec![Arc::new(Entry::Tool(tool.clone()))];
+        assert_eq!(named_image(&all, &dir, &link), Some(shot.clone()));
+        assert_eq!(named_image(&all, &dir, "paste-7.png"), None);
+        // A secret file's call shows none.
+        tool.secret = Some(".env".into());
+        let v = entry(&Entry::Tool(tool.clone()), &scope(&dir));
+        assert!(v.get("images").is_none());
+        let all = vec![Arc::new(Entry::Tool(tool))];
+        assert_eq!(named_image(&all, &dir, &link), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1697,6 +1787,7 @@ mod tests {
             parent: Some("task1".into()),
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         };
         let v = entry(&Entry::Tool(call), &scope(std::path::Path::new(".")));
         assert_eq!(v["parent"], "task1");
@@ -1723,6 +1814,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: Some(".env".into()),
+            images: Vec::new(),
         };
         let v = entry(&Entry::Tool(tool), &scope(std::path::Path::new(".")));
         assert_eq!(v["output"], Value::Null);
@@ -1754,6 +1846,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         }))
     }
 

@@ -314,6 +314,47 @@ fn without_handles(text: &str) -> String {
     out
 }
 
+/// Saves the image in an ACP `image` block a tool returned in `dir`, the
+/// folder of pasted images, and gives its path. `None` for an image that
+/// is not a PNG, JPEG, GIF or WebP, is too big to send, or cannot be read.
+///
+/// It is named like a pasted one, `paste-<digits>.<ext>`, so the session that
+/// holds it deletes it with its own. The digits come from the session and the
+/// bytes: an agent sends a call's content again with each update and when a
+/// session loads, and the same image is then written once.
+pub fn save_tool_image(dir: &Path, session: &str, block: &Value) -> Option<PathBuf> {
+    use sha2::Digest as _;
+    let ext = match block["mimeType"].as_str()? {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    let data = block["data"].as_str()?;
+    // Base64 is a third bigger; a larger one is not worth decoding.
+    if data.len() as u64 > MAX_IMAGE_BYTES / 3 * 4 + 4 {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mut hash = sha2::Sha256::new();
+    hash.update(session.as_bytes());
+    hash.update([0]);
+    hash.update(&bytes);
+    let digest = hash.finalize();
+    let n = u64::from_be_bytes(digest[..8].try_into().ok()?);
+    let file = dir.join(format!("paste-{n}.{ext}"));
+    if !file.is_file() {
+        crate::durable::write_private(&file, &bytes).ok()?;
+    }
+    Some(file)
+}
+
 /// An ACP `image` content block, or why the file can't be sent.
 pub fn acp_block(path: &Path) -> Result<Value, String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -452,6 +493,35 @@ mod tests {
         assert_eq!(mention("src/a.png"), "@src/a.png");
         assert_eq!(mention("my shot.png"), "@\"my shot.png\"");
         assert_eq!(mentions(&mention("my shot.png")), vec!["my shot.png"]);
+    }
+
+    #[test]
+    fn a_tool_image_is_saved_once_per_session_as_a_paste() {
+        let dir = std::env::temp_dir().join(format!("arakun-tool-image-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data = base64::engine::general_purpose::STANDARD.encode(b"png bytes");
+        let block = json!({ "type": "image", "mimeType": "image/png", "data": data });
+        let file = save_tool_image(&dir, "s1", &block).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"png bytes");
+        // Named so deleting the session finds it: `paste-<digits>.png`.
+        let name = file.file_name().unwrap().to_str().unwrap();
+        let digits = name
+            .strip_prefix("paste-")
+            .unwrap()
+            .strip_suffix(".png")
+            .unwrap();
+        assert!(!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
+        // Sent again, it is the same file; another session gets its own.
+        assert_eq!(save_tool_image(&dir, "s1", &block), Some(file.clone()));
+        assert_ne!(save_tool_image(&dir, "s2", &block), Some(file));
+        let svg = json!({ "type": "image", "mimeType": "image/svg+xml", "data": data });
+        assert_eq!(save_tool_image(&dir, "s1", &svg), None);
+        let bad = json!({ "type": "image", "mimeType": "image/png", "data": "not base64!" });
+        assert_eq!(save_tool_image(&dir, "s1", &bad), None);
+        let big = "A".repeat(MAX_IMAGE_BYTES as usize / 3 * 4 + 8);
+        let big = json!({ "type": "image", "mimeType": "image/png", "data": big });
+        assert_eq!(save_tool_image(&dir, "s1", &big), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

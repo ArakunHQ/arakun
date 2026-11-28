@@ -71,6 +71,15 @@ describe("Transcript", () => {
     expect(first()!.open).toBe(true);
   });
 
+  it("shows the pictures a tool returned with its row closed", () => {
+    const shot = { type: "tool", title: "Screenshot", status: "completed", images: [{ name: "paste-1.png", url: "/image?s=x&p=paste-1.png" }] };
+    const { container } = mount(session([shot]));
+    const pic = container.querySelector(".tpics img") as HTMLImageElement;
+    expect(pic.getAttribute("src")).toBe("/image?s=x&p=paste-1.png");
+    expect(pic.alt).toBe("paste-1.png");
+    expect((container.querySelector("details") as HTMLDetailsElement).open).toBe(false);
+  });
+
   it("asks for older entries near the top", () => {
     const props = { loadingOlder: false, onLoadOlder: vi.fn(), pending: null, onHoldBubble: vi.fn() };
     render(<Transcript session={session([notice("a")], 50)} {...props} />);

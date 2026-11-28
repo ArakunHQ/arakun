@@ -202,6 +202,11 @@ pub struct ToolCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     // Not a secret: the name of the file that holds one.
     pub secret: Option<String>,
+    /// The images the tool returned, such as a screenshot, saved with the
+    /// pasted ones so they go when the session does
+    /// ([`attach::save_tool_image`]). Their place in the content is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<PathBuf>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -1062,13 +1067,35 @@ fn parse_tool_status(s: &str) -> ToolStatus {
     }
 }
 
+/// The content as it is, every image "[image]".
+#[cfg(test)]
 fn parse_tool_content(list: &Value) -> Vec<ToolContent> {
-    list.as_array()
+    parse_tool_content_keeping(list, |_| None).0
+}
+
+/// A tool call's content, and the images in it that `keep` saved. An image
+/// it kept leaves no text; one it could not keep stays "[image]".
+fn parse_tool_content_keeping(
+    list: &Value,
+    mut keep: impl FnMut(&Value) -> Option<PathBuf>,
+) -> (Vec<ToolContent>, Vec<PathBuf>) {
+    let mut images = Vec::new();
+    let content = list
+        .as_array()
         .into_iter()
         .flatten()
         .filter_map(|c| match c.get("type").and_then(Value::as_str)? {
             "content" => {
-                let text = content_text(c.get("content")?);
+                let block = c.get("content")?;
+                if block["type"] == "image"
+                    && let Some(path) = keep(block)
+                {
+                    if !images.contains(&path) {
+                        images.push(path);
+                    }
+                    return None;
+                }
+                let text = content_text(block);
                 Some(ToolContent::Text { text })
             }
             "diff" => Some(ToolContent::Diff {
@@ -1081,7 +1108,8 @@ fn parse_tool_content(list: &Value) -> Vec<ToolContent> {
             }),
             _ => None,
         })
-        .collect()
+        .collect();
+    (content, images)
 }
 
 /// The option that allows a tool call, "allow once" first.
@@ -4360,6 +4388,7 @@ impl Thread {
                     parent: None,
                     tool_name: None,
                     secret: None,
+                    images: Vec::new(),
                 }),
                 cx,
             ),
@@ -4389,7 +4418,13 @@ impl Thread {
             return;
         };
         if let Some(content) = u.get("content").filter(|c| c.is_array()) {
-            t.content = parse_tool_content(content);
+            // The session's id keeps two sessions from sharing one file, which
+            // deleting either would take from the other.
+            let session = self.meta.session_id.as_deref().unwrap_or_default();
+            let dir = crate::paths::store(crate::paths::PASTES);
+            (t.content, t.images) = parse_tool_content_keeping(content, |block| {
+                attach::save_tool_image(&dir, session, block)
+            });
             recount(t);
         }
         if let Some(locations) = u["locations"].as_array() {
@@ -4944,6 +4979,36 @@ pub fn staged_notice(staged: Result<Vec<String>, String>) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_tool_keeps_its_images_and_says_image_for_the_rest() {
+        use super::{ToolContent, parse_tool_content, parse_tool_content_keeping};
+        use serde_json::json;
+        use std::path::PathBuf;
+        let shot = json!({ "type": "image", "mimeType": "image/png", "data": "aGk=" });
+        let content = json!([
+            { "type": "content", "content": { "type": "text", "text": "Took it" } },
+            { "type": "content", "content": shot },
+            { "type": "content", "content": shot },
+            { "type": "content", "content": { "type": "image", "mimeType": "image/tiff", "data": "aGk=" } },
+        ]);
+        let (content_kept, images) = parse_tool_content_keeping(&content, |b| {
+            (b["mimeType"] == "image/png").then(|| PathBuf::from("/p/paste-1.png"))
+        });
+        let text = |t: &str| ToolContent::Text { text: t.into() };
+        // A kept image leaves no text, and the same one twice is one.
+        assert_eq!(content_kept, vec![text("Took it"), text("[image]")]);
+        assert_eq!(images, vec![PathBuf::from("/p/paste-1.png")]);
+        assert_eq!(
+            parse_tool_content(&content),
+            vec![
+                text("Took it"),
+                text("[image]"),
+                text("[image]"),
+                text("[image]")
+            ]
+        );
+    }
+
+    #[test]
     fn a_cancel_pauses_the_queue_only_when_it_stops_a_turn() {
         assert!(pauses_on_cancel(true, 2));
         assert!(!pauses_on_cancel(true, 0));
@@ -4993,6 +5058,7 @@ mod tests {
                 parent: None,
                 tool_name: name.map(str::to_string),
                 secret: None,
+                images: Vec::new(),
             };
         let task_id = Some(json!({"task_id": "b1"}));
         assert!(call(Some("Agent"), "Run tests", None).is_subagent());
@@ -5029,6 +5095,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         };
         let mut total = 0u64;
         for i in 0..100_000 {
@@ -5534,6 +5601,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         };
         recount(&mut t);
         Entry::Tool(t)

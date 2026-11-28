@@ -1023,6 +1023,12 @@ fn images_to_ask(
             Entry::User { text, .. } => {
                 crate::agent::attach::image_mentions(&crate::agent::attach::split_pastes(text).0)
             }
+            // A tool's images by their whole path on the server, as `named_image` reads them.
+            Entry::Tool(t) if t.secret.is_none() => t
+                .images
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
             _ => continue,
         };
         for link in links {
@@ -4176,6 +4182,23 @@ mod tests {
                 ("shot.png".to_string(), 3),
                 ("my shots/b.jpg".to_string(), 3)
             ]
+        );
+        // A tool's images, by their whole path on the server.
+        let tool = |secret: Option<&str>| -> Arc<Entry> {
+            Arc::new(
+                serde_json::from_value(json!({
+                    "type": "tool", "id": "t1", "title": "Screenshot", "kind": "other",
+                    "status": "completed", "images": ["/srv/pastes/paste-9.png"], "secret": secret,
+                }))
+                .unwrap(),
+            )
+        };
+        entries.push(tool(Some(".env")));
+        assert_eq!(images_to_ask(&entries, &asked).len(), 2);
+        entries.push(tool(None));
+        assert_eq!(
+            images_to_ask(&entries, &asked).last(),
+            Some(&("/srv/pastes/paste-9.png".to_string(), 5))
         );
     }
 

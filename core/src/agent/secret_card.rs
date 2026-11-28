@@ -490,6 +490,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
+            images: Vec::new(),
         })));
 
         let saved = thread_file(t.meta(), t.entries.clone(), t.queue.clone());

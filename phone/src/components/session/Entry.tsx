@@ -47,7 +47,7 @@ export function estimate(e: Entry): number {
   const n = (str(e.text) || str(e.output) || str(e.title)).length;
   switch (e.type) {
     case "tool":
-      return 38 + (e.status === "failed" ? 120 : 0);
+      return 38 + (e.status === "failed" ? 120 : 0) + (len(e.images) ? 128 : 0);
     case "thought":
       return 38;
     case "plan":
@@ -154,7 +154,24 @@ function UserEntry({ e, edits }: { e: Entry; edits: Edits | null }) {
   );
 }
 
+/** A tool call's row, and under it the pictures it returned, such as a screenshot, shown with the row closed. */
 function ToolEntry({ e }: { e: Entry }) {
+  const h = useContext(EntryContext);
+  const images = (e.images as Pic[] | undefined) ?? [];
+  if (!images.length) return <ToolRow e={e} />;
+  return (
+    <>
+      <ToolRow e={e} />
+      <div className="tpics">
+        {images.map((p, k) => (
+          <Fragment key={k}>{h ? h.renderPic(p.url, p.name) : <img src={p.url} alt={p.name} className="pic" loading="lazy" />}</Fragment>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function ToolRow({ e }: { e: Entry }) {
   const locations = (e.locations as string[] | undefined) ?? [];
   const diffs = (e.diffs as { path: string; added: number; removed: number }[] | undefined) ?? [];
   const failedExit = e.exit_code != null && e.exit_code !== 0 ? `\n[exit ${String(e.exit_code)}]` : "";

@@ -85,7 +85,7 @@ macro_rules! files {
 files! {
     own folder SESSIONS = "sessions", "Sessions and their transcripts";
     own folder LINKED = "linked", "Sessions written out as Markdown for another agent to read";
-    own folder PASTES = "pastes", "Images pasted into the composer or sent from the phone";
+    own folder PASTES = "pastes", "Images pasted into the composer, sent from the phone, or returned by a tool";
     own folder HEADLESS = "headless", "Sessions that run without a window";
     own folder MEMORY = "memory", "Memory (or the folder `ARAKUN_MEMORY_DIR` names)";
     own file SETTINGS = "settings.json", "Your settings from Settings › General, Privacy and Branches";

@@ -1,7 +1,8 @@
 // The cloud environment on the Computers screen. An account with the `cloud`
 // flag sees its environment, the hours left this month and why it stopped, and
 // makes, wakes, stops or removes it here. Any other account sees the request
-// for access instead, and where its request stands.
+// for access instead, and where its request stands; without a linked GitHub
+// account, why it can't ask.
 
 import { useState } from "react";
 import {
@@ -9,6 +10,7 @@ import {
   canAsk,
   type CloudMachine,
   cloudRemoveQuestion,
+  GITHUB_TEXT,
   machineLine,
   MAX_REASON,
   type Usage,
@@ -149,7 +151,7 @@ export function CloudGroup({ flagged }: { flagged: boolean }) {
         <span className="rbody">
           <span className="rt">Cloud environments</span>
           <span className="rs">{accessLine(a)}</span>
-          {canAsk(a) ? <AskForm /> : null}
+          {a.github === false ? <span className="rs">{GITHUB_TEXT}</span> : canAsk(a) ? <AskForm /> : null}
         </span>
       </div>
     );

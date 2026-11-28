@@ -33,7 +33,7 @@
 
 import { record, type Operator } from "./admin_log";
 import { session } from "./auth";
-import { CLOUD_FLAG } from "./cloud_access";
+import { CLOUD_FLAG, githubRequired, hasGitHub } from "./cloud_access";
 import { allowedOwner, newMachineKey, type Refused } from "./cloud_machine";
 import { STOP_ALL_KEY, budgetOf, limitOf, limitText, type Limit } from "./cloud_meter";
 import { isProvider, keyUsable, parseModel } from "./cloud_model";
@@ -127,6 +127,7 @@ async function create(
     return error(400, `name must be 1 to ${MAX_NAME} characters`);
   }
   const name = typeof given === "string" ? given.trim() : DEFAULT_NAME;
+  if (!(await hasGitHub(env, accountId))) return githubRequired();
   // The machine registers like any computer of the account once it runs, so
   // it needs room under the plan's limit.
   const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE account_id = ?").bind(accountId).first<number>("n");
@@ -165,6 +166,8 @@ async function refusal(env: Env, accountId: number, why: Refused): Promise<Respo
   switch (why) {
     case "not_allowed":
       return error(403, "this account may not run a cloud machine now");
+    case "no_github":
+      return githubRequired();
     case "no_machine":
       return error(404, "no such cloud machine");
     case "no_container":

@@ -213,7 +213,15 @@ pub enum Error {
     /// said. Only the Linear calls use it; their 404, 409, 400 and 429 mean
     /// different things.
     Status { status: u16, message: String },
+    /// 403: the call needs a GitHub account linked to the Arakun account, as
+    /// asking for cloud access, starting a cloud environment and Linear
+    /// delegation do. Settings › Account links one.
+    NeedsGitHub,
 }
+
+/// The `error` of the service's 403 for an account without a linked GitHub
+/// account.
+const GITHUB_REQUIRED: &str = "github required";
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -230,6 +238,10 @@ impl std::fmt::Display for Error {
             Error::Status { message, .. } => {
                 write!(f, "The server answered: {}.", message.trim_end_matches('.'))
             }
+            Error::NeedsGitHub => write!(
+                f,
+                "This needs a GitHub account linked to your Arakun account. Link one in Settings › Account."
+            ),
         }
     }
 }
@@ -625,6 +637,14 @@ pub struct CloudAccess {
     pub decided_at: Option<u64>,
     #[serde(default)]
     pub retry_at: Option<u64>,
+    /// A GitHub account is linked, which asking and starting need. A service
+    /// from before the rule leaves it out: it asks for nothing.
+    #[serde(default = "linked")]
+    pub github: bool,
+}
+
+fn linked() -> bool {
+    true
 }
 
 /// One of the account's cloud environments, as `GET /cloud/machines` lists
@@ -998,7 +1018,7 @@ fn linear_refusal(status: u16, body: &str) -> Error {
     let said = v["error"].as_str().unwrap_or_default();
     match status {
         401 => refusal(status, body),
-        403 if said == "blocked" => refusal(status, body),
+        403 if said == "blocked" || said == GITHUB_REQUIRED => refusal(status, body),
         // The app tells a limit apart from a failure, so it keeps its status.
         429 => Error::Status {
             status,
@@ -1209,6 +1229,7 @@ fn refusal(status: u16, body: &str) -> Error {
         403 if said == "blocked" => {
             Error::Blocked(v["reason"].as_str().unwrap_or_default().to_string())
         }
+        403 if said == GITHUB_REQUIRED => Error::NeedsGitHub,
         429 => Error::Refused("too many requests; try again in a minute".into()),
         _ if said.is_empty() => Error::Refused(format!("HTTP {status}")),
         _ => Error::Refused(said.to_string()),
@@ -1708,6 +1729,29 @@ mod tests {
         let (base, rx) = serve(201, answer);
         ask_cloud_access(&base, "s", "").unwrap();
         assert!(rx.recv().unwrap().contains("content-length: 0\r\n"));
+    }
+
+    #[test]
+    fn a_missing_github_account_is_its_own_error() {
+        let (base, _rx) = serve(
+            200,
+            r#"{"status": "none", "requested_at": null, "decided_at": null, "retry_at": null, "github": false}"#,
+        );
+        assert!(!cloud_access(&base, "s").unwrap().github);
+        // A service from before the rule says nothing: nothing is missing.
+        let (base, _rx) = serve(200, r#"{"status": "none"}"#);
+        assert!(cloud_access(&base, "s").unwrap().github);
+
+        let refused = r#"{"error": "github required"}"#;
+        let (base, _rx) = serve(403, refused);
+        assert_eq!(ask_cloud_access(&base, "s", ""), Err(Error::NeedsGitHub));
+        let (base, _rx) = serve(403, refused);
+        assert_eq!(make_cloud_machine(&base, "s"), Err(Error::NeedsGitHub));
+        let (base, _rx) = serve(403, refused);
+        assert_eq!(
+            linear_link(&base, "s", "lin_api_x"),
+            Err(Error::NeedsGitHub)
+        );
     }
 
     #[test]

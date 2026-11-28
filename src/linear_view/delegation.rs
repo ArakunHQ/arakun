@@ -152,6 +152,9 @@ pub(super) fn sync_line(sync: Sync) -> &'static str {
         Sync::Limited => {
             "Too many requests. It is tried again when this computer reconnects or you change something here."
         }
+        Sync::NeedsGitHub => {
+            "Linear delegation needs a GitHub account linked to your Arakun account. Link one, then change something here to try again."
+        }
     }
 }
 
@@ -364,10 +367,26 @@ impl LinearView {
             .children(connect)
             .when(notes.sync, |d| {
                 let color = match self.sync {
-                    Sync::Failed | Sync::Limited => theme::attention().into(),
+                    Sync::Failed | Sync::Limited | Sync::NeedsGitHub => theme::attention().into(),
                     Sync::Unknown | Sync::Idle | Sync::Sending => theme::text_faint(),
                 };
                 d.child(ui::text(Type::Caption, color, sync_line(self.sync)))
+                    .when(self.sync == Sync::NeedsGitHub, |d| {
+                        d.child(
+                            div().flex().child(
+                                ui::button_with(
+                                    "lin-deleg-link-github",
+                                    Some("github"),
+                                    "Link GitHub",
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(LinearEvent::LinkGitHub)),
+                                ),
+                            ),
+                        )
+                    })
             })
             .when_some(self.delegation_error.as_ref(), |d, e| {
                 d.child(ui::text(Type::Body, theme::error().into(), e.clone()))

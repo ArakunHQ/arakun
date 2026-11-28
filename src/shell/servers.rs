@@ -1478,6 +1478,10 @@ impl Shell {
                 self.open_account_sign_in(window, cx);
                 return;
             }
+            ServersEvent::LinkGitHub => {
+                self.open_link_github(window, cx);
+                return;
+            }
             ServersEvent::OpenHere { env, session } => {
                 let found = self
                     .projects
@@ -1585,6 +1589,7 @@ impl Shell {
             | ServersEvent::Cloud { .. }
             | ServersEvent::OpenHere { .. }
             | ServersEvent::SignIn
+            | ServersEvent::LinkGitHub
             | ServersEvent::SignIns { .. } => {}
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());

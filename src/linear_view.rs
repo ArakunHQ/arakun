@@ -52,6 +52,8 @@ pub enum LinearEvent {
     OpenPhoneTab,
     /// Sign in to the Arakun account.
     SignInToArakun,
+    /// Link a GitHub account to the Arakun account, which delegation needs.
+    LinkGitHub,
 }
 
 /// What the shell knows and the view cannot see.
@@ -111,6 +113,8 @@ pub enum Sync {
     Sending,
     Failed,
     Limited,
+    /// The Arakun account has no GitHub account linked.
+    NeedsGitHub,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -500,6 +500,7 @@ pub fn clear_signed_out(workspaces: &[(String, bool)], linked: &[String]) -> Vec
 pub fn outcome(e: &cloud::Error) -> Sync {
     match e {
         cloud::Error::Status { status: 429, .. } => Sync::Limited,
+        cloud::Error::NeedsGitHub => Sync::NeedsGitHub,
         _ => Sync::Failed,
     }
 }
@@ -1252,6 +1253,8 @@ pub(super) mod tests {
             message: String::new(),
         };
         assert_eq!(outcome(&status(429)), Sync::Limited);
+        // It says what to do: link GitHub.
+        assert_eq!(outcome(&cloud::Error::NeedsGitHub), Sync::NeedsGitHub);
         for e in [
             cloud::Error::Unreachable("offline".into()),
             cloud::Error::Refused("HTTP 500".into()),

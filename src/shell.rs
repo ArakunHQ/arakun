@@ -2479,6 +2479,18 @@ impl Shell {
         self.open_sign_in(true, window, cx);
     }
 
+    /// Opens Settings on Account, where a GitHub account is linked: what
+    /// cloud access and Linear delegation ask for.
+    pub(super) fn open_link_github(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An open dialog stays, with what was typed in it.
+        if let Some((Modal::Settings(dialog), _)) = &self.modal {
+            dialog.update(cx, |d, cx| d.show_account(cx));
+        } else {
+            crate::settings_view::start_on_account();
+            self.open_settings(window, cx);
+        }
+    }
+
     fn open_sign_in(&mut self, close_when_in: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::arakun_teams::sign_in::{SignInDialog, SignInEvent};
         self.menu = None;

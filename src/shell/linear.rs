@@ -73,6 +73,7 @@ impl Shell {
             }
             LinearEvent::OpenPhoneTab => self.open_phone_tab(window, cx),
             LinearEvent::SignInToArakun => self.open_account_sign_in(window, cx),
+            LinearEvent::LinkGitHub => self.open_link_github(window, cx),
         }
     }
 }

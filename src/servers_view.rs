@@ -62,6 +62,8 @@ pub enum ServersEvent {
     },
     /// Sign in, so the servers on the account show up.
     SignIn,
+    /// Link a GitHub account, which cloud access needs.
+    LinkGitHub,
 }
 
 /// How the connection to a server stands.
@@ -276,6 +278,10 @@ pub fn can_ask(a: &crate::cloud::CloudAccess, now: u64) -> bool {
         _ => false,
     }
 }
+
+/// Why an account without GitHub can't ask for access or start an
+/// environment, under the line of where its request stands.
+pub const GITHUB_LINE: &str = "Cloud environments need a GitHub account linked to your Arakun account. We look at its age and activity when we decide a request.";
 
 /// Where the account's request for access stands.
 pub fn access_line(a: &crate::cloud::CloudAccess, now: u64) -> String {
@@ -1092,7 +1098,25 @@ impl ServersView {
                 let now = crate::model::unix_now();
                 let mut body =
                     vec![text(access_line(access, now), theme::text_subtle()).into_any_element()];
-                if can_ask(access, now) {
+                if !access.github {
+                    body.push(text(GITHUB_LINE.into(), theme::text_subtle()).into_any_element());
+                    body.push(
+                        buttons()
+                            .child(
+                                ui::button_with(
+                                    "computers-cloud-link-github",
+                                    Some("github"),
+                                    "Link GitHub",
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(ServersEvent::LinkGitHub)),
+                                ),
+                            )
+                            .into_any_element(),
+                    );
+                } else if can_ask(access, now) {
                     body.push(
                         ui::field()
                             .child(self.cloud_reason.clone())
@@ -2686,6 +2710,7 @@ mod tests {
     #[test]
     fn the_cloud_request_says_where_it_stands() {
         let access = |status: &str, retry_at| CloudAccess {
+            github: true,
             status: status.into(),
             requested_at: Some(1),
             decided_at: None,

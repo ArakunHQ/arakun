@@ -421,6 +421,21 @@ describe("Linear's webhook", () => {
     expect(await count("linear_deliveries")).toBe(0);
   });
 
+  it("refuses a creator without a linked GitHub account", async () => {
+    const { owner } = await linkedComputerWithRoute();
+    // As if the account were made by email: no GitHub identity.
+    await env.DB.prepare("DELETE FROM identities WHERE account_id = ? AND provider = 'github'").bind(owner.account_id).run();
+    expect((await send(signedWebhook(body))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([
+      {
+        agentSessionId: SESSION,
+        type: "error",
+        body: "The person who delegated this has no GitHub account linked to their Arakun account, which Linear delegation needs. In Arakun, open Settings › Account and link GitHub.",
+      },
+    ]);
+    expect(await count("linear_deliveries")).toBe(0);
+  });
+
   it("says the queue is full and keeps nothing", async () => {
     const { me, pc } = await linkedComputerWithRoute();
     await away(me.label, pc);

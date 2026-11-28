@@ -197,6 +197,11 @@ pub fn start_on_branches() {
     start_on(Section::Branches);
 }
 
+/// Makes the next dialog open on Account, where GitHub is linked.
+pub fn start_on_account() {
+    start_on(Section::Account);
+}
+
 fn start_on(section: Section) {
     let ix = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
@@ -1216,11 +1221,20 @@ impl SettingsDialog {
 
     /// Moves an open dialog to Branches; its pending edits stay.
     pub fn show_branches(&mut self, cx: &mut Context<Self>) {
-        // A search that leaves Branches out would show its own empty page.
-        if !listed(Section::Branches, &self.query(cx)) {
+        self.show(Section::Branches, cx);
+    }
+
+    /// Moves an open dialog to Account; its pending edits stay.
+    pub fn show_account(&mut self, cx: &mut Context<Self>) {
+        self.show(Section::Account, cx);
+    }
+
+    fn show(&mut self, section: Section, cx: &mut Context<Self>) {
+        // A search that leaves the section out would show its own empty page.
+        if !listed(section, &self.query(cx)) {
             self.input.update(cx, |input, cx| input.set_text("", cx));
         }
-        self.select(Section::Branches, cx);
+        self.select(section, cx);
     }
 
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {

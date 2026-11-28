@@ -95,6 +95,7 @@ files! {
     own file PROMPTS = "prompts.json", "Saved prompts";
     own file NOTICES = "notices.json", "Notice history";
     own file PALETTES = "palettes.json", "Saved palettes";
+    own folder WIDGETS = "widgets", "Community widgets: each version's files under `<author>/<name>/<version>`, and `widgets.toml` with where each shows and what you allowed it (its tokens are in the keyring)";
     own file RULES = "rules.json", "`Ctrl+K` rules";
     own file PINS = "pins.json", "What you pinned from the palette (`Alt+P`)";
     own file TODOS = "todos.json", "Your to-dos, added from the palette";

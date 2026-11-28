@@ -149,6 +149,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Saved prompts | `%LOCALAPPDATA%\arakun\prompts.json` |
 | Notice history | `%LOCALAPPDATA%\arakun\notices.json` |
 | Saved palettes | `%LOCALAPPDATA%\arakun\palettes.json` |
+| Community widgets: each version's files under `<author>/<name>/<version>`, and `widgets.toml` with where each shows and what you allowed it (its tokens are in the keyring) | `%LOCALAPPDATA%\arakun\widgets\` |
 | `Ctrl+K` rules | `%LOCALAPPDATA%\arakun\rules.json` |
 | What you pinned from the palette (`Alt+P`) | `%LOCALAPPDATA%\arakun\pins.json` |
 | Your to-dos, added from the palette | `%LOCALAPPDATA%\arakun\todos.json` |

@@ -172,6 +172,21 @@ pub struct Machine {
     pub last_seen_at: u64,
 }
 
+/// One way the account signs in, as `GET /me/sign-in` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SignInMethod {
+    /// "github" or "email"; a later server may add more.
+    pub provider: String,
+    /// The GitHub login, or the address.
+    pub name: String,
+    pub linked_at: u64,
+}
+
+#[derive(Deserialize)]
+struct SignInMethods {
+    methods: Vec<SignInMethod>,
+}
+
 /// A signed-in device of the account, as `GET /sessions` lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SessionRow {
@@ -427,6 +442,102 @@ pub fn sign_out_session(base: &str, session: &str, id: &str) -> Result<(), Error
         "DELETE",
         &format!("/sessions/{}", path_part(id)?),
     )
+}
+
+/// The ways the account signs in.
+pub fn sign_in_methods(base: &str, session: &str) -> Result<Vec<SignInMethod>, Error> {
+    get::<SignInMethods>(base, session, "/me/sign-in", SMALL_LIMIT).map(|m| m.methods)
+}
+
+/// Adds the GitHub user of a device-flow token to the account. The server
+/// checks and revokes the token as [`sign_in`] does. A GitHub account that
+/// signs in to another Arakun account is refused: accounts are never joined.
+pub fn link_github(
+    base: &str,
+    session: &str,
+    github_token: &str,
+) -> Result<Vec<SignInMethod>, Error> {
+    let body = serde_json::json!({ "access_token": github_token });
+    methods_answer(send(
+        base,
+        "POST",
+        "/me/sign-in/github",
+        Some(session),
+        Some(body),
+        SMALL_LIMIT,
+    )?)
+}
+
+/// Mails `email` a code that adds it to the account, and only that.
+pub fn send_link_code(base: &str, session: &str, email: &str) -> Result<(), Error> {
+    let body = serde_json::json!({ "email": email.trim() });
+    let (status, body) = send(
+        base,
+        "POST",
+        "/me/sign-in/email",
+        Some(session),
+        Some(body),
+        SMALL_LIMIT,
+    )?;
+    match status {
+        200..=299 => Ok(()),
+        _ => Err(link_refusal(status, &body)),
+    }
+}
+
+/// Adds `email` to the account with the code [`send_link_code`] mailed.
+pub fn link_email(
+    base: &str,
+    session: &str,
+    email: &str,
+    code: &str,
+) -> Result<Vec<SignInMethod>, Error> {
+    let body = serde_json::json!({ "email": email.trim(), "code": code.trim() });
+    methods_answer(send(
+        base,
+        "POST",
+        "/me/sign-in/email/verify",
+        Some(session),
+        Some(body),
+        SMALL_LIMIT,
+    )?)
+}
+
+/// Removes the account's sign-in method of this provider. The server keeps
+/// the last one.
+pub fn unlink(base: &str, session: &str, provider: &str) -> Result<Vec<SignInMethod>, Error> {
+    let path = format!("/me/sign-in/{}", path_part(provider)?);
+    methods_answer(send(
+        base,
+        "DELETE",
+        &path,
+        Some(session),
+        None,
+        SMALL_LIMIT,
+    )?)
+}
+
+fn methods_answer((status, body): (u16, String)) -> Result<Vec<SignInMethod>, Error> {
+    match status {
+        200..=299 => serde_json::from_str::<SignInMethods>(&body)
+            .map(|m| m.methods)
+            .map_err(|_| unreadable()),
+        _ => Err(link_refusal(status, &body)),
+    }
+}
+
+/// What the server said about a change of sign-in methods. Its 401 after a
+/// code or a GitHub token is about them, not the session, when it says so:
+/// a session that ended says "not signed in".
+fn link_refusal(status: u16, body: &str) -> Error {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    match v["error"].as_str() {
+        Some(said) if status == 401 && said != "not signed in" && !said.is_empty() => {
+            Error::Refused(said.to_string())
+        }
+        _ if status == 401 => Error::SignedOut,
+        _ => email_refusal(status, body),
+    }
 }
 
 /// Marks a notice read, so `/me` stops listing it.
@@ -1260,6 +1371,73 @@ mod tests {
         assert_eq!(github_client_id(DEFAULT_URL), Ok(CLIENT_ID.to_string()));
         let (base, _rx) = serve(200, r#"{"github_client_id": "Iv1.own"}"#);
         assert_eq!(github_client_id(&base), Ok("Iv1.own".to_string()));
+    }
+
+    #[test]
+    fn sign_in_methods_are_listed_with_the_session() {
+        let (base, rx) = serve(
+            200,
+            r#"{"methods": [{"provider": "github", "name": "rik", "linked_at": 5},
+                            {"provider": "email", "name": "rik@example.com", "linked_at": 9}]}"#,
+        );
+        let list = sign_in_methods(&base, "s3ss10n").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[1].provider, "email");
+        assert_eq!(list[1].name, "rik@example.com");
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("GET /me/sign-in HTTP/1.1\r\n"), "{req}");
+    }
+
+    #[test]
+    fn linking_an_address_sends_the_address_and_the_code() {
+        let (base, rx) = serve(200, r#"{"methods": []}"#);
+        link_email(&base, "s3ss10n", " ada@example.com ", "123 456").unwrap();
+        let req = rx.recv().unwrap();
+        assert!(
+            req.starts_with("POST /me/sign-in/email/verify HTTP/1.1\r\n"),
+            "{req}"
+        );
+        assert!(req.contains(r#""email":"ada@example.com""#), "{req}");
+    }
+
+    #[test]
+    fn a_refused_link_says_why_and_a_wrong_code_is_not_a_sign_out() {
+        let (base, _rx) = serve(
+            409,
+            r#"{"error": "that address signs in to another Arakun account; accounts are never joined, so remove it there first"}"#,
+        );
+        assert!(matches!(
+            link_email(&base, "s", "a@b.co", "123456"),
+            Err(Error::Refused(said)) if said.contains("never joined")
+        ));
+        let (base, _rx) = serve(
+            401,
+            r#"{"error": "the code is wrong or has run out; ask for a new one"}"#,
+        );
+        assert!(matches!(
+            link_email(&base, "s", "a@b.co", "123456"),
+            Err(Error::Refused(said)) if said.starts_with("the code is wrong")
+        ));
+        let (base, _rx) = serve(401, r#"{"error": "not signed in"}"#);
+        assert_eq!(
+            link_email(&base, "s", "a@b.co", "123456"),
+            Err(Error::SignedOut)
+        );
+    }
+
+    #[test]
+    fn unlinking_names_the_provider_in_the_path() {
+        let (base, rx) = serve(
+            200,
+            r#"{"methods": [{"provider": "email", "name": "a@b.co", "linked_at": 1}]}"#,
+        );
+        assert_eq!(unlink(&base, "s", "github").unwrap().len(), 1);
+        assert!(
+            rx.recv()
+                .unwrap()
+                .starts_with("DELETE /me/sign-in/github HTTP/1.1\r\n")
+        );
+        assert!(unlink(&base, "s", "../me").is_err());
     }
 
     #[test]

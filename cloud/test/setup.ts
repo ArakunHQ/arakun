@@ -34,6 +34,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM sessions"),
     env.DB.prepare("DELETE FROM user_flags"),
     env.DB.prepare("DELETE FROM email_codes"),
+    env.DB.prepare("DELETE FROM sign_in_changes"),
     env.DB.prepare("DELETE FROM identities"),
     env.DB.prepare("DELETE FROM accounts"),
   ]);

@@ -1758,7 +1758,7 @@ impl Daemon {
         id: &str,
         sub: &str,
         cx: &App,
-        f: impl FnOnce(&[Entry], &Path) -> R,
+        f: impl FnOnce(&[Arc<Entry>], &Path) -> R,
     ) -> Option<R> {
         match self.live.get(id) {
             Some(live) => {

@@ -229,6 +229,8 @@ pub struct SettingsDialog {
     droid: bool,
     /// The Teams sign-in, for the Account section.
     teams: Entity<crate::arakun_teams::Teams>,
+    /// The account's sign-in methods, for the Account section.
+    methods: Entity<crate::arakun_teams::methods::MethodsView>,
     /// Who is signed in to CoderSpace, if anyone.
     #[cfg(feature = "coderlabs")]
     coderspace: Option<String>,
@@ -465,10 +467,15 @@ impl SettingsDialog {
             t.refresh_if_stale(cx);
         });
         let teams_sub = cx.observe(&teams, |_, _, cx| cx.notify());
+        let methods = {
+            let teams = teams.clone();
+            cx.new(|cx| crate::arakun_teams::methods::MethodsView::new(teams, window, cx))
+        };
 
         Self {
             droid,
             teams,
+            methods,
             #[cfg(feature = "coderlabs")]
             coderspace,
             claude: None,
@@ -1880,8 +1887,8 @@ impl SettingsDialog {
             .into_any_element()
     }
 
-    /// The Account section: the GitHub sign-in that Teams uses.
-    /// The sign-in lives in the Profile dialog; this row is how Settings,
+    /// The Account section: who is signed in, and the ways the account signs
+    /// in. The sign-in lives in the Profile dialog; this row is how Settings,
     /// and its search, still get there.
     fn render_account(&self, cx: &mut Context<Self>) -> AnyElement {
         let teams = self.teams.read(cx);
@@ -1895,8 +1902,9 @@ impl SettingsDialog {
             _ if teams.signed_in() => "Signed in.".to_string(),
             _ => "Not signed in. Sign in from your profile.".to_string(),
         };
-        stack(vec![titled(
-            "GitHub",
+        let signed_in = teams.signed_in();
+        let mut parts = vec![titled(
+            "Arakun account",
             vec![
                 row(
                     "Profile",
@@ -1907,7 +1915,11 @@ impl SettingsDialog {
                 )
                 .into_any_element(),
             ],
-        )])
+        )];
+        if signed_in {
+            parts.push(self.methods.clone().into_any_element());
+        }
+        stack(parts)
     }
 
     /// The Updates card: the automatic switch, and the version with what
@@ -2786,7 +2798,7 @@ fn group(rows: Vec<AnyElement>) -> AnyElement {
 }
 
 /// A card of rows under its caption: one part of a section.
-fn titled(caption: &str, rows: Vec<AnyElement>) -> AnyElement {
+pub(crate) fn titled(caption: &str, rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
@@ -2986,7 +2998,7 @@ fn no_sign_in_row(agent: AgentKind) -> AnyElement {
 /// One setting: what it is on the left, its control on the right. A control
 /// wider than about 200 px goes in a `stacked_row` instead, so it doesn't
 /// squeeze the text into a narrow column.
-fn row(
+pub(crate) fn row(
     title: impl Into<SharedString>,
     hint: impl Into<SharedString>,
     control: AnyElement,
@@ -3020,7 +3032,7 @@ fn toggle_row(
 
 /// One setting with its control under the text: chips, a field, or more
 /// choices than fit beside it.
-fn stacked_row(
+pub(crate) fn stacked_row(
     title: impl Into<SharedString>,
     hint: impl Into<SharedString>,
     control: AnyElement,

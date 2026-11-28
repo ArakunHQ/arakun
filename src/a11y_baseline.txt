@@ -15,7 +15,6 @@ core/src/zoom.rs 2
 src/account_view.rs 2
 src/arakun_teams/bot_view.rs 4
 src/arakun_teams/decisions_view.rs 1
-src/attach_picker.rs 2
 src/automations_view.rs 1
 src/branches_view.rs 2
 src/cloudflare_view.rs 2

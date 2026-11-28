@@ -2070,7 +2070,7 @@ impl Shell {
         id: &str,
         sub: &str,
         cx: &App,
-        f: impl FnOnce(&[crate::agent::Entry], wire::Scope) -> R,
+        f: impl FnOnce(&[std::sync::Arc<crate::agent::Entry>], wire::Scope) -> R,
     ) -> Option<R> {
         match self.phone_thread(env_path, id) {
             Some(thread) => {

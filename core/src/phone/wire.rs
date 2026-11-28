@@ -1346,7 +1346,7 @@ const CLIP_TASK: usize = 300;
 pub fn subagent_entries_message(
     id: &str,
     subagent: &str,
-    all: &[Entry],
+    all: &[Arc<Entry>],
     from: usize,
     to: Option<usize>,
     scope: &Scope,
@@ -2089,7 +2089,7 @@ mod tests {
         assert!(read_subagents(&json!({ "type": "subagents", "id": "s1" })).is_err());
     }
 
-    fn record(id: &str, task: &str, entries: Vec<Entry>) -> SubagentRecord {
+    fn record(id: &str, task: &str, entries: Vec<Arc<Entry>>) -> SubagentRecord {
         SubagentRecord {
             id: id.into(),
             name: "Explore".into(),
@@ -2152,7 +2152,7 @@ mod tests {
 
     #[test]
     fn a_subagents_transcript_comes_as_its_tail_then_older_pages() {
-        let all: Vec<Entry> = (0..80).map(|i| said(&i.to_string())).collect();
+        let all: Vec<Arc<Entry>> = (0..80).map(|i| said(&i.to_string())).collect();
         let at = scope(std::path::Path::new("."));
         let read = |s: String| serde_json::from_str::<Value>(&s).unwrap();
 

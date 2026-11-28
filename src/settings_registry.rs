@@ -145,7 +145,7 @@ impl Section {
                 "What shows on screen, what agents may do in the browser, and what Arakun sends to its PostHog under a random id."
             }
             Section::Account => {
-                "An optional sign-in with GitHub, for what Arakun is still trying out with some people, such as Teams. Agents never need it."
+                "An optional sign-in with GitHub or an email address, for what Arakun is still trying out with some people, such as Teams. Agents never need it."
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "Your pending tasks, inside Arakun.",

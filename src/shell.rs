@@ -102,7 +102,6 @@ use titlebar::*;
 use crate::account::Account;
 use crate::account_view::{self, AccountDialog, AccountDialogEvent};
 use crate::agent::AgentKind;
-use crate::attach_picker::{AttachEvent, AttachPicker};
 use crate::ci::{self, Ci};
 #[cfg(feature = "coderlabs")]
 use crate::coderspace::CoderSpace;
@@ -200,7 +199,6 @@ enum PanelTab {
 
 enum Modal {
     Picker(Entity<FolderPicker>),
-    Attach(Entity<AttachPicker>),
     CreateEnv(Entity<CreateEnvDialog>),
     DeleteEnv(Entity<DeleteEnvDialog>),
     Command(Entity<crate::dialogs::CommandDialog>),
@@ -3714,9 +3712,7 @@ impl Shell {
                 }
             });
         }
-        if let Some((Modal::Attach(picker), _)) = self.modal.take() {
-            picker.update(cx, |picker, cx| picker.release(cx));
-        }
+        self.modal = None;
         if let Some(focus) = self.onboarding_focus() {
             window.focus(focus, cx);
         } else if self.has_projects() {
@@ -4576,7 +4572,6 @@ impl Modal {
     fn view(&self) -> gpui::AnyView {
         match self {
             Modal::Picker(e) => e.clone().into(),
-            Modal::Attach(e) => e.clone().into(),
             Modal::CreateEnv(e) => e.clone().into(),
             Modal::DeleteEnv(e) => e.clone().into(),
             Modal::Command(e) => e.clone().into(),
@@ -4725,10 +4720,7 @@ impl Render for Shell {
         // as you type stay near the top, so they don't jump as their height changes.
         let center_modal = !matches!(
             self.modal,
-            Some((
-                Modal::Palette(_) | Modal::Picker(_) | Modal::Attach(_) | Modal::New(_),
-                _
-            ))
+            Some((Modal::Palette(_) | Modal::Picker(_) | Modal::New(_), _))
         );
         let shown_modal = self.modal.as_ref().map(|(m, _)| ShownModal {
             view: m.view(),

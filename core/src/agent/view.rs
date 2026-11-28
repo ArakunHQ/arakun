@@ -48,6 +48,7 @@ mod diffs;
 mod find_bar;
 mod footer;
 mod note_box;
+mod outline;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod ssh;
 mod tool_rows;
@@ -177,7 +178,7 @@ enum TurnSlice {
     Tail,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ListRow {
     Turn(usize),
     TurnHead(usize),
@@ -401,6 +402,8 @@ pub struct ThreadView {
     turns: Vec<Range<usize>>,
     rows: Vec<ListRow>,
     long_turns: HashMap<usize, LongTurn>,
+    /// The transcript in miniature on the right edge.
+    outline: outline::Outline,
     markdown: HashMap<usize, Rc<Doc>>,
     /// Text pieces of every markdown surface rendered, for selection.
     maps: RefCell<HashMap<usize, Rc<TextMap>>>,
@@ -547,6 +550,7 @@ impl ThreadView {
             turns,
             rows,
             long_turns,
+            outline: outline::Outline::default(),
             markdown: HashMap::new(),
             maps: RefCell::new(HashMap::new()),
             arrivals: HashMap::new(),
@@ -581,6 +585,7 @@ impl ThreadView {
             mascot: cx.new(|cx| Mascot::new(MASCOT_W, cx).dancer().shy()),
             _subs: subs,
         };
+        this.sync_outline(None, cx);
         this.sync_mascot(cx);
         this.sync_tick(window, cx);
         this.sync_ask(window, cx);
@@ -768,6 +773,7 @@ impl ThreadView {
         self.long_turns = long_turns;
         self.list.reset(self.rows.len() + 1);
         self.list.set_follow_mode(FollowMode::Tail);
+        self.reset_outline(cx);
     }
 
     fn apply_status_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -869,6 +875,7 @@ impl ThreadView {
         {
             self.list.remeasure_items(row_ix..self.rows.len());
         }
+        self.sync_outline(remeasure_from, cx);
     }
 
     pub(super) fn row_start_entry(&self, row_ix: usize) -> Option<usize> {
@@ -3217,6 +3224,8 @@ impl Render for ThreadView {
         let queue = self.render_queue(cx);
         let menu = self.render_selection_menu(cx);
         let note = self.render_note_box(cx);
+        let outline_room = self.outline_room(cx);
+        let (outline, outline_card) = self.render_outline(cx).unzip();
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let (ssh_bar, ssh_body) = self.render_ssh(cx);
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -3262,7 +3271,22 @@ impl Render for ThreadView {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(list(self.list.clone(), cx.processor(Self::render_item)).size_full())
+                    .child(
+                        // The list stops short of the outline's lane when the
+                        // session is too narrow to hold it in its margin.
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .right(outline_room)
+                            .child(
+                                list(self.list.clone(), cx.processor(Self::render_item))
+                                    .size_full(),
+                            ),
+                    )
+                    .children(outline)
+                    .children(outline_card.flatten())
                     .when_some(search_bar, |d, bar| d.child(bar))
                     .when(scrolled_away, |d| {
                         d.child(

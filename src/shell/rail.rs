@@ -49,6 +49,8 @@ pub(super) struct Rail {
     /// The search of the Sessions menu.
     pub tree_filter: Entity<TextInput>,
     _tree_filter: Subscription,
+    /// Eases the rail in and out as it shows and hides.
+    pub slide: ui::motion::Slide<bool>,
 }
 
 impl Rail {
@@ -77,6 +79,7 @@ impl Rail {
             active_hover: None,
             flyout: Default::default(),
             keys: None,
+            slide: Default::default(),
             tree_filter,
             _tree_filter: sub,
         }

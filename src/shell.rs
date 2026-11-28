@@ -663,6 +663,39 @@ const MAIN_MIN_W: f32 = 420.;
 /// scale, or a window snapped to half a screen, is that narrow.
 const MAIN_FLOOR_W: f32 = 320.;
 
+/// The plain gap between two cards, where a handle can't be dragged.
+fn side_gap() -> AnyElement {
+    div().flex_none().w(gap_px()).h_full().into_any_element()
+}
+
+/// A side card and its gap as they slide: clipped to the width the slide is
+/// at and laid out at their full width, so nothing reflows. They are held to
+/// the side toward the work (`to_right` for the rail on the left), so the
+/// card travels in from the window's edge. At rest they are drawn as they are.
+fn slide_clip(at: ui::motion::SlideAt, to_right: bool, parts: Vec<AnyElement>) -> Vec<AnyElement> {
+    if !at.moving {
+        return parts;
+    }
+    let inner = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .map(|d| if to_right { d.right_0() } else { d.left_0() })
+        .w(px(at.content))
+        .flex()
+        .children(parts);
+    vec![
+        div()
+            .flex_none()
+            .h_full()
+            .w(px(at.width))
+            .relative()
+            .overflow_hidden()
+            .child(inner)
+            .into_any_element(),
+    ]
+}
+
 /// Whether the open workspace panel is left out so the cards' narrowest
 /// widths fit in `room`. The rail always stays: it holds the projects and the
 /// way back to everything else. With `keep_panel` the panel stays too:
@@ -3347,7 +3380,11 @@ impl Shell {
 
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
-        self.panel.customize = None;
+        let closed = self.panel.customize.take();
+        // Nothing takes its place: it slides out as it is.
+        if !self.panel_wanted() {
+            self.panel.leaving_customize = closed.map(|(view, _)| view);
+        }
         // The views the Add chips marked new have been seen, except Teams
         // while the server keeps the account out: it stays new until it shows.
         let hidden: &[crate::sidebar::View] = if self.teams.read(cx).enabled() {
@@ -3547,13 +3584,51 @@ impl Shell {
     }
 
     /// The gap beside the rail, its resize handle while its card shows. A
-    /// strip alone has a fixed width: just the gap.
-    fn rail_handle(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.rail_body_shown() {
+    /// strip alone has a fixed width, and a sliding rail can't be dragged:
+    /// just the gap.
+    fn rail_handle(&self, at: ui::motion::SlideAt, cx: &mut Context<Self>) -> AnyElement {
+        if self.rail_body_shown() && !at.moving {
             self.side_handle(SideDrag::Rail, cx).into_any_element()
         } else {
-            div().flex_none().w(gap_px()).h_full().into_any_element()
+            side_gap()
         }
+    }
+
+    /// Moves the rail's and the panel's slides on for this frame, from what
+    /// shows now and the widths `fit_side_cards` gave them, each with the gap
+    /// beside it. Terminals keep their size while either moves.
+    fn slide_side_cards(&mut self, window: &Window) -> (ui::motion::SlideAt, ui::motion::SlideAt) {
+        let rail = self.rail_shown();
+        let rail_w = if rail { self.rail_width() + gap() } else { 0. };
+        let rail_at = self.rail.slide.track(rail, rail_w, window);
+        let panel = self.panel_shown();
+        let panel_w = if panel {
+            self.panel_width() + gap()
+        } else {
+            0.
+        };
+        let key = (panel, self.panel.customize.is_some());
+        let mut panel_at = self.panel.slide.track(key, panel_w, window);
+        if self.panel_wanted() || !panel_at.visible() {
+            self.panel.leaving_customize = None;
+        }
+        // A closing panel with nothing to draw (the last project went) goes
+        // at once.
+        if !panel && self.panel.leaving_customize.is_none() && !self.has_projects() {
+            panel_at = ui::motion::SlideAt {
+                width: 0.,
+                content: 0.,
+                moving: false,
+            };
+        }
+        if panel_at.moving {
+            // The panel draws at `panel_width()`: its full width while it opens
+            // or closes, the width it is at while it changes between two.
+            let [r, _] = self.side_fit.get();
+            self.side_fit.set([r, (panel_at.content - gap()).max(0.)]);
+        }
+        ui::motion::hold_resizes(window, rail_at.moving || panel_at.moving);
+        (rail_at, panel_at)
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
@@ -4548,6 +4623,7 @@ impl Render for Shell {
         }
         let has_projects = self.has_projects();
         self.fit_side_cards(window);
+        let (rail_at, panel_at) = self.slide_side_cards(window);
         if has_projects {
             // With a project a view in the welcome's place is a tab again;
             // without one later, the welcome comes back first. The server is
@@ -4681,8 +4757,8 @@ impl Render for Shell {
             .env_menu
             .track(self.env_menu_open.then_some(&self.env_menu_at), window)
             .map(|(at, t)| self.render_env_menu(at, viewport_h, Some(t), cx));
-        let rail = (chrome && self.rail_shown()).then(|| self.cached_rail(cx));
-        let panel = (chrome && self.panel_shown()).then(|| self.cached_panel(cx));
+        let rail = (chrome && rail_at.visible()).then(|| self.cached_rail(cx));
+        let panel = (chrome && panel_at.visible()).then(|| self.cached_panel(cx));
         let (rail_start, rail_end) = if rail_right {
             (None, rail)
         } else {
@@ -4918,15 +4994,21 @@ impl Render for Shell {
                     .flex_1()
                     .min_h_0()
                     .when_some(rail_start, |d, rail| {
-                        d.child(rail).child(self.rail_handle(cx))
+                        let parts = vec![rail, self.rail_handle(rail_at, cx)];
+                        d.children(slide_clip(rail_at, true, parts))
                     })
                     .child(body)
-                    .when(chrome && self.panel_shown(), |d| {
-                        d.child(self.side_handle(SideDrag::Panel, cx))
-                            .children(panel)
+                    .when_some(panel, |d, panel| {
+                        let handle = if panel_at.moving {
+                            side_gap()
+                        } else {
+                            self.side_handle(SideDrag::Panel, cx).into_any_element()
+                        };
+                        d.children(slide_clip(panel_at, false, vec![handle, panel]))
                     })
                     .when_some(rail_end, |d, rail| {
-                        d.child(self.rail_handle(cx)).child(rail)
+                        let parts = vec![self.rail_handle(rail_at, cx), rail];
+                        d.children(slide_clip(rail_at, false, parts))
                     }),
             )
             .when(chrome && has_projects, |d| {

@@ -81,6 +81,7 @@ pub fn message(d: &Delegation, server: &str, keys: Vec<WorkspaceKey>) -> Value {
         mappings: mine.mappings,
         keys,
         slots: mine.slots,
+        no_attribution: !mine.attribute,
     };
     let mut msg = serde_json::to_value(settings).unwrap_or_default();
     msg["type"] = "linear_settings".into();

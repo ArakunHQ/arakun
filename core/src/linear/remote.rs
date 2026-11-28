@@ -38,6 +38,10 @@ pub struct ServerSettings {
     /// person chose. An older app sends none: the default holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slots: Option<usize>,
+    /// The person turned off the "on behalf of" block (`attribution`). Off
+    /// rather than on, so an older app's message leaves it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_attribution: bool,
 }
 
 impl ServerSettings {
@@ -49,6 +53,7 @@ impl ServerSettings {
             consented: Vec::new(),
             slots: self.slots,
             server_slots: Default::default(),
+            attribute: !self.no_attribution,
         }
     }
 
@@ -87,6 +92,7 @@ impl ServerSettings {
             mappings,
             keys,
             slots: self.slots.map(|n| super::runs::slots(Some(n))),
+            no_attribution: self.no_attribution,
         }
     }
 }
@@ -166,6 +172,19 @@ mod tests {
         // An older app sends no slots; a newer one's message still reads.
         let old: ServerSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert_eq!(old.slots, None);
+    }
+
+    #[test]
+    fn attribution_stays_on_unless_the_app_turned_it_off() {
+        let old: ServerSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(old.tidy().delegation().attribute);
+        let off = ServerSettings {
+            no_attribution: true,
+            ..Default::default()
+        };
+        let sent: ServerSettings =
+            serde_json::from_value(serde_json::to_value(off).unwrap()).unwrap();
+        assert!(!sent.tidy().delegation().attribute);
     }
 
     #[test]

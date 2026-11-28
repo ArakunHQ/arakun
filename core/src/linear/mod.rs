@@ -6,6 +6,7 @@
 //! app's keyring or the server's own file, and it goes to `api.linear.app`
 //! in a header only.
 
+pub mod attribution;
 pub mod delegation;
 pub mod env;
 pub mod events;

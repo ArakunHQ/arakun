@@ -664,6 +664,15 @@ again after a week) in its [data folder](storage-and-env.md).
   you. Linear keeps the last plan when a later turn has none. If you close Arakun
   while a session runs, the issue hears `Arakun was closed on {computer} while this ran. Reply here to continue.`
 
+  *Pull requests.* The session opens its pull request with your GitHub account. So
+  that Linear Reviews shows an agent wrote it, Arakun adds a hidden "on behalf of"
+  note to the end of its description once it knows the link: an HTML comment that
+  names the agent (`claude`, `codex` or `opencode`) and, when the agent reported
+  it, the model. GitHub does not show it, the rest of the description stays as it
+  was, and a description that has such a note already gets no second one. Other
+  agents get none. Turn it off with **Mark pull requests as written by the agent**
+  under **Pull requests** in the Linear tab; a paired server follows the same switch.
+
   *Talking to the session.* A reply in Linear from the person who delegated goes to
   the session as a new message, and the issue hears at once that it was passed on
   and what it waits behind (the current turn, a permission or a secret), so Linear

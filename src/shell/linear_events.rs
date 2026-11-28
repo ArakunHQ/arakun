@@ -10,11 +10,13 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use gpui::{Context, Entity, Window};
+use gpui::{AppContext as _, Context, Entity, Window};
 
 use super::Shell;
 use super::linear_run::computer;
 use crate::agent::{Thread, ThreadEvent, ThreadStatus};
+use crate::linear::attribution;
+use crate::linear::delegation::Delegation;
 use crate::linear::runs::{Held, ReportKind, RunState};
 use crate::linear::start::waiting_line;
 use crate::model::unix_now;
@@ -181,6 +183,7 @@ impl Shell {
         let Some(agent_session) = self.linear_runs.link(id, &url) else {
             return;
         };
+        self.linear_attribute(id, &url, cx);
         self.linear_report(
             &agent_session,
             ReportKind::Link,
@@ -189,6 +192,45 @@ impl Shell {
             cx,
         );
         self.linear_watch(cx);
+    }
+
+    /// Marks the run's new pull request as the agent's, for Linear Reviews,
+    /// unless the person turned that off. Once per link, like the link: a
+    /// failure is logged and not tried again.
+    fn linear_attribute(&mut self, id: &str, url: &str, cx: &mut Context<Self>) {
+        if !Delegation::load().attribute {
+            return;
+        }
+        let Some(session) = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .find(|s| s.id.as_ref() == id)
+        else {
+            return;
+        };
+        let model = session
+            .live
+            .as_ref()
+            .and_then(|l| l.thread.read(cx).usage().model.clone());
+        let Some(block) = attribution::block(session.agent, model.as_deref()) else {
+            return;
+        };
+        let Some(run) = self.linear_runs.by_session(id) else {
+            return;
+        };
+        let dir = run
+            .environment
+            .clone()
+            .unwrap_or_else(|| run.project.clone());
+        let url = url.to_string();
+        cx.background_spawn(crate::guard::task_or_default(async move {
+            if let Err(e) = attribution::mark_pr(&dir, &url, &block) {
+                eprintln!("arakun: couldn't mark the pull request as the agent's: {e:#}");
+            }
+        }))
+        .detach();
     }
 
     /// The CI view changed: it may know the pull request of a run now. This

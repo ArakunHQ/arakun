@@ -19,6 +19,7 @@ use gpui::{AppContext as _, Context, Entity};
 use super::{Daemon, PlaceMeta};
 use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
+use crate::linear::attribution;
 use crate::linear::delegation::{Refusal, target_for};
 use crate::linear::events::{
     Action, Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of,
@@ -1223,6 +1224,7 @@ impl Daemon {
         let Some(agent_session) = self.linear_run.runs.link(id, &url) else {
             return;
         };
+        self.linear_attribute(id, &url, cx);
         self.linear_report(
             &agent_session,
             ReportKind::Link,
@@ -1231,6 +1233,35 @@ impl Daemon {
             cx,
         );
         self.linear_watch(cx);
+    }
+
+    /// Marks the run's new pull request as the agent's, for Linear Reviews,
+    /// unless the person turned that off. Once per link, like the link.
+    fn linear_attribute(&mut self, id: &str, url: &str, cx: &mut Context<Self>) {
+        if !self.linear.kept.settings.delegation().attribute {
+            return;
+        }
+        let Some(thread) = self.thread(id) else {
+            return;
+        };
+        let t = thread.read(cx);
+        let Some(block) = attribution::block(t.kind(), t.usage().model.as_deref()) else {
+            return;
+        };
+        let Some(run) = self.linear_run.runs.by_session(id) else {
+            return;
+        };
+        let dir = run
+            .environment
+            .clone()
+            .unwrap_or_else(|| run.project.clone());
+        let url = url.to_string();
+        cx.background_spawn(crate::guard::task_or_default(async move {
+            if let Err(e) = attribution::mark_pr(&dir, &url, &block) {
+                eprintln!("arakun server: couldn't mark the pull request as the agent's: {e:#}");
+            }
+        }))
+        .detach();
     }
 
     fn linear_needs_watch(&self) -> bool {

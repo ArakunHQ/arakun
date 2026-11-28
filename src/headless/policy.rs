@@ -1604,7 +1604,10 @@ fn simple(
         "cp" | "install" | "ln" | "rsync" | "scp" | "sftp" | "rclone" => copy(&c, out),
         "tee" | "touch" | "mkdir" | "truncate" | "mkfifo" | "split" | "csplit" => create(&c, out),
         "chmod" | "chown" | "chgrp" | "setfacl" | "chattr" => {
-            for t in operands(&args, &["--reference"]).iter().skip(1) {
+            // The mode or owner comes first, unless `--reference` gives it.
+            let by_reference = args.iter().any(|a| a.starts_with("--reference"));
+            let first = usize::from(!by_reference);
+            for t in operands(&args, &["--reference"]).iter().skip(first) {
                 write_target(t, cwd.as_deref(), cx, out, "changes permissions of");
             }
         }

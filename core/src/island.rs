@@ -92,6 +92,8 @@ const ROW_H: f32 = 34.;
 const ROW_INSET: f32 = 6.;
 /// A list row's corners, but the bottom ones of the last row.
 const ROW_RADIUS: f32 = 10.;
+/// The white of a list row under the pointer.
+const ROW_HOVER: f32 = 0.06;
 const HEAD_H: f32 = 40.;
 /// The most rows the list shows, and dots the working state does.
 pub const MAX_ROWS: usize = 6;
@@ -411,20 +413,7 @@ impl View {
         } else {
             (cut_w + 2. * self.ear(), h.max(cut_h))
         };
-        let w = w.min(WIN_W - 2. * SHOULDER);
-        if let View::List(_) = self {
-            // The last row's bottom corners are concentric with the island's,
-            // and a corner can't be rounder than half its row: the last row
-            // grows until that radius fits, and the island with it. The radius
-            // grows with the height, so this settles in a few steps.
-            let base = h;
-            let mut h = h;
-            for _ in 0..4 {
-                h = base + (last_row_h(bottom_radius(edge, w, h)) - ROW_H);
-            }
-            return (w, h);
-        }
-        (w, h)
+        (w.min(WIN_W - 2. * SHOULDER), h)
     }
 
     /// A list or a call: content in rows, which goes under a cutout whole.
@@ -1260,6 +1249,8 @@ pub struct Island {
     last: Option<Instant>,
     /// Motion is reduced: working dots hold still. Read at each render.
     still: bool,
+    /// The pointer is on the list's last row, whose highlight is painted.
+    last_row_hover: bool,
     /// When the last frames were painted, for `arakun island fps`.
     frames: std::collections::VecDeque<Instant>,
     phase: Phase,
@@ -1371,6 +1362,7 @@ impl Island {
         let (w, h) = view.size(edge);
         let mut island = Island {
             still: false,
+            last_row_hover: false,
             start: Instant::now(),
             frames: Default::default(),
             last: None,
@@ -2200,14 +2192,14 @@ impl Island {
         let dim = hsla(0., 0., 1., 0.5);
         let n = self.feed.rows.len();
         // The last row sits ROW_INSET in from the island's bottom corners: its
-        // own bottom corners follow them, concentric (the island's radius less
-        // the inset). The row is as tall as that radius needs (`last_row_h`);
-        // its text keeps the usual ROW_H at the top.
+        // highlight's bottom corners follow them, concentric (the island's
+        // radius less the inset). GPUI rounds a box's corner to at most half
+        // its height, too flat here, so that highlight is a painted path.
         let shown = n.min(MAX_ROWS);
         let (w, h) = View::List(shown).size(self.edge);
-        let bottom = bottom_radius(self.edge, w, h);
-        let last_radius = (bottom - ROW_INSET).max(ROW_RADIUS);
-        let last_h = last_row_h(bottom);
+        let last_radius =
+            (bottom_radius(self.edge, w, h) - ROW_INSET).clamp(ROW_RADIUS, ROW_H - ROW_RADIUS);
+        let last_hover = self.last_row_hover;
         let head = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -2251,16 +2243,43 @@ impl Island {
                 let last = i + 1 == shown;
                 div()
                     .id(i)
-                    .h(px(if last { last_h } else { ROW_H }))
-                    .when(last, |d| d.pb(px(last_h - ROW_H)))
+                    .relative()
+                    .h(px(ROW_H))
                     .mx(px(ROW_INSET))
                     .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(ROW_RADIUS))
-                    .when(last, |d| d.rounded_b(px(last_radius)))
-                    .hover(|s| s.bg(hsla(0., 0., 1., 0.06)))
+                    .when(!last, |d| {
+                        d.rounded(px(ROW_RADIUS))
+                            .hover(|s| s.bg(hsla(0., 0., 1., ROW_HOVER)))
+                    })
+                    .when(last, |d| {
+                        d.on_hover(cx.listener(|this, on: &bool, _, cx| {
+                            if this.last_row_hover != *on {
+                                this.last_row_hover = *on;
+                                cx.notify();
+                            }
+                        }))
+                        .when(last_hover, |d| {
+                            d.child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |b, _, window, _| {
+                                        if let Ok(path) =
+                                            row_shape(b, ROW_RADIUS, last_radius).build()
+                                        {
+                                            window.paint_path(path, hsla(0., 0., 1., ROW_HOVER));
+                                        }
+                                    },
+                                )
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .size_full(),
+                            )
+                        })
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -2464,11 +2483,26 @@ fn top_radius(h: f32) -> f32 {
     (h / 2.).min(PILL_R)
 }
 
-/// How tall the list's last row is when the island's bottom corners are
-/// `bottom`: tall enough that its own, `ROW_INSET` inside them, fit (a corner
-/// can't be rounder than half its box), and never shorter than a row.
-fn last_row_h(bottom: f32) -> f32 {
-    (2. * (bottom - ROW_INSET)).max(ROW_H)
+/// A box with `top` and `bottom` corner radii, filling `b`. Unlike a div's
+/// rounding, a radius is not cut to half the box's height.
+fn row_shape(b: Bounds<Pixels>, top: f32, bottom: f32) -> PathBuilder {
+    let (x0, y0) = (f32::from(b.origin.x), f32::from(b.origin.y));
+    let (x1, y1) = (x0 + f32::from(b.size.width), y0 + f32::from(b.size.height));
+    let p = |x: f32, y: f32| point(px(x), px(y));
+    let arc =
+        |pb: &mut PathBuilder, r: f32, to| pb.arc_to(point(px(r), px(r)), px(0.), false, true, to);
+    let mut pb = PathBuilder::fill();
+    pb.move_to(p(x0 + top, y0));
+    pb.line_to(p(x1 - top, y0));
+    arc(&mut pb, top, p(x1, y0 + top));
+    pb.line_to(p(x1, y1 - bottom));
+    arc(&mut pb, bottom, p(x1 - bottom, y1));
+    pb.line_to(p(x0 + bottom, y1));
+    arc(&mut pb, bottom, p(x0, y1 - bottom));
+    pb.line_to(p(x0, y0 + top));
+    arc(&mut pb, top, p(x0 + top, y0));
+    pb.close();
+    pb
 }
 
 /// The radius of the island's bottom corners at this size.
@@ -3142,23 +3176,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_last_rows_corners_are_concentric_with_the_island() {
+    fn the_last_rows_corners_follow_the_islands() {
+        // Concentric: the island's bottom radius less the inset, for every
+        // list size, and the row's own top corners still fit above them.
         for n in 1..=MAX_ROWS {
             let (w, h) = View::List(n).size(Edge::Flat);
-            let bottom = bottom_radius(Edge::Flat, w, h);
-            let radius = (bottom - ROW_INSET).max(ROW_RADIUS);
-            let row = last_row_h(bottom);
-            // The radius fits the row, so it is drawn as asked, not flattened.
-            assert!(
-                radius <= row / 2. + 0.01,
-                "{n} rows: {radius} in a {row} row"
-            );
-            // The island holds the head, the rows and the inset below them.
-            let rows = (n - 1) as f32 * ROW_H + row;
-            assert!(
-                (h - (HEAD_H + rows + ROW_INSET)).abs() < 0.5,
-                "{n} rows: {h}"
-            );
+            let concentric = bottom_radius(Edge::Flat, w, h) - ROW_INSET;
+            assert!(concentric <= ROW_H - ROW_RADIUS, "{n} rows: {concentric}");
         }
     }
 

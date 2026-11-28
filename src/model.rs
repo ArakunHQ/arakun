@@ -2106,6 +2106,27 @@ mod tests {
     }
 
     #[test]
+    fn a_third_pane_joins_a_split_of_two_environments() {
+        let mut strip = strip_of(&["a", "b", "b"]);
+        let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        strip.active_tab = 0;
+        strip.bring_split(a, None);
+        // Ctrl+D on the tab of `a`: the tab of `b` opens beside it, focused.
+        strip.split = Some(Split::pair(ids[0], SplitDir::Right, false, 0.5));
+        strip.active_tab = 1;
+        strip.claim_split();
+        strip.bring_split(b, Some(ids[0]));
+        strip.settle_split(Some(ids[0]));
+        assert_eq!(row(&strip), [ids[0], ids[1]]);
+        // Ctrl+D again, from the tab of `b`: a third pane.
+        assert!(strip.open_pane(ids[2], SplitDir::Right));
+        strip.bring_split(b, Some(ids[1]));
+        strip.settle_split(Some(ids[1]));
+        assert_eq!(row(&strip), [ids[0], ids[1], ids[2]]);
+    }
+
+    #[test]
     fn a_tab_of_another_environment_drops_beside_the_one_on_screen() {
         let mut strip = strip_of(&["a", "a", "b"]);
         let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();

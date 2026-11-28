@@ -46,6 +46,8 @@ blocked, and the user's `teams` flag; otherwise `401` (no session),
 Team endpoints also need membership (`404` if not a member, so a team's existence
 does not leak), and admin endpoints need `owner` or `admin` (`403`). The one
 exception is `POST /teams/<team_id>/remind`, which only a pending user may call.
+Each session may make about 600 of these requests a minute, socket opens included;
+more answer `429 {"error":"too many requests, slow down"}`.
 
 ## Devices
 
@@ -138,7 +140,10 @@ without it, `403` if it is not one of the caller's devices.
    no GitHub user has the login (an organization's login included), `502` if
    GitHub could not be asked, `429` after 30 invites in a minute by one admin.
    Invites expire after 7 days. Inviting the same person again replaces their
-   invite; `409` if they are a member or pending already.
+   invite; `409` if they are a member or pending already. For 7 days after the
+   person declines one of the team's invites, inviting them answers
+   `429 { "error": "...", "retry_at": <unix seconds> }` with a `Retry-After`
+   header; `409` while they hide the team's invites (below).
    Admins see the team's open invites in `GET /teams/<team_id>/invites` →
    `[{ invite_id, login, invited_by_login, created_at, expires_at,
    invitee_state }]`, newest first, without expired ones (`login` is lower
@@ -155,7 +160,11 @@ without it, `403` if it is not one of the caller's devices.
    is not a member: every team endpoint but `POST /teams/<team_id>/remind` (below)
    answers them `404`. Or they decline it:
    `POST /invites/<invite_id>/decline` → `204`, and the invite is gone; `404` if
-   it is expired or someone else's.
+   it is expired or someone else's. The body may be `{ "mute": true }`: then the
+   team's invites are hidden and the team cannot invite them, until they list
+   the hidden teams with `GET /invites/muted` → `[{ team_id, team_name, muted_at }]`
+   (newest first) and undo one with `DELETE /invites/muted/<team_id>` → `204`
+   (`404` if that team is not hidden). Undoing it also ends the 7 days above.
    A pending user sees their own requests in `GET /pending` → `[{ team_id,
    team_name, requested_at, invited_by_login, invited_by_id, reminded_at }]`,
    oldest first, so a client finds them again after a restart. They may remind
@@ -479,8 +488,8 @@ every `send`, so a removal or rotation applies to the next message.
 
 GitHub IDs and logins of users; team names; who is in which team and with which
 role; device public keys and names; when each message was sent, its size, sender
-device and channel; invites, who withdrew or declined them, requests to join and
-when each was last reminded; when each envelope was first stored. It never sees team
+device and channel; invites, who withdrew or declined them and when, which teams'
+invites each user hides, requests to join and when each was last reminded; when each envelope was first stored. It never sees team
 keys, channel names, message text, who replied to what, edits, bot answers,
 decisions or their reversals: these are messages like any other to it.
 

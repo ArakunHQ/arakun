@@ -20,7 +20,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
-use super::api::{DeviceRow, InviteRow, InviteeState, MemberRow, Role};
+use super::api::{DeviceRow, InviteRow, InviteeState, MemberRow, MutedTeam, Role};
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
 use super::store::DeviceError;
@@ -1598,7 +1598,8 @@ impl TeamsView {
                 (r.team_id.clone(), r.name.clone(), first)
             })
             .collect();
-        let has_invites = !hub.invites.is_empty();
+        // Hidden teams are undone on the Invites page, so it stays reachable.
+        let has_invites = !hub.invites.is_empty() || !hub.muted.is_empty();
         let asked = hub.asked();
         let mut panel = ui::menu_panel("teams-menu", 240.).p(ui::sp(5.));
         for (i, (id, name, first)) in teams.into_iter().enumerate() {
@@ -1720,13 +1721,24 @@ impl TeamsView {
     /// The invites this user got, as the invitee sees them.
     fn render_invites(&self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
-        let invites: Vec<(InviteRow, bool, bool)> = hub
+        let invites: Vec<(InviteRow, bool, bool, bool)> = hub
             .invites
             .iter()
             .map(|i| {
                 let busy = hub.busy.contains(&format!("accept:{}", i.invite_id));
                 let declining = hub.busy.contains(&format!("decline:{}", i.invite_id));
-                (i.clone(), busy, declining)
+                let muting = hub.busy.contains(&format!("mute:{}", i.invite_id));
+                (i.clone(), busy, declining, muting)
+            })
+            .collect();
+        let muted: Vec<(MutedTeam, bool)> = hub
+            .muted
+            .iter()
+            .map(|m| {
+                (
+                    m.clone(),
+                    hub.busy.contains(&format!("unmute:{}", m.team_id)),
+                )
             })
             .collect();
         let me = hub
@@ -1734,17 +1746,18 @@ impl TeamsView {
             .map(|m| crate::redact::value(&m.login))
             .unwrap_or_default();
         let mut page = Self::page().child(ui::page_title(
-            if invites.len() > 1 {
-                "Invites"
-            } else {
+            if invites.len() == 1 {
                 "An invite"
+            } else {
+                "Invites"
             },
             Some(format!("You are signed in as {me}.").into_any_element()),
         ));
         if invites.is_empty() {
             page = page.child(Self::footnote("No invites are waiting."));
         }
-        for (ix, (inv, busy, declining)) in invites.into_iter().enumerate() {
+        for (ix, (inv, busy, declining, muting)) in invites.into_iter().enumerate() {
+            let idle = !busy && !declining && !muting;
             let by = inv.invited_by_login.clone();
             let title = match &by {
                 Some(by) => format!("{by} invited you to {}", inv.team_name),
@@ -1752,6 +1765,7 @@ impl TeamsView {
             };
             let accept = inv.clone();
             let decline = inv.clone();
+            let mute = inv.clone();
             let mut about = Vec::new();
             if let Some(n) = inv.member_count {
                 about.push(format!("A team of {n}"));
@@ -1809,14 +1823,34 @@ impl TeamsView {
                                 .gap(ui::sp(8.))
                                 .child(
                                     ui::button(
+                                        ("teams-mute", ix),
+                                        if muting {
+                                            "Hiding…"
+                                        } else {
+                                            "Don't show invites from this team"
+                                        },
+                                        ButtonKind::Ghost,
+                                        idle,
+                                    )
+                                    .tooltip(ui::tip(
+                                        "Decline, and hide this team's invites until you show them again",
+                                    ))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.hub.update(cx, |h, cx| h.decline(&mute, true, cx));
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    ui::button(
                                         ("teams-decline", ix),
                                         if declining { "Declining…" } else { "Decline" },
                                         ButtonKind::Ghost,
-                                        !busy && !declining,
+                                        idle,
                                     )
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| {
-                                            this.hub.update(cx, |h, cx| h.decline(&decline, cx));
+                                            this.hub.update(cx, |h, cx| h.decline(&decline, false, cx));
                                         },
                                     )),
                                 )
@@ -1825,7 +1859,7 @@ impl TeamsView {
                                         ("teams-accept", ix),
                                         if busy { "Joining…" } else { "Accept" },
                                         ButtonKind::Primary,
-                                        !busy && !declining,
+                                        idle,
                                     )
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| {
@@ -1840,6 +1874,40 @@ impl TeamsView {
                         ),
                 ),
             );
+        }
+        if !muted.is_empty() {
+            let mut rows = Self::rows();
+            for (ix, (m, unmuting)) in muted.into_iter().enumerate() {
+                let id = m.team_id.clone();
+                rows = rows.child(
+                    Self::person_row(
+                        faces.avatar(&m.team_name, 24.),
+                        m.team_name.clone(),
+                        format!("Hidden {}", ago(m.muted_at)),
+                        false,
+                    )
+                    .child(
+                        ui::button(
+                            ("teams-unmute", ix),
+                            if unmuting {
+                                "Showing…"
+                            } else {
+                                "Show invites"
+                            },
+                            ButtonKind::Ghost,
+                            !unmuting,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| h.unmute(&id, cx));
+                        })),
+                    ),
+                );
+            }
+            page = page
+                .child(Self::footnote(
+                    "You don't see invites from these teams, and they can't invite you.",
+                ))
+                .child(Self::card().child(rows));
         }
         Self::scrolling("teams-invites-page", page)
     }

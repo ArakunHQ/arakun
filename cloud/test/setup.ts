@@ -28,6 +28,7 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM machines"),
     env.DB.prepare("DELETE FROM envelopes"),
     env.DB.prepare("DELETE FROM channels"),
+    env.DB.prepare("DELETE FROM invite_refusals"),
     env.DB.prepare("DELETE FROM invites"),
     env.DB.prepare("DELETE FROM pending"),
     env.DB.prepare("DELETE FROM members"),

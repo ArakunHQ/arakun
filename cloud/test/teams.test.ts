@@ -141,6 +141,21 @@ describe("devices", () => {
 });
 
 describe("the gate", () => {
+  it("slows down one session that makes too many requests, and not the next", async () => {
+    const u = await user(1001, "busy");
+    let status = 0;
+    let n = 0;
+    for (; n < 700 && status !== 429; n++) status = (await api(u, "GET", "/teams/nope")).status;
+    expect(status).toBe(429);
+    // The limiter allows about 600 a minute; it is not exact.
+    expect(n).toBeGreaterThan(500);
+    expect(await expectJson(api(u, "GET", "/invites"), 429)).toEqual({ error: "too many requests, slow down" });
+    // Another session of the same account has its own count.
+    const again = await user(1001, "busy");
+    expect(again.session).not.toBe(u.session);
+    await expectJson(api(again, "GET", "/teams"), 200);
+  }, 60_000);
+
   it("answers 401 without a session and 403 without the teams flag or to a blocked account", async () => {
     const t = await team();
     const noFlag = await user(1009, "no-flag", false);
@@ -154,6 +169,8 @@ describe("the gate", () => {
       ["GET", `/teams/${t.teamId}/invites`],
       ["DELETE", `/teams/${t.teamId}/invites/${ulid()}`],
       ["POST", `/invites/${ulid()}/decline`],
+      ["GET", "/invites/muted"],
+      ["DELETE", `/invites/muted/${t.teamId}`],
       ["GET", "/pending"],
       ["POST", `/teams/${t.teamId}/remind`],
       ["GET", `/teams/${t.teamId}/envelopes`],
@@ -632,10 +649,68 @@ describe("teams", () => {
     expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/invites`), 200)).toEqual([]);
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
-    // An expired invite cannot be declined either.
+    // An expired invite cannot be declined either. The decline above holds
+    // the team back for a week; this one is past it.
+    await env.DB.prepare("UPDATE invite_refusals SET declined_at = declined_at - 7 * 86400").run();
     const again = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "decliner" } }), 201);
     await env.DB.prepare("UPDATE invites SET expires_at = ?").bind(nowSeconds() - 1).run();
     await expectJson(api(u, "POST", `/invites/${again.invite_id}/decline`), 404);
+  });
+
+  it("keeps a team from inviting someone again for a week after they decline", async () => {
+    const t = await team();
+    const u = await user(2001, "Decliner");
+    const path = `/teams/${t.teamId}/invites`;
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "decliner" } }), 201);
+    expect((await api(u, "POST", `/invites/${invite_id}/decline`)).status).toBe(204);
+    const res = await api(t.owner.user, "POST", path, { body: { github_login: "DECLINER" } });
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string; retry_at: number };
+    expect(body.error).toBe("Decliner declined an invite to this team: try again in 7 days");
+    expect(body.retry_at).toBeGreaterThan(nowSeconds() + 7 * 86400 - 60);
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(7 * 86400 - 60);
+    // Another team may still invite them.
+    const other = await team();
+    await expectJson(api(other.owner.user, "POST", `/teams/${other.teamId}/invites`, { body: { github_login: "decliner" } }), 201);
+    // A week later this one may too.
+    await env.DB.prepare("UPDATE invite_refusals SET declined_at = declined_at - 7 * 86400").run();
+    await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "decliner" } }), 201);
+  });
+
+  it("lets the invitee stop a team's invites, and undo it", async () => {
+    const t = await team();
+    const u = await user(2001, "decliner");
+    const other = await user(2002, "other");
+    const path = `/teams/${t.teamId}/invites`;
+    const first = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "decliner" } }), 201);
+    expect((await expectJson<{ error: string }>(api(u, "POST", `/invites/${first.invite_id}/decline`, { body: { mute: "yes" } }), 400)).error).toMatch(/mute/);
+    expect((await api(u, "POST", `/invites/${first.invite_id}/decline`, { body: { mute: true } })).status).toBe(204);
+    expect(await expectJson(api(u, "GET", "/invites/muted"), 200)).toEqual([{ team_id: t.teamId, team_name: "Arakun", muted_at: expect.any(Number) }]);
+    expect(await expectJson(api(other, "GET", "/invites/muted"), 200)).toEqual([]);
+    // Not after a week either: only the invitee ends it.
+    await env.DB.prepare("UPDATE invite_refusals SET declined_at = declined_at - 30 * 86400").run();
+    const refused = await expectJson<{ error: string }>(api(t.owner.user, "POST", path, { body: { github_login: "decliner" } }), 409);
+    expect(refused.error).toBe("decliner does not take invites from this team");
+    // An invite that slipped in anyway is not shown.
+    await env.DB.prepare("INSERT INTO invites (invite_id, team_id, login, github_id, invited_by, created_at, expires_at) VALUES (?, ?, 'decliner', ?, ?, ?, ?)")
+      .bind(ulid(), t.teamId, 2001, t.owner.user.id, nowSeconds(), nowSeconds() + 86400)
+      .run();
+    expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
+    await env.DB.prepare("DELETE FROM invites").run();
+    // Only the invitee can undo it, and only once.
+    await expectJson(api(other, "DELETE", `/invites/muted/${t.teamId}`), 404);
+    await expectJson(api(u, "DELETE", "/invites/muted/nope"), 404);
+    expect((await api(u, "DELETE", `/invites/muted/${t.teamId}`)).status).toBe(204);
+    await expectJson(api(u, "DELETE", `/invites/muted/${t.teamId}`), 404);
+    expect(await expectJson(api(u, "GET", "/invites/muted"), 200)).toEqual([]);
+    // Then the team may invite them at once, the cooldown gone with the mute.
+    const again = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "decliner" } }), 201);
+    // A plain decline after a mute does not undo it.
+    await env.DB.prepare("INSERT INTO invite_refusals (team_id, github_id, declined_at, muted) VALUES (?, 2001, 0, 1)").bind(t.teamId).run();
+    expect((await api(u, "POST", `/invites/${again.invite_id}/decline`)).status).toBe(204);
+    const row = await env.DB.prepare("SELECT declined_at, muted FROM invite_refusals").first<{ declined_at: number; muted: number }>();
+    expect(row!.muted).toBe(1);
+    expect(row!.declined_at).toBeGreaterThan(nowSeconds() - 60);
   });
 
   it("lists a pending user's own requests until they are approved or rejected", async () => {

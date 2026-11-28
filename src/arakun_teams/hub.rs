@@ -19,8 +19,9 @@ use gpui::{AppContext as _, Context, Entity, Task};
 
 use super::Teams;
 use super::api::{
-    ApiError, Call, DeviceRow, Endorsement, InviteRow, InviteeState, Me, MemberRow, PendingRow,
-    Remind, Role, SenderRow, StaleEnvelope, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
+    ApiError, Call, DeviceRow, Endorsement, InviteRow, InviteeState, Me, MemberRow, MutedTeam,
+    PendingRow, Remind, Role, SenderRow, StaleEnvelope, Stored, TeamDetail, TeamInvite, TeamRow,
+    WaitingRow,
 };
 use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
@@ -548,6 +549,9 @@ pub struct Hub {
     pub load: Load,
     pub teams: Vec<TeamRow>,
     pub invites: Vec<InviteRow>,
+    /// Teams whose invites this user asked not to see. Empty on an older
+    /// server, which has no such list.
+    pub muted: Vec<MutedTeam>,
     pub team: HashMap<String, TeamState>,
     pub channels: HashMap<String, ChannelState>,
     pub notices: Vec<Notice>,
@@ -681,6 +685,7 @@ impl Hub {
             load: Load::Loading,
             teams: Vec::new(),
             invites: Vec::new(),
+            muted: Vec::new(),
             team: HashMap::new(),
             channels: HashMap::new(),
             notices: Vec::new(),
@@ -815,6 +820,7 @@ impl Hub {
         self.reread.clear();
         self.devices_per_user = false;
         self.invites.clear();
+        self.muted.clear();
         self.team.clear();
         self.channels.clear();
         self.messages_rev += 1;
@@ -1189,6 +1195,7 @@ impl Hub {
                 // An older server has no list of requests; the teams file
                 // still remembers this device's.
                 let waiting = net.call().waiting().ok();
+                let muted = net.call().muted().unwrap_or_default();
                 // Every member's devices once, for all the team reads below.
                 let directory = if per_user || teams.is_empty() {
                     Directory::Ask
@@ -1200,11 +1207,11 @@ impl Hub {
                         Err(_) => Directory::Ask,
                     }
                 };
-                Ok((teams, invites, waiting, directory))
+                Ok((teams, invites, waiting, muted, directory))
             },
             move |hub, result, cx| match result {
                 _ if version < hub.applied_roster => {}
-                Ok((teams, invites, waiting, directory)) => {
+                Ok((teams, invites, waiting, muted, directory)) => {
                     if matches!(directory, Directory::PerUser) {
                         hub.devices_per_user = true;
                     }
@@ -1276,6 +1283,7 @@ impl Hub {
                     update_memberships(&mut hub.membership, &hub.teams, &teams, version);
                     hub.teams = teams;
                     hub.invites = invites;
+                    hub.muted = muted;
                     let ids: Vec<String> = hub.teams.iter().map(|t| t.team_id.clone()).collect();
                     for id in ids {
                         hub.reload_team(&id, false, directory.clone(), cx);
@@ -2007,9 +2015,11 @@ impl Hub {
         );
     }
 
-    /// Turns an invite down: it goes away for good.
-    pub fn decline(&mut self, invite: &InviteRow, cx: &mut Context<Self>) {
-        let busy = format!("decline:{}", invite.invite_id);
+    /// Turns an invite down: it goes away for good, and the team may not
+    /// invite again for a week. With `mute`, not until [`Hub::unmute`].
+    pub fn decline(&mut self, invite: &InviteRow, mute: bool, cx: &mut Context<Self>) {
+        let kind = if mute { "mute" } else { "decline" };
+        let busy = format!("{kind}:{}", invite.invite_id);
         if !self.busy.insert(busy.clone()) {
             return;
         }
@@ -2020,7 +2030,7 @@ impl Hub {
             cx,
             {
                 let id = id.clone();
-                move |net| net.call().decline(&id)
+                move |net| net.call().decline(&id, mute)
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
@@ -2030,6 +2040,36 @@ impl Hub {
                         hub.refresh(cx);
                     }
                     Err(e) => hub.error = Some(format!("Could not decline: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Shows the team's invites again, and lets it invite at once.
+    pub fn unmute(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        let busy = format!("unmute:{team_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let id = team_id.to_string();
+        self.run(
+            cx,
+            {
+                let id = id.clone();
+                move |net| net.call().unmute(&id)
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => {
+                        hub.muted.retain(|m| m.team_id != id);
+                        hub.refresh(cx);
+                    }
+                    Err(e) => {
+                        hub.error = Some(format!("Could not show the team's invites again: {e}"))
+                    }
                 }
             },
         );

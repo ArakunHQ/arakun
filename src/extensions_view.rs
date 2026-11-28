@@ -1,12 +1,12 @@
-//! The Marketplace tab. Discover lists the plugins and MCP servers there are to
+//! The Marketplace tab. Browse lists the plugins and MCP servers there are to
 //! add (`market`). Installed shows what the agents load in the visible
 //! environment, one row per item for every agent: Claude Code's MCP servers
 //! with their health and scope, plugins, skills and permission rules
 //! (`agent::claude_ext`), and Droid's MCP servers, plugins and skills
 //! (`agent::extensions`, `agent::plugins`). Show for picks whose state the
-//! cells say and never changes the layout (`agents`). Arakun's own extensions,
-//! tabs the sidebar shows only once they are on here, have a page of their own
-//! (`sidebar::Extensions`).
+//! cells say and never changes the layout (`agents`). Arakun's own optional
+//! tabs are turned on in Settings › Tabs; this view keeps their state
+//! (`sidebar::OptionalTabs`) because the shell already reads it here.
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -55,9 +55,9 @@ pub enum ExtensionsEvent {
     Run(String),
     /// A file to show beside the chat.
     Open(PathBuf),
-    /// An extension was turned on or off: the sidebar shows it, or not.
+    /// An optional tab was turned on or off: the sidebar shows it, or not.
     Toggled(View, bool),
-    /// Connect to the paired servers, if that has not happened yet: Discover
+    /// Connect to the paired servers, if that has not happened yet: Browse
     /// is about to install on one.
     ConnectServers,
     /// A message for the paired server with this id (the phone's `ClientMsg`).
@@ -75,8 +75,6 @@ enum Kind {
     Permissions,
     /// Plugins and MCP servers to add.
     Marketplace,
-    /// Arakun's own extensions: tabs for the sidebar.
-    Arakun,
 }
 
 /// A way out for a server that needs you.
@@ -240,16 +238,16 @@ pub struct ExtensionsView {
     _plugins_task: Option<Task<()>>,
     _query: Subscription,
 
-    /// The extensions turned on, which the sidebar shows.
-    views: sidebar::Extensions,
-    /// Where Discover installs, and what the paired servers said they hold.
+    /// The optional tabs turned on, which the sidebar shows.
+    views: sidebar::OptionalTabs,
+    /// Where Browse installs, and what the paired servers said they hold.
     targets: remote::Targets,
 }
 
 impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
 
 impl ExtensionsView {
-    pub fn new(views: sidebar::Extensions, cx: &mut Context<Self>) -> Self {
+    pub fn new(views: sidebar::OptionalTabs, cx: &mut Context<Self>) -> Self {
         let query = cx.new(|cx| TextInput::new("Search plugins, MCP servers and skills…", cx));
         let sub = cx.subscribe(&query, |this, input, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
@@ -310,14 +308,9 @@ impl ExtensionsView {
         }
     }
 
-    /// Whether the sidebar shows `view`: the core always, an extension once on.
+    /// Whether the sidebar shows `view`: the core always, an optional tab once on.
     pub fn shows(&self, view: View) -> bool {
         self.views.shows(view)
-    }
-
-    /// Opens the page of Arakun's own extensions.
-    pub fn show_extensions(&mut self, cx: &mut Context<Self>) {
-        self.set_kind(Kind::Arakun, cx);
     }
 
     /// Opens Claude Code's installed MCP servers, plugins or skills, where the
@@ -337,7 +330,7 @@ impl ExtensionsView {
         self.set_kind(kind, cx);
     }
 
-    /// Turns an extension tab on or off, as its switch here does.
+    /// Turns an optional tab on or off, as its switch in Settings › Tabs does.
     pub fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
         if self.views.set(view, on) {
             self.views.save();
@@ -978,7 +971,7 @@ impl ExtensionsView {
                 }
                 if rows.is_empty() {
                     rows.push(
-                        empty_row("No plugins installed. Browse them under Discover.")
+                        empty_row("No plugins installed. Find them under Browse.")
                             .into_any_element(),
                     );
                 }
@@ -2229,20 +2222,6 @@ const SERVER_COLS: [Col; 6] = [
         width: Some(ACTIONS_W),
     },
 ];
-const VIEW_COLS: [Col; 3] = [
-    Col {
-        label: "Name",
-        width: None,
-    },
-    Col {
-        label: "Status",
-        width: Some(STATUS_W),
-    },
-    Col {
-        label: "",
-        width: Some(ACTIONS_W),
-    },
-];
 const PLUGIN_COLS: [Col; 6] = [
     Col {
         label: "Name",
@@ -2838,7 +2817,7 @@ impl ExtensionsView {
             .child(seg)
     }
 
-    /// Shows one list of Installed, or Discover, with the search box worded for it.
+    /// Shows one list of Installed, or Browse, with the search box worded for it.
     fn set_kind(&mut self, kind: Kind, cx: &mut Context<Self>) {
         self.kind = kind;
         self.open = None;
@@ -2848,24 +2827,16 @@ impl ExtensionsView {
             Kind::Plugins => "Filter plugins…",
             Kind::Skills => "Filter skills…",
             Kind::Permissions => "Filter permission rules…",
-            Kind::Arakun => "Filter extensions…",
         };
         self.query.update(cx, |q, cx| q.set_placeholder(hint, cx));
         cx.notify();
     }
 
-    /// The pages, as tabs over the view (`crate::subnav`): Arakun's own
-    /// extensions, then whose things, what there is to add and what is
-    /// installed. Where to install and the categories are `filters`.
+    /// The pages, as tabs over the view (`crate::subnav`): what there is to
+    /// add, then what is installed. Where to install and the categories are
+    /// `filters`.
     pub fn nav(&self) -> Vec<Line> {
-        let mut out = vec![
-            Line::Entry(
-                Entry::new("arakun", Lead::Icon("dashboard-square01"), "Extensions")
-                    .count(Some(self.views.on.len()))
-                    .on(self.kind == Kind::Arakun),
-            ),
-            Line::Heading("Discover".into()),
-        ];
+        let mut out = vec![Line::Heading("Browse".into())];
         for (m, key, label, icon_name) in [
             (Market::Plugins, "market:plugins", "Plugins", "cube"),
             (Market::Registry, "market:registry", "MCP servers", "link01"),
@@ -2874,7 +2845,7 @@ impl ExtensionsView {
             let on = self.kind == Kind::Marketplace && self.market == m;
             out.push(Line::Entry(
                 Entry::new(key, Lead::Icon(icon_name), label)
-                    .count(self.discover_count(m))
+                    .count(self.browse_count(m))
                     .on(on),
             ));
         }
@@ -2945,7 +2916,7 @@ impl ExtensionsView {
     }
 
     /// What narrows the page, in a quieter row under the tabs: where to
-    /// install and, in Discover, its categories.
+    /// install and, in Browse, its categories.
     pub fn filters(&self) -> Vec<Line> {
         let mut out = self.target_lines();
         if self.kind == Kind::Marketplace {
@@ -2957,7 +2928,6 @@ impl ExtensionsView {
     /// Opens the page `key` of `nav` names.
     pub fn pick_nav(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
-            "arakun" => self.set_kind(Kind::Arakun, cx),
             "market:plugins" => self.show_market(Market::Plugins, cx),
             "market:registry" => self.show_market(Market::Registry, cx),
             "market:skills" => self.show_market(Market::Skills, cx),
@@ -2983,99 +2953,6 @@ impl ExtensionsView {
         }
     }
 
-    /// Arakun's extensions, each with a switch. On, it shows in the sidebar.
-    fn render_views(&self, cx: &mut Context<Self>) -> Div {
-        let words = self.words(cx);
-        let rows: Vec<AnyElement> = View::EXTENSIONS
-            .iter()
-            .copied()
-            .filter(|v| {
-                let hay = format!("{} {}", v.label(), v.blurb()).to_lowercase();
-                words.iter().all(|w| hay.contains(w.as_str()))
-            })
-            .map(|v| self.view_row(v, cx).into_any_element())
-            .collect();
-        let rows = if rows.is_empty() {
-            vec![empty_row("No extension matches.").into_any_element()]
-        } else {
-            rows
-        };
-        let on = self.views.on.len();
-        section(
-            "Extensions",
-            "Tabs you can add to the sidebar. Turned off, they stay out of it.",
-            Some(
-                div()
-                    .ty(Type::Caption)
-                    .text_color(theme::text_subtle())
-                    .child(format!("{on} of {} on", View::EXTENSIONS.len()))
-                    .into_any_element(),
-            ),
-            table(&VIEW_COLS, rows),
-        )
-    }
-
-    fn view_row(&self, view: View, cx: &mut Context<Self>) -> Stateful<Div> {
-        let on = self.views.shows(view);
-        row_base(
-            SharedString::from(format!("ext-view-{}", view.label())),
-            ROW_H,
-        )
-        .map(|d| ui::as_switch(d, view.label(), on))
-        .aria_description(view.blurb())
-        .child(
-            cell(None)
-                .gap(crate::ui::sp(12.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .size(px(32.))
-                        .rounded(crate::ui::rad(ui::RADIUS))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::fill_raised())
-                        .when(!on, |d| d.opacity(0.55))
-                        .child(icon(view.icon(), 16.).text_color(theme::text_subtle())),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w_0()
-                        .gap(crate::ui::sp(1.))
-                        .child(
-                            div()
-                                .truncate()
-                                .ty(Type::Body)
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if on {
-                                    theme::text()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .child(view.label()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .ty(Type::Caption)
-                                .text_color(theme::text_subtle())
-                                .child(view.blurb()),
-                        ),
-                ),
-        )
-        .child(cell(Some(STATUS_W)).child(if on {
-            status_pill("On", Tone::Success)
-        } else {
-            status_pill("Off", Tone::Neutral)
-        }))
-        .child(cell(Some(ACTIONS_W)).justify_end().child(ui::switch(on)))
-        .on_click(cx.listener(move |this, _, _, cx| this.set_view(view, !on, cx)))
-    }
-
     /// The last error and what the last action did.
     fn render_notes(&self) -> Option<Div> {
         (self.error.is_some() || self.notice.is_some()).then(|| {
@@ -3096,7 +2973,6 @@ fn kind_key(k: Kind) -> &'static str {
         Kind::Plugins => "kind:plugins",
         Kind::Skills => "kind:skills",
         Kind::Permissions => "kind:permissions",
-        Kind::Arakun => "arakun",
         Kind::Marketplace => "market",
     }
 }
@@ -3122,7 +2998,6 @@ impl Render for ExtensionsView {
 
         let market = self.kind == Kind::Marketplace;
         let body: AnyElement = match &self.claude.data {
-            _ if self.kind == Kind::Arakun => self.render_views(cx).into_any_element(),
             _ if market => div().into_any_element(),
             Some(x) => self.render_installed(x, cx).into_any_element(),
             None => ui::loading("Reading Claude Code and Droid, and checking their MCP servers…")
@@ -3169,18 +3044,12 @@ impl Render for ExtensionsView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
-                            .child(if self.kind == Kind::Arakun {
-                                "Tabs for the sidebar, on every project".to_string()
-                            } else {
-                                format!(
-                                    "Plugins, MCP servers and skills for your agents in {place}"
-                                )
-                            }),
+                            .child(format!(
+                                "Plugins, MCP servers and skills for your agents in {place}"
+                            )),
                     ),
             )
-            .when(self.kind != Kind::Arakun, |d| {
-                d.child(self.render_show_for(cx))
-            })
+            .child(self.render_show_for(cx))
             .child(
                 div()
                     .flex()

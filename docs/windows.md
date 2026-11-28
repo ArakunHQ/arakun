@@ -144,7 +144,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Memory (or the folder `ARAKUN_MEMORY_DIR` names) | `%LOCALAPPDATA%\arakun\memory\` |
 | Your settings from Settings › General, Privacy and Branches | `%LOCALAPPDATA%\arakun\settings.json` |
 | The sidebar's layout | `%LOCALAPPDATA%\arakun\sidebar.json` |
-| The extension views turned on in the Marketplace | `%LOCALAPPDATA%\arakun\extensions.json` |
+| The optional tabs turned on in Settings › Tabs | `%LOCALAPPDATA%\arakun\extensions.json` |
 | Prompts sent from the composer, for ↑ and ↓ | `%LOCALAPPDATA%\arakun\history.json` |
 | Saved prompts | `%LOCALAPPDATA%\arakun\prompts.json` |
 | Notice history | `%LOCALAPPDATA%\arakun\notices.json` |
@@ -200,7 +200,7 @@ These stay in `%LOCALAPPDATA%\arakun\` whatever `ARAKUN_STATE` says.
 | Linear: the sessions started from Linear (deliveries handled, runs, reports not yet sent) | `%LOCALAPPDATA%\arakun\linear\runs.json` |
 | Doop sign-ins (`sessions.json`; their keys and tokens are in the keyring) and canvases added by link (`pins.json`) | `%LOCALAPPDATA%\arakun\doop\` |
 | PostHog sign-ins (`sessions.json`; the keys are in the keyring) and links (`links.json`) | `%LOCALAPPDATA%\arakun\posthog\` |
-| Caches: Doop renders, PostHog answers, favicons, marketplaces, extensions | `%LOCALAPPDATA%\arakun\cache\` |
+| Caches: Doop renders, PostHog answers, favicons, marketplaces, Marketplace items | `%LOCALAPPDATA%\arakun\cache\` |
 | `arakun server`: its settings, sign-in, Linear settings and runs, sessions and socket (or the folder `ARAKUN_SERVER_DIR` names) | `%LOCALAPPDATA%\arakun\server\` |
 | Updates: the version waiting | `%LOCALAPPDATA%\arakun\update.json` |
 | Held while an update downloads | `%LOCALAPPDATA%\arakun\update.lock` |

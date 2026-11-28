@@ -23,7 +23,7 @@ use crate::phone_view::PhoneView;
 use crate::posthog_view::PostHogView;
 use crate::runs_view::RunsView;
 use crate::servers_view::ServersView;
-use crate::sidebar::{Extensions, View};
+use crate::sidebar::{OptionalTabs, View};
 use crate::usage_view::{UsageEvent, UsageView};
 
 pub(super) struct TabViews {
@@ -49,7 +49,7 @@ impl TabViews {
         ci: &Entity<Ci>,
         github: &Entity<GitHub>,
         pilot: &Entity<Pilot>,
-        extensions: Extensions,
+        extensions: OptionalTabs,
         window: &mut Window,
         cx: &mut Context<Shell>,
     ) -> Self {
@@ -102,7 +102,7 @@ impl TabViews {
                 this.on_extensions_event(ev, window, cx)
             }),
             cx.observe(&extensions, |this, _, cx| {
-                if this.shows_subnav_view(View::Extensions) {
+                if this.shows_subnav_view(View::Marketplace) {
                     cx.notify();
                 }
             }),
@@ -171,7 +171,7 @@ impl TabViews {
             TabKind::Doop => self.doop.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Branches => self.branches.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::GitHub => self.github.update(cx, |v, cx| v.focus(window, cx)),
-            TabKind::Extensions => self.extensions.update(cx, |v, cx| v.focus(window, cx)),
+            TabKind::Marketplace => self.extensions.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Phone => self.phone.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Servers => self.servers.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Usage => self.usage.update(cx, |v, cx| v.focus(window, cx)),

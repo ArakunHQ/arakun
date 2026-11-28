@@ -1083,7 +1083,7 @@ impl Shell {
     fn palette_views(&self, items: &mut Vec<Item>, cx: &App) {
         let has = self.has_projects();
         for &v in View::ALL {
-            // The Marketplace switch decides for the palette too, so the two
+            // Settings › Tabs decides for the palette too, so the two
             // never disagree on which tabs there are.
             if !self.rail_shows(&crate::sidebar::Piece::view(v), cx) {
                 continue;
@@ -1103,7 +1103,7 @@ impl Shell {
             if !has
                 && !matches!(
                     v,
-                    View::Usage | View::Extensions | View::Memory | View::GitHub | View::Linear
+                    View::Usage | View::Marketplace | View::Memory | View::GitHub | View::Linear
                 )
             {
                 continue;

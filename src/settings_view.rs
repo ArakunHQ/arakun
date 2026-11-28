@@ -103,7 +103,6 @@ pub enum SettingsEvent {
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
-    OpenExtensions,
     /// Close Settings and open the feedback form.
     SendFeedback,
     /// Close Settings and open the Profile dialog, which has the GitHub sign-in.
@@ -195,6 +194,11 @@ pub fn start_on_general() {
 /// Makes the next dialog open on Branches, where the environment cleanup is.
 pub fn start_on_branches() {
     start_on(Section::Branches);
+}
+
+/// Makes the next dialog open on Tabs, where the optional tabs are turned on.
+pub fn start_on_tabs() {
+    start_on(Section::Tabs);
 }
 
 /// Makes the next dialog open on Account, where GitHub is linked.
@@ -1224,6 +1228,11 @@ impl SettingsDialog {
         self.show(Section::Branches, cx);
     }
 
+    /// Moves an open dialog to Tabs; its pending edits stay.
+    pub fn show_tabs(&mut self, cx: &mut Context<Self>) {
+        self.show(Section::Tabs, cx);
+    }
+
     /// Moves an open dialog to Account; its pending edits stay.
     pub fn show_account(&mut self, cx: &mut Context<Self>) {
         self.show(Section::Account, cx);
@@ -1415,6 +1424,36 @@ impl SettingsDialog {
             .into_any_element()
     }
 
+    /// Arakun's optional tabs, one switch each. On, the sidebar shows it.
+    fn render_tabs(&self, q: &str, cx: &mut Context<Self>) -> AnyElement {
+        let key = reg::entry(Id::SidebarViews).key;
+        let rows: Vec<(Id, AnyElement)> = crate::sidebar::View::OPTIONAL
+            .iter()
+            .copied()
+            .map(|view| {
+                let on = self.views_on.contains(&view);
+                let row = toggle_row(
+                    SharedString::from(format!("{key}-{}", view.label())),
+                    view.label(),
+                    view.blurb(),
+                    on,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if on {
+                        this.views_on.retain(|v| *v != view);
+                    } else {
+                        this.views_on.push(view);
+                    }
+                    cx.emit(SettingsEvent::SidebarView(view, !on));
+                    cx.notify();
+                }))
+                .into_any_element();
+                (Id::SidebarViews, row)
+            })
+            .collect();
+        stack_cards(vec![Self::card(q, rows)])
+    }
+
     fn render_pane(&self, cx: &mut Context<Self>) -> AnyElement {
         let s = self.section;
         let head = div()
@@ -1455,21 +1494,6 @@ impl SettingsDialog {
                         })),
                     );
                 }
-                let mut views = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
-                for (i, view) in crate::sidebar::View::EXTENSIONS.iter().copied().enumerate() {
-                    let on = self.views_on.contains(&view);
-                    views = views.child(
-                        ui::chip((reg::entry(Id::SidebarViews).key, i), view.label(), on).on_click(cx.listener(move |this, _, _, cx| {
-                            if on {
-                                this.views_on.retain(|v| *v != view);
-                            } else {
-                                this.views_on.push(view);
-                            }
-                            cx.emit(SettingsEvent::SidebarView(view, !on));
-                            cx.notify();
-                        })),
-                    );
-                }
                 let links = self.switch_row_hint(
                     Id::LinksInArakun,
                     if crate::browser::ENABLED {
@@ -1483,18 +1507,13 @@ impl SettingsDialog {
                     Self::card(&q, vec![(Id::Arcade, self.switch_row(Id::Arcade, cx))]),
                     Self::card(&q, island),
                     Self::card(&q, vec![(Id::Background, self.switch_row(Id::Background, cx))]),
-                    Self::card(
-                        &q,
-                        vec![
-                            (Id::SidebarViews, reg_stacked(Id::SidebarViews, views)),
-                            (Id::UsageCard, reg_stacked(Id::UsageCard, chips)),
-                        ],
-                    ),
+                    Self::card(&q, vec![(Id::UsageCard, reg_stacked(Id::UsageCard, chips))]),
                     Self::card(&q, self.update_rows(cx)),
                     Self::card(&q, vec![(Id::LinksInArakun, links)]),
                 ])
             }
             Section::Appearance => self.render_appearance(&q, cx),
+            Section::Tabs => self.render_tabs(&q, cx),
             Section::Project => self.render_project(&q, cx),
             Section::Branches => {
                 let current = self.namer.choice;
@@ -1794,19 +1813,6 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Droid),
-                    ],
-                )),
-                whole.then(|| titled(
-                    "Extensions",
-                    vec![
-                        row(
-                            "Plugins, skills & MCP servers",
-                            "Install Claude SEO, and turn skills and servers on or off for the visible environment.",
-                            ui::button("set-extensions", "Manage", ButtonKind::Outline, true)
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenExtensions)))
-                                .into_any_element(),
-                        )
-                        .into_any_element(),
                     ],
                 )),
                 ];

@@ -614,7 +614,7 @@ impl Shell {
             TabKind::Usage => self.open_usage_tab(window, cx),
             TabKind::Gallery => self.open_gallery_tab(window, cx),
             TabKind::Isometric => self.open_iso_tab(window, cx),
-            TabKind::Extensions => self.open_extensions_tab(window, cx),
+            TabKind::Marketplace => self.open_extensions_tab(window, cx),
             _ => return false,
         }
         true

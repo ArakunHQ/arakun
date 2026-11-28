@@ -31,7 +31,7 @@ function json(body: unknown, status = 200): Response {
 const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const url = String(input);
   calls.push(`${init?.method ?? "GET"} ${url}`);
-  if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+  if (url === "/api/me") return json({ email: "ops@example.com" });
   const params = new URL(url, "http://x").searchParams;
   if (url.startsWith("/api/users?") || url === "/api/users") {
     if (params.get("q") === "octo") return json({ users: [user(1002, "octocat")], next: null });

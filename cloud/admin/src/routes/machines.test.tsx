@@ -27,7 +27,7 @@ beforeEach(() => {
     "fetch",
     vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
-      if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+      if (url === "/api/me") return json({ email: "ops@example.com" });
       if (url === "/api/machines") return json(rows);
       return json({ error: "not found" }, 404);
     }),

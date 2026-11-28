@@ -44,7 +44,7 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const method = init?.method ?? "GET";
   calls.push(`${method} ${url}`);
   if (init?.body) bodies[`${method} ${url}`] = JSON.parse(String(init.body));
-  if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+  if (url === "/api/me") return json({ email: "ops@example.com" });
   if (failure && method !== "GET" && failure.match.test(url)) return json({ error: failure.error }, 409);
   if (url === "/api/plans") return json({ plans: ["free", "pro"] });
   if (url.startsWith("/api/log")) return json({ entries: log, next: null });

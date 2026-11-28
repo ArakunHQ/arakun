@@ -624,14 +624,15 @@ when, which operator, what was done, which account and a short detail. The Worke
 only appends to it and has no route that edits or deletes a row, and a row stays
 after its account is deleted. The reads above change nothing and write no row.
 
-The admin panel names the operator in the record with two optional headers,
-`X-Arakun-Operator-Id` (a GitHub ID) and `X-Arakun-Operator-Login`. The Worker reads
-them only after the bearer check. A call without them, such as the curl above, is
-recorded with no operator. Add them to a call to name yourself:
+The admin panel names the operator in the record with `X-Arakun-Operator-Email`, the
+email Cloudflare Access signed them in with. The Worker reads it only after the bearer
+check. A call without it, such as the curl above, is recorded with no operator. To name
+yourself in a call by hand, add that header, or `X-Arakun-Operator-Id` (a GitHub ID)
+with `X-Arakun-Operator-Login`:
 
 ```sh
 printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X PUT -H @- \
-  -H "X-Arakun-Operator-Id: <your GitHub ID>" -H "X-Arakun-Operator-Login: <your login>" \
+  -H "X-Arakun-Operator-Email: <your email>" \
   "https://<host>/admin/users/<account_id>/flags/teams"
 ```
 
@@ -722,40 +723,23 @@ printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
 ## The admin panel
 
 `admin/` is a second Worker, `arakun-admin`, with its own package. It serves a React page
-for operators (users, cloud access, phone betas, machines, notices, the activity log) and signs them
-in with GitHub, using its own OAuth App, not the desktop app's. The browser never holds
-`ADMIN_SECRET`: the admin Worker checks the sign-in, then forwards `/api/*` to this
-Worker's `/admin/*` routes over the `CLOUD` service binding and adds the secret. A
-session is a signed cookie, `__Host-arakun_admin`, that lasts 12 hours.
+for operators (users, cloud access, phone betas, machines, notices, the activity log).
+Cloudflare Access sits in front of `admin.arakun.dev` and signs operators in; the panel
+has no sign-in of its own. The browser never holds `ADMIN_SECRET`: the admin Worker
+checks the operator, then forwards `/api/*` to this Worker's `/admin/*` routes over the
+`CLOUD` service binding and adds the secret.
 
-Sign-in has two steps, so a taken-over GitHub account is not enough to get in:
+Access sends its token with every request it lets through, in `Cf-Access-Jwt-Assertion`.
+The admin Worker does not just trust that it is there (`admin/worker/access.ts`). It
+checks the token's RS256 signature against the team's keys
+(`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, kept for an hour), that its
+`aud` is the panel's Access application, its `iss` the team, and that it has not
+expired. The operator is the token's email; a service token has none and gets nothing.
+Without `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`, nobody gets in.
 
-1. GitHub's web flow says who the operator is. The Worker then sets
-   `__Host-arakun_admin_code` (`SameSite=Strict`, ten minutes), which is not a session,
-   and sends the browser to `/sign-in?step=code`, or to `/sign-in?step=setup` for an
-   operator with no authenticator app yet.
-2. The operator types the six-digit code from an authenticator app (TOTP, RFC 6238:
-   SHA-1, 30-second steps; the codes of the step before and after count too). The page
-   posts it to `POST /auth/code`, which needs the panel's own `Origin`. A right code
-   trades the code step's cookie for the session. Each code works once, and none older
-   than the last one taken. Each operator gets five codes a minute, wherever they come
-   from.
-
-Operators set up their own authenticator app. At the first sign-in, the page shows a new
-key as a QR code and as text (`POST /auth/setup/start`), and stores it once a code from
-the app is right (`POST /auth/setup`). This step can set up a first key only, never
-replace one, so a taken-over GitHub account cannot swap in its own. Until then the
-first person through GitHub as that operator gets to set it up, so set it up soon after
-adding an operator. Settings replaces the app, for a new phone; that needs a code from
-the current app as well as the new one.
-
-The keys are in this Worker's D1, in `operator_totp`, sealed by the admin Worker with
-AES-GCM and a key derived from `SESSION_SECRET`: the database alone cannot make a code.
-The admin Worker reaches them at `/admin/operators/<github_id>/totp` and never forwards
-the page there.
-
-Every change made in the panel is recorded in `admin_log` with the operator's name, and
-the panel shows it under Activity.
+Every change made in the panel is recorded in `admin_log` with the operator's email, and
+the panel shows it under Activity. Sign out goes to `/cdn-cgi/access/logout`, which
+Access answers itself.
 
 ### Running both Workers locally
 
@@ -775,53 +759,43 @@ admin/node_modules/.bin/wrangler dev
 npm run dev
 ```
 
-`cloud/.dev.vars` has `ADMIN_SECRET`. `cloud/admin/.dev.vars` (git-ignored) has the same
-`ADMIN_SECRET`, plus:
+No Access is in front of a local run. `cloud/.dev.vars` has `ADMIN_SECRET`.
+`cloud/admin/.dev.vars` (git-ignored) has the same `ADMIN_SECRET`, plus the email the
+panel signs you in as:
 
 ```sh
 ADMIN_SECRET=dev-secret
-SESSION_SECRET=<any long random string>
-ADMIN_GITHUB_IDS=<github_id>
-GITHUB_CLIENT_ID=<your OAuth App's client ID>
-GITHUB_CLIENT_SECRET=<your OAuth App's secret>
+DEV_OPERATOR_EMAIL=you@example.com
 ```
 
-For a real sign-in, create a personal OAuth App on GitHub (Settings, Developer
-settings) whose callback is `http://localhost:5173/auth/github/callback`; use the port
-vite prints. Without an OAuth App or an authenticator app, print a session cookie for the local
-`SESSION_SECRET` and send it from your browser's developer tools or with curl:
+The Worker takes `DEV_OPERATOR_EMAIL` only while `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD`
+is unset, as in the top-level `wrangler.toml`, and only for `localhost` or `127.0.0.1`.
+The production Worker has both in `wrangler.toml`, so it never reads it.
 
-```sh
-node scripts/dev-cookie.mjs <github_id> <login>   # in cloud/admin
-```
-
-The Worker still checks the ID against `ADMIN_GITHUB_IDS`. The dev server logs one
-content-security-policy error per page load, from Vite's reload script. It is harmless
-and does not happen in a build.
+The dev server logs one content-security-policy error per page load, from Vite's reload
+script. It is harmless and does not happen in a build.
 
 `npm run check`, `npm test` and `npm run build` in `cloud/admin` are the checks CI runs.
 
-### First production deploy of the admin panel
+### Production setup of the admin panel
 
-For arakun.dev, the GitHub OAuth App "Arakun Admin" exists and its client ID is already
-in `cloud/admin/wrangler.toml`. Do not create another app: its secret would not match
-that ID, and sign-in would fail with no hint why. What is left is the four secrets, set
-once in `cloud/admin`. `ADMIN_SECRET` is the value the cloud Worker has;
-`GITHUB_CLIENT_SECRET` is the secret of the "Arakun Admin" app; `SESSION_SECRET` is 32
-random bytes (`openssl rand -base64 32`); `ADMIN_GITHUB_IDS` is the operators' numeric
-GitHub IDs, comma-separated (find one at `https://api.github.com/users/<login>`).
-Each command asks for the value, so it is never on the command line:
+1. In Cloudflare Zero Trust, the Access application for `admin.arakun.dev` (a
+   self-hosted application) decides who gets in: its policy lists the operators. Use an
+   identity provider that checks a second factor, as the panel asks for none.
+2. On the application's Overview, copy the Application Audience (AUD) tag. Put it and
+   the team domain (`<team>.cloudflareaccess.com`, under Settings, Custom Pages or
+   Authentication) under `[env.production.vars]` in `cloud/admin/wrangler.toml`, as
+   `ACCESS_AUD` and `ACCESS_TEAM_DOMAIN`. Neither is a secret.
+3. Set `ADMIN_SECRET`, the value the cloud Worker has, once in `cloud/admin`. The
+   command asks for the value, so it is never on the command line:
 
 ```sh
 cd cloud/admin
-npx wrangler secret put GITHUB_CLIENT_SECRET --env production
 npx wrangler secret put ADMIN_SECRET --env production
-npx wrangler secret put ADMIN_GITHUB_IDS --env production
-npx wrangler secret put SESSION_SECRET --env production
 ```
 
 If no deploy came first, the Worker does not exist yet, and wrangler asks whether to
-create it with the secrets. Answer yes. The Worker deploys with the next release, or
+create it with the secret. Answer yes. The Worker deploys with the next release, or
 at once with a manual run of the deploy workflow on `main`:
 
 ```sh
@@ -829,56 +803,33 @@ gh workflow run cloud-deploy.yml --ref main
 ```
 
 By hand, `npm run deploy` in `cloud/admin` does the same; it builds with
-`CLOUDFLARE_ENV=production`, which a production build needs. Until the secrets are set,
-the Worker fails closed: nobody can sign in.
+`CLOUDFLARE_ENV=production`, which a production build needs.
 
-#### A copy of the repository with its own domain
+While `ACCESS_AUD` is `PLACEHOLDER`, the deploy workflow prints a notice and skips the
+admin Worker, so a release still ships the cloud Worker. A copy of the repository with
+its own domain sets up its own Access application, and sets the host under `routes`.
 
-A copy needs an OAuth App of its own, because the committed client ID belongs to
-arakun.dev.
-
-1. On GitHub, create an OAuth App named "Arakun Admin" with the callback
-   `https://<your admin host>/auth/github/callback`.
-2. In `cloud/admin/wrangler.toml`, put the app's client ID under
-   `[env.production.vars]`, and set the host under `routes`.
-3. Set the four secrets as above, with the new app's secret, then merge the change.
-
-While `GITHUB_CLIENT_ID` is `PLACEHOLDER`, the deploy workflow prints a notice and skips
-the admin Worker, so a release still ships the cloud Worker.
-
-### Operators
-
-Who may sign in is the secret `ADMIN_GITHUB_IDS`, so no ID is in the repository. To add
-or remove an operator, put the new list and the secret takes effect at once:
+The GitHub sign-in the panel had before Access has gone. Its Worker secrets do nothing
+now; delete them:
 
 ```sh
 cd cloud/admin
-npx wrangler secret put ADMIN_GITHUB_IDS --env production   # e.g. <github_id>,<github_id>
+for s in GITHUB_CLIENT_SECRET SESSION_SECRET ADMIN_GITHUB_IDS; do npx wrangler secret delete "$s" --env production; done
 ```
 
-The ID is checked on every request, so removing one ends that operator's access at
-once, even with a valid cookie. Unset or empty, nobody gets in. Changing
-`SESSION_SECRET` signs everyone out.
+The `operator_totp` table that held the operators' authenticator keys is unused too. It
+stays, as migrations are never edited.
 
-A new operator sets up an authenticator app at their first sign-in. For one who lost
-their phone, forget their key; they set up a new one at their next sign-in, which is
-recorded in Activity:
+### Operators
 
-```sh
-printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" | curl -fsS -X DELETE -H @- \
-  "https://app.arakun.dev/admin/operators/<github_id>/totp"
-```
+Who may use the panel is the Access application's policy, so no operator is in the
+repository. Change the policy to add or remove one. Access checks it at sign-in and
+when its session ends, so to end a removed operator's access at once, revoke their
+session too (Zero Trust, My Team, Users, or the application's Revoke existing tokens).
 
-Changing `SESSION_SECRET` also makes every stored key unreadable, and the page tells
-each operator to ask for a reset. Forget them all after such a change:
-
-```sh
-npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "DELETE FROM operator_totp"   # in cloud/
-```
-
-If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators stay signed in but
-the panel's calls fail with "unauthorized" errors (a missing one answers "the admin
-secret is not set"). Set it again to the cloud Worker's value.
+If `ADMIN_SECRET` on the admin Worker is wrong or missing, operators get in but the
+panel's calls fail with "unauthorized" errors (a missing one answers "the admin secret
+is not set"). Set it again to the cloud Worker's value.
 
 ## Cloud access
 

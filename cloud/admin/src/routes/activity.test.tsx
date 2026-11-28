@@ -34,7 +34,7 @@ beforeEach(() => {
     vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       calls.push(url);
-      if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+      if (url === "/api/me") return json({ email: "ops@example.com" });
       if (url === "/api/log?before=40") return json({ entries: [entry(39, { action: "unblock" })], next: null });
       if (url === "/api/log") {
         return json({

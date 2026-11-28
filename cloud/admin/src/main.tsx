@@ -36,14 +36,13 @@ declare module "@tanstack/react-router" {
   }
 }
 
-// The session ended while the panel was open: whatever was pressed did not
-// happen. Before the first sign-in there is no operator yet: the root route
-// sends the visit to sign-in itself, and clearing the cache would cancel the
-// very call it waits on.
+// The Cloudflare Access session ended while the panel was open: whatever was
+// pressed did not happen. Loading the page again lets Access sign the operator
+// in. Before the page first loaded there is no operator yet: the root route
+// shows the error itself, and loading again would only loop.
 setOnSignedOut(() => {
   if (queryClient.getQueryData(meQuery.queryKey) === undefined) return;
-  queryClient.clear();
-  void router.navigate({ to: "/sign-in", search: { signed_out: 1 } });
+  window.location.reload();
 });
 
 const root = document.getElementById("root");

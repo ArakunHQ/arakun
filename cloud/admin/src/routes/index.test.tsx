@@ -45,7 +45,7 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const url = String(input);
   const method = init?.method ?? "GET";
   calls.push(`${method} ${url}`);
-  if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+  if (url === "/api/me") return json({ email: "ops@example.com" });
   const list = /^\/api\/cloud\/requests\?status=(\w+)$/.exec(url);
   if (list) return json(requests.filter((r) => r.status === list[1]));
   const act = /^\/api\/cloud\/requests\/(\d+)\/(grant|decline)$/.exec(url);

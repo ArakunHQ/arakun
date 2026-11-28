@@ -36,7 +36,7 @@ const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
   const url = new URL(String(input), "https://admin.test");
   const method = init?.method ?? "GET";
   calls.push(`${method} ${url.pathname}${url.search}`);
-  if (url.pathname === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+  if (url.pathname === "/api/me") return json({ email: "ops@example.com" });
   if (url.pathname === "/api/beta/signups") {
     const status = url.searchParams.get("status");
     const platform = url.searchParams.get("platform");

@@ -12,12 +12,7 @@ export default defineConfig({
           cloudflareTest({
             wrangler: { configPath: "./wrangler.toml" },
             miniflare: {
-              bindings: {
-                ADMIN_SECRET: "test-secret",
-                SESSION_SECRET: "test-session-secret",
-                ADMIN_GITHUB_IDS: "1001,1002",
-                GITHUB_CLIENT_SECRET: "client-secret",
-              },
+              bindings: { ADMIN_SECRET: "test-secret" },
             },
           }),
         ],

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 // What the panel's page may ask of this Worker: /api/<rest> goes to the cloud
 // Worker's /admin/<rest>, as the signed-in operator. The browser never holds
-// ADMIN_SECRET; it is added here, with the operator's name for the audit log.
+// ADMIN_SECRET; it is added here, with the operator's email for the audit log.
 // Nothing else of the browser's request goes on: no cookie, no client header.
 
-import type { Operator } from "./session";
+import type { Operator } from "./access";
 import { error } from "./util";
 
 /// Admin bodies are small JSON objects.
 const MAX_BODY = 4096;
-/// A grant or a decline is recorded under the operator's login, whatever the
+/// A grant or a decline is recorded under the operator's email, whatever the
 /// page sent.
 const DECISION = /^cloud\/requests\/[^/]+\/(grant|decline)$/;
 
@@ -22,18 +22,12 @@ export async function proxy(request: Request, env: Env, op: Operator): Promise<R
   // segment or encoded separator is let through.
   const rest = url.pathname.slice("/api/".length);
   if (!rest || /\.\.|\/\/|\\|%2e|%2f|%5c/i.test(rest)) return error(404, "not found");
-  // The operators' authenticator keys are this Worker's to read and write
-  // (worker/keys.ts), never the page's: a signed-in page could replace
-  // another operator's key, or anyone's, without a code.
-  if (/^operators(\/|$)/i.test(rest)) return error(404, "not found");
-
   const change = request.method !== "GET" && request.method !== "HEAD";
   if (change && request.headers.get("Origin") !== url.origin) return error(403, "the request comes from another origin");
 
   const headers = new Headers({
     Authorization: `Bearer ${env.ADMIN_SECRET}`,
-    "X-Arakun-Operator-Id": String(op.githubId),
-    "X-Arakun-Operator-Login": op.login,
+    "X-Arakun-Operator-Email": op.email,
   });
   let body: Uint8Array<ArrayBuffer> | undefined;
   if (change) {
@@ -44,7 +38,7 @@ export async function proxy(request: Request, env: Env, op: Operator): Promise<R
       headers.set("Content-Type", request.headers.get("Content-Type") ?? "application/json");
     }
     if (request.method === "PUT" && DECISION.test(rest)) {
-      body = new TextEncoder().encode(JSON.stringify({ by: op.login }));
+      body = new TextEncoder().encode(JSON.stringify({ by: op.email }));
       headers.set("Content-Type", "application/json");
     }
   }

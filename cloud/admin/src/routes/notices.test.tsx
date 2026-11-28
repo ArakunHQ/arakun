@@ -31,7 +31,7 @@ beforeEach(() => {
     vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);
       const method = init?.method ?? "GET";
-      if (url === "/api/me") return json({ github_id: 1001, login: "octo-operator" });
+      if (url === "/api/me") return json({ email: "ops@example.com" });
       calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       if (url === "/api/notices" && method === "GET") return json(rows);
       if (url === "/api/notices" && method === "POST") return json({ id: "n9" }, 201);

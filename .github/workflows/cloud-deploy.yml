@@ -56,10 +56,10 @@ name: Cloud deploy
 # cloud/wrangler.toml under [env.production] (the admin Worker's, in
 # cloud/admin/wrangler.toml). The deploy's message names the tag, the hotfix
 # branch and its commit, or main's commit. The admin Worker deploys with the
-# rest. Its client ID for arakun.dev is committed, and a person sets its four
-# secrets (see "The admin panel" in cloud/README.md). A copy of the repository
-# keeps PLACEHOLDER until it has an OAuth App of its own; the step then says so
-# and is skipped.
+# rest. Its Cloudflare Access values for arakun.dev are committed, and a person
+# sets its ADMIN_SECRET (see "The admin panel" in cloud/README.md). A copy of the
+# repository keeps PLACEHOLDER until it has an Access application of its own;
+# the step then says so and is skipped.
 
 on:
   workflow_call:
@@ -252,21 +252,21 @@ jobs:
           MESSAGE: ${{ steps.ref.outputs.message }}
         run: npx wrangler deploy --env production --message "$MESSAGE"
 
-      # The admin Worker's sign-in needs a GitHub OAuth App. arakun.dev's ID is
-      # committed; a copy of the repository creates its own (see "The admin
-      # panel" in cloud/README.md). While the client ID is PLACEHOLDER, skip the
-      # deploy instead of shipping a Worker that nobody can sign in to. A
-      # missing value is a broken file: fail.
+      # The admin Worker sits behind a Cloudflare Access application.
+      # arakun.dev's AUD tag is committed; a copy of the repository sets up its
+      # own (see "The admin panel" in cloud/README.md). While ACCESS_AUD is
+      # PLACEHOLDER, skip the deploy instead of shipping a Worker that nobody
+      # can sign in to. A missing value is a broken file: fail.
       - name: Check the admin Worker is set up
         id: admin
         working-directory: .
         run: |
           file=cloud/admin/wrangler.toml
-          # GITHUB_CLIENT_ID of the [env.production.vars] block, with either
+          # ACCESS_AUD of the [env.production.vars] block, with either
           # quote style and any spacing. Empty if anything is missing.
           id=$(awk '
             /^[[:space:]]*\[/ { inblock = ($0 ~ /^[[:space:]]*\[env\.production\.vars\][[:space:]]*(#.*)?$/) }
-            inblock && /^[[:space:]]*GITHUB_CLIENT_ID[[:space:]]*=/ {
+            inblock && /^[[:space:]]*ACCESS_AUD[[:space:]]*=/ {
               v = $0
               sub(/^[^=]*=[[:space:]]*/, "", v)
               sub(/[[:space:]]*(#.*)?$/, "", v)
@@ -275,11 +275,11 @@ jobs:
               exit
             }' "$file") || id=
           if [ -z "$id" ]; then
-            echo "::error file=$file::No GITHUB_CLIENT_ID found under [env.production.vars]. See \"The admin panel\" in cloud/README.md"
+            echo "::error file=$file::No ACCESS_AUD found under [env.production.vars]. See \"The admin panel\" in cloud/README.md"
             exit 1
           fi
           if [ "$id" = PLACEHOLDER ]; then
-            echo "::notice file=$file::The admin Worker is not set up (GITHUB_CLIENT_ID is still PLACEHOLDER), so it is not deployed. See \"The admin panel\" in cloud/README.md"
+            echo "::notice file=$file::The admin Worker is not set up (ACCESS_AUD is still PLACEHOLDER), so it is not deployed. See \"The admin panel\" in cloud/README.md"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"

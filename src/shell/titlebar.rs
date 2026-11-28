@@ -267,6 +267,34 @@ impl Shell {
                     }))
             });
         let active_id = strip_tabs.active().map(|t| t.id);
+        {
+            let ids: Vec<u64> = strip_tabs.tabs.iter().map(|t| t.id).collect();
+            let shown = order
+                .iter()
+                .map(|&i| {
+                    let t = &strip_tabs.tabs[i];
+                    tab_motion::Shown {
+                        id: t.id,
+                        look: TabLook {
+                            title: t.title.clone(),
+                            kind: t.kind.clone(),
+                            env: t.env.clone(),
+                            preview: t.preview,
+                        },
+                    }
+                })
+                .collect();
+            self.tab_motion.borrow_mut().step(
+                &ids,
+                shown,
+                active_id,
+                Instant::now(),
+                cx.reduce_motion(),
+                TabLook::into_tab,
+            );
+        }
+        let motion = self.tab_motion.borrow();
+        let gap = f32::from(crate::ui::sp(2.));
         if self.tab_revealed.replace(active_id) != active_id
             && let Some(pos) = order.iter().position(|&i| i == strip_tabs.active_tab)
         {
@@ -354,133 +382,198 @@ impl Shell {
             }
             let title = crate::redact::text(&tab.title).into_owned();
             let close_label = format!("Close {title}");
-            list = list.child(
-                slot.child(
-                    ui::tab(("tab", i), title, active)
-                        .group(group.clone())
-                        .when_some(fit, |d, fit| {
-                            d.flex_none()
-                                .w(px(fit.width))
-                                .min_w(px(fit.width))
-                                .max_w(px(fit.width))
-                        })
-                        // The close button keeps its size; only the air beside it scales.
-                        .when(closable, |d| {
-                            d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
-                        })
-                        // The tab on screen in the other pane.
-                        .when(shown_beside, |d| {
-                            d.border_1()
-                                .border_color(theme::border_strong())
-                                .text_color(theme::text_muted())
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        // A middle click closes the tab, as in a browser.
-                        .when(closable, |d| {
-                            d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                                .on_mouse_up(
-                                    MouseButton::Middle,
-                                    cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(i, window, cx)
-                                    }),
-                                )
-                        })
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.tab_menu(i, ev.position, cx)
-                            }),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .when(!active, |d| d.opacity(0.55))
-                                .child(tab_icon),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .when(tab.preview, |d| d.italic())
-                                // A terminal's title is often `user@host:~/path`.
-                                .child(crate::redact::text(&tab.title).into_owned()),
-                        )
-                        .when(closable, |d| {
-                            d.child(
-                                div()
-                                    .id(("tab-close", i))
-                                    .map(|d| {
-                                        ui::labelled(d, gpui::Role::Button, close_label.clone())
-                                    })
-                                    .absolute()
-                                    .right(px(4.))
-                                    .top(px(ui::TAB_CLOSE_TOP))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(20.))
-                                    .rounded(crate::ui::rad(4.))
-                                    // Hidden elements register no click listeners,
-                                    // so keep it pressable for a screen reader.
-                                    .when(!a11y, |d| {
-                                        d.invisible().group_hover(group.clone(), |s| s.visible())
-                                    })
-                                    .hover(|s| s.bg(theme::fill_selected()))
-                                    .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(i, window, cx)
-                                    })),
+            let before = tab_motion::Anchor::Before(tab.id);
+            let after = tab_motion::Anchor::After(tab.id);
+            slot = slot.children(
+                motion
+                    .ghosts_at(before)
+                    .map(|g| self.render_tab_ghost(g, true, gap, cx)),
+            );
+            // The active fill, on its way here from the tab that was active.
+            let fill = motion.marker.filter(|m| active && m.to == tab.id).map(|m| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .h_full()
+                    .rounded(ui::nested(ui::RADIUS_XL, ui::BAR_INSET))
+                    .bg(theme::selection())
+                    .with_animation(
+                        SharedString::from(format!("tab-fill-{}", m.generation)),
+                        gpui::Animation::new(crate::ui::motion::FAST)
+                            .with_easing(crate::ui::motion::ease_out),
+                        move |d, t| {
+                            d.left(px(m.dx * (1. - t)))
+                                .w(px(m.from_w + (m.to_w - m.from_w) * t))
+                        },
+                    )
+            });
+            let bounds = motion.bounds.clone();
+            let tab_id = tab.id;
+            let measure = canvas(
+                move |b, _, _| {
+                    bounds.borrow_mut().insert(tab_id, b);
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            let grows = motion.growing(tab.id);
+            // A new tab's slot opens up to about its width; a run's label
+            // in front of it needs more.
+            let grow_to = fit.map_or(224., |f| f.width) + if starts_run { 160. } else { 0. };
+            slot = slot.child(
+                ui::tab(("tab", i), title, active)
+                    .when(fill.is_some(), |d| d.bg(gpui::transparent_black()))
+                    .children(fill)
+                    .child(measure)
+                    .group(group.clone())
+                    .when_some(fit, |d, fit| {
+                        d.flex_none()
+                            .w(px(fit.width))
+                            .min_w(px(fit.width))
+                            .max_w(px(fit.width))
+                    })
+                    // The close button keeps its size; only the air beside it scales.
+                    .when(closable, |d| {
+                        d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
+                    })
+                    // The tab on screen in the other pane.
+                    .when(shown_beside, |d| {
+                        d.border_1()
+                            .border_color(theme::border_strong())
+                            .text_color(theme::text_muted())
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // A middle click closes the tab, as in a browser.
+                    .when(closable, |d| {
+                        d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(
+                                MouseButton::Middle,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx)
+                                }),
                             )
-                        })
-                        .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                            this.select_tab(i, window, cx);
-                            // A double click keeps a preview tab.
-                            if ev.click_count() >= 2 {
-                                this.pin_preview(cx);
-                            }
-                        }))
-                        .on_drag(dragged, move |d, _, _, cx| {
-                            shell.update(cx, |this, cx| this.start_tab_drag(d, cx))
-                        })
-                        // A dragged tab or session row marks the gap it would
-                        // land in, on the side of this tab's middle the
-                        // pointer is on.
-                        .on_drag_move::<drag::DraggedTab>(cx.listener(
-                            move |this, ev: &gpui::DragMoveEvent<drag::DraggedTab>, _, cx| {
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.tab_menu(i, ev.position, cx)
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .when(!active, |d| d.opacity(0.55))
+                            .child(tab_icon),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .when(tab.preview, |d| d.italic())
+                            // A terminal's title is often `user@host:~/path`.
+                            .child(crate::redact::text(&tab.title).into_owned()),
+                    )
+                    .when(closable, |d| {
+                        d.child(
+                            div()
+                                .id(("tab-close", i))
+                                .map(|d| ui::labelled(d, gpui::Role::Button, close_label.clone()))
+                                .absolute()
+                                .right(px(4.))
+                                .top(px(ui::TAB_CLOSE_TOP))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(20.))
+                                .rounded(crate::ui::rad(4.))
+                                // Hidden elements register no click listeners,
+                                // so keep it pressable for a screen reader.
+                                .when(!a11y, |d| {
+                                    d.invisible().group_hover(group.clone(), |s| s.visible())
+                                })
+                                .hover(|s| s.bg(theme::fill_selected()))
+                                .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx)
+                                })),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                        this.select_tab(i, window, cx);
+                        // A double click keeps a preview tab.
+                        if ev.click_count() >= 2 {
+                            this.pin_preview(cx);
+                        }
+                    }))
+                    .on_drag(dragged, move |d, _, _, cx| {
+                        shell.update(cx, |this, cx| this.start_tab_drag(d, cx))
+                    })
+                    // A dragged tab or session row marks the gap it would
+                    // land in, on the side of this tab's middle the
+                    // pointer is on.
+                    .on_drag_move::<drag::DraggedTab>(cx.listener(
+                        move |this, ev: &gpui::DragMoveEvent<drag::DraggedTab>, _, cx| {
+                            this.bar_drag_over(i, next, ev.bounds, ev.event.position, cx)
+                        },
+                    ))
+                    .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
+                        this.drop_tab_at(d.id, i, cx)
+                    }))
+                    .when(pinned_bar, |d| {
+                        d.on_drag_move::<drag::DraggedSession>(cx.listener(
+                            move |this, ev: &gpui::DragMoveEvent<drag::DraggedSession>, _, cx| {
                                 this.bar_drag_over(i, next, ev.bounds, ev.event.position, cx)
                             },
                         ))
-                        .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
-                            this.drop_tab_at(d.id, i, cx)
-                        }))
-                        .when(pinned_bar, |d| {
-                            d.on_drag_move::<drag::DraggedSession>(cx.listener(
-                                move |this,
-                                      ev: &gpui::DragMoveEvent<drag::DraggedSession>,
-                                      _,
-                                      cx| {
-                                    this.bar_drag_over(i, next, ev.bounds, ev.event.position, cx)
-                                },
-                            ))
-                            .on_drop(cx.listener(
-                                move |this, d: &drag::DraggedSession, _, cx| {
-                                    cx.stop_propagation();
-                                    this.drop_session_on_bar(d, Some(i), cx)
-                                },
-                            ))
-                        })
-                        .when(drop_gap == Some(i), |d| d.child(drop_line(true, pos == 0)))
-                        .when(drop_gap == Some(i + 1) && last, |d| {
-                            d.child(drop_line(false, true))
-                        })
-                        .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
-                ),
+                        .on_drop(cx.listener(
+                            move |this, d: &drag::DraggedSession, _, cx| {
+                                cx.stop_propagation();
+                                this.drop_session_on_bar(d, Some(i), cx)
+                            },
+                        ))
+                    })
+                    .when(drop_gap == Some(i), |d| d.child(drop_line(true, pos == 0)))
+                    .when(drop_gap == Some(i + 1) && last, |d| {
+                        d.child(drop_line(false, true))
+                    })
+                    .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
             );
+            slot = slot.children(
+                motion
+                    .ghosts_at(after)
+                    .map(|g| self.render_tab_ghost(g, false, gap, cx)),
+            );
+            list = list.child(if grows {
+                slot.with_animation(
+                    SharedString::from(format!("tab-grow-{tab_id}")),
+                    gpui::Animation::new(crate::ui::motion::FAST)
+                        .with_easing(crate::ui::motion::ease_out),
+                    move |d, t| {
+                        if t >= 1. {
+                            return d;
+                        }
+                        // The gap beside it opens with it.
+                        let d = d.overflow_hidden().max_w(px(grow_to * t)).opacity(t);
+                        if pos > 0 {
+                            d.ml(px(-gap * (1. - t)))
+                        } else {
+                            d.mr(px(-gap * (1. - t)))
+                        }
+                    },
+                )
+                .into_any_element()
+            } else {
+                slot.into_any_element()
+            });
         }
+        drop(motion);
         // No tab right of the island: "N more" still keeps clear of it.
         if let Some(gap) = notch_gap.filter(|_| fit.is_some_and(|f| f.left >= shown)) {
             if fit.is_some_and(|f| f.more_left) {
@@ -615,6 +708,63 @@ impl Shell {
 
     /// The icon a tab starts with: its kind's, or for a session with
     /// sessions in the sidebar, its state's mark and its project's icon.
+    /// A closed tab shrinking away in front of the tab after it (`before`),
+    /// or after the last one, so its neighbours slide into the gap. It takes
+    /// no clicks: the strip has already moved on.
+    fn render_tab_ghost(
+        &self,
+        g: &tab_motion::Ghost<Tab>,
+        before: bool,
+        gap: f32,
+        cx: &App,
+    ) -> AnyElement {
+        let w = g.width;
+        let title = crate::redact::text(&g.look.title).into_owned();
+        let look = ui::tab(
+            SharedString::from(format!("tab-ghost-{}", g.id)),
+            title.clone(),
+            g.active,
+        )
+        .flex_none()
+        .w(px(w))
+        .min_w(px(w))
+        .max_w(px(w))
+        .child(
+            div()
+                .flex_none()
+                .when(!g.active, |d| d.opacity(0.55))
+                .child(self.tab_lead(&g.look, cx)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .when(g.look.preview, |d| d.italic())
+                .child(title),
+        );
+        crate::ui::motion::inert(
+            div()
+                .flex_none()
+                .overflow_hidden()
+                .child(look)
+                .with_animation(
+                    SharedString::from(format!("tab-leave-{}", g.id)),
+                    gpui::Animation::new(crate::ui::motion::FAST)
+                        .with_easing(crate::ui::motion::ease_out),
+                    move |d, t| {
+                        // The gap it leaves closes with it.
+                        let d = d.w(px(w * (1. - t))).opacity(1. - t);
+                        if before {
+                            d.mr(px(-gap * t))
+                        } else {
+                            d.ml(px(-gap * t))
+                        }
+                    },
+                ),
+        )
+    }
+
     pub(super) fn tab_lead(&self, tab: &Tab, cx: &App) -> AnyElement {
         let layout = crate::tab_layout::current();
         if layout.tree()
@@ -836,4 +986,23 @@ pub(super) fn window_button(
             },
             id,
         ))
+}
+
+/// What a closed tab's ghost draws (`tab_motion`): the tab is gone from the
+/// strip by then, so the bar keeps this much of every tab it shows.
+pub(super) struct TabLook {
+    title: SharedString,
+    kind: TabKind,
+    env: Option<std::path::PathBuf>,
+    preview: bool,
+}
+
+impl TabLook {
+    /// A stand-in tab for the ghost to draw its icon from.
+    fn into_tab(self) -> Tab {
+        let mut tab = Tab::new(self.title, self.kind);
+        tab.env = self.env;
+        tab.preview = self.preview;
+        tab
+    }
 }

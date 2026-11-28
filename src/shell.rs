@@ -83,6 +83,7 @@ mod subagents;
 mod subnav;
 mod survey_card;
 mod switching;
+mod tab_motion;
 mod tab_views;
 #[cfg(feature = "coderlabs")]
 mod tasks;
@@ -379,6 +380,8 @@ pub struct Shell {
     tab_scroll: ScrollHandle,
     /// The tab last scrolled into view in the title bar, so a new active tab is too.
     tab_revealed: Cell<Option<u64>>,
+    /// Tabs growing in, shrinking away, and the active fill sliding (`tab_motion`).
+    tab_motion: RefCell<tab_motion::TabMotion<titlebar::TabLook, Tab>>,
     /// A check is queued for keyboard focus that went nowhere (see `render`).
     refocus_queued: bool,
     modal: Option<(Modal, Subscription)>,
@@ -924,6 +927,7 @@ impl Shell {
             env_menu_at: None,
             tab_scroll: ScrollHandle::new(),
             tab_revealed: Cell::new(None),
+            tab_motion: RefCell::default(),
             refocus_queued: false,
             modal: None,
             survey: survey_card::CardState::new(Instant::now()),

@@ -1224,7 +1224,7 @@ extension AppModel {
         var s = LiveSession(id: id, title: line?.title ?? "", agent: line?.agent ?? "")
         let at = Date().timeIntervalSince1970 - 600
         s.apply(session: JSON.parse(Data("""
-        {"from":0,"count":7,"status":"\(line?.status == .working ? "working" : "needs_input")","usage":{"summary":"48k tokens · $0.41"},
+        {"from":0,"count":8,"status":"\(line?.status == .working ? "working" : "needs_input")","usage":{"summary":"48k tokens · $0.41"},
          "changes":{"files":3,"added":42,"removed":7},"elapsed_ms":95000,
          "entries":[
           {"type":"user","text":"Pairing links fail with limit:phones. Find out why and fix it.","at":\(at),"elapsed_ms":null,"pastes":[]},
@@ -1233,7 +1233,8 @@ extension AppModel {
           {"type":"tool","id":"t2","title":"rg -n admit cloud/src/relay","kind":"search","status":"completed","command":"rg -n admit cloud/src/relay","output":"cloud/src/relay/relay.ts:412:  admit(phone) {\\ncloud/src/relay/relay.ts:498:    this.admit(p)","diffs":[],"added":0,"removed":0},
           {"type":"agent","text":"Found it. `acceptPhone` deletes the pairing code in `admit()` **before** the limit check. When the check refuses the phone, the code is already gone, so every retry gets `no_pairing`."},
           {"type":"plan","entries":[{"content":"Check the limit before spending the code","status":"completed"},{"content":"Add a test for a refused phone that retries","status":"in_progress"},{"content":"Run the relay tests","status":"pending"}]},
-          {"type":"tool","id":"t3","title":"Edit cloud/src/relay/relay.ts","kind":"edit","status":"completed","diffs":[{"path":"cloud/src/relay/relay.ts","added":12,"removed":5}],"added":12,"removed":5}],
+          {"type":"tool","id":"t3","title":"Edit cloud/src/relay/relay.ts","kind":"edit","status":"completed","diffs":[{"path":"cloud/src/relay/relay.ts","added":12,"removed":5}],"added":12,"removed":5},
+          {"type":"agent","text":"## The fix\\n\\n`admit()` now checks the limit first:\\n\\n```ts\\nif (this.phones.size >= LIMIT) return refuse('limit:phones');\\nthis.codes.delete(code);\\n```\\n\\n| Case | Before | After |\\n| --- | --- | --- |\\n| A refused phone retries | `no_pairing` | Paired |\\n| A phone under the limit | Paired | Paired |\\n\\n- [x] Spend the code only once the phone is in\\n- [ ] Test a refused phone that retries\\n\\n> Run `cargo test -p arakun relay` to check it."}],
          "permission":{"tool_call_id":"p1","title":"cargo test -p arakun relay","options":[{"id":"a","name":"Allow","kind":"allow_once"},{"id":"b","name":"Always allow","kind":"allow_always"},{"id":"c","name":"Deny","kind":"reject_once"}]}}
         """.utf8))!)
         if line?.status == .working { s.permission = nil }

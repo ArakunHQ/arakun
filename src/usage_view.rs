@@ -6,6 +6,7 @@
 
 use crate::ui::Typography as _;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +28,7 @@ use crate::agent::seats;
 use crate::agent::{AgentKind, fmt_cost};
 use crate::agent::{devin_plan, opencode_plan};
 use crate::input::{InputEvent, TextInput};
+use crate::loadable::Loadable;
 use crate::theme;
 use crate::ui::{self, ButtonKind};
 use crate::usage_history::{self, Record};
@@ -292,20 +294,16 @@ pub struct UsageView {
     /// The Factory account, shared by the shell once it exists.
     account: Option<Entity<Account>>,
     _account_sub: Option<Subscription>,
-    /// None until the first scan of the logs is done.
-    records: Option<Vec<Record>>,
-    /// Where Claude Code's tokens went in that range, once read.
-    where_report: Option<(Range, usage_where::Report)>,
-    /// The transcripts are read for `where_report`.
-    where_busy: bool,
+    /// The agents' logs. No data until the first scan is done.
+    records: Loadable<Vec<Record>, Infallible>,
+    /// Where Claude Code's tokens went, and the range it was read for.
+    where_report: Loadable<(Range, usage_where::Report), Infallible>,
     /// Every finding shows, not only the first few.
     where_all: bool,
     /// The scan generation `records` came from (see `usage_history`).
     generation: Option<u64>,
     /// When the last scan started.
     scanned: Option<Instant>,
-    /// A scan runs.
-    busy: bool,
     /// The refresh control spins: the user asked for the scan that runs.
     scanning: bool,
     range: Range,
@@ -494,13 +492,11 @@ impl UsageView {
             _proxy_subs: [proxy_key_sub, proxy_address_sub],
             account: None,
             _account_sub: None,
-            records: None,
-            where_report: None,
-            where_busy: false,
+            records: Loadable::default(),
+            where_report: Loadable::default(),
             where_all: false,
             generation: None,
             scanned: None,
-            busy: false,
             scanning: false,
             range: Range::Month,
             measure: Measure::Cost,
@@ -519,80 +515,69 @@ impl UsageView {
 
     /// Reads the agents' logs again off the main thread; unchanged files come
     /// from the cache. The refresh control spins only when the user `asked`,
-    /// and a scan that found nothing new draws nothing.
+    /// and a scan that found nothing new keeps the records and the token
+    /// breakdown as they are.
     fn rescan(&mut self, asked: bool, cx: &mut Context<Self>) {
         if asked && !self.scanning {
             self.scanning = true;
             cx.notify();
         }
-        if self.busy {
+        if self.records.loading() {
             return;
         }
-        self.busy = true;
         self.scanned = Some(Instant::now());
         let seen = self.generation;
-        cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(crate::guard::task(async move {
-                    Some(usage_history::scan_changed(seen))
-                }))
-                .await;
-            let _ = this.update(cx, |v, cx| {
-                v.busy = false;
+        self.records.start(
+            cx,
+            |v| &mut v.records,
+            async move { Some(usage_history::scan_changed(seen)) },
+            |v, found, cx| {
                 let mut changed = std::mem::take(&mut v.scanning);
                 match found {
                     Some((generation, Some(records))) => {
                         v.generation = Some(generation);
-                        v.records = Some(records);
+                        v.records.settle(Ok(records));
                         changed = true;
                     }
                     Some((_, None)) => {}
                     // The scan panicked: show what there is rather than wait.
                     None => {
-                        if v.records.is_none() {
-                            v.records = Some(Vec::new());
+                        if v.records.data.is_none() {
+                            v.records.settle(Ok(Vec::new()));
                             changed = true;
                         }
                     }
                 }
                 if changed {
                     v.rescan_where(cx);
-                    cx.notify();
                 }
-            });
-        })
-        .detach();
+            },
+        );
     }
 
     /// Reads where the range's Claude Code tokens went, off the main thread.
     /// Unchanged transcripts come from `usage_where`'s cache.
     fn rescan_where(&mut self, cx: &mut Context<Self>) {
-        if self.where_busy {
+        if self.where_report.loading() {
             return;
         }
-        self.where_busy = true;
         let range = self.range;
         let since = now().saturating_sub(range.days() * 24 * 3600);
-        cx.spawn(async move |this, cx| {
-            let report = cx
-                .background_spawn(crate::guard::task(
-                    async move { Some(usage_where::scan(since)) },
-                ))
-                .await;
-            let _ = this.update(cx, |v, cx| {
-                v.where_busy = false;
+        self.where_report.start(
+            cx,
+            |v| &mut v.where_report,
+            async move { Some(usage_where::scan(since)) },
+            move |v, report, cx| {
                 // None: the scan panicked; keep what shows.
                 if let Some(report) = report {
-                    v.where_report = Some((range, report));
+                    v.where_report.settle(Ok((range, report)));
                 }
                 // The range changed while it read: read it again for the new one.
                 if v.range != range {
                     v.rescan_where(cx);
                 }
-                cx.notify();
-            });
-        })
-        .detach();
+            },
+        );
     }
 
     /// What the shell knows: session titles and where its projects live.
@@ -2029,7 +2014,7 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let all: &[Record] = self.records.as_deref().unwrap_or_default();
+        let all: &[Record] = self.records.data.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {
             Some(agent) => {
@@ -2082,7 +2067,7 @@ impl Render for UsageView {
                     .child(refresh),
             );
 
-        let body: AnyElement = match &self.records {
+        let body: AnyElement = match &self.records.data {
             None => ui::loading("Reading agent usage history…").into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
@@ -2536,7 +2521,7 @@ impl UsageView {
                 .text_color(theme::text_subtle())
                 .child(text)
         };
-        let Some((_, r)) = &self.where_report else {
+        let Some((_, r)) = &self.where_report.data else {
             return Some(
                 out.child(note("Reading Claude Code transcripts…".into()))
                     .into_any_element(),

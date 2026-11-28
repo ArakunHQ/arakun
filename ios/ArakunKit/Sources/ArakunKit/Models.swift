@@ -71,8 +71,8 @@ public struct Inbox: Sendable {
 
 /// One entry of a session's transcript, cut down for a phone.
 public enum Entry: Equatable, Sendable {
-    /// `images` are the names of the pictures the words mention.
-    case user(text: String, at: Date, elapsedMs: Int?, pastes: [String], images: [String])
+    /// `images` are the pictures the words mention.
+    case user(text: String, at: Date, elapsedMs: Int?, pastes: [String], images: [Picture])
     case agent(String)
     case thought(String)
     case tool(Tool)
@@ -117,7 +117,7 @@ public enum Entry: Equatable, Sendable {
         case "user":
             self = .user(text: j["text"].str, at: Date(timeIntervalSince1970: j["at"].double ?? 0),
                          elapsedMs: j["elapsed_ms"].int, pastes: j["pastes"].array.map { $0["text"].str },
-                         images: j["images"].array.map { $0["name"].str })
+                         images: j["images"].array.map { Picture(name: $0["name"].str, url: $0["url"].str) })
         case "agent": self = .agent(j["text"].str)
         case "thought": self = .thought(j["text"].str)
         case "tool":

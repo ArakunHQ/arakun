@@ -20,18 +20,8 @@ struct EntryView: View {
                     ForEach(Array(pastes.enumerated()), id: \.offset) { _, p in
                         PasteView(text: p)
                     }
-                    // The pictures themselves come through the channel; the
-                    // app names them for now.
-                    ForEach(Array(images.enumerated()), id: \.offset) { _, name in
-                        HStack(spacing: 6) {
-                            Icon("file01", size: 13)
-                            Text(name).lineLimit(1).truncationMode(.middle)
-                        }
-                        .font(.mono(11.5))
-                        .foregroundStyle(Color.textMuted)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.deep))
+                    ForEach(Array(images.enumerated()), id: \.offset) { _, picture in
+                        PictureView(picture: picture, thumbnail: true)
                     }
                     HStack(spacing: 6) {
                         Text(at, style: .time)
@@ -46,11 +36,22 @@ struct EntryView: View {
             }
             .padding(.top, 6)
         case .agent(let text):
-            Text(markdown(text))
-                .font(.body16)
-                .lineSpacing(3)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Text cannot hold a picture: the words around each one are their own.
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(Array(MarkdownPiece.split(text).enumerated()), id: \.offset) { _, piece in
+                    switch piece {
+                    case .text(let words):
+                        Text(markdown(words))
+                            .font(.body16)
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    case .picture(let picture):
+                        PictureView(picture: picture)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .thought(let text):
             Fold(icon: "ai-idea", title: "Thinking") {
                 Text(text).font(.small).foregroundStyle(Color.textMuted).textSelection(.enabled)

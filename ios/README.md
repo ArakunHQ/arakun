@@ -136,11 +136,13 @@ A pairing link opened from another app asks before it opens anything.
 
 - The inbox: every session, the ones waiting for you first, grouped by project.
 - A session, live: messages, tool calls with their output, plans, thinking.
+- The photos in your prompts and the images the agent shows. Tap one to see it
+  full screen, zoom in and share it.
 - Send a prompt (queued while the agent works), Stop, allow or deny a permission,
   answer the agent's questions, load older entries.
 - Start a session in any place the computer offers.
 
-Not yet: photos, diffs, session settings and plan limits.
+Not yet: sending photos, diffs, session settings and plan limits.
 
 ## Notifications
 

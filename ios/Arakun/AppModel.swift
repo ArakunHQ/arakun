@@ -114,6 +114,9 @@ final class AppModel {
     private var openAfterPick: String?
 
     private var link: RelayLink?
+    /// The pictures of the session on screen. Each has its own slot to watch,
+    /// so the model does not observe them as a whole.
+    @ObservationIgnored let pictures = PictureCache()
     private var retry: Duration = .milliseconds(500)
     private var retryTask: Task<Void, Never>?
     /// Limits the relay answered with in a row, for the wait before the next try.
@@ -827,8 +830,22 @@ final class AppModel {
         send(["type": "close"])
     }
 
+    /// Fetches a picture of the session on screen through the relay, as the
+    /// phone page does, unless it is already here. Only the computer's own
+    /// signed links: nothing the agent wrote is loaded from elsewhere.
+    func loadPicture(_ picture: Picture) async {
+        guard picture.served else { return }
+        await pictures.load(picture.url) { [weak self] url in
+            guard let l = self?.link, l.isReady,
+                  let reply = try? await l.fetch(url), reply.status == 200
+            else { return nil }
+            return reply.body
+        }
+    }
+
     /// They belong to the session on screen and go with it.
     private func forgetChanges() {
+        pictures.reset()
         changes = nil
         diffs = [:]
         subagents = []

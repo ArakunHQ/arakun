@@ -46,14 +46,14 @@ describe("Composer", () => {
     await renderScreen(<SessionScreen />, "/s/a", link);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-    expect(link.sent).not.toContainEqual({ type: "cancel", session: "a" });
+    expect(link.sent).not.toContainEqual(expect.objectContaining({ type: "cancel" }));
     act(() => void vi.advanceTimersByTime(STOP_WINDOW + 1));
     // The window went by: this tap only arms it again.
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-    expect(link.sent).not.toContainEqual({ type: "cancel", session: "a" });
+    expect(link.sent).not.toContainEqual(expect.objectContaining({ type: "cancel" }));
     act(() => void vi.advanceTimersByTime(STOP_WINDOW - 1));
     fireEvent.click(screen.getByRole("button", { name: "Tap again to stop" }));
-    expect(link.sent).toContainEqual({ type: "cancel", session: "a" });
+    expect(link.sent).toContainEqual({ type: "cancel", session: "a", keep_queue: true });
   });
 
   it("shows a sent message as pending until the computer has it", async () => {
@@ -82,5 +82,45 @@ describe("Composer", () => {
     link.emit({ type: "linked" });
     expect(link.sent).toContainEqual({ type: "send", session: "a", text: "later" });
     expect(screen.getByText("Sending…")).toBeTruthy();
+  });
+});
+
+describe("Queue", () => {
+  it("takes a queued prompt back into the box", async () => {
+    const link = fakeLink({ session: session({ status: "working", queue: ["first", "second"] }) });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    fireEvent.change(draft(), { target: { value: "draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Take back: second" }));
+    expect(link.sent).toContainEqual({ type: "unqueue", session: "a", index: 1, text: "second" });
+    expect(draft().value).toBe("draft\n\nsecond");
+  });
+
+  it("offers Resume only while the queue is paused", async () => {
+    const link = fakeLink({ session: session({ queue: ["next"] }) });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
+    link.set({ session: session({ queue: ["next"], queue_paused: true }) });
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(link.sent).toContainEqual({ type: "resume_queue", session: "a" });
+  });
+
+  it("shows a sent prompt the computer queued once, in the queue", async () => {
+    const link = fakeLink({ session: session({ status: "working" }) });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    fireEvent.change(draft(), { target: { value: "after this" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    link.set({ session: session({ status: "working", queue: ["after this"] }) });
+    expect(screen.queryByText("Sending…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Take back: after this" })).toBeTruthy();
+  });
+
+  it("stops and sends what is written", async () => {
+    const link = fakeLink({ session: session({ status: "working" }) });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    fireEvent.change(draft(), { target: { value: "do this instead" } });
+    fireEvent.click(screen.getByRole("button", { name: "Stop and send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Tap again to stop and send" }));
+    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "do this instead", now: true });
   });
 });

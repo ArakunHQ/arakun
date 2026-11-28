@@ -999,12 +999,45 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         send("type" to "entries", "session" to s.id, "from" to maxOf(0, s.from - 50), "to" to s.from)
     }
 
-    /** Whether the prompt went out; the composer keeps it when it did not. */
-    fun say(text: String): Boolean {
+    /**
+     * Whether the prompt went out; the composer keeps it when it did not.
+     * `now` stops the running turn and sends it as soon as it stopped.
+     */
+    fun say(text: String, now: Boolean = false): Boolean {
         val s = session ?: return false
         if (!canSend) return false
-        send("type" to "send", "session" to s.id, "text" to text)
+        if (now) {
+            send("type" to "send", "session" to s.id, "text" to text, "now" to true)
+        } else {
+            send("type" to "send", "session" to s.id, "text" to text)
+        }
         return true
+    }
+
+    /**
+     * Takes queued prompt `index` out of the queue; true when it went out, so
+     * the composer can take its text. `text` lets the computer find one that moved.
+     */
+    fun takeBack(index: Int, text: String): Boolean {
+        val s = session ?: return false
+        if (!canSend) return false
+        demo?.let {
+            session = s.copy(queue = s.queue.filterIndexed { i, _ -> i != index })
+            return true
+        }
+        send("type" to "unqueue", "session" to s.id, "index" to index, "text" to text)
+        return true
+    }
+
+    /** Lets the queue a Stop paused go again. */
+    fun resumeQueue() {
+        val s = session ?: return
+        if (!canSend) return
+        demo?.let {
+            session = s.copy(queuePaused = false)
+            return
+        }
+        send("type" to "resume_queue", "session" to s.id)
     }
 
     fun stop() {

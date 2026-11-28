@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 private fun json(s: String) = parseJson(s)!!
 
@@ -126,7 +127,7 @@ class ModelTest {
                 """
                 {"status":"needs_input","permission":{"tool_call_id":"t","title":"Run ls","options":[{"id":"a","name":"Allow","kind":"allow_once"}]},
                  "question":{"tool_call_id":"q","questions":[{"index":1,"topic":"T","question":"Which?","options":["x","y"],"multi":false}]},
-                 "usage":{"summary":"12k tokens"},"elapsed_ms":2000,"queue":["next"],"changes":{"files":1,"added":2,"removed":0}}
+                 "usage":{"summary":"12k tokens"},"elapsed_ms":2000,"queue":["next"],"queue_paused":true,"changes":{"files":1,"added":2,"removed":0}}
                 """,
             ),
             now = 10_000,
@@ -134,6 +135,7 @@ class ModelTest {
         assertEquals("allow_once", s.permission?.options?.first()?.kind)
         assertEquals(listOf("x", "y"), s.question?.questions?.first()?.options)
         assertEquals(listOf("next"), s.queue)
+        assertTrue(s.queuePaused)
         assertEquals(2, s.changes.added)
         assertEquals(8_000L, s.turnStarted)
         assertNotNull(s.usage)

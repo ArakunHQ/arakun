@@ -1,4 +1,4 @@
-// The bottom of the session: the stop row while the agent works, photos to
+// The bottom of the session: the queued prompts, the stop row while the agent works, photos to
 // send, the shortcuts, and the box. The keyboard's return key writes a new
 // line: a prompt often has several, and a half-written one sent by accident
 // sets the agent to work. Only the button sends.
@@ -11,6 +11,7 @@ import { readShot, type Shot } from "../../lib/shots";
 import { toast } from "../../lib/toast";
 import { CutsRow, usedCut } from "./Shortcuts";
 import { Shots } from "./Shots";
+import { Queue } from "./Queue";
 import { StopRow } from "./StopRow";
 import "./Composer.css";
 
@@ -26,10 +27,13 @@ export interface ComposerProps {
   onSubmit: (opts: { now?: boolean; text?: string }) => void;
   /** Stop tapped twice, with nothing written. */
   onCancel: () => void;
+  /** Queued prompt `index` tapped to take back. */
+  onTakeBack: (index: number, text: string) => void;
+  onResumeQueue: () => void;
   onOpenCuts: () => void;
 }
 
-export function Composer({ session: s, draft, setDraft, shots, setShots, onSubmit, onCancel, onOpenCuts }: ComposerProps) {
+export function Composer({ session: s, draft, setDraft, shots, setShots, onSubmit, onCancel, onTakeBack, onResumeQueue, onOpenCuts }: ComposerProps) {
   const box = useRef<HTMLTextAreaElement>(null);
   const files = useRef<HTMLInputElement>(null);
   const [writing, setWriting] = useState(false);
@@ -71,6 +75,7 @@ export function Composer({ session: s, draft, setDraft, shots, setShots, onSubmi
   const waiting = s.status !== "working" && !hasDraft;
   return (
     <>
+      <Queue session={s} onTakeBack={onTakeBack} onResume={onResumeQueue} />
       <StopRow session={s} hasDraft={hasDraft} onStop={() => (hasDraft ? onSubmit({ now: true }) : onCancel())} />
       <Shots shots={shots} onRemove={(i) => setShots((all) => all.filter((_, k) => k !== i))} />
       {writing || waiting ? <CutsRow writing={writing} onUse={pickCut} onMore={onOpenCuts} /> : null}

@@ -58,11 +58,12 @@ struct ModelTests {
         s.apply(state: json(#"""
         {"status":"needs_input","permission":{"tool_call_id":"t","title":"Run ls","options":[{"id":"a","name":"Allow","kind":"allow_once"}]},
          "question":{"tool_call_id":"q","questions":[{"index":1,"topic":"T","question":"Which?","options":["x","y"],"multi":false}]},
-         "usage":{"summary":"12k tokens"},"elapsed_ms":2000,"queue":["next"],"changes":{"files":1,"added":2,"removed":0}}
+         "usage":{"summary":"12k tokens"},"elapsed_ms":2000,"queue":["next"],"queue_paused":true,"changes":{"files":1,"added":2,"removed":0}}
         """#))
         #expect(s.permission?.options.first?.kind == "allow_once")
         #expect(s.question?.questions.first?.options == ["x", "y"])
         #expect(s.queue == ["next"])
+        #expect(s.queuePaused)
         #expect(s.changes.added == 2)
         #expect(s.turnStarted != nil)
     }

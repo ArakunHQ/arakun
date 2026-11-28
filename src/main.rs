@@ -33,6 +33,7 @@ mod customize_view;
 mod design_lint;
 mod dev;
 mod dialogs;
+mod doctor;
 mod doop;
 mod doop_view;
 mod draft;

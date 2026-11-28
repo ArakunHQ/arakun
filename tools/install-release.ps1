@@ -163,7 +163,7 @@ function Install-Arakun {
         $shortcut.Save()
 
         Write-Host "arakun: installed arakun.exe in $dir"
-        Write-Host "arakun: done. Run 'arakun' or open Arakun from the Start menu."
+        Write-Host "arakun: done. Run 'arakun' or open Arakun from the Start menu, and run 'arakun doctor' to see what agents and tools are missing."
         Write-Host "arakun: to uninstall, delete $dir and $lnk, and remove $dir from your user PATH"
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

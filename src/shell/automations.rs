@@ -25,6 +25,7 @@ impl Shell {
                         this.run_due_automations(window, cx);
                         this.watch_merges(cx);
                         this.clean_up_envs(window, cx);
+                        this.housekeep(cx);
                         cx.notify();
                     })
                     .is_err()

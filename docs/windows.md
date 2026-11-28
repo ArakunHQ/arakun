@@ -214,7 +214,7 @@ Outside those folders, or named after the state file:
 |---|---|
 | State | `%LOCALAPPDATA%\arakun\state.json`, or the file `ARAKUN_STATE` names |
 | That the first-launch setup was done | `state.onboarding.json`, next to the state file |
-| Sessions the startup clean-up has seen listed | `state.json.seen`, next to the state file |
+| Sessions the daily clean-up has seen listed | `state.json.seen`, next to the state file |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `state.json.lock`, next to the state file |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock`, next to the state file |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |

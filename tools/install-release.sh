@@ -626,7 +626,7 @@ main() {
     say "browser tabs need an AppArmor profile on this system; see"
     say "https://github.com/$repo#browser-tabs-on-ubuntu"
   fi
-  say "done. Run 'arakun' to start it."
+  say "done. Run 'arakun' to start it, and 'arakun doctor' to see what agents and tools are missing."
   say "to uninstall: $uninstall"
 }
 

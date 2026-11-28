@@ -233,7 +233,7 @@ fn subprocess_path() -> Option<PathBuf> {
 /// 23.10 and later allow the namespace but refuse the maps, unless an AppArmor profile
 /// for arakun allows `userns`.
 #[cfg(target_os = "linux")]
-fn userns_sandbox_works() -> bool {
+pub(super) fn userns_sandbox_works() -> bool {
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
 

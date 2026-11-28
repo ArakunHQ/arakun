@@ -95,6 +95,10 @@ nightly builds.
 
 ## Requirements
 
+After you install, run `arakun doctor`. It checks everything below on your computer
+(the agents and their sign-ins, Node.js, `git`, `gh`, `bwrap`, the browser tabs and the
+graphics driver) and prints the command that fixes each thing that is missing.
+
 ### Platforms
 
 | Platform | Status | Notes |
@@ -189,6 +193,7 @@ arakun check                      # run the project check here
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun ls                         # projects, environments and sessions
+arakun doctor                     # what is missing on this computer, and how to fix it
 arakun server serve               # run sessions on this machine without the window
 ```
 

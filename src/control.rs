@@ -570,6 +570,9 @@ fn cli(args: Vec<String>) -> Cli {
     if first == "shrink" {
         return Cli::Exit(crate::shrink::cli(&args[1..]));
     }
+    if first == "doctor" {
+        return Cli::Exit(crate::doctor::cli(&args[1..]));
+    }
     if first == "usage" && args.get(1).is_some_and(|a| a == "where") {
         return Cli::Exit(crate::usage_where::cli(&args[2..]));
     }
@@ -1884,7 +1887,7 @@ mod tests {
         // before either.
         for args in [
             &["lgos"][..],
-            &["doctor"],
+            &["doktor"],
             &["--verbose"],
             &["-x"],
             &["lgos", "src"],

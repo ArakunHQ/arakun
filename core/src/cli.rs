@@ -183,6 +183,14 @@ pub const COMMANDS: &[Command] = &[
          quits); --check only says whether there is one; --channel says which channel this \
          install follows, or picks nightly builds of main (they can break) or releases",
     ),
+    user(
+        "doctor",
+        "doctor [--json]",
+        "check what Arakun and its agents need on this computer (agents and their sign-ins, \
+         Node.js, git, gh, the browser, the sandbox, the graphics driver), one line each with \
+         the command that fixes it; exits 1 when Arakun cannot run a session. Needs no \
+         running Arakun",
+    ),
     agent(
         "fetch",
         "fetch [--html | --links] <url>",

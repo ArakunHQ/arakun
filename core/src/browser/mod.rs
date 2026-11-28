@@ -178,6 +178,49 @@ impl ScriptContexts {
 /// binary with, in a child process, to see whether it starts in a nested user namespace.
 pub const SANDBOX_PROBE: &str = "--arakun-sandbox-probe";
 
+/// Whether browser tabs can start here, for `arakun doctor`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Health {
+    /// This build has no browser tabs.
+    NotBuilt,
+    /// The browser's runtime is not at this path.
+    NoRuntime(std::path::PathBuf),
+    /// Linux blocks Chromium's sandbox: Ubuntu 23.10 and later, without an
+    /// AppArmor profile for arakun.
+    SandboxBlocked,
+    Ready,
+}
+
+/// Checks what a browser tab needs without loading the runtime. On Linux it
+/// starts this binary once, for the sandbox check.
+pub fn health() -> Health {
+    #[cfg(all(
+        feature = "browser",
+        any(target_os = "linux", target_os = "macos", windows)
+    ))]
+    {
+        #[cfg(target_os = "linux")]
+        let lib = loader::runtime_dir().join("libcef.so");
+        #[cfg(target_os = "macos")]
+        let lib = loader::framework_dir().join("Chromium Embedded Framework");
+        #[cfg(windows)]
+        let lib = loader::runtime_dir().join("libcef.dll");
+        if !lib.is_file() {
+            return Health::NoRuntime(lib);
+        }
+        #[cfg(target_os = "linux")]
+        if !runtime::userns_sandbox_works() {
+            return Health::SandboxBlocked;
+        }
+        Health::Ready
+    }
+    #[cfg(not(all(
+        feature = "browser",
+        any(target_os = "linux", target_os = "macos", windows)
+    )))]
+    Health::NotBuilt
+}
+
 /// Whether this process is that check's child: it only has to start.
 fn is_sandbox_probe(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
     args.nth(1).is_some_and(|a| a == SANDBOX_PROBE)

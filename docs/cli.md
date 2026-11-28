@@ -54,6 +54,15 @@ picks the agent (`claude`, `opencode` or `workers-ai`; on the server, any it run
 The [server](server.md) has its own commands under `arakun server` (`arakun server help`),
 and arakun-pilot's are in [github-pilot.md](github-pilot.md).
 
+`arakun doctor` needs no running Arakun. It checks what Arakun and its agents need on
+this computer: each agent and its sign-in, Node.js and `npm`, `git`, `gh` and its sign-in,
+and on Linux `bwrap`, the desktop and a Vulkan driver, and whether browser tabs can start
+(on Ubuntu 23.10 and later they need an [AppArmor profile](browser.md#browser-tabs-on-ubuntu)).
+Each line says ok, warn, FAIL or `-` (an agent you have not installed), with the command
+that fixes it below. It exits with 1 only when no agent can run a session. `--json` prints
+`{"ok": …, "checks": [{"name", "status", "detail", "fix"}]}` for scripts. It reads no
+secret, only whether a sign-in is there.
+
 ## Every command
 
 This is what `arakun help` prints; `arakun <command> --help` prints the forms of one.
@@ -116,6 +125,12 @@ Usage:
                                says which channel this install follows, or picks
                                nightly builds of main (they can break) or
                                releases
+  arakun doctor [--json]       check what Arakun and its agents need on this
+                               computer (agents and their sign-ins, Node.js,
+                               git, gh, the browser, the sandbox, the graphics
+                               driver), one line each with the command that
+                               fixes it; exits 1 when Arakun cannot run a
+                               session. Needs no running Arakun
   arakun fetch [--html | --links] <url>
                                a web page as Markdown (or HTML, or its links),
                                loaded in Cloudflare Browser Run: for sites that

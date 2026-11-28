@@ -3225,7 +3225,7 @@ impl Render for ThreadView {
         let menu = self.render_selection_menu(cx);
         let note = self.render_note_box(cx);
         let outline_room = self.outline_room(cx);
-        let (outline, outline_card) = self.render_outline(cx).unzip();
+        let outline = self.render_outline(cx);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let (ssh_bar, ssh_body) = self.render_ssh(cx);
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -3286,7 +3286,6 @@ impl Render for ThreadView {
                             ),
                     )
                     .children(outline)
-                    .children(outline_card.flatten())
                     .when_some(search_bar, |d, bar| d.child(bar))
                     .when(scrolled_away, |d| {
                         d.child(

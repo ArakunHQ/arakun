@@ -4,6 +4,10 @@
 //! as the viewport and dragging it scrolls evenly, as a code minimap does. A
 //! click on a turn outside the box brings its prompt to the top.
 //!
+//! The miniature keeps one size, a mark for each line of text, and grows down
+//! from the top as the session does. Once it fills the lane it is squeezed to
+//! fit. It shows only when the session is at least two screens long.
+//!
 //! The list only knows the height of the rows it has drawn, so a row not seen
 //! yet is given the height its content should take and corrected once drawn.
 //!
@@ -25,6 +29,13 @@ const MARKS_X: f32 = 5.;
 const MARKS_W: f32 = 16.;
 /// The box never gets too small to take hold of.
 const BOX_MIN: f32 = 12.;
+/// Lane pixels per pixel of transcript while the miniature still fits: a
+/// line of text every five pixels.
+const NATURAL: f32 = 0.25;
+/// The outline shows from this many screens of transcript on, and stays until
+/// the session is well under that, so folding a turn does not flicker it.
+const SHOW_AT: f32 = 2.;
+const HIDE_AT: f32 = 1.6;
 const CARD_W: f32 = 236.;
 
 // What the transcript's pieces measure, to guess the height of a row the list
@@ -179,16 +190,18 @@ pub(super) struct Laid {
     /// The height of the whole transcript, and lane pixels per pixel of it.
     total: f32,
     k: f32,
+    /// The height the miniature takes in the lane, from its top.
+    extent: f32,
     /// Where each row starts in the transcript; one more closes the last.
     tops: Vec<f32>,
     row_turn: Vec<usize>,
     rects: Vec<Rect>,
 }
 
-/// Lays the rows out in a lane `lane_h` tall, which the transcript always
-/// fills: it spreads when short and squeezes when long. Marks that would land
-/// on top of each other are dropped, so the number painted never passes what
-/// fits.
+/// Lays the rows out from the top of a lane `lane_h` tall. The miniature keeps
+/// its natural size while it fits and is squeezed once it would pass the lane.
+/// Marks that would land on top of each other are dropped, so the number
+/// painted never passes what fits.
 fn lay(rows: &[Row<'_>], footer: f32, lane_h: f32) -> Laid {
     let mut tops = Vec::with_capacity(rows.len() + 1);
     let mut y = 0.0_f32;
@@ -198,7 +211,11 @@ fn lay(rows: &[Row<'_>], footer: f32, lane_h: f32) -> Laid {
     }
     tops.push(y);
     let total = y + footer;
-    let k = if total > 0. { lane_h / total } else { 1. };
+    let k = if total > 0. {
+        (lane_h / total).min(NATURAL)
+    } else {
+        NATURAL
+    };
     let mut rects: Vec<Rect> = Vec::new();
     // The bottom of the last mark drawn, with its air: nothing starts above it.
     let mut floor = 0.0_f32;
@@ -295,6 +312,7 @@ fn lay(rows: &[Row<'_>], footer: f32, lane_h: f32) -> Laid {
         lane_h,
         total,
         k,
+        extent: total * k,
         tops,
         row_turn: rows.iter().map(|r| r.turn).collect(),
         rects,
@@ -317,7 +335,7 @@ impl Laid {
 
     /// The turn drawn at `y`, counted from the top of the lane.
     fn turn_at(&self, y: f32) -> Option<usize> {
-        if y < 0. || y > self.lane_h || self.k <= 0. {
+        if y < 0. || y > self.extent || self.k <= 0. {
             return None;
         }
         Some(self.row_turn[self.row_of(y / self.k)?])
@@ -361,6 +379,8 @@ pub(super) struct Outline {
     /// A row the drag scrolled to before the list had measured it, and how
     /// far into it to go once it has.
     settle: Option<(usize, f32)>,
+    /// The session is long enough for the outline to be worth showing.
+    shown: bool,
     /// The session is too narrow to hold the lane in its margin, so the list
     /// leaves it room.
     own_room: bool,
@@ -552,10 +572,14 @@ impl ThreadView {
         self.sync_outline(None, cx);
     }
 
-    /// Whether the outline shows: like a scrollbar, only when the session
-    /// does not fit on screen.
+    /// Whether the outline shows: only when there is scrolling worth the name.
     fn outline_shown(&self) -> bool {
-        !self.turns.is_empty() && self.list.max_offset_for_scrollbar().y > px(1.)
+        self.outline.shown
+    }
+
+    /// The height the lane has for the miniature.
+    fn outline_lane(&self) -> f32 {
+        (self.list.viewport_bounds().size.height.as_f32() - 2. * LANE_INSET).max(0.)
     }
 
     /// The room the list leaves the lane. Wide sessions have it in their
@@ -571,6 +595,18 @@ impl ThreadView {
                 self.reset_outline(cx);
             }
         }
+        // Worth showing from two screens of transcript on.
+        if self.outline_measure() {
+            self.outline.laid.take();
+        }
+        let view_h = self.list.viewport_bounds().size.height.as_f32();
+        let screens = if view_h > 0. && !self.turns.is_empty() {
+            self.outline_laid(self.outline_lane()).total / view_h
+        } else {
+            0.
+        };
+        let least = if self.outline.shown { HIDE_AT } else { SHOW_AT };
+        self.outline.shown = screens >= least;
         if !self.outline_shown() {
             self.outline.own_room = false;
             return px(0.);
@@ -648,12 +684,12 @@ impl ThreadView {
         let scroll = laid.tops[row] + top.offset_in_item.as_f32();
         let (a, b) = (
             scroll * laid.k,
-            ((scroll + view_h) * laid.k).min(laid.lane_h),
+            ((scroll + view_h) * laid.k).min(laid.extent),
         );
         if b - a >= BOX_MIN {
             return Some((a, b));
         }
-        let a = ((a + b - BOX_MIN) / 2.).clamp(0., (laid.lane_h - BOX_MIN).max(0.));
+        let a = ((a + b - BOX_MIN) / 2.).clamp(0., (laid.extent - BOX_MIN).max(0.));
         Some((a, a + BOX_MIN))
     }
 
@@ -663,7 +699,7 @@ impl ThreadView {
         if self.outline_measure() {
             self.outline.laid.take();
         }
-        let laid = self.outline_laid(bounds.size.height.as_f32());
+        let laid = self.outline_laid(self.outline_lane());
         Frame {
             span: self.outline_box(&laid),
             laid,
@@ -834,13 +870,32 @@ impl ThreadView {
         }
     }
 
-    /// The lane, and the card of the turn the pointer is over.
-    pub(super) fn render_outline(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> Option<(AnyElement, Option<AnyElement>)> {
+    /// The lane, as tall as the miniature so that the rest of the edge does
+    /// nothing, and the card of the turn the pointer is over.
+    pub(super) fn render_outline(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         if !self.outline_shown() {
-            return None;
+            return Vec::new();
+        }
+        let extent = self.outline_laid(self.outline_lane()).extent;
+        let mut parts = Vec::new();
+        if self.outline.own_room {
+            // The room the list left is no part of the list: the wheel still
+            // scrolls the session there.
+            let room = div()
+                .id("session-outline-room")
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(LANE_ROOM))
+                .on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| {
+                    let delta = ev.delta.pixel_delta(window.line_height());
+                    this.glide = None;
+                    this.list.scroll_by(-delta.y);
+                    this.following = this.list.is_following_tail();
+                    cx.notify();
+                }));
+            parts.push(room.into_any_element());
         }
         let (this, held) = (cx.entity(), cx.entity());
         let lane = crate::ui::labelled(
@@ -850,7 +905,7 @@ impl ThreadView {
         )
         .absolute()
         .top(px(LANE_INSET))
-        .bottom(px(LANE_INSET))
+        .h(px(extent))
         .right(px(LANE_RIGHT))
         .w(px(LANE_W))
         .cursor_pointer()
@@ -902,7 +957,16 @@ impl ThreadView {
             )
             .size_full(),
         );
-        Some((lane.into_any_element(), self.render_outline_card(cx)))
+        let lane = crate::ui::motion::enter(
+            lane,
+            "session-outline-in",
+            crate::ui::motion::From::Above,
+            0.,
+            crate::ui::motion::BASE,
+        );
+        parts.push(lane.into_any_element());
+        parts.extend(self.render_outline_card(cx));
+        parts
     }
 
     /// The prompt of the turn under the pointer, with its number, its time
@@ -1028,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn the_miniature_fills_the_lane_and_keeps_the_rows_in_proportion() {
+    fn the_miniature_keeps_its_size_and_the_rows_in_proportion() {
         let (a, b) = (turn(80), turn(800));
         let rows = [
             Row {
@@ -1045,14 +1109,17 @@ mod tests {
         ];
         let laid = lay(&rows, 40., 600.);
         assert_eq!(laid.total, a.h + b.h * 2. + 40.);
-        assert_eq!(laid.k, 600. / laid.total);
+        // It fits, so it keeps its natural size and leaves the rest of the lane.
+        assert_eq!(laid.k, NATURAL);
+        assert_eq!(laid.extent, laid.total * NATURAL);
         assert_eq!(laid.tops, [0., a.h, a.h + b.h * 2.]);
         assert!(laid.rects.iter().all(|r| r.y + r.h <= 600.5));
         // A point in the lane is the turn drawn there.
         assert_eq!(laid.turn_at(0.), Some(0));
         assert_eq!(laid.turn_at(a.h * laid.k + 1.), Some(1));
-        assert_eq!(laid.turn_at(599.), Some(1));
-        assert_eq!(laid.turn_at(601.), None);
+        assert_eq!(laid.turn_at(laid.extent - 1.), Some(1));
+        // Under the miniature there is nothing to point at.
+        assert_eq!(laid.turn_at(laid.extent + 1.), None);
         assert_eq!(laid.turn_y(1), Some(a.h * laid.k));
         assert_eq!(laid.row_of(a.h + 5.), Some(1));
     }
@@ -1069,6 +1136,7 @@ mod tests {
             .collect();
         let laid = lay(&rows, 0., 760.);
         assert_eq!(laid.tops.len(), 401);
+        assert_eq!(laid.extent, 760.);
         assert!(laid.rects.len() as f32 <= 760. / 3. + 1.);
         assert!(laid.rects.iter().all(|r| r.y + r.h <= 760.5));
         // No two marks share a line.

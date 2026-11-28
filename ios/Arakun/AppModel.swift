@@ -907,11 +907,29 @@ final class AppModel {
     }
 
     /// Whether it went out; the composer keeps the text when it did not.
+    /// `now` stops the running turn and sends it as soon as it stopped.
     @discardableResult
-    func say(_ text: String) -> Bool {
+    func say(_ text: String, now: Bool = false) -> Bool {
         guard let s = session, canSend else { return false }
-        send(["type": "send", "session": s.id, "text": text])
+        var msg: [String: Any] = ["type": "send", "session": s.id, "text": text]
+        if now { msg["now"] = true }
+        send(msg)
         return true
+    }
+
+    /// Takes queued prompt `index` out of the queue; true when it went out, so
+    /// the composer can take its text. `text` lets the computer find one that moved.
+    @discardableResult
+    func takeBack(_ index: Int, text: String) -> Bool {
+        guard let s = session, canSend else { return false }
+        send(["type": "unqueue", "session": s.id, "index": index, "text": text])
+        return true
+    }
+
+    /// Lets the queue a Stop paused go again.
+    func resumeQueue() {
+        guard let s = session, canSend else { return }
+        send(["type": "resume_queue", "session": s.id])
     }
 
     func stop() {

@@ -31,9 +31,6 @@ struct SessionView: View {
                         ForEach(Array(s.entries.enumerated()), id: \.offset) { i, e in
                             EntryView(entry: e).id(s.from + i)
                         }
-                        ForEach(Array(s.queue.enumerated()), id: \.offset) { _, q in
-                            QueuedView(text: q)
-                        }
                         if s.status == .working, let started = s.turnStarted {
                             WorkingLine(since: started)
                         }
@@ -90,8 +87,12 @@ struct SessionView: View {
                     }
                 }
                 .disabled(!model.isLinked)
+                if let s, !s.queue.isEmpty {
+                    QueueCard(queue: s.queue, paused: s.queuePaused, linked: model.isLinked,
+                              takeBack: takeBack, resume: model.resumeQueue)
+                }
                 Composer(draft: $draft, typing: $typing, working: s?.status == .working, linked: model.isLinked,
-                         send: send, stop: model.stop)
+                         send: { send() }, stopAndSend: { send(now: true) }, stop: model.stop)
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
@@ -156,11 +157,18 @@ struct SessionView: View {
         }
     }
 
-    private func send() {
+    private func send(now: Bool = false) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         // Not sent (the link is down): the text stays to send again.
-        if model.say(text) { draft = "" }
+        if model.say(text, now: now) { draft = "" }
+    }
+
+    /// Out of the queue and into the box, after anything written there.
+    private func takeBack(_ index: Int, _ text: String) {
+        guard model.takeBack(index, text: text) else { return }
+        let had = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft = had.isEmpty ? text : "\(had)\n\n\(text)"
     }
 }
 
@@ -223,6 +231,8 @@ struct Composer: View {
     let working: Bool
     let linked: Bool
     let send: () -> Void
+    /// Stops the running turn and sends what is written once it stopped.
+    let stopAndSend: () -> Void
     let stop: () -> Void
 
     private var empty: Bool { draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -253,6 +263,19 @@ struct Composer: View {
                 .padding(6)
             } else {
                 let ready = !empty && linked
+                if working {
+                    // Send alone queues it behind the turn; this goes now.
+                    Button(action: stopAndSend) {
+                        Icon("square", size: 14)
+                            .foregroundStyle(Color.failure)
+                            .frame(width: 34, height: 34)
+                            .background(RoundedRectangle(cornerRadius: Radius.control).strokeBorder(Color.failure.opacity(0.5)))
+                    }
+                    .disabled(!ready)
+                    .opacity(ready ? 1 : 0.5)
+                    .padding(.vertical, 6)
+                    .accessibilityLabel("Stop and send")
+                }
                 Button(action: send) {
                     Icon("arrow-up01", size: 18)
                         .foregroundStyle(ready ? Color.onAmber : Color.textFaint)
@@ -270,21 +293,55 @@ struct Composer: View {
     }
 }
 
-struct QueuedView: View {
-    let text: String
+/// The prompts the computer holds until the turn ends, over the composer.
+/// Each can be taken back into the box; after a Stop they wait for Resume.
+struct QueueCard: View {
+    let queue: [String]
+    let paused: Bool
+    let linked: Bool
+    let takeBack: (Int, String) -> Void
+    let resume: () -> Void
 
     var body: some View {
-        HStack {
-            Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 4) {
-                Eyebrow("Queued")
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(Color.textMuted)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: Radius.card).strokeBorder(Color.lineStrong, style: .init(lineWidth: 1, dash: [4, 3])))
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Eyebrow(paused ? "Paused" : "Queued")
+                Text(paused ? "· waits until you resume" : "· sends when this turn ends")
+                    .font(.mono(11))
+                    .foregroundStyle(Color.textFaint)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if paused {
+                    Button("Resume", action: resume)
+                        .buttonStyle(.outline)
+                        .disabled(!linked)
+                }
+            }
+            .frame(minHeight: 40)
+            ForEach(Array(queue.enumerated()), id: \.offset) { i, q in
+                HStack(spacing: 8) {
+                    Text(q)
+                        .font(.callout)
+                        .foregroundStyle(Color.textMuted)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { takeBack(i, q) } label: {
+                        Text("Take back")
+                            .font(.geist(14, .medium))
+                            .foregroundStyle(Color.text)
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 40)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!linked)
+                    .opacity(linked ? 1 : 0.5)
+                    .accessibilityLabel("Take back: \(q)")
+                }
             }
         }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: Radius.card).strokeBorder(Color.lineStrong, style: .init(lineWidth: 1, dash: [4, 3])))
     }
 }

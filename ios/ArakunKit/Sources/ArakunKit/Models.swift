@@ -223,7 +223,10 @@ public struct LiveSession: Sendable {
     public var question: QuestionAsk?
     public var secret: SecretAsk?
     public var usage: String?
+    /// Prompts the computer holds until the turn ends.
     public var queue: [String]
+    /// A Stop paused `queue`: it waits until resumed.
+    public var queuePaused = false
     public var turnStarted: Date?
     public var changes: (files: Int, added: Int, removed: Int)
 
@@ -270,6 +273,7 @@ public struct LiveSession: Sendable {
         secret = SecretAsk(j["secret"])
         usage = j["usage"]["summary"].string
         queue = j["queue"].array.map(\.str)
+        queuePaused = j["queue_paused"].bool
         if let t = j["title"].string, !t.isEmpty { title = t }
         turnStarted = j["elapsed_ms"].double.map { Date().addingTimeInterval(-$0 / 1000) }
         let c = j["changes"]

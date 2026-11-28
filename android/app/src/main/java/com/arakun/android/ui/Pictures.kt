@@ -51,6 +51,7 @@ import androidx.core.content.FileProvider
 import com.arakun.android.Picture
 import com.arakun.android.Pictures
 import com.arakun.android.R
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,13 +77,27 @@ private fun rememberPicture(url: String?): Picture? {
     return pic
 }
 
-/** A picture of the agent's, as wide as the screen at most; tap it to see it whole. */
+/**
+ * A picture of the agent's, as wide as the screen at most; tap it to see it
+ * whole. One from the web loads only once tapped: words an agent was fed could
+ * name a link that carries what it read to someone else's server.
+ */
 @Composable
 fun AgentPicture(url: String, alt: String) {
-    val pic = rememberPicture(url)
+    val web = !url.startsWith("/")
+    var allowed by remember(url) { mutableStateOf(!web) }
+    val pic = rememberPicture(url.takeIf { allowed })
     val name = pictureName(url, alt)
     if (pic == null) {
-        Placeholder(name, Modifier.fillMaxWidth())
+        if (allowed) {
+            Placeholder(name, Modifier.fillMaxWidth())
+        } else {
+            val host = remember(url) { url.toHttpUrlOrNull()?.host ?: "the web" }
+            Placeholder(
+                "$name · Tap to load from $host",
+                Modifier.fillMaxWidth().tap { allowed = true },
+            )
+        }
         return
     }
     var open by remember { mutableStateOf(false) }

@@ -18,7 +18,8 @@ class Picture(val bitmap: ImageBitmap, val bytes: ByteArray, val mime: String)
 /**
  * The pictures of the session on screen, as the phone page's PicStore keeps
  * them. The relay serves no images, so the computer's own `/…` links are
- * fetched inside the sealed channel; `https:` ones come from the web. Each is
+ * fetched inside the sealed channel; `https:` ones come from the web, only
+ * once the person taps to load one (see ui/Pictures.kt). Each is
  * fetched once while it is kept, and a failure is tried again on the next
  * ask. Never log a link or what came back: both can name private files.
  */
@@ -98,7 +99,9 @@ class Pictures(
         private val web: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .callTimeout(30, TimeUnit.SECONDS)
-                // No cookies, no cache: a picture an agent names tells the web nothing more.
+                // Only the host the person agreed to load from: no hop elsewhere.
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
         }
 

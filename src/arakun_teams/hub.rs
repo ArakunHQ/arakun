@@ -25,7 +25,7 @@ use super::api::{
 use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
-use super::store::{self, Kept, Local, Sealer};
+use super::store::{self, DeviceError, Kept, Local, Sealer};
 
 /// How often a device that waits for an endorsement asks again.
 const ENDORSE_POLL: Duration = Duration::from_secs(5);
@@ -59,7 +59,7 @@ pub enum DeviceState {
         code: String,
         id: String,
     },
-    Failed(String),
+    Failed(DeviceError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -847,11 +847,47 @@ impl Hub {
             return;
         };
         if super::fixture().is_some() {
-            self.device = DeviceState::Failed(
+            self.device = DeviceState::Failed(DeviceError::Local(
                 "ARAKUN_TEAMS_FIXTURE is set: there is no Teams server to talk to.".into(),
-            );
+            ));
             return;
         }
+        self.start_device(base, session, me, false, cx);
+    }
+
+    /// Sets this computer up as a new device, once its keys are lost. The
+    /// account's other devices then have to approve it, as for any new one.
+    pub fn new_device(&mut self, cx: &mut Context<Self>) {
+        if self.net.is_some()
+            || !matches!(self.device, DeviceState::Failed(DeviceError::KeysLost(_)))
+        {
+            return;
+        }
+        let Some(signed) = self.teams_entity.read(cx).signed() else {
+            return;
+        };
+        if Some(account_of(&signed)) != self.account {
+            return;
+        }
+        let (base, session, me) = signed;
+        self.generation += 1;
+        self.error = None;
+        self.info = None;
+        self.device = DeviceState::Starting;
+        self.load = Load::Loading;
+        cx.notify();
+        self.start_device(base, session, me, true, cx);
+    }
+
+    /// Reads this device's keys (or makes new ones with `fresh`), then registers.
+    fn start_device(
+        &mut self,
+        base: String,
+        session: String,
+        me: Me,
+        fresh: bool,
+        cx: &mut Context<Self>,
+    ) {
         let generation = self.generation;
         // A second sign-in can supersede this one. Both must wait for the
         // pending write; taking the task would let the second read overtake it.
@@ -859,21 +895,30 @@ impl Hub {
         cx.spawn(async move |this, cx| {
             let started = cx
                 .background_spawn(store::after_save(pending_save, move || {
-                    let local = store::load_device(&base, me.github_id, || {
-                        let call = Call {
-                            base: &base,
-                            session: &session,
-                            device: None,
-                        };
-                        let rows = call.devices(me.github_id).map_err(|e| e.to_string())?;
-                        let trusted = trusted_devices(me.github_id, &rows);
-                        if trusted.len() != rows.len() {
-                            return Err("Could not verify this account's existing devices.".into());
-                        }
-                        Ok(trusted)
-                    })?;
+                    let local = store::load_device(
+                        &base,
+                        me.github_id,
+                        || {
+                            let call = Call {
+                                base: &base,
+                                session: &session,
+                                device: None,
+                            };
+                            let rows = call
+                                .devices(me.github_id)
+                                .map_err(|e| DeviceError::Server(e.to_string()))?;
+                            let trusted = trusted_devices(me.github_id, &rows);
+                            if trusted.len() != rows.len() {
+                                return Err(
+                                    "Could not verify this account's existing devices.".into()
+                                );
+                            }
+                            Ok(trusted)
+                        },
+                        fresh,
+                    )?;
                     let kept = local.read()?;
-                    Ok::<_, String>((
+                    Ok::<_, DeviceError>((
                         Net {
                             base,
                             session,
@@ -1004,7 +1049,7 @@ impl Hub {
                 }
                 Err(e) => {
                     hub.load = Load::Unreachable(e.to_string());
-                    hub.device = DeviceState::Failed(e.to_string());
+                    hub.device = DeviceState::Failed(DeviceError::Server(e.to_string()));
                 }
             },
         );

@@ -30,6 +30,13 @@
 // account linked to the Arakun account (cloud_access.ts says why); without
 // one it is a 403 whose `error` is GITHUB_REQUIRED. The webhook hands nothing
 // to an account without one.
+//
+// A cloud machine's own session (cloud_machine.ts) may make the calls a
+// computer makes for its work: PUT /linear/routes, the accept and the
+// session's progress. Only for its own label: its routes, and the deliveries
+// sent to it. Its server takes Linear's work as any server does
+// (core/src/server/daemon/linear.rs), so an issue runs there with the
+// owner's computer off.
 
 import { cookie, session, type Session } from "./auth";
 import { githubRequired, hasGitHub } from "./cloud_access";
@@ -48,16 +55,17 @@ export function configured(env: Env): boolean {
   return Boolean(env.LINEAR_CLIENT_ID && env.LINEAR_CLIENT_SECRET && env.LINEAR_WEBHOOK_SECRET && keyUsable(env));
 }
 
-/// The session, or the 401 or 403 to send.
-export async function signedIn(request: Request, env: Env): Promise<Session | Response> {
-  const s = await session(request, env, { flag: FLAG });
+/// The session, or the 401 or 403 to send. `machine`: a cloud machine's
+/// session counts too, and its `machine` names its label.
+export async function signedIn(request: Request, env: Env, machine = false): Promise<Session | Response> {
+  const s = await session(request, env, { flag: FLAG, cloud: machine });
   if (!s) return error(401, "not signed in");
   if (s.blocked || !s.flagged) return error(403, "Linear is not available for this account");
   return s;
 }
 
 /// The answer for a /linear route, or null when the path is not one.
-export async function linear(request: Request, env: Env, url: URL): Promise<Response | null> {
+export async function linear(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response | null> {
   const { pathname } = url;
   if (pathname !== "/linear" && !pathname.startsWith("/linear/")) return null;
   if (!configured(env)) return error(404, "not found");
@@ -65,9 +73,9 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
   // Linear's own calls carry no session: the webhook's proof is its
   // signature. The callback is a browser's, and does its own check of
   // session and flag.
-  if (key === "POST /linear/webhook") return webhook(request, env);
+  if (key === "POST /linear/webhook") return webhook(request, env, ctx);
   if (key === "GET /linear/callback") return callback(request, env, url);
-  const who = await signedIn(request, env);
+  const who = await signedIn(request, env, machineCall(request.method, pathname));
   if (who instanceof Response) return who;
   switch (key) {
     case "GET /linear/link":
@@ -93,6 +101,15 @@ export async function linear(request: Request, env: Env, url: URL): Promise<Resp
       return error(404, "not found");
     }
   }
+}
+
+/// Whether the call is one a computer makes for the work it takes, which a
+/// cloud machine's session may make too.
+function machineCall(method: string, pathname: string): boolean {
+  if (method === "PUT" && pathname === "/linear/routes") return true;
+  if (method === "POST" && /^\/linear\/deliveries\/[^/]+\/accept$/.test(pathname)) return true;
+  if (method === "POST" && /^\/linear\/sessions\/[^/]+\/(?:activity|links)$/.test(pathname)) return true;
+  return method === "PUT" && /^\/linear\/sessions\/[^/]+\/plan$/.test(pathname);
 }
 
 /// `__Host-`, so a sibling host cannot plant a state of its own.
@@ -259,7 +276,7 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
   const repos = repositories(body["repositories"]);
   if (typeof label !== "string" || typeof org !== "string" || !UUID.test(org) || !teams || !projects || !repos) return bad();
   if (teams.length + projects.length > MAX_IDS) return bad();
-  if (!LABEL.test(label)) return error(404, "no such computer");
+  if (!LABEL.test(label) || (who.machine !== null && label !== who.machine)) return error(404, "no such computer");
   const [machine, link] = await env.DB.batch<{ n: number }>([
     env.DB.prepare("SELECT COUNT(*) AS n FROM machines WHERE label = ? AND account_id = ?").bind(label, who.accountId),
     env.DB.prepare("SELECT COUNT(*) AS n FROM linear_links WHERE organization_id = ? AND account_id = ?").bind(org, who.accountId),
@@ -352,11 +369,12 @@ const DELIVERY_ID = /^[0-9a-f]{32}$/;
 /// The computer took a delivery: the relay need not keep it any longer.
 async function accept(env: Env, who: Session, id: string): Promise<Response> {
   if (!DELIVERY_ID.test(id)) return error(404, "no such delivery");
-  // Owner and id in one statement, so another account's id looks unknown.
+  // Owner and id in one statement, so another account's id looks unknown,
+  // and so does another machine's to a cloud machine.
   const row = await env.DB.prepare(
-    "UPDATE linear_deliveries SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ? AND account_id = ? RETURNING label",
+    "UPDATE linear_deliveries SET accepted_at = COALESCE(accepted_at, ?1) WHERE id = ?2 AND account_id = ?3 AND (?4 IS NULL OR label = ?4) RETURNING label",
   )
-    .bind(now(), id, who.accountId)
+    .bind(now(), id, who.accountId, who.machine)
     .first<{ label: string }>();
   if (!row) return error(404, "no such delivery");
   // Every time: a first accept may have failed after the update.
@@ -443,13 +461,15 @@ function parseLinks(links: unknown): Activity["links"] | null {
 }
 
 /// The workspace and issue of a session the caller was given. They come from
-/// the delivery, not the caller.
+/// the delivery, not the caller. A cloud machine was given only what was
+/// sent to its label.
 async function ownedSession(env: Env, who: Session, agentSessionId: string): Promise<{ organizationId: string; issueId: string } | null> {
   const owned = await env.DB.prepare(
-    `SELECT organization_id, issue_id FROM linear_deliveries WHERE agent_session_id = ? AND account_id = ? AND kind = 'created'
+    `SELECT organization_id, issue_id FROM linear_deliveries WHERE agent_session_id = ?1 AND account_id = ?2 AND kind = 'created'
+       AND (?3 IS NULL OR label = ?3)
      ORDER BY created_at DESC LIMIT 1`,
   )
-    .bind(agentSessionId, who.accountId)
+    .bind(agentSessionId, who.accountId, who.machine)
     .first<{ organization_id: string; issue_id: string }>();
   return owned ? { organizationId: owned.organization_id, issueId: owned.issue_id } : null;
 }

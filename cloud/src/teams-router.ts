@@ -102,7 +102,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (notice) return notice;
     const pushed = await push(request, env, url);
     if (pushed) return pushed;
-    const linked = await linear(request, env, url);
+    const linked = await linear(request, env, url, ctx);
     if (linked) return linked;
     const answer = await teams(request, env, url);
     if (answer) return answer;

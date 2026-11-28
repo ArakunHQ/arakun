@@ -115,6 +115,11 @@ pub fn split_documents(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
     })
 }
 
+/// The regular file a mention written as `mention` names, when it is one.
+pub fn mentioned_file(mention: &str, cwd: &Path) -> Option<PathBuf> {
+    resolve(mention, cwd).filter(|p| p.is_file())
+}
+
 /// The image file a mention written as `mention` names, when it is one.
 pub fn mentioned_image(mention: &str, cwd: &Path) -> Option<PathBuf> {
     resolve(mention, cwd).filter(|p| is_image_file(p))

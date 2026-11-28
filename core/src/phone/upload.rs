@@ -1,7 +1,8 @@
-//! Photos a phone sends with a prompt. A relay frame is small, so a photo
-//! comes in pieces, each base64, under an id the phone makes up. Once the last
-//! piece lands the photo is saved, and the prompt that names the id carries
-//! the file as an `@` mention, the way a pasted image does on the desktop.
+//! Photos a phone sends with a prompt, and files the desktop sends with a
+//! prompt to a server. A relay frame is small, so each comes in pieces, each
+//! base64, under an id the sender makes up. Once the last piece lands it is
+//! saved, and the prompt that names the id carries the file as an `@`
+//! mention, the way a pasted image does on the desktop.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,17 +29,35 @@ struct Limits {
     count: usize,
 }
 
+/// The most bytes one file sent with a prompt may hold. A server drops a
+/// larger one, so a sender keeps it back.
+pub const MAX_FILE: u64 = crate::agent::attach::MAX_IMAGE_BYTES;
+/// The most bytes the files of one prompt may hold together: what a server
+/// keeps of half-sent ones at once.
+pub const MAX_PROMPT: u64 = 3 * MAX_FILE;
+
 const LIMITS: Limits = Limits {
-    one: crate::agent::attach::MAX_IMAGE_BYTES as usize,
-    all: 3 * crate::agent::attach::MAX_IMAGE_BYTES as usize,
+    one: MAX_FILE as usize,
+    all: MAX_PROMPT as usize,
     count: 32,
 };
+
+/// What a finished upload is saved as.
+#[derive(Debug, PartialEq)]
+pub enum Save<'a> {
+    /// A photo or a pasted image, under this extension.
+    Image(&'a str),
+    /// Any other file, under this name: its own, made safe by [`file_name`].
+    File(&'a str),
+}
 
 struct Upload {
     parts: Vec<Option<Vec<u8>>>,
     /// The bytes its pieces hold so far.
     held: usize,
     name: String,
+    /// Sent as a file (`file` on the wire), saved under its own name.
+    file: bool,
     at: Instant,
     /// Where it landed once its last piece arrived.
     path: Option<PathBuf>,
@@ -50,21 +69,23 @@ pub struct Uploads {
 }
 
 impl Uploads {
-    /// Takes piece `part` of `of` of the photo `upload`. Once every piece is
-    /// here, `save` gets the bytes and the extension to save them under, and
-    /// the file it made is returned (again for a piece that comes twice).
-    /// A photo that grows past what one may hold, or past what all may hold
+    /// Takes piece `part` of `of` of the photo or `file` `upload`. Once every
+    /// piece is here, `save` gets the bytes and what to save them as, and the
+    /// file it made is returned (again for a piece that comes twice). An
+    /// upload that grows past what one may hold, or past what all may hold
     /// together, is dropped with the pieces it had.
+    #[allow(clippy::too_many_arguments)] // The fields of one `upload` message.
     pub fn piece(
         &mut self,
         upload: &str,
         name: &str,
+        file: bool,
         part: usize,
         of: usize,
         data: &str,
-        save: impl FnOnce(&[u8], &str) -> std::io::Result<PathBuf>,
+        save: impl FnOnce(&[u8], Save) -> std::io::Result<PathBuf>,
     ) -> Option<PathBuf> {
-        self.piece_within(LIMITS, upload, name, part, of, data, save)
+        self.piece_within(LIMITS, upload, name, file, part, of, data, save)
     }
 
     #[allow(clippy::too_many_arguments)] // `piece`, with the limits a test can make small.
@@ -73,10 +94,11 @@ impl Uploads {
         limits: Limits,
         upload: &str,
         name: &str,
+        file: bool,
         part: usize,
         of: usize,
         data: &str,
-        save: impl FnOnce(&[u8], &str) -> std::io::Result<PathBuf>,
+        save: impl FnOnce(&[u8], Save) -> std::io::Result<PathBuf>,
     ) -> Option<PathBuf> {
         self.by_id.retain(|_, u| u.at.elapsed() < LIVES);
         if !self.by_id.contains_key(upload) && self.by_id.len() >= limits.count {
@@ -95,6 +117,7 @@ impl Uploads {
                 parts: vec![None; of.clamp(1, MAX_PARTS)],
                 held: 0,
                 name: name.to_string(),
+                file,
                 at: Instant::now(),
                 path: None,
             });
@@ -113,7 +136,13 @@ impl Uploads {
         }
         if entry.path.is_none() && entry.parts.iter().all(|p| p.is_some()) {
             let bytes: Vec<u8> = entry.parts.iter().flatten().flatten().cloned().collect();
-            if let Ok(path) = save(&bytes, ext(&entry.name)) {
+            let name = file_name(&entry.name);
+            let what = if entry.file {
+                Save::File(&name)
+            } else {
+                Save::Image(ext(&entry.name))
+            };
+            if let Ok(path) = save(&bytes, what) {
                 entry.path = Some(path);
                 // On disk now: only where it is has to be remembered.
                 (entry.parts, entry.held) = (Vec::new(), 0);
@@ -150,6 +179,28 @@ fn ext(name: &str) -> &str {
     }
 }
 
+/// The name a file sent with a prompt is saved under: the last part of
+/// `name` with only plain characters left, so it cannot reach out of the
+/// folder it is saved in or hide as a dot file.
+pub fn file_name(name: &str) -> String {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let plain: String = last
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(100)
+        .collect();
+    match plain.trim_start_matches('.') {
+        "" => "file".to_string(),
+        plain => plain.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,21 +213,27 @@ mod tests {
     fn a_photo_is_saved_once_its_last_piece_lands() {
         let mut uploads = Uploads::default();
         let saved = std::cell::RefCell::new(Vec::new());
-        let save = |bytes: &[u8], ext: &str| {
+        let save = |bytes: &[u8], what: Save| {
+            let Save::Image(ext) = what else {
+                panic!("a photo")
+            };
             saved.borrow_mut().push((bytes.to_vec(), ext.to_string()));
             Ok(PathBuf::from("/tmp/photo.png"))
         };
         // Out of order: nothing is saved until both are here.
-        assert_eq!(uploads.piece("u1", "a.png", 1, 2, &b64(b"cd"), save), None);
         assert_eq!(
-            uploads.piece("u1", "a.png", 0, 2, &b64(b"ab"), save),
+            uploads.piece("u1", "a.png", false, 1, 2, &b64(b"cd"), save),
+            None
+        );
+        assert_eq!(
+            uploads.piece("u1", "a.png", false, 0, 2, &b64(b"ab"), save),
             Some(PathBuf::from("/tmp/photo.png"))
         );
         assert_eq!(*saved.borrow(), [(b"abcd".to_vec(), "png".to_string())]);
         // A piece that comes again finds the file and saves nothing new.
         assert!(
             uploads
-                .piece("u1", "a.png", 0, 2, &b64(b"ab"), save)
+                .piece("u1", "a.png", false, 0, 2, &b64(b"ab"), save)
                 .is_some()
         );
         assert_eq!(saved.borrow().len(), 1);
@@ -190,10 +247,10 @@ mod tests {
     #[test]
     fn a_photo_in_a_folder_with_a_space_is_still_read_as_one_path() {
         let mut uploads = Uploads::default();
-        let save = |_: &[u8], _: &str| Ok(PathBuf::from("/srv/Agent Data/uploads/photo-1.jpg"));
+        let save = |_: &[u8], _: Save| Ok(PathBuf::from("/srv/Agent Data/uploads/photo-1.jpg"));
         assert!(
             uploads
-                .piece("u", "a.jpg", 0, 1, &b64(b"x"), save)
+                .piece("u", "a.jpg", false, 0, 1, &b64(b"x"), save)
                 .is_some()
         );
         let text = uploads.attach("look".into(), &["u".into()]);
@@ -207,9 +264,36 @@ mod tests {
     #[test]
     fn a_piece_out_of_range_or_not_base64_is_left_out() {
         let mut uploads = Uploads::default();
-        let never = |_: &[u8], _: &str| -> std::io::Result<PathBuf> { panic!("not complete") };
-        assert_eq!(uploads.piece("u", "a.jpg", 5, 2, &b64(b"x"), never), None);
-        assert_eq!(uploads.piece("u", "a.jpg", 0, 2, "***", never), None);
+        let never = |_: &[u8], _: Save| -> std::io::Result<PathBuf> { panic!("not complete") };
+        assert_eq!(
+            uploads.piece("u", "a.jpg", false, 5, 2, &b64(b"x"), never),
+            None
+        );
+        assert_eq!(uploads.piece("u", "a.jpg", false, 0, 2, "***", never), None);
+    }
+
+    #[test]
+    fn a_file_is_saved_under_its_own_name() {
+        let mut uploads = Uploads::default();
+        let saved = std::cell::RefCell::new(None);
+        let save = |bytes: &[u8], what: Save| {
+            assert_eq!(what, Save::File("server.log"));
+            *saved.borrow_mut() = Some(bytes.to_vec());
+            Ok(PathBuf::from("/srv/uploads/file-1/server.log"))
+        };
+        let path = uploads.piece("u", "server.log", true, 0, 1, &b64(b"boot"), save);
+        assert_eq!(path, Some(PathBuf::from("/srv/uploads/file-1/server.log")));
+        assert_eq!(*saved.borrow(), Some(b"boot".to_vec()));
+    }
+
+    #[test]
+    fn a_file_name_stays_in_its_folder() {
+        assert_eq!(file_name("data 2024.csv"), "data_2024.csv");
+        assert_eq!(file_name("../../etc/passwd"), "passwd");
+        assert_eq!(file_name("C:\\x\\report.pdf"), "report.pdf");
+        assert_eq!(file_name(".bashrc"), "bashrc");
+        assert_eq!(file_name(".."), "file");
+        assert_eq!(file_name(""), "file");
     }
 
     #[test]
@@ -227,9 +311,9 @@ mod tests {
         };
         let mut uploads = Uploads::default();
         let held = |u: &Uploads| u.by_id.values().map(|u| u.held).sum::<usize>();
-        let save = |_: &[u8], _: &str| Ok(PathBuf::from("/tmp/photo.jpg"));
+        let save = |_: &[u8], _: Save| Ok(PathBuf::from("/tmp/photo.jpg"));
         let piece = |u: &mut Uploads, id: &str, part: usize, bytes: &[u8]| {
-            u.piece_within(limits, id, "a.jpg", part, 3, &b64(bytes), save)
+            u.piece_within(limits, id, "a.jpg", false, part, 3, &b64(bytes), save)
         };
 
         // The first piece of a photo that is never finished, again and again.

@@ -1,5 +1,5 @@
-//! Images a prompt to a server carries. A prompt names a pasted image by its
-//! path on this computer, which the server cannot read. So each one goes
+//! Files a prompt to a server carries. A prompt names an attached file by
+//! its path on this computer, which the server cannot read. So each one goes
 //! ahead of the prompt as `upload` pieces, as a phone sends its photos, and
 //! the prompt names it by the upload's id instead. The server saves it and
 //! puts its own path back in the prompt.
@@ -11,44 +11,102 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::agent::attach;
+use crate::phone::{MAX_FILE, MAX_PROMPT};
 
 /// The base64 one piece carries at most: under the relay's frame once sealed,
 /// as the phone page's pieces are.
 pub const PIECE: usize = 160 * 1024;
 
-/// How many sent images are remembered, to put a prompt that did not go back
+/// How many sent files are remembered, to put a prompt that did not go back
 /// in the composer as it was written.
 const REMEMBERED: usize = 64;
 
-/// An image file on this computer that a prompt mentions.
+/// A file on this computer that a prompt mentions.
 #[derive(Debug, PartialEq)]
-pub struct Image {
+pub struct Upload {
     pub path: PathBuf,
     pub bytes: Vec<u8>,
+    /// An image, which every server takes. Any other file only goes to a
+    /// server that takes files.
+    pub image: bool,
 }
 
-/// `text` without its mentions of image files on this computer, and those
-/// images read. Only a full path (or one under `~/`) can be a file here: a
+/// What [`local_files`] made of a prompt.
+#[derive(Debug, Default, PartialEq)]
+pub struct Local {
+    /// The prompt without the mentions of the files that go.
+    pub text: String,
+    pub files: Vec<Upload>,
+    /// Files on this computer too large to send, alone or with the others:
+    /// they stay mentions, which the server cannot read.
+    pub too_large: Vec<PathBuf>,
+}
+
+/// `text` without its mentions of files on this computer, and those files
+/// read: any regular file when the server takes `files`, its images only
+/// otherwise. Only a full path (or one under `~/`) can be a file here: a
 /// relative one names a file in the server's folder.
-pub fn local_images(text: &str) -> (String, Vec<Image>) {
-    attach::split_mentions(text, |m| {
+pub fn local_files(text: &str, files: bool) -> Local {
+    let mut too_large = Vec::new();
+    let mut total = 0;
+    let (text, files) = attach::split_mentions(text, |m| {
         if !(Path::new(m).is_absolute() || m.starts_with("~/")) {
             return None;
         }
-        let path = attach::mentioned_image(m, Path::new("/"))?;
+        let path = attach::mentioned_file(m, Path::new("/"))?;
+        let image = attach::mime_type(&path).is_some();
+        if !(image || files) {
+            return None;
+        }
         // The server drops a larger one, so it stays a mention.
-        if std::fs::metadata(&path).ok()?.len() > attach::MAX_IMAGE_BYTES {
+        let len = std::fs::metadata(&path).ok()?.len();
+        if len > MAX_FILE || total + len > MAX_PROMPT {
+            too_large.push(path);
             return None;
         }
         let bytes = std::fs::read(&path).ok()?;
-        Some(Image { path, bytes })
-    })
+        total += len;
+        Some(Upload { path, bytes, image })
+    });
+    Local {
+        text,
+        files,
+        too_large,
+    }
 }
 
-/// The `upload` messages that carry `image` to the server as upload `id`.
-pub fn pieces(session: &str, id: &str, image: &Image) -> Vec<Value> {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&image.bytes);
-    let name = image
+/// The notice for files left out of a prompt for their size.
+pub fn too_large_notice(paths: &[PathBuf]) -> Option<String> {
+    let names: Vec<String> = paths
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map_or_else(|| p.to_string_lossy(), |n| n.to_string_lossy())
+                .into_owned()
+        })
+        .collect();
+    let mb = |b: u64| b / (1024 * 1024);
+    let limits = format!(
+        "A server takes files up to {} MB each and {} MB for one prompt",
+        mb(MAX_FILE),
+        mb(MAX_PROMPT)
+    );
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "{one} is too large to send, so the agent cannot open it. {limits}."
+        )),
+        _ => Some(format!(
+            "{} are too large to send, so the agent cannot open them. {limits}.",
+            names.join(", ")
+        )),
+    }
+}
+
+/// The `upload` messages that carry `file` to the server as upload `id`.
+pub fn pieces(session: &str, id: &str, file: &Upload) -> Vec<Value> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&file.bytes);
+    let name = file
         .path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -67,15 +125,20 @@ pub fn pieces(session: &str, id: &str, image: &Image) -> Vec<Value> {
         .into_iter()
         .enumerate()
         .map(|(part, data)| {
-            json!({
+            let mut piece = json!({
                 "type": "upload", "session": session, "upload": id, "name": name,
                 "part": part, "of": of, "data": data,
-            })
+            });
+            // Left out for an image: a server from before files saves it the same.
+            if !file.image {
+                piece["file"] = true.into();
+            }
+            piece
         })
         .collect()
 }
 
-/// The images sent lately, by upload id, so a prompt that did not reach the
+/// The files sent lately, by upload id, so a prompt that did not reach the
 /// server goes back in the composer with them.
 #[derive(Default)]
 pub struct Sent {
@@ -95,7 +158,7 @@ impl Sent {
         id
     }
 
-    /// `text` with the images of `ids` after it as mentions again.
+    /// `text` with the files of `ids` after it as mentions again.
     pub fn put_back(&mut self, text: &str, ids: &[String]) -> String {
         let mentions: Vec<String> = ids
             .iter()
@@ -124,30 +187,101 @@ mod tests {
     }
 
     #[test]
-    fn takes_out_the_images_on_this_computer_only() {
-        let dir = dir();
+    fn takes_out_the_files_on_this_computer_only() {
+        let dir = dir().join("only");
+        std::fs::create_dir_all(&dir).unwrap();
         let shot = dir.join("shot one.png");
+        let log = dir.join("server.log");
         std::fs::write(&shot, b"png").unwrap();
+        std::fs::write(&log, b"boot").unwrap();
         let text = format!(
-            "look {} and @src/logo.png and @/nowhere/x.png",
-            attach::mention(&shot.to_string_lossy())
+            "look {} and {} and @src/logo.png and @/nowhere/x.png and @{}",
+            attach::mention(&shot.to_string_lossy()),
+            attach::mention(&log.to_string_lossy()),
+            dir.display(),
         );
-        let (text, images) = local_images(&text);
-        assert_eq!(text, "look  and @src/logo.png and @/nowhere/x.png");
+        let local = local_files(&text, true);
         assert_eq!(
-            images,
-            [Image {
-                path: shot,
-                bytes: b"png".to_vec()
-            }]
+            local.text,
+            format!(
+                "look  and  and @src/logo.png and @/nowhere/x.png and @{}",
+                dir.display()
+            )
         );
+        let shot = Upload {
+            path: shot,
+            bytes: b"png".to_vec(),
+            image: true,
+        };
+        let log = Upload {
+            path: log,
+            bytes: b"boot".to_vec(),
+            image: false,
+        };
+        assert_eq!(local.files, [shot, log]);
+
+        // A server from before files gets the images only.
+        let older = local_files(&text, false);
+        assert_eq!(older.files.len(), 1);
+        assert!(older.files[0].image);
+        assert!(older.text.contains("server.log"));
+    }
+
+    #[test]
+    fn a_file_too_large_stays_and_is_named() {
+        let dir = dir().join("large");
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.csv");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_FILE + 1)
+            .unwrap();
+        // Three that fit one by one, but not together.
+        let parts: Vec<PathBuf> = (0..4)
+            .map(|n| {
+                let p = dir.join(format!("part{n}.bin"));
+                std::fs::File::create(&p)
+                    .unwrap()
+                    .set_len(MAX_FILE)
+                    .unwrap();
+                p
+            })
+            .collect();
+        let text = std::iter::once(&big)
+            .chain(&parts)
+            .map(|p| attach::mention(&p.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let local = local_files(&text, true);
+        assert_eq!(local.files.len(), 3);
+        assert_eq!(local.too_large, [big.clone(), parts[3].clone()]);
+        assert!(local.text.contains("big.csv") && local.text.contains("part3.bin"));
+        assert_eq!(
+            too_large_notice(&local.too_large).unwrap(),
+            "big.csv, part3.bin are too large to send, so the agent cannot open them. \
+             A server takes files up to 5 MB each and 15 MB for one prompt."
+        );
+        assert_eq!(too_large_notice(&[]), None);
+    }
+
+    #[test]
+    fn only_a_file_that_is_not_an_image_is_marked_as_one() {
+        let log = Upload {
+            path: PathBuf::from("/p/server.log"),
+            bytes: b"boot".to_vec(),
+            image: false,
+        };
+        assert_eq!(pieces("s1", "u1", &log)[0]["file"], true);
+        let shot = Upload { image: true, ..log };
+        assert!(pieces("s1", "u1", &shot)[0].get("file").is_none());
     }
 
     #[test]
     fn cuts_an_image_into_pieces_that_join_back() {
-        let image = Image {
+        let image = Upload {
             path: PathBuf::from("/p/a.png"),
             bytes: (0..=255u8).cycle().take(PIECE).collect(),
+            image: true,
         };
         let pieces = pieces("s1", "u1", &image);
         // PIECE bytes make 4/3 as much base64: two pieces.
@@ -176,9 +310,10 @@ mod tests {
 
     #[test]
     fn the_server_saves_what_the_pieces_carry() {
-        let image = Image {
+        let image = Upload {
             path: PathBuf::from("/p/shot.png"),
             bytes: (0..=255u8).cycle().take(3 * PIECE).collect(),
+            image: true,
         };
         let mut uploads = crate::phone::Uploads::default();
         let mut saved = None;
@@ -189,11 +324,15 @@ mod tests {
             saved = uploads.piece(
                 "u1",
                 name,
+                false,
                 part as usize,
                 of as usize,
                 data,
-                |bytes, ext| {
-                    assert_eq!((bytes, ext), (image.bytes.as_slice(), "png"));
+                |bytes, what| {
+                    assert_eq!(
+                        (bytes, what),
+                        (image.bytes.as_slice(), crate::phone::Save::Image("png"))
+                    );
                     Ok(PathBuf::from("/srv/uploads/shot.png"))
                 },
             );

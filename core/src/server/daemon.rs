@@ -1116,15 +1116,28 @@ fn last_error(entries: &[Arc<Entry>]) -> String {
 }
 
 /// A photo that came with a prompt, saved where the agent can read it.
-fn save_upload(dir: &Path, bytes: &[u8], ext: &str) -> std::io::Result<PathBuf> {
+fn save_upload(dir: &Path, bytes: &[u8], what: phone::Save) -> std::io::Result<PathBuf> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
-    let mut path = dir.join(format!("photo-{stamp}.{ext}"));
-    let mut n = 1;
-    while path.exists() {
-        path = dir.join(format!("photo-{stamp}-{n}.{ext}"));
+    // A file keeps its own name, which the agent reads it by, in a folder of
+    // its own so two of the same name both stay.
+    let at = |n: usize| {
+        let n = if n == 0 {
+            String::new()
+        } else {
+            format!("-{n}")
+        };
+        match what {
+            phone::Save::Image(ext) => dir.join(format!("photo-{stamp}{n}.{ext}")),
+            phone::Save::File(name) => dir.join(format!("file-{stamp}{n}")).join(name),
+        }
+    };
+    let mut n = 0;
+    let mut path = at(n);
+    while path.exists() || path.parent().is_some_and(|p| p != dir && p.exists()) {
         n += 1;
+        path = at(n);
     }
     crate::durable::write_private(&path, bytes)?;
     Ok(path)
@@ -4323,13 +4336,16 @@ impl Daemon {
         };
         // An API key or another endpoint in place of a plan, as last read in `Usage`.
         let access = agent::claude_auth::latest().map(|a| a.label());
-        wire::plan_usage(
+        let mut usage = wire::plan_usage(
             plan.as_ref(),
             access.as_deref(),
             &droid,
             crate::account::unix_now(),
-        )
-        .to_string()
+        );
+        // It saves any file a prompt carries (`file` on an upload): a desktop
+        // sends a server without this its images only.
+        usage["files"] = true.into();
+        usage.to_string()
     }
 
     /// The plan limits may have moved (a fetch landed): devices hear if they did.
@@ -4993,14 +5009,15 @@ impl SessionHost for Daemon {
         &mut self,
         upload: &str,
         name: &str,
+        file: bool,
         part: usize,
         of: usize,
         data: &str,
     ) -> Option<PathBuf> {
         let dir = self.store.uploads_dir();
         self.uploads
-            .piece(upload, name, part, of, data, |bytes, ext| {
-                save_upload(&dir, bytes, ext)
+            .piece(upload, name, file, part, of, data, |bytes, what| {
+                save_upload(&dir, bytes, what)
             })
     }
 
@@ -7682,12 +7699,27 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
     fn a_photo_gets_a_file_of_its_own() {
         let dir = std::env::temp_dir().join(format!("arakun-server-up-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let a = save_upload(&dir, b"one", "png").unwrap();
-        let b = save_upload(&dir, b"two", "png").unwrap();
+        let a = save_upload(&dir, b"one", phone::Save::Image("png")).unwrap();
+        let b = save_upload(&dir, b"two", phone::Save::Image("png")).unwrap();
         assert_ne!(a, b);
         assert_eq!(std::fs::read(&a).unwrap(), b"one");
         assert_eq!(std::fs::read(&b).unwrap(), b"two");
         assert_eq!(a.extension().unwrap(), "png");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_keeps_its_name_in_a_folder_of_its_own() {
+        let dir = std::env::temp_dir().join(format!("arakun-server-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = save_upload(&dir, b"one", phone::Save::File("server.log")).unwrap();
+        let b = save_upload(&dir, b"two", phone::Save::File("server.log")).unwrap();
+        assert_ne!(a.parent(), b.parent());
+        assert_eq!(a.file_name().unwrap(), "server.log");
+        assert_eq!(b.file_name().unwrap(), "server.log");
+        assert!(a.starts_with(&dir) && b.starts_with(&dir));
+        assert_eq!(std::fs::read(&a).unwrap(), b"one");
+        assert_eq!(std::fs::read(&b).unwrap(), b"two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

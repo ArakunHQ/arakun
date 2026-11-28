@@ -120,7 +120,10 @@ reach each other this way. There are two ways to use it:
   commit messages and pull request text cross the network unencrypted, like the rest of
   that link: reach it over https or the relay. The Explorer lists a server's environment, its files
   open in file tabs (text only, read from the server), and `@` in the composer completes
-  its paths. Merging into the main checkout and GitHub's form stay with this machine's
+  its paths. A file you attach from this computer, such as an image, a log or a PDF,
+  is sent to the server with the prompt, up to 5 MB each and 15 MB for one prompt; a
+  relative path still names a file in the server's folder. An older arakun-server
+  takes images only. Merging into the main checkout and GitHub's form stay with this machine's
   folders. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   hands a server's session to another of the agents on that server, in the same tab.
@@ -228,7 +231,7 @@ arakun server service install   # keep it running; see Keep it running
   it is signed in to and the sign-in that lets it in to the relay; `logout` removes it),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
   work), `linked/` (the conversation of a session handed to another agent, as
-  markdown that the new agent reads), `uploads/` (photos sent with prompts),
+  markdown that the new agent reads), `uploads/` (photos and files sent with prompts),
   `linear.json` (the Linear settings the app sent it: the switch, the mappings to its
   projects, the Linear key of each mapped workspace, and how many of its sessions
   work at once) and `linear-runs.json` (the

@@ -128,8 +128,8 @@ the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.
 next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
 older copy: each move replaces the previous one.
 Only your user can read these logs (0600 on Linux and macOS; on Windows only your
-account is allowed, and the same goes for `arakun.log`): an agent prints whatever it
-reads, and that can include keys and tokens.
+account and `SYSTEM` are allowed, and the same goes for `arakun.log`): an agent
+prints whatever it reads, and that can include keys and tokens.
 
 `ARAKUN_ACP_TRACE=1` prints every message between Arakun and its agents to stderr (on
 Windows, `arakun.log` when Arakun was not started from a terminal): your prompts, the

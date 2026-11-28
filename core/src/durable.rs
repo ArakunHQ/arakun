@@ -31,7 +31,8 @@ pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// `write` for a file other users of the machine must not read (agent
 /// replies, tokens): on Unix the file ends up 0600, since the temp file is
 /// created that way before anything goes in, and a directory it creates is
-/// 0700. Elsewhere it is `write`.
+/// 0700. On Windows both are created with a DACL that lets in only this user
+/// and SYSTEM and inherits nothing (`private_acl`). Elsewhere it is `write`.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     after_queued(path);
     write_in(path, bytes, true, true)
@@ -45,16 +46,24 @@ pub fn replace_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Creates `dir` and its missing parents. On Unix those it creates are 0700,
-/// as `write_private` makes them; one already there keeps its mode.
+/// as `write_private` makes them, and on Windows only this user and SYSTEM
+/// may open them; one already there keeps its mode.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
+    #[cfg(windows)]
     {
-        use std::os::unix::fs::DirBuilderExt as _;
-        builder.mode(0o700);
+        crate::private_acl::create_dir_all(dir)
     }
-    builder.create(dir)
+    #[cfg(not(windows))]
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(dir)
+    }
 }
 
 /// Opens `path` to append to, for a log other users of the machine must not
@@ -77,6 +86,14 @@ pub fn open_private_log(path: &Path, start_over: bool) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
+    // A new log is created private, so it is never readable for a moment;
+    // one from before is closed off below.
+    #[cfg(windows)]
+    match crate::private_acl::create_new_file(path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
     let file = options.open(path)?;
     // The mode above only applies to a new file; a log from before is
     // closed off here.
@@ -86,7 +103,7 @@ pub fn open_private_log(path: &Path, start_over: bool) -> io::Result<File> {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
     #[cfg(windows)]
-    crate::private_socket::owner_only(path)?;
+    crate::private_acl::set(path)?;
     Ok(file)
 }
 
@@ -328,8 +345,9 @@ const TEMP_TRIES: u32 = 64;
 /// Creates a new temp file for `name` in `dir`. The file is created
 /// exclusively: a file already at that name (left by a crash, or put there by
 /// another user of a shared directory to read what we write) is never opened,
-/// and the next name is tried. On Unix a private file is 0600 from the start,
-/// which a pre-existing file would not be.
+/// and the next name is tried. A private file is the owner's alone from the
+/// start (0600 on Unix, a private DACL on Windows), which a pre-existing file
+/// would not be.
 fn create_temp(
     dir: &Path,
     name: &std::ffi::OsStr,
@@ -343,14 +361,23 @@ fn create_temp(
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = private;
     for _ in 0..TEMP_TRIES {
         let mut tmp = OsString::from(".");
         tmp.push(name);
         tmp.push(format!(".{}-{}.tmp", std::process::id(), next()));
         let tmp = dir.join(tmp);
-        match opts.open(&tmp) {
+        // The rename keeps the temp file's DACL, so the file ends up with it.
+        #[cfg(windows)]
+        let opened = if private {
+            crate::private_acl::create_new_file(&tmp)
+        } else {
+            opts.open(&tmp)
+        };
+        #[cfg(not(windows))]
+        let opened = opts.open(&tmp);
+        match opened {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -585,6 +612,35 @@ mod tests {
         super::open_private_log(&path, true).unwrap();
         assert!(std::fs::read(&path).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_private_file_its_folders_and_a_log_are_this_users_alone() {
+        use crate::private_acl::tests::assert_private;
+        let dir = scratch("private-acl");
+        let path = dir.join("deep").join("phone.json");
+        super::write_private(&path, b"one").unwrap();
+        assert_private(&dir, true);
+        assert_private(&dir.join("deep"), true);
+        assert_private(&path, false);
+        // A file from before, with the folder's rules, ends up private too.
+        let old = dir.join("deep").join("servers.json");
+        std::fs::write(&old, b"old").unwrap();
+        super::replace_private(&old, b"new").unwrap();
+        assert_eq!(std::fs::read(&old).unwrap(), b"new");
+        assert_private(&old, false);
+        // So does a log, new or from before.
+        let log = dir.join("agents").join("claude.log");
+        super::open_private_log(&log, false).unwrap();
+        assert_private(&dir.join("agents"), true);
+        assert_private(&log, false);
+        let plain = dir.join("plain.log");
+        std::fs::write(&plain, b"old\n").unwrap();
+        drop(super::open_private_log(&plain, false).unwrap());
+        assert_private(&plain, false);
+        assert_eq!(std::fs::read(&plain).unwrap(), b"old\n");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

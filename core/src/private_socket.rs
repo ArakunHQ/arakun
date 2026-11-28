@@ -3,7 +3,7 @@
 //! `bind` then `chmod` leaves a moment when another user on the machine can
 //! connect. On Unix the socket is bound inside a new 0700 folder, made 0600,
 //! and only then linked to its real name. On Windows it gets a DACL that lets
-//! in only the current user.
+//! in only the current user and SYSTEM.
 
 use std::io;
 #[cfg(unix)]
@@ -70,119 +70,18 @@ impl Drop for Gone {
     }
 }
 
-/// Binds `path` and lets in only this user. The socket inherits its folder's
+/// Binds `path` and lets in only this user (and SYSTEM). The socket inherits its folder's
 /// ACL until then; arakun's folders are in the user's profile, which other
 /// users cannot open.
 #[cfg(windows)]
 pub fn bind(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
-    if let Err(e) = owner_only(path) {
+    if let Err(e) = crate::private_acl::set(path) {
         drop(listener);
         let _ = std::fs::remove_file(path);
         return Err(e);
     }
     Ok(listener)
-}
-
-/// Replaces the file's DACL with one entry, full access for the current user,
-/// and stops it inheriting from its folder. For sockets, and for logs other
-/// users must not read (`durable::open_private_log`).
-#[cfg(windows)]
-pub(crate) fn owner_only(path: &Path) -> io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SDDL_REVISION_1, SE_FILE_OBJECT, SetSecurityInfo,
-    };
-    use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
-        TokenUser,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL, WRITE_DAC,
-    };
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-    let last = io::Error::last_os_error;
-    // SAFETY: each pointer handed to Windows points at a live local or at
-    // memory Windows allocated, which is freed once, after its last use.
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(last());
-        }
-        // u64s keep TOKEN_USER's pointers aligned.
-        let mut buf = vec![0u64; 64];
-        let mut len = 0u32;
-        let ok = GetTokenInformation(
-            token,
-            TokenUser,
-            buf.as_mut_ptr().cast(),
-            (buf.len() * 8) as u32,
-            &mut len,
-        );
-        let err = last();
-        CloseHandle(token);
-        if ok == 0 {
-            return Err(err);
-        }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        let mut wide_sid = std::ptr::null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut wide_sid) == 0 {
-            return Err(last());
-        }
-        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(
-            wide_sid,
-            (0..).take_while(|&i| *wide_sid.add(i) != 0).count(),
-        ));
-        LocalFree(wide_sid.cast());
-
-        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{sid})")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut sd,
-            std::ptr::null_mut(),
-        ) == 0
-        {
-            return Err(last());
-        }
-        let (mut present, mut defaulted) = (0, 0);
-        let mut dacl: *mut ACL = std::ptr::null_mut();
-        if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0 {
-            let err = last();
-            LocalFree(sd);
-            return Err(err);
-        }
-        // A socket is a reparse point: open it, not what it would point at.
-        let file = std::fs::OpenOptions::new()
-            .access_mode(READ_CONTROL | WRITE_DAC)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-            .open(path);
-        let result = file.and_then(|file| {
-            match SetSecurityInfo(
-                file.as_raw_handle(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                dacl,
-                std::ptr::null(),
-            ) {
-                0 => Ok(()),
-                e => Err(io::Error::from_raw_os_error(e as i32)),
-            }
-        });
-        LocalFree(sd);
-        result
-    }
 }
 
 #[cfg(test)]

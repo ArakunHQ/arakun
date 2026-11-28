@@ -84,10 +84,16 @@ data class Inbox(val host: String, val sessions: List<InboxSession>, val places:
 
 /** One entry of a session's transcript, cut down for a phone. */
 sealed interface Entry {
-    /** `images` are the names of the pictures the words mention. */
+    /** `images` are the pictures the words mention. */
     data class User(
-        val text: String, val at: Long, val elapsedMs: Int?, val pastes: List<String>, val images: List<String>,
+        val text: String, val at: Long, val elapsedMs: Int?, val pastes: List<String>, val images: List<Picture>,
     ) : Entry
+
+    /**
+     * A picture a prompt mentions: its file name, and the link the computer
+     * signed for it (`/image?…`). No link when the computer had no key to sign with.
+     */
+    data class Picture(val name: String, val url: String?)
 
     data class Agent(val text: String) : Entry
     data class Thought(val text: String) : Entry
@@ -125,7 +131,7 @@ sealed interface Entry {
                 at = j["at"].millis(),
                 elapsedMs = j["elapsed_ms"].int,
                 pastes = j["pastes"].array.map { it["text"].str },
-                images = j["images"].array.map { it["name"].str },
+                images = j["images"].array.map { Picture(it["name"].str, it["url"].string?.takeIf(String::isNotEmpty)) },
             )
             "agent" -> Agent(j["text"].str)
             "thought" -> Thought(j["text"].str)

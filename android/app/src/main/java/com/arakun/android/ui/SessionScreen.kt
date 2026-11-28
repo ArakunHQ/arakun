@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -97,123 +98,125 @@ fun SessionScreen(model: AppModel, id: String) {
         }
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(c.ground)
-            // Under a sheet the session is not there for a screen reader either.
-            .then(if (sheet != null) Modifier.clearAndSetSemantics {} else Modifier),
-    ) {
-        SessionTopBar(
-            s,
-            muted = model.isMuted(id),
-            canMute = model.isLinked,
-            knowsMuting = model.knowsMuting,
-            onMute = { model.mute(id, !model.isMuted(id)) },
-            onBack = model::close,
-        )
-        Box(Modifier.weight(1f)) {
-            LazyColumn(
-                state = list,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                if (s == null) {
-                    item {
-                        Box(Modifier.fillMaxWidth().padding(top = 60.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(Modifier.size(22.dp), color = c.textMuted, strokeWidth = 2.dp)
-                        }
-                    }
-                } else {
-                    item(key = "header") {
-                        SessionHeader(s) {
-                            // The keyboard would stay up over the sheet.
-                            focus.clearFocus()
-                            sheet = ChangesSheet.Files
-                        }
-                    }
-                    if (s.from > 0) {
-                        item(key = "older") {
-                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                OutlineButton(
-                                    if (model.loadingOlder) "Loading…" else "Show ${s.from} earlier entries",
-                                    model::loadOlder,
-                                    // Offline the request would go nowhere.
-                                    enabled = !model.loadingOlder && model.canSend,
-                                )
+    CompositionLocalProvider(LocalPictures provides PictureSource(model.pictures, model.connection == AppModel.Connection.Connected)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(c.ground)
+                // Under a sheet the session is not there for a screen reader either.
+                .then(if (sheet != null) Modifier.clearAndSetSemantics {} else Modifier),
+        ) {
+            SessionTopBar(
+                s,
+                muted = model.isMuted(id),
+                canMute = model.isLinked,
+                knowsMuting = model.knowsMuting,
+                onMute = { model.mute(id, !model.isMuted(id)) },
+                onBack = model::close,
+            )
+            Box(Modifier.weight(1f)) {
+                LazyColumn(
+                    state = list,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp),
+                ) {
+                    if (s == null) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(top = 60.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(Modifier.size(22.dp), color = c.textMuted, strokeWidth = 2.dp)
                             }
                         }
-                    }
-                    itemsIndexed(s.entries, key = { i, _ -> "e" + (s.from + i) }) { _, e -> EntryView(e) }
-                    itemsIndexed(s.queue, key = { i, _ -> "q$i" }) { _, q -> QueuedView(q) }
-                    if (working) {
-                        item(key = "working") { WorkingLine(s.turnStarted!!) }
-                    }
-                }
-                // Room for the raccoon perched over the composer, inside the
-                // list so scrolling to the end keeps the last entry clear of it.
-                item(key = "end") { Spacer(Modifier.height(48.dp)) }
-            }
-            if (unseen) {
-                OutlineButton(
-                    onClick = { scope.launch { list.animateScrollToItem(lastIndex) } },
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                ) {
-                    BrandIcon(R.drawable.ic_arrow_down01, 14.dp, LocalContentColor.current)
-                    Text("New entries", style = geist(14f, FontWeight.Medium))
-                }
-            }
-        }
-        Box {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(c.ground)
-                    // The hairline first, so the raccoon perched across it is drawn over it.
-                    .drawWithContent {
-                        drawContent()
-                        drawLine(c.line, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
-                    }
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                ConnectionBanner(model)
-                // Offline the cards stay but wait: an answer now would be lost.
-                val linked = model.isLinked || model.demo != null
-                s?.permission?.let { p ->
-                    PermissionCard(p, enabled = linked) { model.allow(it) }
-                } ?: s?.question?.let { q ->
-                    androidx.compose.runtime.key(q.toolCallId) {
-                        QuestionCard(q, enabled = linked, answer = model::answer, skip = model::skipQuestion)
-                    }
-                } ?: s?.secret?.let { r ->
-                    androidx.compose.runtime.key(r.id) {
-                        SecretCard(r, enabled = linked, save = model::saveSecret, decline = model::declineSecret)
-                    }
-                }
-                Composer(
-                    draft = draft,
-                    working = s?.status == SessionStatus.WORKING,
-                    linked = linked,
-                    send = {
-                        val text = draft.text.trim().toString()
-                        if (text.isNotEmpty()) {
-                            // Offline the prompt stays in the box, to send again.
-                            if (model.say(text)) draft.clearText()
+                    } else {
+                        item(key = "header") {
+                            SessionHeader(s) {
+                                // The keyboard would stay up over the sheet.
+                                focus.clearFocus()
+                                sheet = ChangesSheet.Files
+                            }
                         }
-                    },
-                    stop = model::stop,
+                        if (s.from > 0) {
+                            item(key = "older") {
+                                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    OutlineButton(
+                                        if (model.loadingOlder) "Loading…" else "Show ${s.from} earlier entries",
+                                        model::loadOlder,
+                                        // Offline the request would go nowhere.
+                                        enabled = !model.loadingOlder && model.canSend,
+                                    )
+                                }
+                            }
+                        }
+                        itemsIndexed(s.entries, key = { i, _ -> "e" + (s.from + i) }) { _, e -> EntryView(e) }
+                        itemsIndexed(s.queue, key = { i, _ -> "q$i" }) { _, q -> QueuedView(q) }
+                        if (working) {
+                            item(key = "working") { WorkingLine(s.turnStarted!!) }
+                        }
+                    }
+                    // Room for the raccoon perched over the composer, inside the
+                    // list so scrolling to the end keeps the last entry clear of it.
+                    item(key = "end") { Spacer(Modifier.height(48.dp)) }
+                }
+                if (unseen) {
+                    OutlineButton(
+                        onClick = { scope.launch { list.animateScrollToItem(lastIndex) } },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                    ) {
+                        BrandIcon(R.drawable.ic_arrow_down01, 14.dp, LocalContentColor.current)
+                        Text("New entries", style = geist(14f, FontWeight.Medium))
+                    }
+                }
+            }
+            Box {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(c.ground)
+                        // The hairline first, so the raccoon perched across it is drawn over it.
+                        .drawWithContent {
+                            drawContent()
+                            drawLine(c.line, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
+                        }
+                        .navigationBarsPadding()
+                        .imePadding()
+                        .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    ConnectionBanner(model)
+                    // Offline the cards stay but wait: an answer now would be lost.
+                    val linked = model.isLinked || model.demo != null
+                    s?.permission?.let { p ->
+                        PermissionCard(p, enabled = linked) { model.allow(it) }
+                    } ?: s?.question?.let { q ->
+                        androidx.compose.runtime.key(q.toolCallId) {
+                            QuestionCard(q, enabled = linked, answer = model::answer, skip = model::skipQuestion)
+                        }
+                    } ?: s?.secret?.let { r ->
+                        androidx.compose.runtime.key(r.id) {
+                            SecretCard(r, enabled = linked, save = model::saveSecret, decline = model::declineSecret)
+                        }
+                    }
+                    Composer(
+                        draft = draft,
+                        working = s?.status == SessionStatus.WORKING,
+                        linked = linked,
+                        send = {
+                            val text = draft.text.trim().toString()
+                            if (text.isNotEmpty()) {
+                                // Offline the prompt stays in the box, to send again.
+                                if (model.say(text)) draft.clearText()
+                            }
+                        },
+                        stop = model::stop,
+                    )
+                }
+                // Perched on the edge, over the last lines: it shows how the session is doing.
+                Mascot(
+                    sessionMood(model, s),
+                    52.dp,
+                    Modifier.align(Alignment.TopEnd).offset(x = (-20).dp, y = (-50).dp),
                 )
             }
-            // Perched on the edge, over the last lines: it shows how the session is doing.
-            Mascot(
-                sessionMood(model, s),
-                52.dp,
-                Modifier.align(Alignment.TopEnd).offset(x = (-20).dp, y = (-50).dp),
-            )
         }
     }
     val over = sheet

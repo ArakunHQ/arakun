@@ -239,6 +239,16 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** The link's own thread: the main one, posted to in order. */
     private val linkScope = CoroutineScope(viewModelScope.coroutineContext + Dispatchers.Main)
 
+    /** The pictures of the session on screen; the computer's come through the link. */
+    val pictures = Pictures(linkScope) { path ->
+        val l = link?.takeIf { it.isReady } ?: return@Pictures null
+        try {
+            l.fetch(path)
+        } catch (_: RelayLink.ClosedException) {
+            null
+        }
+    }
+
     init {
         viewModelScope.launch {
             snapshotFlow { if (foreground) session?.id else null }.collect { id ->
@@ -931,6 +941,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** They belong to the session on screen and go with it. */
     private fun forgetChanges() {
+        pictures.clear()
         changes = null
         diffs = emptyMap()
         subagents = emptyList()

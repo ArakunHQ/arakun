@@ -35,6 +35,10 @@
 .tchip svg { width: 12px; height: 12px; color: var(--color-text-subtle); }
 .tchip .stats { font-family: var(--font-mono); }
 /* Pictures and pasted blocks keep a fixed height: the bubble is measured before they load. */
+/* Never reached the session: dimmed, with why and what to do under it. */
+.entry.user.unsent .bubble { opacity: 0.6; }
+.entry.user.unsent .meta { flex-wrap: wrap; }
+.entry.user.unsent .why { color: var(--color-error); }
 .entry.user .pics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; white-space: normal; }
 .entry.user .text + .pics, .entry.user .text + .paste, .entry.user .pics + .paste { margin-top: 8px; }
 .entry.user .pics img { display: block; height: 120px; max-width: 48%; border-radius: var(--radius-lg); overflow: hidden; object-fit: cover; }

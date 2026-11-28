@@ -114,6 +114,9 @@ export function createLink(opts: LinkOptions): Link {
       noticeOpen = "";
       raw({ type: "open", session: msg.id });
       emit({ type: "started", id: msg.id });
+    } else if (msg.type === "unsent") {
+      // Said under the message itself, not as a toast.
+      emit({ type: "unsent", session: msg.id, sent: msg.sent, message: msg.message });
     } else if (msg.type === "error") {
       emit({ type: "error", message: msg.message });
       emit({ type: "toast", text: msg.message });

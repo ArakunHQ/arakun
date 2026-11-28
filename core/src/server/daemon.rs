@@ -3297,6 +3297,7 @@ impl Daemon {
                 text,
                 uploads,
                 now,
+                ..
             } => {
                 let text = self.uploads.attach(text, &uploads);
                 if let Err(e) = self.send_to_session(&session, text, now, cx) {

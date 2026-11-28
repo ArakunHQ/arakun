@@ -61,7 +61,7 @@ describe("Composer", () => {
     await renderScreen(<SessionScreen />, "/s/a", link);
     fireEvent.change(draft(), { target: { value: "run the tests" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "run the tests" });
+    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "run the tests", sent: expect.any(String) });
     expect(screen.getByText("Sending…")).toBeTruthy();
     expect(draft().value).toBe("");
     // An agent line alone does not settle it.
@@ -80,8 +80,48 @@ describe("Composer", () => {
     expect(screen.getByText("Waiting to send · sends when reconnected")).toBeTruthy();
     link.set({ connected: true });
     link.emit({ type: "linked" });
-    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "later" });
+    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "later", sent: expect.any(String) });
     expect(screen.getByText("Sending…")).toBeTruthy();
+  });
+
+  // What the phone sent last, and its id.
+  const lastSend = (link: ReturnType<typeof fakeLink>) => (link.sent as { type: string; text: string; sent: string }[]).filter((m) => m.type === "send").at(-1)!;
+
+  it("marks a message the server never got, and sends it again on Retry", async () => {
+    const link = fakeLink({ session: session() });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    fireEvent.change(draft(), { target: { value: "deploy it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const first = lastSend(link);
+    // Another id is not this message.
+    act(() => link.emit({ type: "unsent", session: "a", sent: "other", message: "Lost." }));
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    act(() => link.emit({ type: "unsent", session: "a", sent: first.sent, message: "The server was not connected." }));
+    expect(screen.queryByText("Sending…")).toBeNull();
+    expect(screen.getByText("The server was not connected.")).toBeTruthy();
+    // A user entry from elsewhere does not settle it: its copy is not coming.
+    link.set({ session: session({ count: 1, entries: [{ type: "user", text: "from the desktop" }] }) });
+    expect(screen.getByText("The server was not connected.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry: deploy it" }));
+    const again = lastSend(link);
+    expect(again.text).toBe("deploy it");
+    expect(again.sent).not.toBe(first.sent);
+    expect(screen.queryByText("The server was not connected.")).toBeNull();
+    expect(screen.getByText("Sending…")).toBeTruthy();
+  });
+
+  it("takes a message the server never got back into the box", async () => {
+    const link = fakeLink({ session: session() });
+    await renderScreen(<SessionScreen />, "/s/a", link);
+    fireEvent.change(draft(), { target: { value: "deploy it" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    act(() => link.emit({ type: "unsent", session: "a", sent: lastSend(link).sent, message: "Not sent." }));
+    fireEvent.change(draft(), { target: { value: "first" } });
+    const sends = link.sent.length;
+    fireEvent.click(screen.getByRole("button", { name: "Take back: deploy it" }));
+    expect(draft().value).toBe("first\n\ndeploy it");
+    expect(screen.queryByText("Not sent.")).toBeNull();
+    expect(link.sent.length).toBe(sends);
   });
 });
 
@@ -121,6 +161,6 @@ describe("Queue", () => {
     fireEvent.change(draft(), { target: { value: "do this instead" } });
     fireEvent.click(screen.getByRole("button", { name: "Stop and send" }));
     fireEvent.click(screen.getByRole("button", { name: "Tap again to stop and send" }));
-    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "do this instead", now: true });
+    expect(link.sent).toContainEqual({ type: "send", session: "a", text: "do this instead", now: true, sent: expect.any(String) });
   });
 });

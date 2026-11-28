@@ -8,7 +8,7 @@ import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, us
 import { AgentAvatar } from "../components/SessionRow";
 import { Composer } from "../components/session/Composer";
 import { Counts, EntryContext, type EntryHandlers } from "../components/session/Entry";
-import { Pending, usePending } from "../components/session/Pending";
+import { Pending, type PendingMessage, sentId, usePending } from "../components/session/Pending";
 import { type Permission, PermissionCard } from "../components/session/PermissionCard";
 import { type Question, QuestionCard } from "../components/session/QuestionCard";
 import { type SecretRequest, SecretCard } from "../components/session/SecretCard";
@@ -91,7 +91,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   // Answered here; the card goes before the computer says so.
   const [answered, setAnswered] = useState<string[]>([]);
   const [askedOlder, setAskedOlder] = useState<number | null>(null);
-  const { pending, add, drop } = usePending(link, s);
+  const { pending, add, drop, take } = usePending(link, s);
   const transcript = useRef<TranscriptHandle>(null);
   const pics = usePics(mode() === "account");
   const send = useCallback((m: ClientMessage) => link.send(m), [link]);
@@ -120,31 +120,59 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
     return false;
   };
 
-  const submit = ({ now, text }: { now?: boolean; text?: string }) => {
-    const body = (text ?? draft).trim();
-    if (!body && !shots.length) return;
-    if (now && !stillLinked()) return;
+  // Out to the computer, or held here until it is back: `typed` with the
+  // photos `pics`, under a new id the computer names if it does not get there.
+  const deliver = (typed: string, pics: Shot[], now?: boolean) => {
     // Without the computer the message waits on the phone and goes out on
     // reconnect; photos cannot, they need the socket now.
     const queued = !connected;
-    if (queued && shots.length) return toast("Photos wait for a connection");
-    const msg: ClientMessage = { type: "send", session: s.id, text: body };
+    if (queued && pics.length) {
+      toast("Photos wait for a connection");
+      return false;
+    }
+    const sent = sentId();
+    const msg: ClientMessage = { type: "send", session: s.id, text: typed, sent };
     if (now) msg.now = true;
-    if (shots.length) {
-      msg.uploads = shots.map((sh, i) => {
+    if (pics.length) {
+      msg.uploads = pics.map((sh, i) => {
         const up = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
         sendShot(sh, up, s.id, send);
         return up;
       });
-      if (!body) msg.text = shots.length === 1 ? "(photo)" : `(${shots.length} photos)`;
-      setShots([]);
+      if (!typed) msg.text = pics.length === 1 ? "(photo)" : `(${pics.length} photos)`;
     }
     if (!queued) send(msg);
-    add({ text: String(msg.text), after: s.from + s.entries.length, queued });
+    add({ text: String(msg.text), after: s.from + s.entries.length, queued, sent, typed, shots: pics.length ? pics : undefined });
+    transcript.current?.scrollToEnd();
+    return true;
+  };
+
+  const submit = ({ now, text }: { now?: boolean; text?: string }) => {
+    const body = (text ?? draft).trim();
+    if (!body && !shots.length) return;
+    if (now && !stillLinked()) return;
+    if (!deliver(body, shots, now)) return;
+    setShots([]);
     setDraft("");
     // The keyboard goes down: the page gets its height back, with no gap under.
     refit(0, 120, 300, 600);
-    transcript.current?.scrollToEnd();
+  };
+
+  // A message that did not reach a server's session goes again, as new.
+  const retry = (p: PendingMessage) => {
+    if (!p.sent || (!connected && p.shots?.length)) {
+      if (p.shots?.length) toast("Photos wait for a connection");
+      return;
+    }
+    if (take(p.sent)) deliver(p.typed ?? p.text, p.shots ?? []);
+  };
+
+  // Or back into the box, after anything written there, with its photos.
+  const takeBackUnsent = (p: PendingMessage) => {
+    if (!p.sent || !take(p.sent)) return;
+    const typed = p.typed ?? p.text;
+    if (typed) setDraft(draft.trim() ? `${draft.trimEnd()}\n\n${typed}` : typed);
+    if (p.shots?.length) setShots((all) => [...all, ...(p.shots ?? [])]);
   };
 
   const cancel = () => {
@@ -200,8 +228,14 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
     [pics, showPic, openNode, openSheet],
   );
 
+  // Retry and Take back read the state of the moment they are tapped.
+  const unsent = useRef({ retry, takeBack: takeBackUnsent });
+  unsent.current = { retry, takeBack: takeBackUnsent };
   // Stable, so typing in the box does not draw the transcript again.
-  const pendingNode = useMemo(() => <Pending pending={pending} queued={s.queue} />, [pending, s.queue]);
+  const pendingNode = useMemo(
+    () => <Pending pending={pending} queued={s.queue} onRetry={(p) => unsent.current.retry(p)} onTakeBack={(p) => unsent.current.takeBack(p)} />,
+    [pending, s.queue],
+  );
   const keepAsCut = useCallback((text: string) => openSheet({ kind: "cut", seed: { text }, fromList: false }), [openSheet]);
 
   const p = s.permission as Permission | null;

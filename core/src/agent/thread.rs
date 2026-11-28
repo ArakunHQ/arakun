@@ -742,6 +742,9 @@ struct Caps {
     load: bool,
     resume: bool,
     image: bool,
+    /// PDFs go as embedded resources. Only Claude's adapter is known to turn
+    /// them into documents; other agents keep the `@path` mention.
+    pdf: bool,
     /// `session/fork`.
     fork: bool,
     /// The AIR `_session/rename` extension.
@@ -2116,6 +2119,9 @@ impl Thread {
             let load = caps["loadSession"].as_bool().unwrap_or(false);
             let resume_cap = caps["sessionCapabilities"].get("resume").is_some();
             let image = caps["promptCapabilities"]["image"].as_bool().unwrap_or(false);
+            let embedded = caps["promptCapabilities"]["embeddedContext"]
+                .as_bool()
+                .unwrap_or(false);
             let fork = caps["sessionCapabilities"].get("fork").is_some();
             let rename = [&init["_meta"], &caps["_meta"]].iter().any(|m| {
                 m["jetbrains"]["air"]["capabilities"]
@@ -2127,6 +2133,7 @@ impl Thread {
                     load,
                     resume: resume_cap,
                     image,
+                    pdf: embedded && t.kind == AgentKind::Claude,
                     fork,
                     rename,
                 };
@@ -2670,6 +2677,12 @@ impl Thread {
             );
         }
         let images = if self.caps.image { images } else { Vec::new() };
+        // An agent that takes no PDFs still has their paths in the text.
+        let documents = if self.caps.pdf {
+            attach::documents(&text, &self.cwd)
+        } else {
+            Vec::new()
+        };
         // The held prompt is answered once this one goes out; its response still
         // carries what it used.
         if held && let Some(old) = self._prompt.take() {
@@ -2684,6 +2697,7 @@ impl Thread {
                     images
                         .iter()
                         .map(|p| attach::acp_block(p))
+                        .chain(documents.iter().map(|p| attach::acp_document_block(p)))
                         .collect::<Vec<_>>()
                 }))
                 .await;

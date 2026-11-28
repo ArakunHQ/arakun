@@ -1,5 +1,5 @@
 //! The session composer: an entity of its own that keeps each environment's
-//! draft and what waits with it (images, pastes, dropped sessions, notes),
+//! draft and what waits with it (images, PDFs, pastes, dropped sessions, notes),
 //! with its keys, mouse, history and completion. The shell tells it each
 //! frame what is around it (`Frame`), and it asks the shell, by its events,
 //! for what reaches past it: sending, menus, pickers and saving.
@@ -31,8 +31,8 @@ const DRAFT_SAVE_DELAY: Duration = Duration::from_millis(600);
 #[derive(Default)]
 pub(super) struct EnvDraft {
     pub text: crate::draft::Draft,
-    /// Images waiting above the text, sent along with the draft.
-    pub images: Vec<PathBuf>,
+    /// Images and PDFs waiting above the text, sent along with the draft.
+    pub files: Vec<PathBuf>,
     /// Large pastes, sent with the draft.
     pub pastes: Vec<paste::Paste>,
     /// Other sessions' conversations dropped on the composer.
@@ -44,15 +44,15 @@ pub(super) struct EnvDraft {
 }
 
 impl EnvDraft {
-    /// The prompt this sends from `env`: the text, then the images as
+    /// The prompt this sends from `env`: the text, then the files as
     /// mentions, the dropped sessions, the pastes and the notes, a blank
     /// line between each.
     fn outgoing(&self, env: &Path) -> String {
         let mut parts = vec![self.text.trim().to_string()];
-        if !self.images.is_empty() {
-            // Mentioned like any file: the agent gets the pictures and their paths.
+        if !self.files.is_empty() {
+            // Mentioned like any file: the agent gets the files and their paths.
             let mentions: Vec<String> = self
-                .images
+                .files
                 .iter()
                 .map(|p| {
                     crate::agent::attach::mention(
@@ -77,7 +77,7 @@ impl EnvDraft {
 
     /// Something waits to go with the text.
     fn has_extras(&self) -> bool {
-        !self.images.is_empty()
+        !self.files.is_empty()
             || !self.pastes.is_empty()
             || !self.attached.is_empty()
             || !self.notes.is_empty()
@@ -160,7 +160,7 @@ pub(super) enum ComposerEvent {
     AttachFiles,
     DropSession(drag::DraggedSession),
     UseAgent(AgentKind),
-    OpenImage(PathBuf),
+    OpenAttachment(PathBuf),
     /// The notes of this environment changed; its transcripts mark them.
     NotesChanged(PathBuf),
     /// `@` completion wants a server environment's files.
@@ -232,7 +232,7 @@ impl Composer {
             .map(|(path, text, images)| {
                 let d = EnvDraft {
                     text,
-                    images,
+                    files: images,
                     ..Default::default()
                 };
                 (path, d)
@@ -306,10 +306,10 @@ impl Composer {
         self.drafts.retain(|env, _| *env == here || keep(env));
     }
 
-    /// An environment's draft as the state saves it: text, caret and images.
+    /// An environment's draft as the state saves it: text, caret and attached files.
     pub fn saved(&self, env: &Path) -> Option<(String, usize, Vec<PathBuf>)> {
         let d = self.drafts.get(env)?;
-        Some((d.text.to_string(), d.text.head(), d.images.clone()))
+        Some((d.text.to_string(), d.text.head(), d.files.clone()))
     }
 
     /// Where the caret is on screen, for the start screen's face to look at.
@@ -340,7 +340,7 @@ impl Composer {
         let typed = d.text.trim().to_string();
         let text = d.outgoing(env);
         let had_notes = !d.notes.is_empty();
-        d.images.clear();
+        d.files.clear();
         d.attached.clear();
         d.pastes.clear();
         d.notes.clear();
@@ -887,7 +887,7 @@ impl Shell {
                 self.save(cx);
                 cx.notify();
             }
-            ComposerEvent::OpenImage(path) => {
+            ComposerEvent::OpenAttachment(path) => {
                 let env = self.env().path.clone();
                 self.open_file_beside(&env, path, None, window, cx);
             }
@@ -931,7 +931,7 @@ impl Shell {
     }
 
     /// Opens the system's file picker; the picked files go into the draft as
-    /// `@` mentions, and images among them are sent along with the prompt.
+    /// `@` mentions, and images and PDFs among them are sent along with the prompt.
     fn attach_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.composer.update(cx, |c, _| c.close_completion());
@@ -1153,7 +1153,7 @@ mod tests {
         let env = Path::new("/tmp/arakun-composer-test");
         let mut d = EnvDraft::default();
         d.text.set("  fix the tests \n");
-        d.images = vec![env.join("shots/a b.png"), PathBuf::from("/elsewhere/c.png")];
+        d.files = vec![env.join("shots/a b.png"), PathBuf::from("/elsewhere/c.png")];
         d.attached.push(drag::AttachedContext {
             title: "Other".into(),
             block: "<context/>".into(),
@@ -1167,7 +1167,7 @@ mod tests {
 
         // Nothing typed: what waits goes alone, without a blank line first.
         d.text.clear();
-        d.images.clear();
+        d.files.clear();
         d.attached.clear();
         assert_eq!(
             d.outgoing(env),

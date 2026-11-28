@@ -2345,6 +2345,12 @@ impl ThreadView {
         } else {
             super::attach::split_images(&typed, thread.cwd())
         };
+        // A server's PDFs are not here to open, so their mentions stay text.
+        let (typed, documents) = if thread.is_remote() {
+            (typed, Vec::new())
+        } else {
+            super::attach::split_documents(&typed, thread.cwd())
+        };
         let single_image = images.len() == 1;
         let text = typed.as_str();
         let expanded = self.open.contains(&ix);
@@ -2362,7 +2368,8 @@ impl ThreadView {
         let single = !text.contains('\n')
             && text.chars().count() < 70
             && pastes.is_empty()
-            && images.is_empty();
+            && images.is_empty()
+            && documents.is_empty();
         let copy = full.to_string();
         div()
             .id(("user", ix))
@@ -2448,6 +2455,21 @@ impl ThreadView {
                                                     }))
                                             },
                                         )),
+                                )
+                            })
+                            .when(!documents.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .justify_end()
+                                        .gap(crate::ui::sp(6.))
+                                        .when(!text.is_empty(), |d| d.mt(px(6.)))
+                                        .children(
+                                            documents.into_iter().enumerate().map(|(n, path)| {
+                                                document_chip(ix * 64 + n, path, cx)
+                                            }),
+                                        ),
                                 )
                             })
                             .when(!pastes.is_empty(), |d| {
@@ -3302,6 +3324,35 @@ impl Render for ThreadView {
             .when_some(menu, |d, m| d.child(m))
             .when_some(note, |d, n| d.child(n))
     }
+}
+
+/// A PDF sent with a prompt, by name; a click opens it.
+fn document_chip(id: usize, path: PathBuf, cx: &Context<ThreadView>) -> AnyElement {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    div()
+        .id(("user-document", id))
+        .map(|d| crate::ui::labelled(d, gpui::Role::Button, format!("Open {name}")))
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .h(px(24.))
+        .max_w(px(280.))
+        .px(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(8.))
+        .bg(theme::fill_selected())
+        .text_size(px(crate::ui::TEXT_SM))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::mix(0.14)))
+        .child(icon("pdf01", 12.).text_color(theme::text_subtle()))
+        .child(div().truncate().text_color(theme::text_muted()).child(name))
+        .on_click(
+            cx.listener(move |_, _, _, cx| cx.emit(ThreadViewEvent::OpenFile(path.clone(), None))),
+        )
+        .into_any_element()
 }
 
 /// The box an image sent in a message shows in: its own size, scaled down to

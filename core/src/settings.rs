@@ -43,6 +43,15 @@ pub struct General {
     /// channel this build came from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_channel: Option<Channel>,
+    /// Desktop notifications when an agent finishes, needs the user or fails
+    /// and the island can't show it.
+    pub notifications: bool,
+    /// Agents are told what the project's memory holds, and sessions are
+    /// recorded in it.
+    pub memory: bool,
+    /// Agents Arakun starts are told about the `arakun` command in their
+    /// system prompt.
+    pub agent_notes: bool,
 }
 
 impl Default for General {
@@ -52,6 +61,9 @@ impl Default for General {
             agents_drive_any_page: false,
             automatic_updates: true,
             update_channel: None,
+            notifications: true,
+            memory: true,
+            agent_notes: true,
         }
     }
 }
@@ -301,6 +313,79 @@ pub fn default_namer_model(agent: AgentKind) -> &'static str {
     }
 }
 
+// ---- what the environment decides ------------------------------------------------
+
+pub use crate::stored::Saving;
+
+/// A setting a variable decides for this run, whatever Settings holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Forced {
+    /// The variable, which Settings names next to the switch.
+    pub var: &'static str,
+    pub on: bool,
+}
+
+/// What `var` decides, read by `means` from its trimmed value: `None` when it
+/// is not set or says nothing `means` knows.
+pub fn forced(var: &'static str, means: fn(&str) -> Option<bool>) -> Option<Forced> {
+    let value = std::env::var(var).ok()?;
+    means(value.trim()).map(|on| Forced { var, on })
+}
+
+/// The setting, unless the environment decides it.
+fn decided(forced: Option<Forced>, saved: fn(&Settings) -> bool) -> bool {
+    forced.map_or_else(|| read(saved), |f| f.on)
+}
+
+fn off_only(v: &str) -> Option<bool> {
+    (v == "off").then_some(false)
+}
+
+/// `ARAKUN_NOTIFY=off` turns desktop notifications off for the run.
+pub fn notifications_forced() -> Option<Forced> {
+    forced("ARAKUN_NOTIFY", off_only)
+}
+
+pub fn notifications() -> bool {
+    decided(notifications_forced(), |s| s.general.notifications)
+}
+
+pub fn set_notifications(on: bool) -> Saving {
+    change(|s| s.general.notifications = on)
+}
+
+/// `ARAKUN_MEMORY=off` keeps memory out of prompts and stops recording
+/// sessions in it; `on` keeps it in even without the agent notes.
+pub fn memory_forced() -> Option<Forced> {
+    forced("ARAKUN_MEMORY", |v| match v {
+        "off" => Some(false),
+        "on" => Some(true),
+        _ => None,
+    })
+}
+
+pub fn memory() -> bool {
+    decided(memory_forced(), |s| s.general.memory)
+}
+
+pub fn set_memory(on: bool) -> Saving {
+    change(|s| s.general.memory = on)
+}
+
+/// `ARAKUN_AGENT_HINT=off` leaves agents' system prompts alone; `arakun
+/// server` sets it for itself.
+pub fn agent_notes_forced() -> Option<Forced> {
+    forced("ARAKUN_AGENT_HINT", off_only)
+}
+
+pub fn agent_notes() -> bool {
+    decided(agent_notes_forced(), |s| s.general.agent_notes)
+}
+
+pub fn set_agent_notes(on: bool) -> Saving {
+    change(|s| s.general.agent_notes = on)
+}
+
 // ---- loading and saving ----------------------------------------------------------
 
 /// What was loaded, and the file it came from as it was then.
@@ -329,13 +414,14 @@ pub fn read<R>(f: impl FnOnce(&Settings) -> R) -> R {
 
 /// Changes the settings and saves them in the background, for a click in
 /// Settings. The change holds for this run even when the file can't be
-/// written; that is logged.
-pub fn change(f: impl FnOnce(&mut Settings)) {
+/// written; that is logged, and what comes back says so for the control
+/// that made the change.
+pub fn change(f: impl FnOnce(&mut Settings)) -> Saving {
     let path = file();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cached = fresh(&mut cache, &path);
     f(&mut cached.settings);
-    crate::stored::write_soon(&path, to_bytes(&cached.settings), "could not save settings");
+    crate::stored::write_soon_saving(&path, to_bytes(&cached.settings), "could not save settings")
 }
 
 /// `change`, saved before it returns: for a command that exits right after,
@@ -516,6 +602,30 @@ mod tests {
         assert!(s.general.automatic_updates);
         assert!(s.branches.archive_after_merge);
         assert!(!s.privacy.redacted);
+    }
+
+    #[test]
+    fn a_file_from_before_the_agent_switches_keeps_them_on() {
+        let s: Settings =
+            serde_json::from_str(r#"{"general": {"automatic_updates": false}}"#).unwrap();
+        assert!(s.general.notifications && s.general.memory && s.general.agent_notes);
+    }
+
+    #[test]
+    fn a_variable_decides_only_with_a_value_it_knows() {
+        assert_eq!(off_only("off"), Some(false));
+        assert_eq!(off_only("on"), None);
+        assert_eq!(off_only(""), None);
+        // Decided, the saved setting is not read.
+        let saved: fn(&Settings) -> bool = |_| unreachable!();
+        assert!(!decided(
+            Some(Forced {
+                var: "X",
+                on: false
+            }),
+            saved
+        ));
+        assert!(decided(Some(Forced { var: "X", on: true }), saved));
     }
 
     #[test]

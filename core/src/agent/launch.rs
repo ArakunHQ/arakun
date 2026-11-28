@@ -430,18 +430,19 @@ pub fn resolve_droid_native(cwd: Option<&Path>) -> Result<LaunchSpec> {
 
 /// Told to the agents arakun starts, so they can show their work in the window,
 /// and, for a session working in `cwd`, what its project's memory holds.
-/// `ARAKUN_AGENT_HINT=off` leaves their prompts alone; `ARAKUN_MEMORY=off` keeps
-/// memory out of them.
+/// Settings › General › Agents turns either off, and so do
+/// `ARAKUN_AGENT_HINT=off` and `ARAKUN_MEMORY=off`.
 /// `kind` is the agent told: the ones Arakun gives `request_secret` hear of it.
 pub fn agent_hint(kind: AgentKind, cwd: Option<&Path>) -> Option<String> {
-    if std::env::var_os("ARAKUN_AGENT_HINT").is_some_and(|v| v == "off") {
-        if std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "on") {
+    if !crate::settings::agent_notes() {
+        // Asked for by name, memory still goes in without the notes.
+        if crate::settings::memory_forced().is_some_and(|f| f.on) {
             return cwd.map(crate::host::get().memory_prompt);
         }
         return None;
     }
     let memory = cwd
-        .filter(|_| !std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off"))
+        .filter(|_| crate::settings::memory())
         .map(|dir| format!("\n\n{}", (crate::host::get().memory_prompt)(dir)))
         .unwrap_or_default();
     let secrets = super::secret::offered_to(kind);

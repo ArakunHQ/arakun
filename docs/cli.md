@@ -4,7 +4,8 @@ While Arakun is running, `arakun <command>` acts on the environment of the curre
 directory, over a local control socket (`$XDG_RUNTIME_DIR/arakun/control.sock`, or
 `%LOCALAPPDATA%\arakun\control.sock` on Windows). Terminals and agents started by Arakun
 get `ARAKUN_SOCKET` and `arakun` on their `PATH`, and the agents get a note in their
-system prompt about it (`ARAKUN_AGENT_HINT=off` removes it).
+system prompt about it (Settings › General › Agents › Notes to agents, or
+`ARAKUN_AGENT_HINT=off`, removes it).
 
 One Arakun runs per state. `arakun` started again brings the running window up and
 exits (`arakun <dir>` adds the project there), since two windows on one state would

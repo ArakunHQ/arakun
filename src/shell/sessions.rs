@@ -2647,7 +2647,8 @@ pub(super) fn send_notification(
     critical: bool,
     cx: &gpui::App,
 ) {
-    if std::env::var_os("ARAKUN_NOTIFY").is_some_and(|v| v == "off") {
+    // Settings › General › Notifications, or `ARAKUN_NOTIFY=off`.
+    if !crate::settings::notifications() {
         return;
     }
     // The OS keeps a history of notices. A title from before titles were

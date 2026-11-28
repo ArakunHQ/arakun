@@ -33,9 +33,9 @@ pub fn on() -> bool {
 }
 
 /// Turns the mode on or off and remembers it in the settings.
-pub fn set(on: bool) {
+pub fn set(on: bool) -> crate::settings::Saving {
     STATE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
-    crate::settings::change(|s| s.privacy.redacted = on);
+    crate::settings::change(|s| s.privacy.redacted = on)
 }
 
 /// `value` as it is, or [`MASK`] while the mode is on. For what is private as
@@ -108,9 +108,9 @@ pub fn hides_secrets() -> bool {
 }
 
 /// Turns hiding secrets in chats on or off and remembers it, as [`set`] does.
-pub fn set_hides_secrets(hides: bool) {
+pub fn set_hides_secrets(hides: bool) -> crate::settings::Saving {
     CHAT.store(if hides { 2 } else { 1 }, Ordering::Relaxed);
-    crate::settings::change(|s| s.privacy.hide_secrets = hides);
+    crate::settings::change(|s| s.privacy.hide_secrets = hides)
 }
 
 /// Secrets the user clicked to see, with how many chat views show each. A

@@ -165,17 +165,22 @@ pub fn set_status(s: Status) {
 /// Settings or `ARAKUN_UPDATES=0` says so for this run.
 pub fn automatic() -> bool {
     release_build()
-        && !matches!(
-            std::env::var("ARAKUN_UPDATES").as_deref(),
-            Ok("0" | "off" | "false" | "no")
-        )
+        && forced_off().is_none()
         && crate::settings::read(|s| s.general.automatic_updates)
         && crate::dev::size().is_none()
 }
 
+/// `ARAKUN_UPDATES=0` (or `off`, `false`, `no`): no checks this run, whatever
+/// Settings holds. Settings says so beside the switch.
+pub fn forced_off() -> Option<crate::settings::Forced> {
+    crate::settings::forced("ARAKUN_UPDATES", |v| {
+        matches!(v, "0" | "off" | "false" | "no").then_some(false)
+    })
+}
+
 /// Turns the automatic checks on or off and remembers it.
-pub fn set_automatic(on: bool) {
-    crate::settings::change(|s| s.general.automatic_updates = on);
+pub fn set_automatic(on: bool) -> crate::settings::Saving {
+    crate::settings::change(|s| s.general.automatic_updates = on)
 }
 
 /// `vX.Y.Z` as numbers, or a nightly `X.Y.Z-nightly.N`, which comes before

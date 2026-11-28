@@ -69,19 +69,51 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// the disk flushes would stall the window. A load right after still sees it.
 /// A failure is logged after `what`. Private like `write`.
 pub fn write_soon(path: &Path, bytes: Vec<u8>, what: &'static str) {
+    // Nobody waits for it: a failure is logged.
+    drop(write_soon_saving(path, bytes, what));
+}
+
+/// `write_soon` that tells, when it is done, whether it reached the disk, so
+/// a control can say a change did not last.
+pub fn write_soon_saving(path: &Path, bytes: Vec<u8>, what: &'static str) -> Saving {
     if !clear(path, crate::model::unix_now()) {
         eprintln!(
             "arakun: not saving {}: it holds data that could not be read",
             path.display()
         );
-        return;
+        return Saving::failed();
     }
-    // Nobody waits for it: a failure is logged.
-    drop(crate::durable::write_private_soon(
+    Saving(Some(crate::durable::write_private_soon(
         path.to_path_buf(),
         bytes,
         what,
-    ));
+    )))
+}
+
+/// A save on the background writer. Wait on it with [`Saving::saved`], or drop
+/// it: the save goes on, and a failure is logged either way.
+pub struct Saving(Option<futures::channel::oneshot::Receiver<bool>>);
+
+impl Saving {
+    /// Nothing to write, so nothing can fail.
+    pub fn done() -> Saving {
+        Saving(None)
+    }
+
+    /// A save that failed before it was queued.
+    pub fn failed() -> Saving {
+        // The sender is dropped here, so the wait ends with `false`.
+        let (_, saved) = futures::channel::oneshot::channel();
+        Saving(Some(saved))
+    }
+
+    /// Whether the change reached the disk.
+    pub async fn saved(self) -> bool {
+        match self.0 {
+            None => true,
+            Some(saved) => saved.await.unwrap_or(false),
+        }
+    }
 }
 
 /// The files set aside since the last call.

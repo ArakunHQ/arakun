@@ -107,6 +107,8 @@ pub enum SettingsEvent {
     SendFeedback,
     /// Close Settings and open the Profile dialog, which has the GitHub sign-in.
     OpenProfile,
+    /// Close Settings and open the form that connects arakun-pilot.
+    OpenPilot,
     #[cfg(feature = "coderlabs")]
     OpenTasks,
     #[cfg(feature = "coderlabs")]
@@ -226,6 +228,9 @@ const TEST_KEY: &str = "settings-test";
 const DIALOG_W: f32 = 880.;
 /// The section list's column, search included.
 const LIST_W: f32 = 224.;
+/// Under a switch whose change could not be written to settings.json.
+const SAVE_FAILED: &str =
+    "Not saved: Arakun could not write its settings file, so this lasts until it quits.";
 /// Under Claude Code's API key or endpoint, which needs no claude.ai sign-in.
 const ACCESS_HINT: &str = "Claude Code runs on this, from ~/.claude/settings.json or the environment. Sign in only to see claude.ai plan limits.";
 /// The list and the pane under the header. A short window shrinks it.
@@ -287,6 +292,10 @@ pub struct SettingsDialog {
     namer_input: Entity<TextInput>,
     /// Why the last crash report or usage count choice could not be saved.
     telemetry_error: Option<SharedString>,
+    /// The row whose last change could not be saved, and what to say under it.
+    save_error: Option<(Id, SharedString)>,
+    /// Whether arakun-pilot has settings, for the Account section.
+    pilot: bool,
     /// The extension views the sidebar shows.
     views_on: Vec<crate::sidebar::View>,
     /// The open project, if there is one.
@@ -319,6 +328,7 @@ impl SettingsDialog {
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
         views_on: Vec<crate::sidebar::View>,
         project: Option<ProjectSettings>,
+        pilot: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -509,6 +519,8 @@ impl SettingsDialog {
             namer,
             namer_input,
             telemetry_error: None,
+            save_error: None,
+            pilot,
             views_on,
             project,
             setup_input,
@@ -1336,7 +1348,9 @@ impl SettingsDialog {
         self.switch_row_hint(id, reg::entry(id).hint, cx)
     }
 
-    /// A registry switch with a hint that says more than the registry's.
+    /// A registry switch with a hint that says more than the registry's. One
+    /// an environment variable decides says which, and does not turn; one
+    /// whose change could not be saved says so under it.
     fn switch_row_hint(
         &self,
         id: Id,
@@ -1344,17 +1358,58 @@ impl SettingsDialog {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let e = reg::entry(id);
-        toggle_row(e.key, e.label, hint, e.on().unwrap_or(false))
+        let forced = e.forced();
+        let hint: SharedString = match forced {
+            Some(f) => format!("{} Set by {} in the environment.", hint.into(), f.var).into(),
+            None => hint.into(),
+        };
+        let row = toggle_row(e.key, e.label, hint, e.on().unwrap_or(false))
+            .when(forced.is_some(), |d| d.cursor_default())
             .on_click(cx.listener(move |this, _, _, cx| {
                 let on = !reg::entry(id).on().unwrap_or(false);
-                reg::set(id, on);
+                let Some(saving) = reg::set(id, on) else {
+                    return;
+                };
                 if id == Id::ReadAloud {
                     this.voice.enabled = on;
                 }
+                this.watch_save(id, saving, cx);
                 cx.emit(SettingsEvent::Switched(id));
                 cx.notify();
-            }))
-            .into_any_element()
+            }));
+        self.with_save_error(id, row.into_any_element())
+    }
+
+    /// Clears the row's last failure, then shows a new one if `saving` fails.
+    fn watch_save(&mut self, id: Id, saving: crate::settings::Saving, cx: &mut Context<Self>) {
+        if self.save_error.as_ref().is_some_and(|(at, _)| *at == id) {
+            self.save_error = None;
+        }
+        cx.spawn(async move |this, cx| {
+            if saving.saved().await {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                this.save_error = Some((id, SAVE_FAILED.into()));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// `row`, with the reason under it when the row's last change could not
+    /// be saved.
+    fn with_save_error(&self, id: Id, row: AnyElement) -> AnyElement {
+        match &self.save_error {
+            Some((at, why)) if *at == id => div()
+                .flex()
+                .flex_col()
+                .child(row)
+                .child(error_line(why.clone()))
+                .into_any_element(),
+            _ => row,
+        }
     }
 
     /// The card of `rows`, under the registry's caption for the first, with
@@ -1507,6 +1562,17 @@ impl SettingsDialog {
                     Self::card(&q, vec![(Id::Arcade, self.switch_row(Id::Arcade, cx))]),
                     Self::card(&q, island),
                     Self::card(&q, vec![(Id::Background, self.switch_row(Id::Background, cx))]),
+                    Self::card(
+                        &q,
+                        vec![(Id::Notifications, self.switch_row(Id::Notifications, cx))],
+                    ),
+                    Self::card(
+                        &q,
+                        vec![
+                            (Id::Memory, self.switch_row(Id::Memory, cx)),
+                            (Id::AgentNotes, self.switch_row(Id::AgentNotes, cx)),
+                        ],
+                    ),
                     Self::card(&q, vec![(Id::UsageCard, reg_stacked(Id::UsageCard, chips))]),
                     Self::card(&q, self.update_rows(cx)),
                     Self::card(&q, vec![(Id::LinksInArakun, links)]),
@@ -1596,16 +1662,7 @@ impl SettingsDialog {
                     (Id::UsageCounts, self.telemetry_row(false, cx)),
                 ];
                 if let Some(e) = &self.telemetry_error {
-                    sent.push((
-                        Id::CrashReports,
-                        div()
-                            .px(crate::ui::sp(14.))
-                            .py(crate::ui::sp(10.))
-                            .text_size(px(ui::TEXT_SM))
-                            .text_color(theme::error())
-                            .child(e.clone())
-                            .into_any_element(),
-                    ));
+                    sent.push((Id::CrashReports, error_line(e.clone())));
                 }
                 sent.push((
                     Id::Feedback,
@@ -1865,7 +1922,7 @@ impl SettingsDialog {
                     ],
                 )])
             }
-            Section::Account => self.render_account(cx),
+            Section::Account => self.render_account(&q, cx),
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => {
                 let signed_in = self.coderspace.is_some();
@@ -1936,7 +1993,7 @@ impl SettingsDialog {
     /// The Account section: who is signed in, and the ways the account signs
     /// in. The sign-in lives in the Profile dialog; this row is how Settings,
     /// and its search, still get there.
-    fn render_account(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_account(&self, q: &str, cx: &mut Context<Self>) -> AnyElement {
         let teams = self.teams.read(cx);
         let hint = match teams.me() {
             Some(m) if teams.signed_in() => {
@@ -1965,6 +2022,27 @@ impl SettingsDialog {
         if signed_in {
             parts.push(self.methods.clone().into_any_element());
         }
+        let (button, hint) = if self.pilot {
+            (
+                "Change…",
+                "Your pull request agent on Cloudflare is connected. Change its address or tokens, or disconnect it.",
+            )
+        } else {
+            (
+                "Connect…",
+                "Your pull request agent on Cloudflare. Type its address and token, and the GitHub tab shows its board.",
+            )
+        };
+        let e = reg::entry(Id::Pilot);
+        let pilot = row(
+            e.label,
+            hint,
+            ui::button(e.key, button, ButtonKind::Outline, true)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenPilot)))
+                .into_any_element(),
+        )
+        .into_any_element();
+        parts.extend(Self::card(q, vec![(Id::Pilot, pilot)]));
         stack(parts)
     }
 
@@ -2043,10 +2121,17 @@ impl SettingsDialog {
                 let saved = cx
                     .background_spawn(crate::guard::task(async move { update::set_channel(to) }))
                     .await;
-                if let Err(e) = saved {
+                if let Err(e) = &saved {
                     eprintln!("arakun: the update channel will not last past a restart: {e}");
                 }
-                this.update(cx, |_, cx| cx.notify()).ok();
+                this.update(cx, |this, cx| {
+                    this.save_error = saved.err().map(|e| {
+                        let why = format!("Not saved, so it lasts until Arakun quits: {e}.");
+                        (Id::Nightly, why.into())
+                    });
+                    cx.notify();
+                })
+                .ok();
             })
             .detach();
         };
@@ -2061,7 +2146,7 @@ impl SettingsDialog {
                 }
             }));
         if on || !self.confirm_nightly {
-            return switch_row.into_any_element();
+            return self.with_save_error(Id::Nightly, switch_row.into_any_element());
         }
         let warning = div()
             .flex()
@@ -2116,12 +2201,13 @@ impl SettingsDialog {
                         ),
                     ),
             );
-        div()
+        let shown = div()
             .flex()
             .flex_col()
             .child(switch_row)
             .child(warning)
-            .into_any_element()
+            .into_any_element();
+        self.with_save_error(Id::Nightly, shown)
     }
 
     /// Puts `id` in use across the app and remembers it.
@@ -2831,6 +2917,17 @@ fn field(input: Entity<TextInput>, width: f32) -> gpui::Div {
 }
 
 /// Rows in one card, divided by hairlines.
+/// Why a change didn't work, under its row.
+fn error_line(text: SharedString) -> AnyElement {
+    div()
+        .px(crate::ui::sp(14.))
+        .pb(crate::ui::sp(10.))
+        .text_size(px(ui::TEXT_SM))
+        .text_color(theme::error())
+        .child(text)
+        .into_any_element()
+}
+
 fn group(rows: Vec<AnyElement>) -> AnyElement {
     ui::surface_card()
         .children(rows.into_iter().enumerate().map(|(i, r)| {

@@ -4,6 +4,7 @@
 //! names, so the two can't disagree.
 
 use crate::agent::AgentKind;
+use crate::settings::{Forced, Saving};
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -219,6 +220,9 @@ pub enum Id {
     Background,
     SidebarViews,
     UsageCard,
+    Notifications,
+    Memory,
+    AgentNotes,
     AutoUpdate,
     Nightly,
     Version,
@@ -254,6 +258,7 @@ pub enum Id {
     CrashReports,
     UsageCounts,
     Feedback,
+    Pilot,
     ReadAloud,
     VoiceTone,
     VoiceKey,
@@ -266,8 +271,14 @@ pub enum Id {
 /// `Shell::after_setting`.
 #[derive(Clone, Copy)]
 pub struct Switch {
+    /// What is in use, which is what an environment variable says when one
+    /// decides it.
     pub get: fn() -> bool,
-    pub set: fn(bool),
+    /// What comes back tells whether the change was saved.
+    pub set: fn(bool) -> Saving,
+    /// The variable that decides it for this run, if one does. Then neither
+    /// the dialog nor the palette turns it.
+    pub forced: fn() -> Option<Forced>,
 }
 
 pub struct Entry {
@@ -315,6 +326,11 @@ impl Entry {
     pub fn on(&self) -> Option<bool> {
         self.switch.map(|s| (s.get)())
     }
+
+    /// The variable that decides this switch for the run, if one does.
+    pub fn forced(&self) -> Option<Forced> {
+        self.switch.and_then(|s| (s.forced)())
+    }
 }
 
 fn words_in(query: &str, text: &str) -> bool {
@@ -327,10 +343,14 @@ pub fn entry(id: Id) -> &'static Entry {
         .expect("every Id has an entry")
 }
 
-/// Turns a switch on or off where it is kept. `None` for a row that isn't one.
-pub fn set(id: Id, on: bool) -> Option<()> {
-    (entry(id).switch?.set)(on);
-    Some(())
+/// Turns a switch on or off where it is kept. `None` for a row that isn't
+/// one, or one an environment variable decides.
+pub fn set(id: Id, on: bool) -> Option<Saving> {
+    let e = entry(id);
+    if e.forced().is_some() {
+        return None;
+    }
+    Some((e.switch?.set)(on))
 }
 
 #[cfg(target_os = "linux")]
@@ -342,29 +362,57 @@ fn background_on() -> bool {
     false
 }
 #[cfg(target_os = "linux")]
-fn set_background(on: bool) {
+fn set_background(on: bool) -> Saving {
     crate::background::set_enabled(on);
+    Saving::done()
 }
 #[cfg(not(target_os = "linux"))]
-fn set_background(_: bool) {}
+fn set_background(_: bool) -> Saving {
+    Saving::done()
+}
 
 fn read_aloud() -> bool {
     crate::voice::settings().enabled
 }
 
-fn set_read_aloud(on: bool) {
+fn set_read_aloud(on: bool) -> Saving {
     let mut s = crate::voice::settings();
     s.enabled = on;
     crate::voice::store(&s);
     if !on {
         crate::voice::stop();
     }
+    Saving::done()
+}
+
+fn set_animated(on: bool) -> Saving {
+    crate::mascot::set_animated(on);
+    Saving::done()
+}
+
+fn set_island(on: bool) -> Saving {
+    crate::island::set_enabled(on);
+    Saving::done()
 }
 
 use Section as S;
 
-const fn sw(get: fn() -> bool, set: fn(bool)) -> Option<Switch> {
-    Some(Switch { get, set })
+/// A switch no variable decides.
+const fn sw(get: fn() -> bool, set: fn(bool) -> Saving) -> Option<Switch> {
+    Some(Switch {
+        get,
+        set,
+        forced: || None,
+    })
+}
+
+/// A switch a variable can decide for the run.
+const fn sw_env(
+    get: fn() -> bool,
+    set: fn(bool) -> Saving,
+    forced: fn() -> Option<Forced>,
+) -> Option<Switch> {
+    Some(Switch { get, set, forced })
 }
 
 /// In the order the dialog shows them.
@@ -378,7 +426,7 @@ pub static ALL: &[Entry] = &[
         section: S::General,
         card: "Raccoon",
         keywords: "mascot animated motion arcade",
-        switch: sw(crate::mascot::chosen, crate::mascot::set_animated),
+        switch: sw(crate::mascot::chosen, set_animated),
     },
     Entry {
         id: Id::Island,
@@ -388,7 +436,7 @@ pub static ALL: &[Entry] = &[
         section: S::General,
         card: "Dynamic Island",
         keywords: "notch top bar overlay agents alerts notices wake word voice microphone",
-        switch: sw(crate::island::enabled, crate::island::set_enabled),
+        switch: sw(crate::island::enabled, set_island),
     },
     Entry {
         id: Id::Background,
@@ -399,6 +447,48 @@ pub static ALL: &[Entry] = &[
         card: "Window",
         keywords: "close hide tray quit",
         switch: sw(background_on, set_background),
+    },
+    Entry {
+        id: Id::Notifications,
+        key: "set-notifications",
+        label: "Desktop notifications",
+        hint: "When an agent finishes, needs you or fails and the island can't show the notice, it shows as a desktop notification.",
+        section: S::General,
+        card: "Notices",
+        keywords: "notify desktop notification alerts system",
+        switch: sw_env(
+            crate::settings::notifications,
+            crate::settings::set_notifications,
+            crate::settings::notifications_forced,
+        ),
+    },
+    Entry {
+        id: Id::Memory,
+        key: "set-memory",
+        label: "Memory",
+        hint: "Agents are told what they saved about this project and about you with arakun mem, and each session is recorded there. Off, they start without it and nothing new is recorded. The Memory view still shows what is kept.",
+        section: S::General,
+        card: "Agents",
+        keywords: "remember mem recall sessions prompt",
+        switch: sw_env(
+            crate::settings::memory,
+            crate::settings::set_memory,
+            crate::settings::memory_forced,
+        ),
+    },
+    Entry {
+        id: Id::AgentNotes,
+        key: "set-agent-notes",
+        label: "Notes to agents",
+        hint: "Agents Arakun starts are told about the arakun command in their system prompt, so they can show their work in the window. Off, their prompts are their own, without memory either.",
+        section: S::General,
+        card: "Agents",
+        keywords: "hint system prompt arakun command instructions",
+        switch: sw_env(
+            crate::settings::agent_notes,
+            crate::settings::set_agent_notes,
+            crate::settings::agent_notes_forced,
+        ),
     },
     Entry {
         id: Id::UsageCard,
@@ -418,7 +508,11 @@ pub static ALL: &[Entry] = &[
         section: S::General,
         card: "Updates",
         keywords: "updates automatic auto version release upgrade",
-        switch: sw(crate::update::automatic, crate::update::set_automatic),
+        switch: sw_env(
+            crate::update::automatic,
+            crate::update::set_automatic,
+            crate::update::forced_off,
+        ),
     },
     Entry {
         id: Id::Nightly,
@@ -784,6 +878,17 @@ pub static ALL: &[Entry] = &[
         keywords: "bug report idea send",
         switch: None,
     },
+    // Account
+    Entry {
+        id: Id::Pilot,
+        key: "set-pilot",
+        label: "arakun-pilot",
+        hint: "Your pull request agent on Cloudflare. With its address and token, the GitHub tab shows its board.",
+        section: S::Account,
+        card: "Pull request agent",
+        keywords: "pilot worker cloudflare token address url connect",
+        switch: None,
+    },
     // Droid
     Entry {
         id: Id::ReadAloud,
@@ -917,6 +1022,10 @@ mod tests {
         assert!(found("posthog").contains(&Section::Tabs));
         assert!(found("optional tabs").contains(&Section::Tabs));
         assert!(!found("optional tabs").contains(&Section::General));
+        assert!(found("notifications").contains(&Section::General));
+        assert!(found("memory").contains(&Section::General));
+        assert!(found("system prompt").contains(&Section::General));
+        assert!(found("pilot").contains(&Section::Account));
         assert_eq!(found("").len(), Section::ALL.len());
         assert!(found("zzz-nothing").is_empty());
     }

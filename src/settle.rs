@@ -24,8 +24,8 @@ pub fn on() -> bool {
     crate::settings::read(|s| s.branches.archive_after_merge)
 }
 
-pub fn set(on: bool) {
-    crate::settings::change(|s| s.branches.archive_after_merge = on);
+pub fn set(on: bool) -> crate::settings::Saving {
+    crate::settings::change(|s| s.branches.archive_after_merge = on)
 }
 
 /// A pull request of the user's that was merged.

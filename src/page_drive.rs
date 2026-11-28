@@ -9,6 +9,6 @@ pub fn any_page() -> bool {
     crate::settings::read(|s| s.general.agents_drive_any_page)
 }
 
-pub fn set_any_page(on: bool) {
-    crate::settings::change(|s| s.general.agents_drive_any_page = on);
+pub fn set_any_page(on: bool) -> crate::settings::Saving {
+    crate::settings::change(|s| s.general.agents_drive_any_page = on)
 }

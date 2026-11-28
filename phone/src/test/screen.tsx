@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { vi } from "vitest";
 import { validateSessionSearch } from "../components/session/sheetNav";
 import { type Link, LinkContext } from "../lib/link";
-import { closeSession, emptyLink, type LinkEvent, type LinkState, openSession } from "../lib/model";
+import { closeSession, emptyLink, type LinkEvent, type LinkState, openSession, watchSubagent } from "../lib/model";
 
 export type FakeLink = Link & {
   sent: unknown[];
@@ -38,10 +38,11 @@ export function fakeLink(over: Partial<LinkState> = {}): FakeLink {
     },
     getState: () => state,
     // As the real link: `open` and `close` change the session in the state too.
-    send: vi.fn((m: { type: string; session?: unknown }) => {
+    send: vi.fn((m: { type: string; session?: unknown; subagent?: unknown }) => {
       sent.push(m);
       if (m.type === "open" && typeof m.session === "string") set(openSession(state, m.session));
       else if (m.type === "close") set(closeSession(state));
+      else if (m.type === "subagent") set(watchSubagent(state, typeof m.subagent === "string" ? m.subagent : null));
     }),
     fetch: vi.fn(),
     reconnectNow() {},

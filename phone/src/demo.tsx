@@ -14,7 +14,7 @@ import { Shell } from "./components/shell/Shell";
 import { validateSessionSearch } from "./components/session/sheetNav";
 import type { Link } from "./lib/link";
 import { LinkContext } from "./lib/link";
-import { emptyLink, type InboxSession, type LinkState, type Session } from "./lib/model";
+import { emptyLink, type InboxSession, type LinkState, type Session, type Subagent } from "./lib/model";
 import { detectWay } from "./lib/start";
 import { Computers } from "./routes/computers";
 import { Toaster } from "./lib/toast";
@@ -55,12 +55,24 @@ const session: Session = {
   entries: [
     { type: "user", text: "The phone drops off the relay after a minute idle. Find out why and fix it.", at: now - 600 },
     { type: "agent", text: "The relay closes a socket after 60 s without traffic. A phone that only reads sends nothing, so it gets cut." },
+    { type: "tool", id: "t1", status: "completed", title: "Explore" },
     { type: "tool", status: "completed", title: "Edited relay/src/socket.ts", added: 24, removed: 6 },
     { type: "tool", status: "completed", title: "Edited phone/relay.js", added: 11, removed: 2 },
     { type: "agent", text: "I added a ping every 25 s and a reconnect with backoff. Now I want to run the relay tests." },
     { type: "tool", status: "in_progress", command: "cargo test --locked relay", kind: "execute" },
   ],
 };
+
+// A subagent that looked around before the edits, and what it did.
+const subagents: Subagent[] = [
+  { id: "sub1", name: "Explore", task: "Find where the relay closes idle sockets and what keeps a phone's socket alive", state: "completed", started: now - 560, ended: now - 488, call: "t1", host: null },
+];
+const subagentEntries = [
+  { type: "user", text: subagents[0].task },
+  { type: "tool", status: "completed", title: "Searched for idle_timeout", kind: "search" },
+  { type: "tool", status: "completed", title: "Read relay/src/socket.ts", kind: "read" },
+  { type: "agent", text: "The relay closes a socket after **60 s** without a frame (`IDLE_TIMEOUT` in `relay/src/socket.ts`). The phone sends nothing while it only reads." },
+];
 
 function demoLink(over: Partial<LinkState>): Link {
   let state: LinkState = { ...emptyLink(), connected: true, host: "MacBook Pro", inbox, places: [{ path: "/src/arakun", project: "arakun", branch: "main" }], ...over };
@@ -75,7 +87,10 @@ function demoLink(over: Partial<LinkState>): Link {
       const msg = m as { type: string; session?: string };
       if (msg.type === "open") {
         const row = inbox.find((r) => r.id === msg.session);
-        state = { ...state, session: msg.session === "a" || !row ? session : ({ ...session, ...row, permission: null } as Session) };
+        state = { ...state, session: msg.session === "a" || !row ? session : ({ ...session, ...row, permission: null } as Session), subagents };
+      } else if (msg.type === "subagent") {
+        const id = (m as { subagent?: string }).subagent;
+        state = id ? { ...state, subagent: { id, loaded: true, count: subagentEntries.length, from: 0, entries: subagentEntries } } : { ...state, subagent: null };
       }
       for (const fn of listeners) fn();
     },
@@ -143,7 +158,7 @@ if (new URLSearchParams(location.search).has("account")) {
 createRoot(document.getElementById("app")!).render(
   <StrictMode>
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <LinkContext.Provider value={demoLink({ session })}>
+      <LinkContext.Provider value={demoLink({ session, subagents })}>
         <RouterProvider router={router} />
       </LinkContext.Provider>
     </QueryClientProvider>

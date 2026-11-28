@@ -3,7 +3,7 @@
 // (the draft, the photos, what is on its way, the sheet on top) and talks to
 // the link.
 
-import { useNavigate, useParams, useRouter } from "@tanstack/react-router";
+import { useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { AgentAvatar } from "../components/SessionRow";
 import { Composer } from "../components/session/Composer";
@@ -13,7 +13,9 @@ import { type Permission, PermissionCard } from "../components/session/Permissio
 import { type Question, QuestionCard } from "../components/session/QuestionCard";
 import { type SecretRequest, SecretCard } from "../components/session/SecretCard";
 import { Sheet } from "../components/session/Sheet";
-import { useSheetNav } from "../components/session/sheetNav";
+import { useSheetNav, validateSessionSearch } from "../components/session/sheetNav";
+import { BackgroundLine, SubagentContext, type SubagentHandlers } from "../components/session/Subagents";
+import { SubagentView } from "../components/session/SubagentView";
 import { usageSummary } from "../components/session/StopRow";
 import { Transcript, type TranscriptHandle } from "../components/session/Transcript";
 import { drawDiagram, NodeView, Pic, PicView, usePics } from "../components/session/Views";
@@ -94,6 +96,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   const pics = usePics(mode() === "account");
   const send = useCallback((m: ClientMessage) => link.send(m), [link]);
   const { sheet, go: openSheet } = useSheetNav(s.id, send);
+  const agents = useSubagents(link, s.id);
 
   const setDraft = (text: string) => {
     setDraftState(text);
@@ -244,14 +247,16 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
           {s.from > 0 ? (loadingOlder ? "Loading…" : `${s.from} earlier`) : ""}
         </div>
         <EntryContext.Provider value={handlers}>
-          <Transcript
-            ref={transcript}
-            session={s}
-            loadingOlder={loadingOlder}
-            onLoadOlder={loadOlder}
-            pending={pendingNode}
-            onHoldBubble={keepAsCut}
-          />
+          <SubagentContext.Provider value={agents.inSession}>
+            <Transcript
+              ref={transcript}
+              session={s}
+              loadingOlder={loadingOlder}
+              onLoadOlder={loadOlder}
+              pending={pendingNode}
+              onHoldBubble={keepAsCut}
+            />
+          </SubagentContext.Provider>
         </EntryContext.Provider>
         {p && !answered.includes(p.tool_call_id) ? (
           <PermissionCard
@@ -284,6 +289,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
             onDecline={() => answer({ type: "secret", session: s.id, id: secret.id }, `secret:${secret.id}`)}
           />
         ) : null}
+        <BackgroundLine subagents={agents.list} status={status} />
         <Composer
           session={live}
           draft={draft}
@@ -300,7 +306,66 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
           <Sheet sheet={sheet} session={live} send={send} open={openSheet} draft={draft} />
         </div>
       ) : null}
+      {agents.open ? (
+        <EntryContext.Provider value={handlers}>
+          <SubagentContext.Provider value={agents.inOpen}>
+            <SubagentView
+              agent={s.agent}
+              subagent={agents.list.find((a) => a.id === agents.open?.id)}
+              transcript={agents.open}
+              loadingOlder={agents.loadingOlder}
+              onLoadOlder={agents.loadOlder}
+              onBack={agents.back}
+            />
+          </SubagentContext.Provider>
+        </EntryContext.Provider>
+      ) : null}
       {viewNode}
     </div>
   );
 }
+
+/**
+ * The session's subagents, and the one whose transcript is open: it is
+ * `?subagent=` on the session's address, so the phone's back gesture goes
+ * back to the session. The computer keeps the open one live until it closes.
+ */
+function useSubagents(link: Link, id: string) {
+  const router = useRouter();
+  const navigate = useNavigate();
+  const want = useSearch({ strict: false, select: (q: Record<string, unknown>) => validateSessionSearch(q).subagent ?? null });
+  const list = useLink((st) => st.subagents);
+  const entries = useLink((st) => st.session?.entries ?? NONE);
+  const watched = useLink((st) => st.subagent);
+  const open = want && watched?.id === want ? watched : null;
+  // Asked for what comes before `from` of this one; the answer moves `from`.
+  const [askedOlder, setAskedOlder] = useState("");
+
+  useEffect(() => {
+    if (!want) return;
+    link.send({ type: "subagent", session: id, subagent: want });
+    return () => link.send({ type: "subagent", session: id });
+  }, [link, id, want]);
+
+  const onOpen = useCallback(
+    (sub: string) =>
+      void navigate({ to: "/s/$session", params: { session: id }, search: { subagent: sub }, state: { subagentFrom: true } }),
+    [navigate, id],
+  );
+  const back = useCallback(() => {
+    if (router.state.location.state.subagentFrom) router.history.back();
+    else void navigate({ to: "/s/$session", params: { session: id }, search: {}, replace: true });
+  }, [router, navigate, id]);
+  const from = open?.from ?? 0;
+  const loadOlder = useCallback(() => {
+    if (!open || from === 0) return;
+    setAskedOlder(`${open.id}:${from}`);
+    link.send({ type: "entries", session: id, subagent: open.id, from: Math.max(0, from - 50), to: from });
+  }, [link, id, open, from]);
+
+  const inSession: SubagentHandlers = useMemo(() => ({ subagents: list, entries, open: null, onOpen }), [list, entries, onOpen]);
+  const inOpen: SubagentHandlers = useMemo(() => ({ subagents: list, entries: open?.entries ?? NONE, open, onOpen }), [list, open, onOpen]);
+  return { list, open, inSession, inOpen, back, loadOlder, loadingOlder: !!open && open.from > 0 && askedOlder === `${open.id}:${open.from}` };
+}
+
+const NONE: never[] = [];

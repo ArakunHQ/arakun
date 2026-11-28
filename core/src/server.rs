@@ -17,7 +17,7 @@
 //! Everything it keeps is in `<data>/arakun/server/`, apart from the app's own
 //! files: `phone.json` (how it is reached, its relay identity and the paired
 //! devices), `account.json` (its sign-in), `state.json` (folders and sessions, see [`store`]), `sessions/`
-//! (transcripts) and `uploads/` (photos sent with prompts). The app and a
+//! (transcripts) and `uploads/` (photos and files sent with prompts). The app and a
 //! server can run on one machine; they share nothing.
 //!
 //! The same module is built into `arakun-server` (the `server/` package),

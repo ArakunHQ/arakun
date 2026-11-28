@@ -32,7 +32,7 @@ mod upload;
 pub mod wire;
 
 pub use transport::Transport;
-pub use upload::Uploads;
+pub use upload::{MAX_FILE, MAX_PROMPT, Save, Uploads};
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -150,6 +150,10 @@ pub enum ClientMsg {
         session: String,
         upload: String,
         name: String,
+        /// Any file, saved under its own name, not a photo. Only a server that
+        /// says `files` in its `usage` is sent one.
+        #[serde(default)]
+        file: bool,
         part: usize,
         of: usize,
         data: String,
@@ -2861,6 +2865,7 @@ mod tests {
                 session: "s1".into(),
                 upload: "u1".into(),
                 name: "IMG_1.jpg".into(),
+                file: false,
                 part: 0,
                 of: 2,
                 data: "AAEC".into(),

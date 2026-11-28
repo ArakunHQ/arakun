@@ -106,11 +106,13 @@ pub trait SessionHost {
     /// Whether what devices say reaches this host encrypted end to end.
     fn private(&self) -> bool;
 
-    /// Keeps a piece of a photo; the saved file once the last piece landed.
+    /// Keeps a piece of a photo, or of any `file`; the saved file once the
+    /// last piece landed.
     fn upload_piece(
         &mut self,
         upload: &str,
         name: &str,
+        file: bool,
         part: usize,
         of: usize,
         data: &str,
@@ -133,11 +135,12 @@ pub fn dispatch<H: SessionHost>(
             session: _,
             upload,
             name,
+            file,
             part,
             of,
             data,
         } => {
-            if let Some(path) = host.upload_piece(&upload, &name, part, of, &data) {
+            if let Some(path) = host.upload_piece(&upload, &name, file, part, of, &data) {
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy())

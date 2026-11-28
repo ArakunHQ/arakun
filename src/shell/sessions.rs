@@ -1048,6 +1048,15 @@ impl Shell {
             super::servers::Asker::Desktop,
             first.mentions_from.as_deref(),
         );
+        if let Some(notice) = self.servers_too_large() {
+            self.notify(
+                crate::island::AlertKind::Warning,
+                "A file did not go with the prompt",
+                &notice,
+                None,
+                cx,
+            );
+        }
         // Until the server answers: it names the branch once the session
         // started, and the prompt comes back if it did not.
         if let Some(reference) = sent {

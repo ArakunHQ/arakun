@@ -72,6 +72,9 @@ struct Conn {
     idle_told: Option<(u64, std::time::Instant)>,
     /// It is from before it took idle time: none is sent to it.
     no_idle: bool,
+    /// It saves any file a prompt carries, as its `usage` says. One from
+    /// before is sent images only.
+    files: bool,
 }
 
 impl Conn {
@@ -89,6 +92,7 @@ impl Conn {
             agents: Vec::new(),
             idle_told: None,
             no_idle: false,
+            files: false,
         }
     }
 
@@ -237,8 +241,10 @@ pub(super) struct ServersLink {
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
     starts: Starts,
-    /// Images sent ahead of prompts, to put back a prompt that did not go.
-    sent_images: servers::upload::Sent,
+    /// Files sent ahead of prompts, to put back a prompt that did not go.
+    sent_files: servers::upload::Sent,
+    /// Files a prompt mentioned that were too large to send, for a notice.
+    too_large: Vec<PathBuf>,
     /// That session, by server and id: its tab opens once the inbox has it.
     starting_id: Option<(String, String)>,
     /// Environments of folders a server no longer offers, kept for the
@@ -370,11 +376,13 @@ fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -
 }
 
 impl ServersLink {
-    /// Sends the images on this computer that `text` mentions to `server`
-    /// ahead of a prompt for its session `session` (none yet for a start).
-    /// Gives the text without them and the upload ids that name them. While
-    /// the server is not connected nothing goes, and the text stays as it is.
-    fn upload_images(&mut self, server: &str, session: &str, text: &str) -> (String, Vec<String>) {
+    /// Sends the files on this computer that `text` mentions to `server`
+    /// ahead of a prompt for its session `session` (none yet for a start):
+    /// any file when the server takes them, its images otherwise. Gives the
+    /// text without them and the upload ids that name them; the ones too
+    /// large to go wait in `too_large` for a notice. While the server is not
+    /// connected nothing goes, and the text stays as it is.
+    fn upload_files(&mut self, server: &str, session: &str, text: &str) -> (String, Vec<String>) {
         let unchanged = || (text.to_string(), Vec::new());
         let Some(conn) = self.conns.get(server) else {
             return unchanged();
@@ -382,21 +390,23 @@ impl ServersLink {
         if conn.reach != Reach::Connected {
             return unchanged();
         }
-        let (rest, images) = servers::upload::local_images(text);
-        if images.is_empty() {
+        let local = servers::upload::local_files(text, conn.files);
+        self.too_large.extend(local.too_large);
+        if local.files.is_empty() {
             return unchanged();
         }
-        let ids = images
+        let ids = local
+            .files
             .into_iter()
-            .map(|image| {
-                let id = self.sent_images.id(image.path.clone());
-                for piece in servers::upload::pieces(session, &id, &image) {
+            .map(|file| {
+                let id = self.sent_files.id(file.path.clone());
+                for piece in servers::upload::pieces(session, &id, &file) {
                     conn.client.send(&piece);
                 }
                 id
             })
             .collect();
-        (rest, ids)
+        (local.text, ids)
     }
 
     /// A folder `server` was asked for is not coming: said where it was asked.
@@ -1185,7 +1195,8 @@ impl Shell {
             inboxes_saving: None,
             origins: HashMap::new(),
             starts: Starts::default(),
-            sent_images: Default::default(),
+            sent_files: Default::default(),
+            too_large: Vec::new(),
             starting_id: None,
             retired: HashSet::new(),
             adding: HashSet::new(),
@@ -2006,9 +2017,14 @@ impl Shell {
         let msg = match action {
             RemoteAction::Send { text, now } => {
                 let (text, uploads) = match &mut self.servers {
-                    Some(link) => link.upload_images(&remote.server, id, text),
+                    Some(link) => link.upload_files(&remote.server, id, text),
                     None => (text.clone(), Vec::new()),
                 };
+                if let Some(notice) = self.servers_too_large()
+                    && let Some(thread) = thread_of(&self.projects, env_path, id)
+                {
+                    thread.update(cx, |t, cx| t.post_notice(notice, true, cx));
+                }
                 json!({ "type": "send", "text": text, "uploads": uploads, "now": now })
             }
             // Paused, not dropped: the queue stays on show, to resume or empty.
@@ -2152,6 +2168,15 @@ impl Shell {
         }
     }
 
+    /// Why files the last prompt to a server mentioned did not go with it,
+    /// if some did not. Said once.
+    pub(super) fn servers_too_large(&mut self) -> Option<String> {
+        let link = self.servers.as_mut()?;
+        let notice = servers::upload::too_large_notice(&link.too_large);
+        link.too_large.clear();
+        notice
+    }
+
     /// The thread on screen for `server`'s session `session`, if any.
     fn server_thread(&self, server: &str, session: &str) -> Option<Entity<Thread>> {
         let env = self.server_session_env(server, session)?;
@@ -2183,9 +2208,12 @@ impl Shell {
         }
         // A photo the phone sent here is a file here: it goes on to the server.
         let (text, uploads) = match &mut self.servers {
-            Some(link) => link.upload_images(server, id, text),
+            Some(link) => link.upload_files(server, id, text),
             None => (text.to_string(), Vec::new()),
         };
+        if let Some(notice) = self.servers_too_large() {
+            self.phone_send(client, wire::error(&notice));
+        }
         // `phone` is this app's own: the server reads past it.
         let msg = json!({
             "type": "send", "text": text, "uploads": uploads, "now": now, "phone": client,
@@ -2260,7 +2288,7 @@ impl Shell {
         // A pick the server does not offer (one from this machine's
         // catalog) would only fail there: it starts on its own instead.
         // No session yet: the server keeps them by id all the same.
-        let (text, uploads) = link.upload_images(&remote.server, "", text);
+        let (text, uploads) = link.upload_files(&remote.server, "", text);
         let offered = link
             .options
             .get(&(remote.server.clone(), remote.place.clone(), agent));
@@ -2589,7 +2617,7 @@ impl Shell {
             .filter_map(|id| id.as_str().map(String::from))
             .collect();
         let written = match &mut self.servers {
-            Some(link) => link.sent_images.put_back(&text(msg, "text"), &ids),
+            Some(link) => link.sent_files.put_back(&text(msg, "text"), &ids),
             None => text(msg, "text"),
         };
         self.servers_put_back(&env_path, written, None, None, why, cx);
@@ -3266,6 +3294,8 @@ impl Shell {
                             conn.since = Some(now);
                             // Its agents and their limits; it says again when they change.
                             conn.client.send(&json!({ "type": "usage" }));
+                            // Until it says so again: it may be another version now.
+                            conn.files = false;
                         }
                         (true, false) => {
                             conn.since = None;
@@ -3393,6 +3423,7 @@ impl Shell {
                 if kind == "usage" {
                     if let Some(conn) = link.conns.get_mut(id) {
                         conn.agents = crate::servers_view::agents_of(&msg);
+                        conn.files = msg["files"] == true;
                     }
                     self.sync_servers_view(cx);
                     return;

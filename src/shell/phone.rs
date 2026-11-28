@@ -1590,9 +1590,11 @@ impl Shell {
                 // and says its id when it has one.
                 if found.remote.is_some() {
                     let by = super::servers::Asker::Phone(client);
-                    let Some(reference) =
-                        self.servers_start(&path, agent, &text, &settings, by, None)
-                    else {
+                    let sent = self.servers_start(&path, agent, &text, &settings, by, None);
+                    if let Some(notice) = self.servers_too_large() {
+                        self.phone_send(client, wire::error(&notice));
+                    }
+                    let Some(reference) = sent else {
                         self.phone_send(client, wire::error("that server is not connected"));
                         return;
                     };
@@ -2683,17 +2685,29 @@ impl SessionHost for PhoneHost<'_> {
     }
 
     // Saved as a pasted image, so the id a prompt names is worth that file.
+    // A device sends this app photos only: it never said `files`.
     fn upload_piece(
         &mut self,
         upload: &str,
         name: &str,
+        file: bool,
         part: usize,
         of: usize,
         data: &str,
     ) -> Option<PathBuf> {
         let link = self.shell.phone.as_mut()?;
-        link.uploads
-            .piece(upload, name, part, of, data, super::composer::save_image)
+        link.uploads.piece(
+            upload,
+            name,
+            file,
+            part,
+            of,
+            data,
+            |bytes, what| match what {
+                phone::Save::Image(ext) => super::composer::save_image(bytes, ext),
+                phone::Save::File(_) => Err(std::io::ErrorKind::Unsupported.into()),
+            },
+        )
     }
 
     fn set_visible(&mut self, client: ClientId, visible: bool) {

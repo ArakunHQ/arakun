@@ -41,8 +41,15 @@ arakun check                      # run the project check here
 arakun page screenshot            # PNG of the environment's browser tab
 arakun shrink -- cargo test       # run it and print a summary; the whole output goes to a file
 arakun mem search <words>         # search what agents remember about this project
+arakun agent start --agent claude fix the build   # a session in the window; prints its id
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - < review.md
 ```
+
+`arakun agent start` is the one way to start an agent: in the window by default,
+`--headless` in a process of its own (the same as `arakun agent run`), or `--server` on
+the Arakun server running on this machine (the same as `arakun server new`). `--agent`
+picks the agent (`claude`, `opencode` or `workers-ai`; on the server, any it runs).
+`arakun agent new` is `agent start` in the window, with the agent picked by its model.
 
 The [server](server.md) has its own commands under `arakun server` (`arakun server help`),
 and arakun-pilot's are in [github-pilot.md](github-pilot.md).
@@ -119,11 +126,24 @@ Usage:
                [--exclude <glob>] <url>
                                a site's pages as Markdown, through Browser Run;
                                honors robots.txt and Content Signals
+  arakun agent start [--agent <agent>] [--headless | --server] [--model <id>]
+                     [--effort <level>] [--dir <dir>] [--title <text>]
+                     [<flags of new or run>] <prompt…>
+                               start an agent and print its id. Without
+                               --headless or --server it starts in the window,
+                               listed in the sidebar, and takes the flags of
+                               agent new; --agent is claude, opencode or
+                               workers-ai there. --headless starts it in a
+                               process of its own that goes on with arakun
+                               closed (workers-ai only) and takes the flags of
+                               agent run. --server starts it on the arakun
+                               server running on this machine, with any agent
+                               the server runs (arakun server new)
   arakun agent new [--model <provider/model>] [--effort <level>] [--mode <id>]
                    [--dir <dir>] [--title <text>] [--ask] <prompt…>
-                               start a background agent, listed in the sidebar,
-                               and print its id: OpenCode, arakun's own Workers
-                               AI agent for a workers-ai/@cf/… model, or Claude
+                               agent start in the window, the agent picked by
+                               the model: OpenCode, arakun's own Workers AI
+                               agent for a workers-ai/@cf/… model, or Claude
                                Code for a claude/<model> one; --effort sets the
                                reasoning (none, low, high, max: per model); it
                                allows its own tool calls unless --ask (Claude
@@ -144,19 +164,20 @@ Usage:
                    [--allow net,modal,mail-read] [--read <path>]…
                    [--no-sandbox [--yes]] [--append-system-prompt <file>]
                    [--wait [--timeout <secs>] [--result <file>]] [--] <prompt…>
-                               start a headless agent (Workers AI) in a process
-                               of its own: it goes on with arakun closed; prints
-                               its id. ls, log, wait, send and stop work on it
-                               too. The policy (default workspace) picks the
-                               tool calls it runs alone; the rest wait for
-                               approve or deny, and mail, git push, publishing
-                               and system changes always do. It runs in a
-                               sandbox without network or credentials: --allow
-                               grants those, --read lets it read a path outside
-                               its folder, --no-sandbox --yes runs it without
-                               one. --resume gives a session a new prompt.
-                               --wait blocks until the turn ends and prints its
-                               summary as JSON (what would ask is declined)
+                               agent start --headless: a headless agent (Workers
+                               AI) in a process of its own that goes on with
+                               arakun closed; prints its id. ls, log, wait, send
+                               and stop work on it too. The policy (default
+                               workspace) picks the tool calls it runs alone;
+                               the rest wait for approve or deny, and mail, git
+                               push, publishing and system changes always do. It
+                               runs in a sandbox without network or credentials:
+                               --allow grants those, --read lets it read a path
+                               outside its folder, --no-sandbox --yes runs it
+                               without one. --resume gives a session a new
+                               prompt. --wait blocks until the turn ends and
+                               prints its summary as JSON (what would ask is
+                               declined)
   arakun agent pending [--json]
                                the tool calls headless agents wait on you for
   arakun agent approve <id> <req_id>

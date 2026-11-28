@@ -198,14 +198,25 @@ pub const COMMANDS: &[Command] = &[
         "`arakun crawl <url>` reads a site's pages (honoring robots.txt and Content Signals).",
     ),
     agent(
+        "agent start",
+        "agent start [--agent <agent>] [--headless | --server] [--model <id>] \
+         [--effort <level>] [--dir <dir>] [--title <text>] [<flags of new or run>] <prompt…>",
+        "start an agent and print its id. Without --headless or --server it starts in the \
+         window, listed in the sidebar, and takes the flags of agent new; --agent is claude, \
+         opencode or workers-ai there. --headless starts it in a process of its own that goes \
+         on with arakun closed (workers-ai only) and takes the flags of agent run. --server \
+         starts it on the arakun server running on this machine, with any agent the server \
+         runs (arakun server new)",
+        "`arakun agent <start|wait|log|send|stop|ls>` runs background agents.",
+    ),
+    user(
         "agent new",
         "agent new [--model <provider/model>] [--effort <level>] [--mode <id>] [--dir <dir>] \
          [--title <text>] [--ask] <prompt…>",
-        "start a background agent, listed in the sidebar, and print its id: OpenCode, \
-         arakun's own Workers AI agent for a workers-ai/@cf/… model, or Claude Code for a \
-         claude/<model> one; --effort sets the reasoning (none, low, high, max: per model); \
-         it allows its own tool calls unless --ask (Claude Code always asks in the window)",
-        "`arakun agent <new|wait|log|send|stop|ls>` runs background agents.",
+        "agent start in the window, the agent picked by the model: OpenCode, arakun's own \
+         Workers AI agent for a workers-ai/@cf/… model, or Claude Code for a claude/<model> \
+         one; --effort sets the reasoning (none, low, high, max: per model); it allows its \
+         own tool calls unless --ask (Claude Code always asks in the window)",
     ),
     user(
         "agent ls",
@@ -236,8 +247,8 @@ pub const COMMANDS: &[Command] = &[
          [--policy readonly|workspace|full] [--allow net,modal,mail-read] [--read <path>]… \
          [--no-sandbox [--yes]] [--append-system-prompt <file>] \
          [--wait [--timeout <secs>] [--result <file>]] [--] <prompt…>",
-        "start a headless agent (Workers AI) in a process of its own: it goes on with arakun \
-         closed; prints its id. ls, log, wait, send and stop work on it too. The policy \
+        "agent start --headless: a headless agent (Workers AI) in a process of its own that \
+         goes on with arakun closed; prints its id. ls, log, wait, send and stop work on it too. The policy \
          (default workspace) picks the tool calls it runs alone; the rest wait for approve or \
          deny, and mail, git push, publishing and system changes always do. It runs in a \
          sandbox without network or credentials: --allow grants those, --read lets it read a \
@@ -590,7 +601,8 @@ mod tests {
     #[test]
     fn help_after_a_word_lists_the_forms_it_starts() {
         let agent = usage("agent").unwrap();
-        assert!(agent.starts_with("arakun agent new "));
+        assert!(agent.starts_with("arakun agent start "));
+        assert!(agent.contains("\n       arakun agent new "));
         assert!(agent.contains("\n       arakun agent deny <id> <req_id> [reason…]"));
         assert_eq!(usage("agent rm").unwrap(), "arakun agent rm <id>");
         // `agent` does not start `agent-host`.
@@ -629,7 +641,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l| l.starts_with(&format!("{:COLUMN$}start a headless agent", "")))
+                .any(|l| l.starts_with(&format!("{:COLUMN$}agent start --headless", "")))
         );
     }
 

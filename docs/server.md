@@ -182,6 +182,7 @@ reach each other this way. There are two ways to use it:
 ```sh
 arakun server add ~/code/app      # a folder sessions can start in; the page lists them
 arakun server new --agent claude "fix the failing test"   # start one here; prints its id
+arakun agent start --server --agent claude "fix the failing test"   # the same
 arakun server ls                  # folders and sessions
 arakun server log <id>            # a session's status and last entries
 arakun server wait <id>           # until it stops working; prints its answer or what it asks

@@ -16,6 +16,9 @@ use crate::agent::mirror::{self, ItemKind, RepoHas, RepoItem, Where};
 use crate::agent::publishers;
 use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
+/// Why Droid can't use what Discover installs.
+const DISCOVER_NOT_FOR_DROID: &str = "Arakun installs it for Claude Code; Droid doesn't read it";
+
 /// Wait this long after the last keystroke before asking the registry.
 const DEBOUNCE: Duration = Duration::from_millis(350);
 
@@ -1550,6 +1553,18 @@ impl ExtensionsView {
             return ui::state_pill("checkmark-circle02", "Installed", Tone::Success.color())
                 .into_any_element();
         }
+        // Discover installs for Claude Code: with Droid picked, the card stays
+        // and says so instead of offering an install Droid won't see.
+        if self.show == Show::Only(Agent::Droid) {
+            return div()
+                .id(SharedString::from(format!(
+                    "ext-card-not-for-{}",
+                    item.key()
+                )))
+                .child(agents::pill("Not for Droid", Tone::Neutral, true))
+                .tooltip(ui::tip_text(DISCOVER_NOT_FOR_DROID))
+                .into_any_element();
+        }
         let busy_name = match item {
             Item::Plugin(p) => Some(p.name.as_str()),
             Item::Skill(k) => Some(k.name.as_str()),
@@ -1842,6 +1857,25 @@ impl ExtensionsView {
                     .child(description),
             )
         });
+        panel = panel.child(agents::card(
+            "ext-detail",
+            vec![
+                agents::Line {
+                    agent: Agent::Claude,
+                    uses: if installed { Use::On } else { Use::Missing },
+                    file: self.where_summary(item.kind()),
+                    toggle: None,
+                    busy: false,
+                },
+                agents::Line {
+                    agent: Agent::Droid,
+                    uses: Use::Cannot(DISCOVER_NOT_FOR_DROID),
+                    file: String::new(),
+                    toggle: None,
+                    busy: false,
+                },
+            ],
+        ));
         if let Some(picker) = self.render_where(item.kind(), cx) {
             panel = panel.child(picker);
         }

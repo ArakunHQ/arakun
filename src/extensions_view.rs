@@ -1,11 +1,11 @@
 //! The Marketplace tab. Discover lists the plugins and MCP servers there are to
 //! add (`market`). Installed shows what the agents load in the visible
-//! environment. For Claude Code, that is its MCP servers with their health and
-//! scope, plugins (with a switch), skills and permission rules
-//! (`agent::claude_ext`). For Droid, it is its plugins (Claude SEO with an
-//! install button), MCP servers and skills, each with a switch
-//! (`agent::extensions`, `agent::plugins`). Arakun's own extensions, tabs the
-//! sidebar shows only once they are on here, have a page of their own
+//! environment, one row per item for every agent: Claude Code's MCP servers
+//! with their health and scope, plugins, skills and permission rules
+//! (`agent::claude_ext`), and Droid's MCP servers, plugins and skills
+//! (`agent::extensions`, `agent::plugins`). Show for picks whose state the
+//! cells say and never changes the layout (`agents`). Arakun's own extensions,
+//! tabs the sidebar shows only once they are on here, have a page of their own
 //! (`sidebar::Extensions`).
 
 use std::collections::HashSet;
@@ -22,8 +22,8 @@ use gpui::{
 };
 
 use crate::agent::claude_ext::{self, ClaudeExtensions, Health, RuleKind, Scope, Server};
-use crate::agent::extensions::{self, Extensions};
-use crate::agent::plugins::{self, Plugins, Runtime};
+use crate::agent::extensions::{self, Extensions, McpServer};
+use crate::agent::plugins::{self, Installed, Plugins, Runtime};
 use crate::input::{InputEvent, TextInput};
 use crate::loadable::Loadable;
 use crate::logos;
@@ -33,9 +33,11 @@ use crate::theme;
 use crate::ui::Typography as _;
 use crate::ui::{self, ButtonKind, Tone, Type, icon};
 
+mod agents;
 mod market;
 mod remote;
 
+use agents::{Agent, Show, Use, Uses};
 use market::{Market, MarketState};
 pub use remote::ServerTarget;
 
@@ -62,12 +64,6 @@ pub enum ExtensionsEvent {
     Server(String, serde_json::Value),
     /// Something changed on this computer: the paired servers get what they lack.
     Mirror,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Which {
-    Claude,
-    Droid,
 }
 
 /// What the page lists.
@@ -202,7 +198,8 @@ enum Busy {
 
 pub struct ExtensionsView {
     cwd: Option<PathBuf>,
-    which: Which,
+    /// Whose state the cells say. It never changes which sections show.
+    show: Show,
     kind: Kind,
     market: Market,
     ms: MarketState,
@@ -236,6 +233,8 @@ pub struct ExtensionsView {
     droid_at: Option<Instant>,
     droid_error: Option<SharedString>,
     droid_busy: Option<Busy>,
+    /// Droid isn't installed: nothing is in it, and that is no error.
+    droid_absent: bool,
     plugins: Option<Plugins>,
     _droid_task: Option<Task<()>>,
     _plugins_task: Option<Task<()>>,
@@ -277,7 +276,7 @@ impl ExtensionsView {
         });
         Self {
             cwd: None,
-            which: Which::Claude,
+            show: Show::All,
             kind: Kind::Marketplace,
             market: Market::Plugins,
             ms: MarketState::default(),
@@ -301,6 +300,7 @@ impl ExtensionsView {
             droid_at: None,
             droid_error: None,
             droid_busy: None,
+            droid_absent: false,
             plugins: None,
             _droid_task: None,
             _plugins_task: None,
@@ -330,7 +330,10 @@ impl ExtensionsView {
             Place::Skills => Kind::Skills,
             Place::File(_) | Place::Nothing => return,
         };
-        self.which = Which::Claude;
+        // The finding is about Claude Code: its state, not Droid's.
+        if self.show != Show::All {
+            self.show = Show::Only(Agent::Claude);
+        }
         self.set_kind(kind, cx);
     }
 
@@ -375,26 +378,21 @@ impl ExtensionsView {
 
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         let stale = |at: Option<Instant>| at.is_none_or(|t| t.elapsed() > STALE);
-        match self.which {
-            Which::Claude if stale(self.claude_at) && !self.claude.loading() => {
-                self.load_claude(cx)
-            }
-            Which::Droid
-                if stale(self.droid_at)
-                    && self.droid_busy.is_none()
-                    && self._droid_task.is_none() =>
-            {
-                self.load_droid(cx)
-            }
-            _ => {}
+        // Every agent's, whichever Show for picks: each row says how every
+        // agent stands with it.
+        if stale(self.claude_at) && !self.claude.loading() {
+            self.load_claude(cx)
         }
-        if self.which == Which::Claude && self.kind == Kind::Marketplace {
+        if stale(self.droid_at) && self.droid_busy.is_none() && self._droid_task.is_none() {
+            self.load_droid(cx)
+        }
+        if self.kind == Kind::Marketplace {
             self.open_market(cx);
         }
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.which == Which::Claude && self.kind == Kind::Marketplace {
+        if self.kind == Kind::Marketplace {
             self.ask_remote(true, cx);
             // Asked for, a failed load is tried again at once.
             self.ms.failed_at = None;
@@ -402,10 +400,8 @@ impl ExtensionsView {
             self.ms.skills.error = None;
             self.open_market(cx);
         }
-        match self.which {
-            Which::Claude => self.load_claude(cx),
-            Which::Droid => self.load_droid(cx),
-        }
+        self.load_claude(cx);
+        self.load_droid(cx);
     }
 
     fn load_claude(&mut self, cx: &mut Context<Self>) {
@@ -666,11 +662,18 @@ impl ExtensionsView {
 
     fn load_droid(&mut self, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd.clone() else { return };
-        // What the last look found shows until the new one answers.
-        if self.droid.is_none() {
-            self.droid = extensions::cached(&cwd);
+        self.droid_absent = !extensions::installed();
+        if self.droid_absent {
+            self.droid = Some(Extensions::default());
+            self.droid_error = None;
+            self.droid_at = Some(Instant::now());
+        } else {
+            // What the last look found shows until the new one answers.
+            if self.droid.is_none() {
+                self.droid = extensions::cached(&cwd);
+            }
+            self.run_droid(None, move || extensions::load(&cwd), cx);
         }
-        self.run_droid(None, move || extensions::load(&cwd), cx);
         self._plugins_task = Some(cx.spawn(async move |this, cx| {
             let found = cx
                 .background_spawn(crate::guard::task_or_default(
@@ -777,7 +780,9 @@ impl ExtensionsView {
     // -----------------------------------------------------------------------
     // Claude Code.
 
-    fn render_claude(&self, x: &ClaudeExtensions, cx: &mut Context<Self>) -> Div {
+    /// Installed: one row per item, whichever agents have it. Show for changes
+    /// what the cells say, never which sections show.
+    fn render_installed(&self, x: &ClaudeExtensions, cx: &mut Context<Self>) -> Div {
         let words = self.words(cx);
         let shown = |hay: &str| {
             let hay = hay.to_lowercase();
@@ -793,31 +798,78 @@ impl ExtensionsView {
                 Tone::Warning,
             ));
         }
+        if let Some(e) = &self.droid_error {
+            body = body.child(note(format!("Droid: {e}"), Tone::Danger));
+        }
+        if self.droid_absent && self.show == Show::Only(Agent::Droid) {
+            body = body.child(note(
+                "Droid's CLI is not installed, so nothing here is in Droid yet.",
+                Tone::Info,
+            ));
+        }
+        let droid = self.droid.as_ref();
+        let droid_servers: &[McpServer] = droid.map_or(&[], |d| &d.servers);
+        let droid_skills: &[extensions::Skill] = droid.map_or(&[], |d| &d.skills);
+        // Until Droid answers, its column would say "Not in Droid" for all.
+        let asking = (self.droid.is_none() || self._droid_task.is_some()) && !self.droid_absent;
+        let asking_aside = || {
+            asking.then(|| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child(ui::spinner(12., theme::text_faint()))
+                    .child("Asking Droid…")
+            })
+        };
 
         if wants(Kind::Servers) && !filtering {
             body = body.children(self.render_attention(x, cx));
         }
 
         if wants(Kind::Servers) {
-            let servers: Vec<&Server> = x
-                .servers
-                .iter()
-                .filter(|s| {
-                    shown(&format!(
-                        "{} {} {} {}",
+            let (offered, used): (Vec<&Server>, Vec<&Server>) =
+                x.servers.iter().partition(|s| s.unused_connector());
+            let droid_refs: Vec<&McpServer> = droid_servers.iter().collect();
+            let merged: Vec<_> = agents::merge(
+                &used,
+                |s| display_name(&s.name),
+                &droid_refs,
+                |d| d.name.clone(),
+            )
+            .into_iter()
+            .filter(|(c, d)| {
+                let mut hay = String::new();
+                if let Some(s) = c {
+                    hay += &format!(
+                        "{} {} {} {} ",
                         s.name,
                         s.scope.label(),
                         s.target,
                         health_label(&s.health)
-                    ))
-                })
+                    );
+                }
+                if let Some(d) = d {
+                    hay += &format!("{} {} {}", d.name, d.source, d.status);
+                }
+                shown(&hay)
+            })
+            .collect();
+            let offered: Vec<&Server> = offered
+                .into_iter()
+                .filter(|s| shown(&format!("{} {}", s.name, s.target)))
                 .collect();
-            if !servers.is_empty() || !filtering {
-                let (offered, used): (Vec<&Server>, Vec<&Server>) =
-                    servers.into_iter().partition(|s| s.unused_connector());
-                let mut rows: Vec<AnyElement> = used
+            if !merged.is_empty() || !offered.is_empty() || !filtering {
+                let mut rows: Vec<AnyElement> = merged
                     .iter()
-                    .map(|s| self.server_row(s, cx).into_any_element())
+                    .map(|(c, d)| match c {
+                        Some(s) => self.server_row(s, d.map(|d| &**d), cx).into_any_element(),
+                        None => d
+                            .map(|d| self.droid_server_row(d, cx).into_any_element())
+                            .unwrap_or_else(|| div().into_any_element()),
+                    })
                     .collect();
                 if !offered.is_empty() {
                     let all = filtering || self.unfolded.contains("connectors");
@@ -838,14 +890,16 @@ impl ExtensionsView {
                         rows.extend(
                             offered
                                 .iter()
-                                .map(|s| self.server_row(s, cx).into_any_element()),
+                                .map(|s| self.server_row(s, None, cx).into_any_element()),
                         );
                     }
                 }
                 if rows.is_empty() {
                     rows.push(
-                        empty_row("No MCP servers. Add one with `claude mcp add`.")
-                            .into_any_element(),
+                        empty_row(
+                            "No MCP servers. Add one with `claude mcp add` or `droid mcp add`.",
+                        )
+                        .into_any_element(),
                     );
                 }
                 let healthy = x
@@ -865,6 +919,15 @@ impl ExtensionsView {
                         .child(ui::spinner(12., theme::text_faint()))
                         .child("Checking connections…")
                         .into_any_element()
+                } else if let Some(a) = asking_aside() {
+                    a.into_any_element()
+                } else if self.show == Show::Only(Agent::Droid) {
+                    let on = droid_servers.iter().filter(|s| s.enabled()).count();
+                    ui::status_dot(
+                        format!("{on} of {} on for Droid", droid_servers.len()),
+                        Tone::Success,
+                    )
+                    .into_any_element()
                 } else if problems > 0 {
                     ui::status_dot(
                         format!(
@@ -891,7 +954,7 @@ impl ExtensionsView {
                 }
                 body = body.child(section(
                     "MCP servers",
-                    "Tools Claude can call, and whether it reaches them",
+                    "Tools your agents can call, and whether they reach them",
                     Some(aside),
                     table(&SERVER_COLS, rows),
                 ));
@@ -903,26 +966,65 @@ impl ExtensionsView {
         }
 
         if wants(Kind::Plugins) {
-            let plugins: Vec<_> = x
-                .plugins
-                .iter()
-                .filter(|p| shown(&format!("{} {}", p.id, p.servers.join(" "))))
-                .collect();
-            if !plugins.is_empty() || !filtering {
-                let mut rows: Vec<AnyElement> = plugins
+            let droid_plugins: &[Installed] = self.plugins.as_ref().map_or(&[], |p| &p.droid);
+            let mut merged: Vec<_> = agents::merge(
+                &x.plugins,
+                |p| p.short().to_string(),
+                droid_plugins,
+                |i| droid_short(&i.id).to_string(),
+            );
+            // Claude SEO has an install of its own, for both agents: it keeps
+            // a row while neither has it.
+            let seo = self.plugins.is_some()
+                && !merged
                     .iter()
-                    .map(|p| self.plugin_row(p, cx).into_any_element())
+                    .any(|(c, d)| c.is_some_and(is_seo_claude) || d.is_some_and(is_seo_droid));
+            merged.retain(|(c, d)| {
+                let mut hay = String::new();
+                if let Some(p) = c {
+                    hay += &format!("{} {} ", p.id, p.servers.join(" "));
+                }
+                if let Some(i) = d {
+                    hay += &i.id;
+                }
+                shown(&hay)
+            });
+            let seo = seo && shown(SEO_WORDS);
+            if !merged.is_empty() || seo || !filtering {
+                let mut rows: Vec<AnyElement> = merged
+                    .iter()
+                    .map(|(c, d)| self.plugin_row(*c, *d, cx).into_any_element())
                     .collect();
+                if seo {
+                    rows.push(self.seo_row(cx).into_any_element());
+                }
                 if rows.is_empty() {
                     rows.push(
-                        empty_row("No plugins installed. Browse them with /plugin in Claude Code.")
+                        empty_row("No plugins installed. Browse them under Discover.")
                             .into_any_element(),
                     );
                 }
-                let on = x.plugins.iter().filter(|p| p.enabled).count();
-                let aside =
-                    ui::status_dot(format!("{on} of {} on", x.plugins.len()), Tone::Success)
-                        .into_any_element();
+                let aside = match asking_aside().filter(|_| self.plugins.is_none()) {
+                    Some(a) => a.into_any_element(),
+                    None => {
+                        let (on, all) = match self.show {
+                            Show::Only(Agent::Droid) => (
+                                droid_plugins.iter().filter(|p| p.enabled).count(),
+                                droid_plugins.len(),
+                            ),
+                            _ => (
+                                x.plugins.iter().filter(|p| p.enabled).count(),
+                                x.plugins.len(),
+                            ),
+                        };
+                        let whose = match self.show {
+                            Show::All => String::new(),
+                            Show::Only(a) => format!(" for {}", a.name()),
+                        };
+                        ui::status_dot(format!("{on} of {all} on{whose}"), Tone::Success)
+                            .into_any_element()
+                    }
+                };
                 body = body.child(section(
                     "Plugins",
                     "Bundles of skills, agents, commands and servers",
@@ -933,27 +1035,51 @@ impl ExtensionsView {
         }
 
         if wants(Kind::Skills) {
-            let skills: Vec<_> = x
-                .skills
-                .iter()
-                .filter(|s| shown(&format!("{} {} {}", s.name, s.source, s.description)))
-                .collect();
-            if !skills.is_empty() || !filtering {
+            let merged: Vec<_> = agents::merge(
+                &x.skills,
+                |s| skill_short(&s.name).to_string(),
+                droid_skills,
+                |s| s.name.clone(),
+            )
+            .into_iter()
+            .filter(|(c, d)| {
+                let mut hay = String::new();
+                if let Some(s) = c {
+                    hay += &format!("{} {} {} ", s.name, s.source, s.description);
+                }
+                if let Some(s) = d {
+                    hay += &format!("{} {} {}", s.name, s.location, s.description);
+                }
+                shown(&hay)
+            })
+            .collect();
+            if !merged.is_empty() || !filtering {
+                let source =
+                    |c: Option<&claude_ext::Skill>, d: Option<&extensions::Skill>| match (c, d) {
+                        (Some(s), _) => s.source.clone(),
+                        (None, Some(s)) if !s.location.is_empty() => s.location.clone(),
+                        _ => "other".to_string(),
+                    };
                 let mut rows: Vec<AnyElement> = Vec::new();
-                let mut sources: Vec<&str> = Vec::new();
-                for s in &skills {
-                    if !sources.contains(&s.source.as_str()) {
-                        sources.push(&s.source);
+                let mut sources: Vec<String> = Vec::new();
+                for (c, d) in &merged {
+                    let s = source(*c, *d);
+                    if !sources.contains(&s) {
+                        sources.push(s);
                     }
                 }
-                for source in sources {
-                    let group: Vec<_> = skills.iter().filter(|s| s.source == source).collect();
-                    let key = format!("skills:{source}");
+                let mut n = 0;
+                for src in sources {
+                    let group: Vec<_> = merged
+                        .iter()
+                        .filter(|(c, d)| source(*c, *d) == src)
+                        .collect();
+                    let key = format!("skills:{src}");
                     let all = filtering || self.unfolded.contains(&key);
-                    let fold = if kind == Kind::Skills { FOLD * 2 } else { FOLD };
+                    let fold = FOLD * 2;
                     rows.push(
                         group_row(
-                            format!("{source} · {}", group.len()),
+                            format!("{src} · {}", group.len()),
                             (!all && group.len() > fold).then(|| {
                                 self.show_all(key.clone(), group.len(), cx)
                                     .into_any_element()
@@ -961,66 +1087,39 @@ impl ExtensionsView {
                         )
                         .into_any_element(),
                     );
-                    for (i, s) in group
-                        .iter()
-                        .enumerate()
-                        .take(if all { usize::MAX } else { fold })
-                    {
-                        let mark = if matches!(source, "personal" | "project") {
-                            logos::mark(&s.name, "")
-                        } else {
-                            logos::mark(source, "")
-                        };
-                        let short = s.name.rsplit(':').next().unwrap_or(&s.name).to_string();
-                        let path = s.path.join("SKILL.md");
-                        let open_path = path.clone();
-                        let open_label = format!("Open SKILL.md of {short}");
-                        rows.push(
-                            row_base(SharedString::from(format!("skill-{source}-{i}")), 52.)
-                                .child(name_cell(mark, 28., short, s.description.clone(), false))
-                                .child(
-                                    cell(Some(SOURCE_W))
-                                        .child(ui::badge(source.to_string(), Tone::Neutral)),
-                                )
-                                .child(
-                                    cell(Some(ACTIONS_W)).justify_end().child(
-                                        ui::icon_button(
-                                            SharedString::from(format!("skill-open-{source}-{i}")),
-                                            "file01",
-                                            14.,
-                                            "Open SKILL.md",
-                                        )
-                                        .aria_label(open_label)
-                                        .on_click(
-                                            cx.listener(move |_, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.emit(ExtensionsEvent::Open(open_path.clone()))
-                                            }),
-                                        ),
-                                    ),
-                                )
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(ExtensionsEvent::Open(path.clone()))
-                                }))
-                                .into_any_element(),
-                        );
+                    for (c, d) in group.iter().take(if all { usize::MAX } else { fold }) {
+                        rows.push(self.skill_row(n, &src, *c, *d, cx).into_any_element());
+                        n += 1;
                     }
                 }
                 if rows.is_empty() {
                     rows.push(empty_row("No skills. Personal ones live in ~/.claude/skills, project ones in .claude/skills.").into_any_element());
                 }
-                let personal = x.skills.iter().filter(|s| s.source == "personal").count();
-                let aside = div()
-                    .ty(Type::Caption)
-                    .text_color(theme::text_subtle())
-                    .child(format!(
-                        "{personal} personal · {} from plugins",
-                        x.skills.len() - personal
-                    ));
+                let aside = match asking_aside() {
+                    Some(a) => a.into_any_element(),
+                    None => {
+                        let personal = x.skills.iter().filter(|s| s.source == "personal").count();
+                        div()
+                            .ty(Type::Caption)
+                            .text_color(theme::text_subtle())
+                            .child(match self.show {
+                                Show::Only(Agent::Droid) => format!(
+                                    "{} of {} on for Droid",
+                                    droid_skills.iter().filter(|s| s.enabled).count(),
+                                    droid_skills.len()
+                                ),
+                                _ => format!(
+                                    "{personal} personal · {} from plugins",
+                                    x.skills.len() - personal
+                                ),
+                            })
+                            .into_any_element()
+                    }
+                };
                 body = body.child(section(
                     "Skills",
-                    "Know-how Claude loads when a task calls for it",
-                    Some(aside.into_any_element()),
+                    "Know-how your agents load when a task calls for it",
+                    Some(aside),
                     table(&SKILL_COLS, rows),
                 ));
             }
@@ -1040,14 +1139,154 @@ impl ExtensionsView {
         body
     }
 
-    fn server_row(&self, s: &Server, cx: &mut Context<Self>) -> Div {
+    /// The Status cell: the picked agent's state, or the item's own.
+    fn status_cell(&self, uses: &Uses, own: (&str, Tone)) -> Div {
+        match agents::state_for(self.show, uses) {
+            Some(words) => agents::pill(words, Tone::Neutral, true),
+            None => agents::pill(own.0.to_string(), own.1, false),
+        }
+    }
+
+    /// A switch that turns an item on or off for one agent, or its spinner.
+    fn agent_switch(
+        &self,
+        id: String,
+        label: String,
+        on: bool,
+        busy: bool,
+        locked: bool,
+        flip: impl Fn(&mut Self, bool, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if busy || locked {
+            return switch_or_spinner(on, busy, locked);
+        }
+        div()
+            .id(SharedString::from(id))
+            .map(|d| ui::as_switch(d, label, on))
+            .cursor_pointer()
+            .child(ui::switch(on))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                flip(this, !on, cx)
+            }))
+            .into_any_element()
+    }
+
+    /// Makes an Agents card switch out of a method of the view.
+    fn toggle_for(
+        &self,
+        cx: &mut Context<Self>,
+        flip: impl Fn(&mut Self, bool, &mut Context<Self>) + 'static,
+    ) -> Option<agents::Toggle> {
+        let this = cx.entity().downgrade();
+        Some(Box::new(move |on, _, cx| {
+            let _ = this.update(cx, |this, cx| flip(this, on, cx));
+        }))
+    }
+
+    /// Droid's line in an Agents card, for an item in its MCP config.
+    fn droid_server_line(&self, d: Option<&McpServer>, cx: &mut Context<Self>) -> agents::Line {
+        let uses = d.map_or(Use::Missing, |d| Use::on(d.enabled()));
+        let toggle = d.filter(|d| !d.managed).and_then(|d| {
+            let name = d.name.clone();
+            self.toggle_for(cx, move |this, on, cx| {
+                this.toggle_droid_server(name.clone(), on, cx)
+            })
+        });
+        agents::Line {
+            agent: Agent::Droid,
+            uses,
+            file: d.map_or_else(|| DROID_MCP.to_string(), |d| droid_server_file(&d.source)),
+            toggle,
+            busy: d.is_some_and(|d| self.droid_busy == Some(Busy::Server(d.name.clone()))),
+        }
+    }
+
+    /// An MCP server only Droid has.
+    fn droid_server_row(&self, s: &McpServer, cx: &mut Context<Self>) -> Div {
+        let key = format!("droid-mcp:{}", s.name);
+        let open = self.open.as_ref() == Some(&key);
+        let on = s.enabled();
+        let uses: Uses = [Use::Missing, Use::on(on)];
+        let mut tags: Vec<(String, u32)> = vec![(s.server_type.to_uppercase(), CAT_BLUE)];
+        if s.tools > 0 {
+            tags.push((format!("{} tools", s.tools), CAT_GREEN));
+        }
+        if s.managed {
+            tags.push(("managed".into(), CAT_AMBER));
+        }
+        let name = s.name.clone();
+        let spinning = self.droid_busy == Some(Busy::Server(name.clone()));
+        let switch = self.agent_switch(
+            format!("droid-server-switch-{name}"),
+            format!("{name} for Droid"),
+            on,
+            spinning,
+            s.managed,
+            move |this, on, cx| this.toggle_droid_server(name.clone(), on, cx),
+            cx,
+        );
+        let header = row_base(SharedString::from(format!("ext-{key}")), ROW_H)
+            .map(|d| ui::labelled(d, gpui::Role::Button, s.name.clone()))
+            .when(open, |d| d.bg(theme::fill_hover()))
+            .child(name_cell(
+                logos::mark(&s.name, ""),
+                32.,
+                s.name.clone(),
+                format!("{} · {}", s.server_type, s.source),
+                !on,
+            ))
+            .child(cell(Some(STATUS_W)).child(self.status_cell(&uses, droid_server_state(s))))
+            .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &uses)))
+            .child(cell(Some(SOURCE_W)).child(ui::badge(s.source.clone(), Tone::Neutral)))
+            .child(cell(Some(TAGS_W)).child(tag_list(&tags, 3)))
+            .child(
+                cell(Some(ACTIONS_W))
+                    .justify_end()
+                    .gap(crate::ui::sp(8.))
+                    .child(switch)
+                    .child(
+                        icon(if open { "arrow-up01" } else { "arrow-down01" }, 14.)
+                            .text_color(theme::text_faint()),
+                    ),
+            )
+            .on_click({
+                let key = key.clone();
+                cx.listener(move |this, _, _, cx| this.toggle_open(key.clone(), cx))
+            });
+        let detail = open.then(|| {
+            let lines = vec![
+                agents::Line {
+                    agent: Agent::Claude,
+                    uses: Use::Missing,
+                    file: CLAUDE_MCP.into(),
+                    toggle: None,
+                    busy: false,
+                },
+                self.droid_server_line(Some(s), cx),
+            ];
+            detail_panel()
+                .child(agents::card(&key, lines))
+                .child(facts_grid(vec![
+                    ("Transport", s.server_type.clone(), false),
+                    ("Status", s.status.clone(), false),
+                    ("Tools", s.tools.to_string(), false),
+                ]))
+        });
+        div().flex().flex_col().child(header).children(detail)
+    }
+
+    fn server_row(&self, s: &Server, droid: Option<&McpServer>, cx: &mut Context<Self>) -> Div {
         let key = format!("mcp:{}", s.name);
         let open = self.open.as_ref() == Some(&key);
         let checking = self.claude.data.as_ref().is_some_and(|c| c.checking);
-        let (word, tone) = if checking && s.health == Health::Unknown {
-            ("Checking…", Tone::Neutral)
-        } else {
-            health_badge(&s.health)
+        let uses = server_uses(s, droid);
+        let (word, tone) = match droid {
+            // Droid picked: its state, not Claude Code's health.
+            Some(d) if self.show == Show::Only(Agent::Droid) => droid_server_state(d),
+            _ if checking && s.health == Health::Unknown => ("Checking…", Tone::Neutral),
+            _ => health_badge(&s.health),
         };
         let mut tags: Vec<(String, u32)> = vec![(s.transport.to_uppercase(), CAT_BLUE)];
         if s.scope == Scope::ClaudeAi {
@@ -1061,13 +1300,16 @@ impl ExtensionsView {
         if !s.rules.is_empty() {
             tags.push((format!("{} rules", s.rules.len()), CAT_VIOLET));
         }
+        // Claude Code's fixes, in its cells: with Droid picked, Droid's state shows.
+        let claude_cells = self.show != Show::Only(Agent::Droid);
         let quick: Option<(Fix, bool)> = match &s.health {
+            _ if !claude_cells => None,
             Health::NeedsAuth if s.unused_connector() => Some((Fix::Connect, false)),
             Health::NeedsAuth => Some((Fix::SignIn, true)),
             Health::Pending => Some((Fix::Approve, false)),
             _ => None,
         };
-        let failing = matches!(s.health, Health::Failed(_));
+        let failing = claude_cells && matches!(s.health, Health::Failed(_));
         let server = s.clone();
         let quick = quick.map(|(fix, primary)| {
             ui::button(
@@ -1111,7 +1353,8 @@ impl ExtensionsView {
                 s.target.clone(),
                 dim,
             ))
-            .child(cell(Some(STATUS_W)).child(status_pill(word, tone)))
+            .child(cell(Some(STATUS_W)).child(self.status_cell(&uses, (word, tone))))
+            .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &uses)))
             .child(cell(Some(SOURCE_W)).child(ui::badge(s.scope.label(), Tone::Neutral)))
             .child(cell(Some(TAGS_W)).child(tag_list(&tags, 3)))
             .child(
@@ -1130,10 +1373,32 @@ impl ExtensionsView {
             .flex()
             .flex_col()
             .child(header)
-            .when(open, |d| d.child(self.server_detail(s, cx)))
+            .when(open, |d| d.child(self.server_detail(s, droid, cx)))
     }
 
-    fn server_detail(&self, s: &Server, cx: &mut Context<Self>) -> Div {
+    fn server_detail(&self, s: &Server, droid: Option<&McpServer>, cx: &mut Context<Self>) -> Div {
+        let uses = server_uses(s, droid);
+        let droid_line = match &uses[Agent::Droid.index()] {
+            Use::Cannot(why) => agents::Line {
+                agent: Agent::Droid,
+                uses: Use::Cannot(why),
+                file: String::new(),
+                toggle: None,
+                busy: false,
+            },
+            _ => self.droid_server_line(droid, cx),
+        };
+        let lines = vec![
+            agents::Line {
+                agent: Agent::Claude,
+                uses: uses[Agent::Claude.index()].clone(),
+                file: claude_server_file(&s.scope),
+                // Claude Code turns a server off per folder, from /mcp.
+                toggle: None,
+                busy: false,
+            },
+            droid_line,
+        ];
         let mut facts = vec![
             ("Where", s.scope.about().to_string(), false),
             ("Transport", s.transport.clone(), false),
@@ -1177,6 +1442,7 @@ impl ExtensionsView {
         };
         detail_panel()
             .children(self.fix_box(s, cx))
+            .child(agents::card(&format!("mcp-{}", s.name), lines))
             .child(facts_grid(facts))
             .child(
                 div()
@@ -1508,97 +1774,293 @@ impl ExtensionsView {
         ))
     }
 
-    fn plugin_row(&self, p: &claude_ext::Plugin, cx: &mut Context<Self>) -> Div {
-        let key = format!("plugin:{}", p.id);
+    /// A plugin, for whichever agents have it: Claude Code's from its
+    /// settings, Droid's from ~/.factory.
+    fn plugin_row(
+        &self,
+        c: Option<&claude_ext::Plugin>,
+        d: Option<&Installed>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let short = c.map_or_else(
+            || d.map_or("", |d| droid_short(&d.id)).to_string(),
+            |p| p.short().to_string(),
+        );
+        let key = format!("plugin:{short}");
         let open = self.open.as_ref() == Some(&key);
-        let busy = self.plugin_busy.as_ref() == Some(&p.id);
+        let uses: Uses = [
+            c.map_or(Use::Missing, |p| Use::on(p.enabled)),
+            d.map_or(Use::Missing, |p| Use::on(p.enabled)),
+        ];
         let mut tags: Vec<(String, u32)> = Vec::new();
-        if p.skills > 0 {
-            tags.push((plural(p.skills, "skill"), CAT_BLUE));
+        if let Some(p) = c {
+            if p.skills > 0 {
+                tags.push((plural(p.skills, "skill"), CAT_BLUE));
+            }
+            if p.agents > 0 {
+                tags.push((plural(p.agents, "agent"), CAT_VIOLET));
+            }
+            if p.commands > 0 {
+                tags.push((plural(p.commands, "command"), CAT_CYAN));
+            }
+            if !p.servers.is_empty() {
+                tags.push(("MCP".into(), CAT_CORAL));
+            }
+            if p.hooks {
+                tags.push(("hooks".into(), CAT_AMBER));
+            }
+            if p.short().ends_with("-lsp") {
+                tags.push(("language server".into(), CAT_SAND));
+            }
         }
-        if p.agents > 0 {
-            tags.push((plural(p.agents, "agent"), CAT_VIOLET));
-        }
-        if p.commands > 0 {
-            tags.push((plural(p.commands, "command"), CAT_CYAN));
-        }
-        if !p.servers.is_empty() {
-            tags.push(("MCP".into(), CAT_CORAL));
-        }
-        if p.hooks {
-            tags.push(("hooks".into(), CAT_AMBER));
-        }
-        if p.short().ends_with("-lsp") {
-            tags.push(("language server".into(), CAT_SAND));
-        }
-        let (id, on) = (p.id.clone(), p.enabled);
-        let toggle = if busy {
-            div()
-                .w(px(30.))
-                .flex()
-                .justify_center()
-                .child(ui::spinner(14., theme::text_faint()))
-                .into_any_element()
-        } else {
-            div()
-                .id(SharedString::from(format!("ext-switch-{id}")))
-                .map(|d| ui::as_switch(d, p.short().to_string(), on))
-                .cursor_pointer()
-                .child(ui::switch(on))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.set_plugin(id.clone(), !on, cx)
-                }))
-                .into_any_element()
+        // The picked agent's switch; with every agent, Claude Code's (Droid's
+        // plugins have none here: its CLI turns them on and off).
+        let on = match (self.show, c, d) {
+            (Show::Only(Agent::Droid), _, Some(d)) => d.enabled,
+            (_, Some(p), _) => p.enabled,
+            (_, None, Some(d)) => d.enabled,
+            _ => false,
+        };
+        let switch = c
+            .filter(|_| self.show != Show::Only(Agent::Droid))
+            .map(|p| {
+                let id = p.id.clone();
+                self.agent_switch(
+                    format!("ext-switch-{id}"),
+                    p.short().to_string(),
+                    p.enabled,
+                    self.plugin_busy.as_ref() == Some(&p.id),
+                    false,
+                    move |this, on, cx| this.set_plugin(id.clone(), on, cx),
+                    cx,
+                )
+            });
+        let seo = c.is_some_and(is_seo_claude) || d.is_some_and(is_seo_droid);
+        let seo_button = seo.then(|| self.seo_button(cx)).flatten();
+        let subtitle = match (c, d) {
+            (Some(p), _) => format!("v{} · {}", p.version, p.marketplace()),
+            (None, Some(i)) => format!(
+                "v{} · {}",
+                i.version,
+                i.id.split_once('@').map_or("", |(_, m)| m)
+            ),
+            _ => String::new(),
         };
         let header = row_base(SharedString::from(format!("ext-{key}")), ROW_H)
+            .map(|d| ui::labelled(d, gpui::Role::Button, short.clone()))
             .when(open, |d| d.bg(theme::fill_hover()))
             .child(name_cell(
-                logos::mark(p.short(), ""),
+                logos::mark(&short, ""),
                 32.,
-                p.short().to_string(),
-                format!("v{} · {}", p.version, p.marketplace()),
+                short.clone(),
+                subtitle,
                 !on,
             ))
-            .child(cell(Some(STATUS_W)).child(if on {
-                status_pill("On", Tone::Success)
-            } else {
-                status_pill("Off", Tone::Neutral)
-            }))
+            .child(cell(Some(STATUS_W)).child(self.status_cell(
+                &uses,
+                if on {
+                    ("On", Tone::Success)
+                } else {
+                    ("Off", Tone::Neutral)
+                },
+            )))
+            .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &uses)))
             .child(cell(Some(SOURCE_W)).child(ui::badge("user", Tone::Neutral)))
             .child(cell(Some(TAGS_W)).child(tag_list(&tags, 2)))
             .child(
                 cell(Some(ACTIONS_W))
                     .justify_end()
                     .gap(crate::ui::sp(8.))
-                    .child(toggle)
+                    .children(seo_button)
+                    .children(switch)
                     .child(
                         icon(if open { "arrow-up01" } else { "arrow-down01" }, 14.)
                             .text_color(theme::text_faint()),
                     ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.toggle_open(key.clone(), cx)));
-        let mut facts = vec![
-            ("Id", p.id.clone(), true),
-            (
-                "State",
-                if on {
-                    "On in every project".into()
-                } else {
-                    "Off".to_string()
+            .on_click({
+                let key = key.clone();
+                cx.listener(move |this, _, _, cx| this.toggle_open(key.clone(), cx))
+            });
+        let detail = open.then(|| {
+            let claude_toggle = c.and_then(|p| {
+                let id = p.id.clone();
+                self.toggle_for(cx, move |this, on, cx| this.set_plugin(id.clone(), on, cx))
+            });
+            let lines = vec![
+                agents::Line {
+                    agent: Agent::Claude,
+                    uses: uses[0].clone(),
+                    file: CLAUDE_SETTINGS.into(),
+                    toggle: claude_toggle,
+                    busy: c.is_some_and(|p| self.plugin_busy.as_ref() == Some(&p.id)),
                 },
-                false,
-            ),
+                agents::Line {
+                    agent: Agent::Droid,
+                    uses: uses[1].clone(),
+                    file: d.map_or_else(|| DROID_PLUGINS.to_string(), |i| short_path(&i.path)),
+                    toggle: None,
+                    busy: false,
+                },
+            ];
+            let mut facts = Vec::new();
+            if let Some(p) = c {
+                facts.push(("Id", p.id.clone(), true));
+                if !p.servers.is_empty() {
+                    facts.push(("MCP servers", p.servers.join(", "), false));
+                }
+                facts.push(("Installed in", short_path(&p.path), true));
+            } else if let Some(i) = d {
+                facts.push(("Id", i.id.clone(), true));
+            }
+            if seo && let Some(p) = &self.plugins {
+                facts.push(("Claude SEO", seo_state(p).0, false));
+            }
+            detail_panel()
+                .child(agents::card(&key, lines))
+                .child(facts_grid(facts))
+        });
+        div().flex().flex_col().child(header).children(detail)
+    }
+
+    /// Claude SEO while neither agent has it: its own install sets it up for both.
+    fn seo_row(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let uses: Uses = [Use::Missing, Use::Missing];
+        row_base("ext-plugin-seo".into(), ROW_H)
+            .child(name_cell(
+                logos::mark("seo", ""),
+                32.,
+                "claude-seo".into(),
+                "Site audits, schema, Core Web Vitals, AI search and local SEO".into(),
+                true,
+            ))
+            .child(
+                cell(Some(STATUS_W))
+                    .child(self.status_cell(&uses, ("Not installed", Tone::Neutral))),
+            )
+            .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &uses)))
+            .child(cell(Some(SOURCE_W)).child(ui::badge("user", Tone::Neutral)))
+            .child(cell(Some(TAGS_W)).child(tag_list(
+                &[("Claude Code and Droid".to_string(), CAT_GREEN)],
+                1,
+            )))
+            .child(
+                cell(Some(ACTIONS_W))
+                    .justify_end()
+                    .children(self.seo_button(cx)),
+            )
+    }
+
+    /// Install, Set up or Update for Claude SEO; none when it can't run here.
+    fn seo_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.plugins.as_ref()?;
+        let (status, action) = seo_state(p);
+        let label = action?;
+        let enabled = self.cwd.is_some();
+        let kind = if matches!(label, "Install" | "Set up") {
+            ButtonKind::Primary
+        } else {
+            ButtonKind::Outline
+        };
+        Some(
+            ui::button("seo-install", label, kind, enabled)
+                .tooltip(ui::tip_text(format!(
+                    "Claude SEO for Droid and Claude Code · {status}"
+                )))
+                .when(enabled, |b| {
+                    b.on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.install_seo(cx)
+                    }))
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// A skill, for whichever agents have it. Claude Code's opens its SKILL.md;
+    /// Droid's has a switch.
+    fn skill_row(
+        &self,
+        i: usize,
+        source: &str,
+        c: Option<&claude_ext::Skill>,
+        d: Option<&extensions::Skill>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let name = c.map_or_else(|| d.map_or("", |d| d.name.as_str()), |s| s.name.as_str());
+        let short = skill_short(name).to_string();
+        let description = c.map_or_else(
+            || d.map_or(String::new(), |d| d.description.clone()),
+            |s| s.description.clone(),
+        );
+        let uses: Uses = [
+            c.map_or(Use::Missing, |_| Use::On),
+            d.map_or(Use::Missing, |d| Use::on(d.enabled)),
         ];
-        if !p.servers.is_empty() {
-            facts.push(("MCP servers", p.servers.join(", "), false));
+        let mark = if matches!(source, "personal" | "project") || c.is_none() {
+            logos::mark(name, "")
+        } else {
+            logos::mark(source, "")
+        };
+        let dim = match self.show {
+            Show::All => !uses.contains(&Use::On),
+            Show::Only(a) => uses[a.index()] != Use::On,
+        };
+        let path = c.map(|s| s.path.join("SKILL.md"));
+        let open_button = path.clone().map(|open_path| {
+            ui::icon_button(
+                SharedString::from(format!("skill-open-{source}-{i}")),
+                "file01",
+                14.,
+                "Open SKILL.md",
+            )
+            .aria_label(format!("Open SKILL.md of {short}"))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.emit(ExtensionsEvent::Open(open_path.clone()))
+            }))
+        });
+        // Droid's switch where its state is what the row is about.
+        let switch = d
+            .filter(|_| c.is_none() || self.show == Show::Only(Agent::Droid))
+            .map(|d| {
+                let n = d.name.clone();
+                self.agent_switch(
+                    format!("droid-skill-switch-{source}-{i}"),
+                    format!("{} for Droid", d.name),
+                    d.enabled,
+                    self.droid_busy == Some(Busy::Skill(d.name.clone())),
+                    false,
+                    move |this, on, cx| this.toggle_droid_skill(n.clone(), on, cx),
+                    cx,
+                )
+            });
+        let row = row_base(SharedString::from(format!("skill-{source}-{i}")), 52.)
+            .child(name_cell(mark, 28., short.clone(), description, dim))
+            .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &uses)))
+            .child(cell(Some(SOURCE_W)).child(ui::badge(source.to_string(), Tone::Neutral)))
+            .child(
+                cell(Some(ACTIONS_W))
+                    .justify_end()
+                    .gap(crate::ui::sp(8.))
+                    .children(switch)
+                    .children(open_button),
+            );
+        match (path, d) {
+            (Some(path), _) => row
+                .map(|r| ui::labelled(r, gpui::Role::Button, format!("Open {short}")))
+                .on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(ExtensionsEvent::Open(path.clone()))),
+                ),
+            (None, Some(d)) => {
+                let (n, on) = (d.name.clone(), d.enabled);
+                row.map(|r| ui::as_switch(r, format!("{short} for Droid"), on))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_droid_skill(n.clone(), !on, cx)
+                    }))
+            }
+            (None, None) => row,
         }
-        facts.push(("Installed in", short_path(&p.path), true));
-        div()
-            .flex()
-            .flex_col()
-            .child(header)
-            .when(open, |d| d.child(detail_panel().child(facts_grid(facts))))
     }
 
     fn render_permissions(
@@ -1764,6 +2226,7 @@ impl ExtensionsView {
                     .child(
                         cell(Some(STATUS_W)).child(status_pill(capitalize(r.kind.label()), tone)),
                     )
+                    .child(cell(Some(AGENTS_W)).child(agents::cell(self.show, &RULE_USES)))
                     .child(cell(Some(SOURCE_W)).child(ui::badge(r.source, Tone::Neutral)))
                     .into_any_element(),
             );
@@ -1829,274 +2292,6 @@ impl ExtensionsView {
                 cx.notify();
             }))
     }
-
-    // -----------------------------------------------------------------------
-    // Droid.
-
-    fn render_droid(&self, cx: &mut Context<Self>) -> Div {
-        let words = self.words(cx);
-        let shown = |hay: &str| {
-            let hay = hay.to_lowercase();
-            words.iter().all(|w| hay.contains(w.as_str()))
-        };
-        let kind = self.kind;
-        let wants = |k: Kind| kind == k;
-        let mut body = div().flex().flex_col().gap(crate::ui::sp(28.));
-        if let Some(e) = &self.droid_error {
-            body = body.child(note(e.clone(), Tone::Danger));
-        }
-
-        if wants(Kind::Plugins) {
-            match &self.plugins {
-                None => body = body.child(ui::loading("Checking plugins…")),
-                Some(p) => {
-                    let mut content = div().flex().flex_col().gap(crate::ui::sp(12.));
-                    if shown("Claude SEO audits schema core web vitals geo sitemap backlinks local")
-                    {
-                        content = content.child(self.render_seo(p, cx));
-                    }
-                    let rows: Vec<AnyElement> = p
-                        .droid
-                        .iter()
-                        .filter(|i| i.id != plugins::SEO_DROID && shown(&i.id))
-                        .enumerate()
-                        .map(|(i, p)| {
-                            let short = p.id.split('@').next().unwrap_or(&p.id).to_string();
-                            row_base(SharedString::from(format!("droid-plugin-{i}")), ROW_H)
-                                .child(name_cell(
-                                    logos::mark(&short, ""),
-                                    32.,
-                                    short.clone(),
-                                    p.id.clone(),
-                                    !p.enabled,
-                                ))
-                                .child(cell(Some(STATUS_W)).child(if p.enabled {
-                                    status_pill("On", Tone::Success)
-                                } else {
-                                    status_pill("Off", Tone::Neutral)
-                                }))
-                                .child(
-                                    cell(Some(SOURCE_W))
-                                        .child(ui::badge(p.version.clone(), Tone::Neutral)),
-                                )
-                                .into_any_element()
-                        })
-                        .collect();
-                    if !rows.is_empty() {
-                        content = content.child(table(&DROID_PLUGIN_COLS, rows));
-                    }
-                    let aside = div()
-                        .ty(Type::Caption)
-                        .text_color(theme::text_subtle())
-                        .child(format!("{} installed", p.droid.len()));
-                    body = body.child(section(
-                        "Plugins",
-                        "Installed for Droid",
-                        Some(aside.into_any_element()),
-                        content,
-                    ));
-                }
-            }
-        }
-
-        match &self.droid {
-            None if self.droid_error.is_none() => body = body.child(ui::loading("Asking Droid…")),
-            None => {}
-            Some(data) => {
-                let busy = self.droid_busy.clone();
-                if wants(Kind::Servers) {
-                    let mut rows: Vec<AnyElement> = Vec::new();
-                    for (i, s) in data
-                        .servers
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| shown(&format!("{} {}", s.name, s.source)))
-                    {
-                        let on = s.enabled();
-                        let (word, tone) = match s.status.as_str() {
-                            "disabled" => ("Off", Tone::Neutral),
-                            "failed" => ("Failing", Tone::Danger),
-                            "connected" | "running" | "ready" => ("Connected", Tone::Success),
-                            _ if s.tools > 0 => ("Connected", Tone::Success),
-                            _ => ("On", Tone::Info),
-                        };
-                        let mut tags: Vec<(String, u32)> =
-                            vec![(s.server_type.to_uppercase(), CAT_BLUE)];
-                        if s.tools > 0 {
-                            tags.push((format!("{} tools", s.tools), CAT_GREEN));
-                        }
-                        if s.managed {
-                            tags.push(("managed".into(), CAT_AMBER));
-                        }
-                        let name = s.name.clone();
-                        let spinning = busy == Some(Busy::Server(name.clone()));
-                        rows.push(
-                            row_base(SharedString::from(format!("droid-server-{i}")), ROW_H)
-                                .map(|d| ui::as_switch(d, s.name.clone(), on))
-                                .child(name_cell(
-                                    logos::mark(&s.name, ""),
-                                    32.,
-                                    s.name.clone(),
-                                    format!("{} · {}", s.server_type, s.source),
-                                    !on,
-                                ))
-                                .child(cell(Some(STATUS_W)).child(status_pill(word, tone)))
-                                .child(
-                                    cell(Some(SOURCE_W))
-                                        .child(ui::badge(s.source.clone(), Tone::Neutral)),
-                                )
-                                .child(cell(Some(TAGS_W)).child(tag_list(&tags, 3)))
-                                .child(
-                                    cell(Some(ACTIONS_W))
-                                        .justify_end()
-                                        .child(switch_or_spinner(on, spinning, s.managed)),
-                                )
-                                .when(!s.managed, |d| {
-                                    d.on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_droid_server(name.clone(), !on, cx)
-                                    }))
-                                })
-                                .into_any_element(),
-                        );
-                    }
-                    if rows.is_empty() {
-                        rows.push(empty_row("None configured. Add them with `droid mcp add` or in ~/.factory/mcp.json.").into_any_element());
-                    }
-                    let on = data.servers.iter().filter(|s| s.enabled()).count();
-                    let aside =
-                        ui::status_dot(format!("{on} of {} on", data.servers.len()), Tone::Success)
-                            .into_any_element();
-                    body = body.child(section(
-                        "MCP servers",
-                        "Switches change your Droid user settings and apply to new sessions",
-                        Some(aside),
-                        table(&SERVER_COLS, rows),
-                    ));
-                }
-                if wants(Kind::Skills) {
-                    let all = !words.is_empty() || self.unfolded.contains("droid-skills");
-                    let skills: Vec<_> = data
-                        .skills
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| {
-                            shown(&format!("{} {} {}", s.name, s.location, s.description))
-                        })
-                        .collect();
-                    let fold = if kind == Kind::Skills {
-                        FOLD * 3
-                    } else {
-                        FOLD * 2
-                    };
-                    let mut rows: Vec<AnyElement> = Vec::new();
-                    for (i, s) in skills.iter().take(if all { usize::MAX } else { fold }) {
-                        let on = s.enabled;
-                        let name = s.name.clone();
-                        let spinning = busy == Some(Busy::Skill(name.clone()));
-                        rows.push(
-                            row_base(SharedString::from(format!("droid-skill-{i}")), 52.)
-                                .map(|d| ui::as_switch(d, s.name.clone(), on))
-                                .child(name_cell(
-                                    logos::mark(&s.name, ""),
-                                    28.,
-                                    s.name.clone(),
-                                    s.description.clone(),
-                                    !on,
-                                ))
-                                .child(cell(Some(SOURCE_W)).child(ui::badge(
-                                    if s.location.is_empty() {
-                                        "—".to_string()
-                                    } else {
-                                        s.location.clone()
-                                    },
-                                    Tone::Neutral,
-                                )))
-                                .child(
-                                    cell(Some(ACTIONS_W))
-                                        .justify_end()
-                                        .child(switch_or_spinner(on, spinning, false)),
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_droid_skill(name.clone(), !on, cx)
-                                }))
-                                .into_any_element(),
-                        );
-                    }
-                    if !all && skills.len() > fold {
-                        rows.push(
-                            group_row(
-                                String::new(),
-                                Some(
-                                    self.show_all("droid-skills".into(), skills.len(), cx)
-                                        .into_any_element(),
-                                ),
-                            )
-                            .into_any_element(),
-                        );
-                    }
-                    if rows.is_empty() {
-                        rows.push(empty_row("No skills found for this folder.").into_any_element());
-                    }
-                    let aside = div()
-                        .ty(Type::Caption)
-                        .text_color(theme::text_subtle())
-                        .child(format!("{} skills", data.skills.len()));
-                    body = body.child(section(
-                        "Skills",
-                        "Click a row to turn it on or off",
-                        Some(aside.into_any_element()),
-                        table(&SKILL_COLS, rows),
-                    ));
-                }
-            }
-        }
-        body
-    }
-
-    fn render_seo(&self, p: &Plugins, cx: &mut Context<Self>) -> Div {
-        let (status, action) = seo_state(p);
-        let enabled = action.is_some() && self.cwd.is_some();
-        let primary = matches!(action, Some("Install" | "Set up"));
-        let ready = action == Some("Update");
-        div()
-            .flex()
-            .items_center()
-            .gap(crate::ui::sp(16.))
-            .p(crate::ui::sp(16.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::fill_raised())
-            .child(logos::tile(logos::mark("seo", ""), 44.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .gap(crate::ui::sp(4.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(8.))
-                            .child(div().ty(Type::Heading).text_color(theme::text()).child("Claude SEO"))
-                            .child(ui::badge("Featured", Tone::Accent))
-                            .child(status_pill(if ready { "Ready" } else { "Needs setup" }, if ready { Tone::Success } else { Tone::Warning })),
-                    )
-                    .child(
-                        div()
-                            .ty(Type::Body)
-                            .text_color(theme::text_muted())
-                            .child("Site audits, schema, Core Web Vitals, AI search, local SEO and more, for Droid and Claude Code."),
-                    )
-                    .child(div().ty(Type::Caption).text_color(theme::text_subtle()).truncate().child(status)),
-            )
-            .when_some(action, |d, label| {
-                let kind = if primary { ButtonKind::Primary } else { ButtonKind::Outline };
-                d.child(ui::button("seo-install", label, kind, enabled).when(enabled, |b| b.on_click(cx.listener(|this, _, _, cx| this.install_seo(cx)))))
-            })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,12 +2303,13 @@ struct Col {
 }
 
 const STATUS_W: f32 = 136.;
+const AGENTS_W: f32 = 150.;
 const SOURCE_W: f32 = 104.;
 const TAGS_W: f32 = 210.;
 const ACTIONS_W: f32 = 100.;
 const ROW_H: f32 = 60.;
 
-const SERVER_COLS: [Col; 5] = [
+const SERVER_COLS: [Col; 6] = [
     Col {
         label: "Name",
         width: None,
@@ -2121,6 +2317,10 @@ const SERVER_COLS: [Col; 5] = [
     Col {
         label: "Status",
         width: Some(STATUS_W),
+    },
+    Col {
+        label: "Agents",
+        width: Some(AGENTS_W),
     },
     Col {
         label: "Scope",
@@ -2149,7 +2349,7 @@ const VIEW_COLS: [Col; 3] = [
         width: Some(ACTIONS_W),
     },
 ];
-const PLUGIN_COLS: [Col; 5] = [
+const PLUGIN_COLS: [Col; 6] = [
     Col {
         label: "Name",
         width: None,
@@ -2157,6 +2357,10 @@ const PLUGIN_COLS: [Col; 5] = [
     Col {
         label: "Status",
         width: Some(STATUS_W),
+    },
+    Col {
+        label: "Agents",
+        width: Some(AGENTS_W),
     },
     Col {
         label: "Scope",
@@ -2171,10 +2375,14 @@ const PLUGIN_COLS: [Col; 5] = [
         width: Some(ACTIONS_W),
     },
 ];
-const SKILL_COLS: [Col; 3] = [
+const SKILL_COLS: [Col; 4] = [
     Col {
         label: "Name",
         width: None,
+    },
+    Col {
+        label: "Agents",
+        width: Some(AGENTS_W),
     },
     Col {
         label: "Source",
@@ -2185,7 +2393,7 @@ const SKILL_COLS: [Col; 3] = [
         width: Some(ACTIONS_W),
     },
 ];
-const RULE_COLS: [Col; 3] = [
+const RULE_COLS: [Col; 4] = [
     Col {
         label: "Rule",
         width: None,
@@ -2195,25 +2403,14 @@ const RULE_COLS: [Col; 3] = [
         width: Some(STATUS_W),
     },
     Col {
+        label: "Agents",
+        width: Some(AGENTS_W),
+    },
+    Col {
         label: "Source",
         width: Some(SOURCE_W),
     },
 ];
-const DROID_PLUGIN_COLS: [Col; 3] = [
-    Col {
-        label: "Name",
-        width: None,
-    },
-    Col {
-        label: "Status",
-        width: Some(STATUS_W),
-    },
-    Col {
-        label: "Version",
-        width: Some(SOURCE_W),
-    },
-];
-
 const CAT_BLUE: u32 = theme::CATEGORY[0];
 const CAT_AMBER: u32 = theme::CATEGORY[1];
 const CAT_GREEN: u32 = theme::CATEGORY[2];
@@ -2494,7 +2691,81 @@ fn switch_or_spinner(on: bool, busy: bool, locked: bool) -> AnyElement {
     }
 }
 
-/// The Claude SEO card's status line and button label (none when it can't run).
+/// Where each agent reads an item from, for the Agents card.
+const CLAUDE_MCP: &str = "~/.claude.json or .mcp.json";
+const CLAUDE_SETTINGS: &str = "~/.claude/settings.json";
+const DROID_MCP: &str = "~/.factory/mcp.json";
+const DROID_PLUGINS: &str = "~/.factory/plugins";
+
+/// Why Droid can't use an item Claude Code has.
+const CONNECTOR_NOT_FOR_DROID: &str = "A claude.ai connector: only Claude Code signs in to it";
+const RULES_NOT_FOR_DROID: &str = "Droid keeps its own allow and deny lists";
+
+/// A permission rule is Claude Code's alone.
+const RULE_USES: Uses = [Use::On, Use::Cannot(RULES_NOT_FOR_DROID)];
+
+/// What a search for Claude SEO's row matches.
+const SEO_WORDS: &str =
+    "claude-seo Claude SEO audits schema core web vitals geo sitemap backlinks local";
+
+fn claude_server_file(scope: &Scope) -> String {
+    match scope {
+        Scope::User | Scope::Local => "~/.claude.json".into(),
+        Scope::Project => ".mcp.json".into(),
+        Scope::Plugin(p) => format!("the {p} plugin"),
+        Scope::ClaudeAi => "your claude.ai account".into(),
+    }
+}
+
+fn droid_server_file(source: &str) -> String {
+    match source {
+        "project" => ".factory/mcp.json".into(),
+        "user" | "" => DROID_MCP.into(),
+        other => other.to_string(),
+    }
+}
+
+/// How Claude Code and Droid stand with an MCP server Claude Code has.
+fn server_uses(s: &Server, droid: Option<&McpServer>) -> Uses {
+    let claude = Use::on(s.health != Health::Off);
+    let droid = match droid {
+        Some(d) => Use::on(d.enabled()),
+        None if s.scope == Scope::ClaudeAi => Use::Cannot(CONNECTOR_NOT_FOR_DROID),
+        None => Use::Missing,
+    };
+    [claude, droid]
+}
+
+fn droid_server_state(s: &McpServer) -> (&'static str, Tone) {
+    match s.status.as_str() {
+        "disabled" => ("Off", Tone::Neutral),
+        "failed" => ("Failing", Tone::Danger),
+        "connected" | "running" | "ready" => ("Connected", Tone::Success),
+        _ if s.tools > 0 => ("Connected", Tone::Success),
+        _ => ("On", Tone::Info),
+    }
+}
+
+/// `claude-seo@claude-seo` → `claude-seo`.
+fn droid_short(id: &str) -> &str {
+    id.split('@').next().unwrap_or(id)
+}
+
+/// `claude-seo:seo-audit` → `seo-audit`: a plugin's skill and Droid's of the
+/// same name are one row.
+fn skill_short(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
+fn is_seo_claude(p: &claude_ext::Plugin) -> bool {
+    p.id == plugins::SEO_CLAUDE
+}
+
+fn is_seo_droid(i: &Installed) -> bool {
+    i.id == plugins::SEO_DROID
+}
+
+/// Claude SEO's status line and button label (none when it can't run).
 fn seo_state(p: &Plugins) -> (String, Option<&'static str>) {
     if !p.python {
         return ("Needs Python 3.10 or newer".into(), None);
@@ -2643,14 +2914,34 @@ fn short_path(p: &std::path::Path) -> String {
 }
 
 impl ExtensionsView {
-    fn set_which(&mut self, which: Which, cx: &mut Context<Self>) {
-        self.which = which;
-        self.open = None;
-        if which == Which::Droid && matches!(self.kind, Kind::Permissions | Kind::Marketplace) {
-            self.set_kind(Kind::Servers, cx);
-        }
+    /// Picks whose state the cells say. The sections stay as they are.
+    fn set_show(&mut self, show: Show, cx: &mut Context<Self>) {
+        self.show = show;
         self.refresh_if_stale(cx);
         cx.notify();
+    }
+
+    /// Show for, in the header: All agents, then one segment per agent.
+    fn render_show_for(&self, cx: &mut Context<Self>) -> Div {
+        let mut seg = ui::segmented();
+        for (i, show) in Show::every().enumerate() {
+            seg = seg.child(
+                ui::segment(("ext-show", i), None, show.label(), self.show == show)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_show(show, cx))),
+            );
+        }
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .child(
+                div()
+                    .ty(Type::Caption)
+                    .text_color(theme::text_subtle())
+                    .child("Show for"),
+            )
+            .child(seg)
     }
 
     /// Shows one list of Installed, or Discover, with the search box worded for it.
@@ -2673,94 +2964,40 @@ impl ExtensionsView {
     /// extensions, then whose things, what there is to add and what is
     /// installed. Where to install and the categories are `filters`.
     pub fn nav(&self) -> Vec<Line> {
-        let which = self.which;
         let mut out = vec![
             Line::Entry(
                 Entry::new("arakun", Lead::Icon("dashboard-square01"), "Extensions")
                     .count(Some(self.views.on.len()))
                     .on(self.kind == Kind::Arakun),
             ),
-            Line::Gap,
-            Line::Choice(vec![
-                (
-                    "which:claude".into(),
-                    "Claude Code".into(),
-                    which == Which::Claude,
-                ),
-                ("which:droid".into(), "Droid".into(), which == Which::Droid),
-            ]),
+            Line::Heading("Discover".into()),
         ];
-
-        if which == Which::Claude {
-            out.push(Line::Heading("Discover".into()));
-            for (m, key, label, icon_name) in [
-                (Market::Plugins, "market:plugins", "Plugins", "cube"),
-                (Market::Registry, "market:registry", "MCP servers", "link01"),
-                (Market::Skills, "market:skills", "Skills", "sparkles"),
-            ] {
-                let on = self.kind == Kind::Marketplace && self.market == m;
-                out.push(Line::Entry(
-                    Entry::new(key, Lead::Icon(icon_name), label)
-                        .count(self.discover_count(m))
-                        .on(on),
-                ));
-            }
+        for (m, key, label, icon_name) in [
+            (Market::Plugins, "market:plugins", "Plugins", "cube"),
+            (Market::Registry, "market:registry", "MCP servers", "link01"),
+            (Market::Skills, "market:skills", "Skills", "sparkles"),
+        ] {
+            let on = self.kind == Kind::Marketplace && self.market == m;
+            out.push(Line::Entry(
+                Entry::new(key, Lead::Icon(icon_name), label)
+                    .count(self.discover_count(m))
+                    .on(on),
+            ));
         }
 
+        // The same pages for every agent: Show for changes the words only.
         out.push(Line::Heading("Installed".into()));
-        let problems = match which {
-            Which::Claude => self.problems(),
-            Which::Droid => 0,
+        let problems = match self.show {
+            Show::Only(Agent::Droid) => 0,
+            _ => self.problems(),
         };
-        let rows: Vec<(Kind, &str, &str, Option<usize>)> = match which {
-            Which::Claude => {
-                let x = self.claude.data.as_ref();
-                vec![
-                    (
-                        Kind::Servers,
-                        "MCP servers",
-                        "link01",
-                        x.map(|x| x.servers.iter().filter(|s| !s.unused_connector()).count()),
-                    ),
-                    (Kind::Plugins, "Plugins", "cube", x.map(|x| x.plugins.len())),
-                    (
-                        Kind::Skills,
-                        "Skills",
-                        "sparkles",
-                        x.map(|x| x.skills.len()),
-                    ),
-                    (
-                        Kind::Permissions,
-                        "Permissions",
-                        "shield-alert",
-                        x.map(|x| x.permissions.rules.len()),
-                    ),
-                ]
-            }
-            Which::Droid => {
-                let d = self.droid.as_ref();
-                vec![
-                    (
-                        Kind::Servers,
-                        "MCP servers",
-                        "link01",
-                        d.map(|d| d.servers.len()),
-                    ),
-                    (
-                        Kind::Plugins,
-                        "Plugins",
-                        "cube",
-                        self.plugins.as_ref().map(|p| p.droid.len()),
-                    ),
-                    (
-                        Kind::Skills,
-                        "Skills",
-                        "sparkles",
-                        d.map(|d| d.skills.len()),
-                    ),
-                ]
-            }
-        };
+        let [servers, plugins, skills, rules] = self.installed_counts();
+        let rows: [(Kind, &str, &str, Option<usize>); 4] = [
+            (Kind::Servers, "MCP servers", "link01", servers),
+            (Kind::Plugins, "Plugins", "cube", plugins),
+            (Kind::Skills, "Skills", "sparkles", skills),
+            (Kind::Permissions, "Permissions", "shield-alert", rules),
+        ];
         for (k, label, icon_name, n) in rows {
             let entry = Entry::new(kind_key(k), Lead::Icon(icon_name), label).on(self.kind == k);
             // Servers that need you say how many, not how many there are.
@@ -2775,15 +3012,50 @@ impl ExtensionsView {
         out
     }
 
+    /// How many rows each Installed page has, every agent's items once.
+    fn installed_counts(&self) -> [Option<usize>; 4] {
+        let Some(x) = self.claude.data.as_ref() else {
+            return [None; 4];
+        };
+        let droid = self.droid.as_ref();
+        let used: Vec<&Server> = x.servers.iter().filter(|s| !s.unused_connector()).collect();
+        let droid_servers: Vec<&McpServer> =
+            droid.map_or(Vec::new(), |d| d.servers.iter().collect());
+        let servers = agents::merge(
+            &used,
+            |s| display_name(&s.name),
+            &droid_servers,
+            |d| d.name.clone(),
+        )
+        .len();
+        let plugins = agents::merge(
+            &x.plugins,
+            |p| p.short().to_string(),
+            self.plugins.as_ref().map_or(&[][..], |p| &p.droid),
+            |i| droid_short(&i.id).to_string(),
+        )
+        .len();
+        let skills = agents::merge(
+            &x.skills,
+            |s| skill_short(&s.name).to_string(),
+            droid.map_or(&[][..], |d| &d.skills),
+            |s| s.name.clone(),
+        )
+        .len();
+        [
+            Some(servers),
+            Some(plugins),
+            Some(skills),
+            Some(x.permissions.rules.len()),
+        ]
+    }
+
     /// What narrows the page, in a quieter row under the tabs: where to
     /// install and, in Discover, its categories.
     pub fn filters(&self) -> Vec<Line> {
-        let mut out = Vec::new();
-        if self.which == Which::Claude {
-            out.extend(self.target_lines());
-            if self.kind == Kind::Marketplace {
-                out.extend(self.category_lines());
-            }
+        let mut out = self.target_lines();
+        if self.kind == Kind::Marketplace {
+            out.extend(self.category_lines());
         }
         out
     }
@@ -2792,8 +3064,6 @@ impl ExtensionsView {
     pub fn pick_nav(&mut self, key: &str, cx: &mut Context<Self>) {
         match key {
             "arakun" => self.set_kind(Kind::Arakun, cx),
-            "which:claude" => self.set_which(Which::Claude, cx),
-            "which:droid" => self.set_which(Which::Droid, cx),
             "market:plugins" => self.show_market(Market::Plugins, cx),
             "market:registry" => self.show_market(Market::Registry, cx),
             "market:skills" => self.show_market(Market::Skills, cx),
@@ -2939,16 +3209,14 @@ fn kind_key(k: Kind) -> &'static str {
 
 impl Render for ExtensionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let which = self.which;
-        let busy = match which {
-            Which::Claude => self.claude.loading() || self.plugin_busy.is_some(),
-            Which::Droid => {
-                self._droid_task.is_some() || self.plugins.is_none() && self.droid_at.is_some()
-            }
-        };
-        let updated = match which {
-            Which::Claude => self.claude_at,
-            Which::Droid => self.droid_at,
+        let busy = self.claude.loading()
+            || self.plugin_busy.is_some()
+            || self._droid_task.is_some()
+            || self.plugins.is_none() && self.droid_at.is_some();
+        // The older of the two reads: what the page says is no newer than that.
+        let updated = match (self.claude_at, self.droid_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
         .map(|t| ago(t.elapsed()));
         let place = self
@@ -2958,16 +3226,13 @@ impl Render for ExtensionsView {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let market = which == Which::Claude && self.kind == Kind::Marketplace;
-        let body: AnyElement = match which {
+        let market = self.kind == Kind::Marketplace;
+        let body: AnyElement = match &self.claude.data {
             _ if self.kind == Kind::Arakun => self.render_views(cx).into_any_element(),
-            Which::Claude if market => div().into_any_element(),
-            Which::Claude => match &self.claude.data {
-                Some(x) => self.render_claude(x, cx).into_any_element(),
-                None => ui::loading("Reading Claude Code and checking its MCP servers…")
-                    .into_any_element(),
-            },
-            Which::Droid => self.render_droid(cx).into_any_element(),
+            _ if market => div().into_any_element(),
+            Some(x) => self.render_installed(x, cx).into_any_element(),
+            None => ui::loading("Reading Claude Code and Droid, and checking their MCP servers…")
+                .into_any_element(),
         };
 
         let header = div()
@@ -3019,6 +3284,9 @@ impl Render for ExtensionsView {
                             }),
                     ),
             )
+            .when(self.kind != Kind::Arakun, |d| {
+                d.child(self.render_show_for(cx))
+            })
             .child(
                 div()
                     .flex()

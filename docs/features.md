@@ -804,7 +804,14 @@ again after a week) in its [data folder](storage-and-env.md).
   while Claude Code runs on an API key, a gateway or a cloud provider, which win over
   any seat's token. Without a saved seat nothing changes.
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
-  skills and permission rules the agents load now. Discover › Skills searches
+  skills and permission rules the agents load now. The page has one layout for every
+  agent: **Show for** in its header (All agents, Claude Code, Droid) changes only what
+  the cells say. Installed lists each item once, and its Agents column shows which agents
+  have it ("Off for Droid", "Claude Code only"). With one agent picked, an item that agent
+  can't use stays in the list as "Not for Droid", with the reason. An item's details have
+  an Agents card: one row per agent with the file it reads and, where Arakun can change
+  it, a switch that turns the item off for that agent only. Discover installs for Claude
+  Code. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
   repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
   the repo's `.claude/skills` when Where (below) picks everyone in the project. A repository

@@ -9,7 +9,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, App, Div, Hsla, SharedString, Window, div, px};
 
 use crate::theme;
-use crate::ui::{RADIUS, TOOLBAR_H, Tone, Type, Typography, icon, segment, segmented};
+use crate::ui::{RADIUS, TOOLBAR_H, Tone, Type, Typography, icon};
 
 /// What sits before a page's name.
 #[derive(Clone)]
@@ -75,8 +75,6 @@ pub enum Line {
     /// A line between groups.
     Gap,
     Entry(Entry),
-    /// One of a few, side by side: (key, label, on).
-    Choice(Vec<(SharedString, SharedString, bool)>),
 }
 
 /// Called with the key of the page picked.
@@ -147,22 +145,6 @@ fn pieces(id: &str, name: &str, lines: Vec<Line>, small: bool, pick: &Pick) -> D
                 // The heading names the tabs after it, so close the list before it.
                 out = flush(out, &mut run, &label);
                 label = text;
-                (el, false)
-            }
-            Line::Choice(choices) => {
-                let mut seg = segmented();
-                for (j, (key, label, on)) in choices.into_iter().enumerate() {
-                    let pick = pick.clone();
-                    seg = seg.child(
-                        segment((el_id.clone(), j), None, label, on)
-                            .on_click(move |_, window, cx| pick(&key, window, cx)),
-                    );
-                }
-                let el = div()
-                    .flex_none()
-                    .mx(crate::ui::sp(4.))
-                    .child(seg)
-                    .into_any_element();
                 (el, false)
             }
             Line::Entry(e) => {

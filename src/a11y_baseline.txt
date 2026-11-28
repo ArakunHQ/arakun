@@ -22,7 +22,7 @@ src/cloudflare_view/overview.rs 3
 src/customize_view.rs 4
 src/dialogs.rs 3
 src/doop_view.rs 2
-src/extensions_view.rs 5
+src/extensions_view.rs 3
 src/extensions_view/market.rs 3
 src/github_view/bandeja.rs 3
 src/github_view/diff.rs 5

@@ -229,7 +229,10 @@ data class LiveSession(
     val question: QuestionAsk? = null,
     val secret: SecretAsk? = null,
     val usage: String? = null,
+    /** Prompts the computer holds until the turn ends. */
     val queue: List<String> = emptyList(),
+    /** A Stop paused [queue]: it waits until resumed. */
+    val queuePaused: Boolean = false,
     /** When the running turn started, by this phone's clock. */
     val turnStarted: Long? = null,
     val changes: Changes = Changes(),
@@ -271,6 +274,7 @@ data class LiveSession(
             secret = SecretAsk.of(j["secret"]),
             usage = j["usage"]["summary"].string,
             queue = j["queue"].array.map { it.str },
+            queuePaused = j["queue_paused"].bool,
             title = j["title"].string?.takeIf { it.isNotEmpty() } ?: title,
             turnStarted = j["elapsed_ms"].double?.let { now - it.toLong() },
             changes = Changes(c["files"].int ?: 0, c["added"].int ?: 0, c["removed"].int ?: 0),

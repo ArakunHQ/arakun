@@ -29,6 +29,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
@@ -79,12 +80,12 @@ fun SessionScreen(model: AppModel, id: String) {
     // The session's changes or one of its diffs, over everything else here.
     var sheet by remember { mutableStateOf<ChangesSheet?>(null) }
     val focus = LocalFocusManager.current
-    val lastIndex = (s?.let { 1 + (if (it.from > 0) 1 else 0) + it.entries.size + it.queue.size + 1 }) ?: 1
+    val lastIndex = (s?.let { 1 + (if (it.from > 0) 1 else 0) + it.entries.size + 1 }) ?: 1
 
     val working = s?.status == SessionStatus.WORKING && s.turnStarted != null
     // The working line counts too: a turn can start without a new entry. So
     // does the last entry, which streaming text grows without adding one.
-    LaunchedEffect(s?.count, s?.entries?.lastOrNull(), s?.queue?.size, working) {
+    LaunchedEffect(s?.count, s?.entries?.lastOrNull(), working) {
         if (s == null) return@LaunchedEffect
         if (!followed) {
             // Opened at the end, as a chat is.
@@ -148,7 +149,6 @@ fun SessionScreen(model: AppModel, id: String) {
                             }
                         }
                         itemsIndexed(s.entries, key = { i, _ -> "e" + (s.from + i) }) { _, e -> EntryView(e) }
-                        itemsIndexed(s.queue, key = { i, _ -> "q$i" }) { _, q -> QueuedView(q) }
                         if (working) {
                             item(key = "working") { WorkingLine(s.turnStarted!!) }
                         }
@@ -196,17 +196,34 @@ fun SessionScreen(model: AppModel, id: String) {
                             SecretCard(r, enabled = linked, save = model::saveSecret, decline = model::declineSecret)
                         }
                     }
+                    if (s != null && s.queue.isNotEmpty()) {
+                        QueueCard(
+                            s.queue,
+                            paused = s.queuePaused,
+                            enabled = linked,
+                            takeBack = { i, q ->
+                                // Into the box, after anything written there.
+                                if (model.takeBack(i, q)) {
+                                    val had = draft.text.trimEnd()
+                                    draft.setTextAndPlaceCursorAtEnd(if (had.isBlank()) q else "$had\n\n$q")
+                                }
+                            },
+                            resume = model::resumeQueue,
+                        )
+                    }
+                    val say = { now: Boolean ->
+                        val text = draft.text.trim().toString()
+                        if (text.isNotEmpty()) {
+                            // Offline the prompt stays in the box, to send again.
+                            if (model.say(text, now)) draft.clearText()
+                        }
+                    }
                     Composer(
                         draft = draft,
                         working = s?.status == SessionStatus.WORKING,
                         linked = linked,
-                        send = {
-                            val text = draft.text.trim().toString()
-                            if (text.isNotEmpty()) {
-                                // Offline the prompt stays in the box, to send again.
-                                if (model.say(text)) draft.clearText()
-                            }
-                        },
+                        send = { say(false) },
+                        stopAndSend = { say(true) },
                         stop = model::stop,
                     )
                 }
@@ -345,6 +362,8 @@ private fun Composer(
     working: Boolean,
     linked: Boolean,
     send: () -> Unit,
+    /** Stops the running turn and sends what is written once it stopped. */
+    stopAndSend: () -> Unit,
     stop: () -> Unit,
 ) {
     val c = Palette.current
@@ -381,6 +400,21 @@ private fun Composer(
             }
         } else {
             val ready = !empty && linked
+            if (working) {
+                // Send alone queues it behind the turn; this goes now.
+                Box(
+                    Modifier
+                        .padding(top = 6.dp, bottom = 6.dp, start = 6.dp)
+                        .alpha(if (ready) 1f else 0.5f)
+                        .size(34.dp)
+                        .border(1.dp, c.failure.copy(alpha = 0.5f), RoundedCornerShape(Radius.control))
+                        .tap(enabled = ready, onClick = stopAndSend)
+                        .semantics { contentDescription = "Stop and send" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BrandIcon(R.drawable.ic_square, 14.dp, c.failure)
+                }
+            }
             Box(
                 Modifier
                     .padding(6.dp)
@@ -396,29 +430,67 @@ private fun Composer(
     }
 }
 
+/**
+ * The prompts the computer holds until the turn ends, over the composer. Each
+ * can be taken back into the box; after a Stop they wait for Resume.
+ */
 @Composable
-private fun QueuedView(text: String) {
+private fun QueueCard(
+    queue: List<String>,
+    paused: Boolean,
+    enabled: Boolean,
+    takeBack: (Int, String) -> Unit,
+    resume: () -> Unit,
+) {
     val c = Palette.current
-    Row(Modifier.fillMaxWidth()) {
-        Spacer(Modifier.weight(1f).widthIn(min = 48.dp))
-        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Eyebrow("Queued")
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .drawWithContent {
+                drawContent()
+                val r = Radius.card.toPx()
+                drawRoundRect(
+                    c.lineStrong,
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(r),
+                    style = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))),
+                )
+            }
+            .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically) {
+            Eyebrow(if (paused) "Paused" else "Queued")
             Text(
-                text,
-                style = Type.callout,
-                color = c.textMuted,
-                modifier = Modifier
-                    .drawWithContent {
-                        drawContent()
-                        val r = Radius.card.toPx()
-                        drawRoundRect(
-                            c.lineStrong,
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(r),
-                            style = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))),
-                        )
-                    }
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                if (paused) " · waits until you resume" else " · sends when this turn ends",
+                style = mono(11f),
+                color = c.textFaint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            if (paused) OutlineButton("Resume", resume, enabled = enabled)
+        }
+        queue.forEachIndexed { i, q ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    q,
+                    style = Type.callout,
+                    color = c.textMuted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "Take back",
+                    style = geist(14f, FontWeight.Medium),
+                    color = c.text,
+                    modifier = Modifier
+                        .alpha(if (enabled) 1f else 0.5f)
+                        .heightIn(min = 40.dp)
+                        .tap(enabled = enabled) { takeBack(i, q) }
+                        .semantics { contentDescription = "Take back: $q" }
+                        .padding(horizontal = 10.dp, vertical = 10.dp),
+                )
+            }
         }
     }
 }

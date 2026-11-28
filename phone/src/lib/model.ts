@@ -52,6 +52,9 @@ export interface Session {
   /** When `elapsed_ms` was heard, so the clock can run on from it. */
   elapsedAt?: number;
   changes?: unknown;
+  /** Prompts the computer holds until the turn ends, and whether a Stop paused them. */
+  queue?: string[];
+  queue_paused?: boolean;
   [k: string]: unknown;
 }
 

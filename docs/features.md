@@ -451,7 +451,9 @@ again after a week) in its [data folder](storage-and-env.md).
   count as read when you close it. Arakun keeps the last 300. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
   prompts and answer the agent. While the agent works, a prompt you send waits for the
-  turn to end; with something written, Stop becomes "Stop and send". Phones reach the
+  turn to end, listed over the box; Take back puts one back in the box. With something
+  written, Stop becomes "Stop and send". Stop pauses what waits, and Resume lets it go.
+  The iPhone and Android apps do the same. Phones reach the
   computer over the local network (the default), over Tailscale, or through an
   end-to-end encrypted relay. On the local network and over Tailscale the page comes
   from the computer itself, so it only opens while the computer is on and awake; the

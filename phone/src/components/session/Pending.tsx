@@ -1,7 +1,7 @@
 // A sent message shows at once, faded, until the computer's own copy of it
 // arrives: each prompt entry after the moment of sending takes one away.
 // What was written while the computer was away waits here and goes out once
-// it is back.
+// it is back. One the computer holds in its queue shows there instead.
 
 import { useEffect, useRef, useState } from "react";
 import type { Link } from "../../lib/link";
@@ -51,13 +51,26 @@ export function usePending(link: Link, s: Session | null) {
   );
 
   const add = (p: PendingMessage) => setPending((all) => [...all, p]);
-  return { pending, add };
+  // Taken back from the queue: its copy will never come.
+  const drop = (text: string) =>
+    setPending((all) => {
+      const i = all.findIndex((p) => !p.queued && p.text === text);
+      return i < 0 ? all : all.filter((_, k) => k !== i);
+    });
+  return { pending, add, drop };
 }
 
-export function Pending({ pending }: { pending: PendingMessage[] }) {
+/** `queued`: what the computer's queue holds, shown over the composer and not here. */
+export function Pending({ pending, queued = [] }: { pending: PendingMessage[]; queued?: string[] }) {
+  const held = [...queued];
+  const shown = pending.filter((p) => {
+    const i = p.queued ? -1 : held.indexOf(p.text);
+    if (i >= 0) held.splice(i, 1);
+    return i < 0;
+  });
   return (
     <>
-      {pending.map((p, i) => (
+      {shown.map((p, i) => (
         <div key={i} className="entry user">
           <div className="bubble">
             <div className="text">{p.text}</div>

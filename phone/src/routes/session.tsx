@@ -91,7 +91,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   // Answered here; the card goes before the computer says so.
   const [answered, setAnswered] = useState<string[]>([]);
   const [askedOlder, setAskedOlder] = useState<number | null>(null);
-  const { pending, add } = usePending(link, s);
+  const { pending, add, drop } = usePending(link, s);
   const transcript = useRef<TranscriptHandle>(null);
   const pics = usePics(mode() === "account");
   const send = useCallback((m: ClientMessage) => link.send(m), [link]);
@@ -149,8 +149,22 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
 
   const cancel = () => {
     if (!stillLinked()) return;
-    send({ type: "cancel", session: s.id });
+    // The queue waits, paused, as Esc leaves it in the app.
+    send({ type: "cancel", session: s.id, keep_queue: true });
     toast("Stopping…");
+  };
+
+  // Out of the queue and into the box, after anything written there.
+  const takeBack = (index: number, text: string) => {
+    if (!stillLinked()) return;
+    send({ type: "unqueue", session: s.id, index, text });
+    drop(text);
+    setDraft(draft.trim() ? `${draft.trimEnd()}\n\n${text}` : text);
+  };
+
+  const resumeQueue = () => {
+    if (!stillLinked()) return;
+    send({ type: "resume_queue", session: s.id });
   };
 
   const back = () => {
@@ -187,7 +201,7 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
   );
 
   // Stable, so typing in the box does not draw the transcript again.
-  const pendingNode = useMemo(() => <Pending pending={pending} />, [pending]);
+  const pendingNode = useMemo(() => <Pending pending={pending} queued={s.queue} />, [pending, s.queue]);
   const keepAsCut = useCallback((text: string) => openSheet({ kind: "cut", seed: { text }, fromList: false }), [openSheet]);
 
   const p = s.permission as Permission | null;
@@ -298,6 +312,8 @@ function SessionView({ link, s }: { link: Link; s: Session }) {
           setShots={setShots}
           onSubmit={submit}
           onCancel={cancel}
+          onTakeBack={takeBack}
+          onResumeQueue={resumeQueue}
           onOpenCuts={() => openSheet({ kind: "cuts" })}
         />
       </div>

@@ -62,6 +62,7 @@ pub(crate) mod pages;
 mod palette;
 mod panel;
 mod panes;
+mod parts;
 mod phone;
 mod pinned;
 mod posthog;
@@ -460,6 +461,8 @@ pub struct Shell {
     rail: rail::Rail,
     /// The Workspace panel on the right: open, width, tab and Customize.
     panel: panel::Panel,
+    /// The rail, title bar and panel as views of their own, drawn cached.
+    parts: parts::Parts,
     /// What the rail shows, in the user's order.
     sidebar: crate::sidebar::Sidebar,
     /// The sidebar builder tab's selection, fields and undo.
@@ -1032,6 +1035,7 @@ impl Shell {
             running_checked: None,
             bar_more: RefCell::default(),
             bar_area: Rc::default(),
+            parts: parts::Parts::default(),
             slide: None,
             drop_menu: None,
             dropping: std::collections::HashMap::new(),
@@ -4606,6 +4610,7 @@ impl Render for Shell {
         let body: AnyElement = if let Some(onboarding) = onboarding {
             onboarding
         } else if has_projects {
+            let titlebar = self.cached_titlebar(cx);
             // The tabs sit on the window, above the sheet: only the work itself
             // is a surface. The title bar moves the window itself, so a press
             // anywhere here must not reach the root's handler as well.
@@ -4616,7 +4621,7 @@ impl Render for Shell {
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .child(self.render_titlebar(window, cx))
+                .child(titlebar)
                 .child(
                     ui::card()
                         .id("main-card")
@@ -4677,6 +4682,7 @@ impl Render for Shell {
             .track(self.env_menu_open.then_some(&self.env_menu_at), window)
             .map(|(at, t)| self.render_env_menu(at, viewport_h, Some(t), cx));
         let rail = (chrome && self.rail_shown()).then(|| self.cached_rail(cx));
+        let panel = (chrome && self.panel_shown()).then(|| self.cached_panel(cx));
         let (rail_start, rail_end) = if rail_right {
             (None, rail)
         } else {
@@ -4917,7 +4923,7 @@ impl Render for Shell {
                     .child(body)
                     .when(chrome && self.panel_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
-                            .child(self.render_panel(cx))
+                            .children(panel)
                     })
                     .when_some(rail_end, |d, rail| {
                         d.child(self.rail_handle(cx)).child(rail)

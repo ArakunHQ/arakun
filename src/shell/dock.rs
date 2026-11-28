@@ -816,7 +816,12 @@ impl Shell {
                 .min_h_0()
                 .pl(crate::ui::sp(10.))
                 .pt(crate::ui::sp(6.))
-                .child(tab.view.clone())
+                // Cached: the terminal follows its own output, and a frame
+                // that only moves a loop elsewhere doesn't lay out its grid.
+                .child(
+                    gpui::AnyView::from(tab.view.clone())
+                        .cached(gpui::StyleRefinement::default().size_full()),
+                )
                 .into_any_element(),
             None => panel_empty("No terminals in this environment yet.").into_any_element(),
         };

@@ -331,6 +331,7 @@ impl Shell {
                 progress: None,
                 plan: None,
                 linked: None,
+                watch: None,
                 kept: Vec::new(),
                 comment: start.comment.clone(),
                 guidance: start.guidance.clone(),

@@ -252,7 +252,9 @@ arakun server service install   # keep it running; see Keep it running
   sign-in (`login`) and the relay. `linear-runs.json` in its folder holds the
   deliveries handled, each run, and the reports Linear has not taken yet (dropped
   after a day). A server that stops mid-session tells the issue when it starts again;
-  a reply in Linear continues the session.
+  a reply in Linear continues the session. Once a session is done, the server watches
+  its pull request with `gh` and tells the issue when its required checks fail or a
+  reviewer asks for changes, as the app does.
 - **A turn that is running when the server stops** is cut off. Its session is still
   there after a restart, and the next message picks it up. Follow-ups that were
   waiting behind that turn run first, then the new message.

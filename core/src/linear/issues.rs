@@ -393,6 +393,23 @@ pub fn prompt_text(
         .ok_or_else(|| ApiError::Failed("Linear didn't send that message.".into()))
 }
 
+/// Whether the issue is done or canceled, so watching its pull request ends.
+pub fn closed(
+    q: impl FnOnce(&str, Value) -> Result<Value, ApiError>,
+    id: &str,
+) -> Result<bool, ApiError> {
+    let query = "query($id: String!) { issue(id: $id) { state { type } } }";
+    let data = q(query, json!({ "id": id }))?;
+    Ok(is_closed(&data))
+}
+
+fn is_closed(data: &Value) -> bool {
+    matches!(
+        data["issue"]["state"]["type"].as_str(),
+        Some("completed" | "canceled")
+    )
+}
+
 /// Search reads the identifier, the title and the team, ignoring case.
 pub fn matches(issue: &Issue, needle: &str) -> bool {
     let needle = needle.trim().to_lowercase();
@@ -685,5 +702,12 @@ mod tests {
         ] {
             assert_eq!(parse_prompt_text(&data, "as-1"), None, "{data}");
         }
+    }
+
+    #[test]
+    fn a_done_or_canceled_issue_is_closed() {
+        let of = |t: &str| json!({"issue": {"state": {"type": t}}});
+        assert!(is_closed(&of("completed")) && is_closed(&of("canceled")));
+        assert!(!is_closed(&of("started")) && !is_closed(&json!({})));
     }
 }

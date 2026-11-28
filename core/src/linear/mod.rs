@@ -19,6 +19,7 @@ pub mod remote;
 pub mod runs;
 pub mod start;
 pub mod uploads;
+pub mod watch;
 
 use std::sync::OnceLock;
 use std::time::Duration;

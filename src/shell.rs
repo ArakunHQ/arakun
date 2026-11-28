@@ -530,6 +530,8 @@ pub struct Shell {
     linear_reads: usize,
     /// The timer that tells Linear a quiet session still works is on.
     linear_watching: bool,
+    /// A read of finished runs' pull requests is under way.
+    linear_looking: bool,
     github: Entity<GitHub>,
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 4],
@@ -1045,6 +1047,7 @@ impl Shell {
             linear_kept: Vec::new(),
             linear_reads: 0,
             linear_watching: false,
+            linear_looking: false,
             github,
             pilot,
             _github: github_subs,

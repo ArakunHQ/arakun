@@ -18,7 +18,7 @@ impl Render for Composer {
         let here = self.here();
         let ready = !here.text.bare().trim().is_empty() || here.has_extras();
         let completion = self.render_completion(cx);
-        let images = self.render_image_row(cx);
+        let images = self.render_file_row(cx);
         let pastes = self.render_paste_row(cx);
         let notes = self.render_note_row(cx);
         let context = self.render_context_row(cx);
@@ -45,7 +45,7 @@ impl Render for Composer {
             .on_drop(cx.listener(|_, d: &drag::DraggedSession, _, cx| {
                 cx.emit(ComposerEvent::DropSession(d.clone()))
             }))
-            // Files dropped from a file manager: images as pictures, the rest as mentions.
+            // Files dropped from a file manager: images and PDFs wait above the text, the rest are mentions.
             .drag_over::<gpui::ExternalPaths>(|s, _, _, _| {
                 s.border_color(theme::active())
                     .bg(theme::active().opacity(0.06))

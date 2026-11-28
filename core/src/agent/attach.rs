@@ -1,6 +1,7 @@
-//! Images attached to a prompt with `@path` mentions (`@"path with spaces"`
-//! quotes a path). The text is sent as written; the images go alongside it,
-//! as paths for Droid and as base64 blocks for ACP agents.
+//! Images and PDFs attached to a prompt with `@path` mentions (`@"path with
+//! spaces"` quotes a path). The text is sent as written; the images go
+//! alongside it, as paths for Droid and as base64 blocks for ACP agents, and
+//! PDFs as document blocks to the agents that take them.
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,22 @@ use serde_json::{Value, json};
 
 /// The Anthropic API rejects larger images, so they are not worth sending.
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The Anthropic API takes requests up to 32 MB, and base64 makes a file a
+/// third bigger, so a larger PDF would not fit.
+pub const MAX_PDF_BYTES: u64 = 24 * 1024 * 1024;
+
+/// A PDF, by its extension.
+pub fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
+/// A file that goes along with a prompt instead of as a mention alone: an
+/// image, or a PDF.
+pub fn is_attachable(path: &Path) -> bool {
+    (mime_type(path).is_some() || is_pdf(path)) && path.is_file()
+}
 
 pub fn mime_type(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -79,6 +96,23 @@ pub fn images(text: &str, cwd: &Path) -> Vec<PathBuf> {
 /// pictures instead of paths.
 pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
     split_mentions(text, |m| mentioned_image(m, cwd))
+}
+
+/// The PDF files `text` mentions, resolved against `cwd`.
+pub fn documents(text: &str, cwd: &Path) -> Vec<PathBuf> {
+    mentions(text)
+        .into_iter()
+        .filter_map(|m| resolve(&m, cwd))
+        .filter(|p| is_pdf(p) && p.is_file())
+        .collect()
+}
+
+/// A prompt without its PDF mentions, and the PDFs, to show them as chips
+/// instead of paths.
+pub fn split_documents(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
+    split_mentions(text, |m| {
+        resolve(m, cwd).filter(|p| is_pdf(p) && p.is_file())
+    })
 }
 
 /// The image file a mention written as `mention` names, when it is one.
@@ -284,20 +318,44 @@ fn without_handles(text: &str) -> String {
 pub fn acp_block(path: &Path) -> Result<Value, String> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let mime = mime_type(path).ok_or_else(|| format!("{name} is not an image"))?;
-    let len = std::fs::metadata(path)
-        .map_err(|e| format!("{name}: {e}"))?
-        .len();
-    if len > MAX_IMAGE_BYTES {
-        return Err(format!("{name} is larger than 5 MB"));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
-    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let data = read_base64(path, MAX_IMAGE_BYTES)?;
     Ok(json!({
         "type": "image",
         "mimeType": mime,
         "data": data,
         "uri": format!("file://{}", path.display()),
     }))
+}
+
+/// A PDF as an ACP embedded resource, or why it can't be sent. Claude's
+/// adapter turns a PDF blob into a `document` block for the model.
+pub fn acp_document_block(path: &Path) -> Result<Value, String> {
+    if !is_pdf(path) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        return Err(format!("{name} is not a PDF"));
+    }
+    let data = read_base64(path, MAX_PDF_BYTES)?;
+    Ok(json!({
+        "type": "resource",
+        "resource": {
+            "uri": format!("file://{}", path.display()),
+            "mimeType": "application/pdf",
+            "blob": data,
+        },
+    }))
+}
+
+/// The file in base64, unless it is larger than `max` bytes.
+fn read_base64(path: &Path, max: u64) -> Result<String, String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("{name}: {e}"))?
+        .len();
+    if len > max {
+        return Err(format!("{name} is larger than {} MB", max / (1024 * 1024)));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{name}: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 #[cfg(test)]
@@ -417,6 +475,47 @@ mod tests {
         let block = acp_block(&found[0]).unwrap();
         assert_eq!(block["mimeType"], "image/png");
         assert_eq!(block["data"], "eA==");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pdfs_go_as_documents() {
+        let dir = std::env::temp_dir().join(format!("arakun-attach-pdf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("spec.PDF"), b"x").unwrap();
+        std::fs::write(dir.join("a.png"), b"x").unwrap();
+        let text = "read @spec.PDF and @a.png, not @gone.pdf";
+        assert_eq!(documents(text, &dir), vec![dir.join("spec.PDF")]);
+        // A PDF is no image: the image list leaves it, and the other way round.
+        assert_eq!(images(text, &dir), vec![dir.join("a.png")]);
+        assert_eq!(
+            split_documents(text, &dir),
+            (
+                "read  and @a.png, not @gone.pdf".to_string(),
+                vec![dir.join("spec.PDF")]
+            )
+        );
+        assert!(is_attachable(&dir.join("spec.PDF")));
+        assert!(!is_attachable(&dir.join("gone.pdf")));
+        let block = acp_document_block(&dir.join("spec.PDF")).unwrap();
+        assert_eq!(block["type"], "resource");
+        assert_eq!(block["resource"]["mimeType"], "application/pdf");
+        assert_eq!(block["resource"]["blob"], "eA==");
+        assert!(acp_document_block(&dir.join("a.png")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_pdf_over_the_limit_is_not_sent() {
+        let dir = std::env::temp_dir().join(format!("arakun-attach-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.pdf");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_PDF_BYTES + 1).unwrap();
+        assert_eq!(
+            acp_document_block(&big).unwrap_err(),
+            "big.pdf is larger than 24 MB"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

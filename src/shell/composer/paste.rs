@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, InteractiveElement as _, IntoElement as _,
     ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
@@ -87,17 +88,16 @@ impl Composer {
     }
 
     /// Puts files in the draft at the caret as `@` mentions, relative to the
-    /// environment when they are inside it. Images wait above the text as
-    /// pictures instead, and go along with the prompt.
+    /// environment when they are inside it. Images and PDFs wait above the
+    /// text instead, as pictures and chips, and go along with the prompt.
     pub(super) fn push_mentions(&mut self, paths: &[PathBuf]) {
         let root = self.frame.env.clone();
         let env = self.here_mut();
-        let (images, files): (Vec<&PathBuf>, Vec<&PathBuf>) = paths
-            .iter()
-            .partition(|p| attach::mime_type(p).is_some() && p.is_file());
-        for image in images {
-            if !env.images.contains(image) {
-                env.images.push(image.clone());
+        let (attached, files): (Vec<&PathBuf>, Vec<&PathBuf>) =
+            paths.iter().partition(|p| attach::is_attachable(p));
+        for file in attached {
+            if !env.files.contains(file) {
+                env.files.push(file.clone());
             }
         }
         let mentions: Vec<String> = files
@@ -113,11 +113,11 @@ impl Composer {
         self.reveal.set(true);
     }
 
-    /// The images waiting in the composer, as thumbnails: a click shows one
-    /// beside the chat, the cross takes it out.
-    pub(super) fn render_image_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let images = &self.here().images;
-        if images.is_empty() {
+    /// The files waiting in the composer, images as thumbnails and PDFs as
+    /// chips: a click shows one beside the chat, the cross takes it out.
+    pub(super) fn render_file_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let files = &self.here().files;
+        if files.is_empty() {
             return None;
         }
         Some(
@@ -127,14 +127,15 @@ impl Composer {
                 .gap(crate::ui::sp(8.))
                 .px(crate::ui::sp(12.))
                 .pt(crate::ui::sp(10.))
-                .children(images.iter().enumerate().map(|(i, path)| {
+                .children(files.iter().enumerate().map(|(i, path)| {
+                    let pdf = attach::is_pdf(path);
                     let group: SharedString = format!("composer-image-{i}").into();
                     let open = path.clone();
                     div()
                         .id(("composer-image", i))
                         .group(group.clone())
                         .relative()
-                        .size(px(64.))
+                        .h(px(64.))
                         .flex_none()
                         .rounded(crate::ui::rad(12.))
                         .overflow_hidden()
@@ -142,18 +143,24 @@ impl Composer {
                         .border_color(theme::border_strong())
                         .bg(theme::fill_hover())
                         .cursor_pointer()
-                        .child(
-                            img(path.clone())
-                                .size_full()
-                                .object_fit(ObjectFit::Cover)
-                                .with_fallback(|| {
-                                    icon("image01", 16.)
-                                        .text_color(theme::text_subtle())
-                                        .into_any_element()
-                                }),
-                        )
+                        .map(|d| {
+                            if pdf {
+                                d.max_w(px(200.)).child(pdf_chip(path))
+                            } else {
+                                d.w(px(64.)).child(
+                                    img(path.clone())
+                                        .size_full()
+                                        .object_fit(ObjectFit::Cover)
+                                        .with_fallback(|| {
+                                            icon("image01", 16.)
+                                                .text_color(theme::text_subtle())
+                                                .into_any_element()
+                                        }),
+                                )
+                            }
+                        })
                         .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ComposerEvent::OpenImage(open.clone()))
+                            cx.emit(ComposerEvent::OpenAttachment(open.clone()))
                         }))
                         .child(
                             div()
@@ -173,9 +180,9 @@ impl Composer {
                                 .child(icon("cancel01", 10.).text_color(gpui::white()))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    let images = &mut this.here_mut().images;
-                                    if i < images.len() {
-                                        images.remove(i);
+                                    let files = &mut this.here_mut().files;
+                                    if i < files.len() {
+                                        files.remove(i);
                                     }
                                     this.changed(cx);
                                     cx.notify();
@@ -186,6 +193,31 @@ impl Composer {
         )
     }
 }
+
+/// A PDF waiting in the composer: its icon over its name.
+fn pdf_chip(path: &std::path::Path) -> gpui::Div {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .justify_center()
+        .gap(crate::ui::sp(4.))
+        .px(crate::ui::sp(10.))
+        .child(icon("pdf01", 16.).text_color(theme::text_subtle()))
+        .child(
+            div()
+                .truncate()
+                .text_size(px(crate::ui::TEXT_SM))
+                .text_color(theme::text_muted())
+                .child(name),
+        )
+}
+
 /// Text that is only a list of existing files (what file managers put on the
 /// clipboard, as `file://` URIs or plain paths), else `None`.
 fn pasted_paths(text: &str) -> Option<Vec<PathBuf>> {

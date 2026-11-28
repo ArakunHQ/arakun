@@ -1,5 +1,39 @@
 package com.arakun.android.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -7,12 +41,218 @@ import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.arakun.android.R
+import com.arakun.kit.Align
+import com.arakun.kit.Block as MdBlock
+import com.arakun.kit.Item
+import com.arakun.kit.isFigure
+import com.arakun.kit.parseMarkdown
+import kotlinx.coroutines.delay
 
 /**
- * The agent's words with inline Markdown only, as the iOS app reads them:
+ * An agent's reply as blocks: paragraphs, headings, lists, quotes, rules,
+ * code and tables, each with its inline spans. The caller wraps it in a
+ * SelectionContainer so the text stays selectable.
+ */
+@Composable
+fun MarkdownView(text: String, modifier: Modifier = Modifier) {
+    val blocks = remember(text) { parseMarkdown(text) }
+    Blocks(blocks, modifier.fillMaxWidth())
+}
+
+/** The body's line height, a little looser for reading. */
+private val Prose = Type.body.copy(lineHeight = Type.body.lineHeight * 1.08f)
+
+@Composable
+private fun Blocks(blocks: List<MdBlock>, modifier: Modifier = Modifier) {
+    val c = Palette.current
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        blocks.forEachIndexed { n, b ->
+            when (b) {
+                is MdBlock.Paragraph -> Text(markdown(b.text, c), style = Prose)
+                is MdBlock.Heading -> Text(
+                    markdown(b.text, c),
+                    style = when (b.level) {
+                        1 -> geist(20f, FontWeight.SemiBold).copy(lineHeight = 27.sp)
+                        2 -> geist(18f, FontWeight.SemiBold).copy(lineHeight = 25.sp)
+                        else -> geist(16f, FontWeight.SemiBold).copy(lineHeight = 23.sp)
+                    },
+                    modifier = Modifier.padding(top = if (n > 0) 6.dp else 0.dp).semantics { heading() },
+                )
+                is MdBlock.Items -> ItemsView(b.items)
+                is MdBlock.Quote -> {
+                    val bar = c.lineStrong
+                    Box(
+                        Modifier
+                            .drawBehind { drawRect(bar, size = Size(3.dp.toPx(), size.height)) }
+                            .padding(start = 15.dp),
+                    ) {
+                        CompositionLocalProvider(LocalContentColor provides c.textMuted) { Blocks(b.blocks) }
+                    }
+                }
+                MdBlock.Rule -> Box(Modifier.fillMaxWidth().padding(vertical = 6.dp).height(1.dp).background(c.line))
+                is MdBlock.Code -> CodeView(b)
+                is MdBlock.Table -> TableView(b)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItemsView(items: List<Item>) {
+    val c = Palette.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        items.forEach { item ->
+            Row(Modifier.padding(start = (item.depth * 18).dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val marker = Modifier.widthIn(min = 16.dp)
+                when {
+                    item.checked != null -> BrandIcon(
+                        if (item.checked == true) R.drawable.ic_checkmark_circle02 else R.drawable.ic_circle,
+                        16.dp,
+                        if (item.checked == true) c.amberInk else c.textFaint,
+                        Modifier.padding(top = 4.dp).semantics { contentDescription = if (item.checked == true) "Done" else "To do" },
+                    )
+                    item.number != null -> Text("${item.number}.", style = Prose, color = c.textMuted, modifier = marker)
+                    else -> Text(BULLETS[item.depth % BULLETS.size], style = Prose, color = c.textMuted, modifier = marker)
+                }
+                Text(markdown(item.text, c), style = Prose, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+private val BULLETS = listOf("•", "◦", "▪")
+
+/**
+ * A fenced block: monospaced, scrolling sideways rather than wrapping, with
+ * its language and a copy button. A chart or diagram shows as its code.
+ */
+@Composable
+private fun CodeView(code: MdBlock.Code) {
+    val c = Palette.current
+    val context = LocalContext.current
+    var copied by remember(code.text) { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1500)
+            copied = false
+        }
+    }
+    Column(Modifier.fillMaxWidth().card(c.deep, c.line, Radius.control)) {
+        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(code.lang, style = mono(11f), color = c.textFaint, modifier = Modifier.weight(1f))
+            Row(
+                Modifier
+                    .minimumInteractiveComponentSize()
+                    .tap {
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("Code", code.text))
+                        copied = true
+                    }
+                    .semantics { contentDescription = if (copied) "Copied" else "Copy code" }
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BrandIcon(R.drawable.ic_copy01, 13.dp, c.textMuted)
+                Text(if (copied) "Copied" else "Copy", style = mono(11f), color = c.textMuted)
+            }
+        }
+        Text(
+            code.text,
+            style = Type.code,
+            color = c.text,
+            softWrap = false,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+        )
+    }
+}
+
+/**
+ * A table that scrolls sideways. Columns are as wide as their widest cell,
+ * up to a cap past which long cells wrap; figures line up on the right.
+ */
+@Composable
+private fun TableView(t: MdBlock.Table) {
+    val c = Palette.current
+    val cols = t.head.size
+    val cap = with(LocalDensity.current) { 260.dp.roundToPx() }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val n = t.rows.size
+        Text(
+            "$n row${if (n == 1) "" else "s"} · $cols column${if (cols == 1) "" else "s"}",
+            style = mono(11f),
+            color = c.textFaint,
+        )
+        Box(Modifier.fillMaxWidth().card(c.ground, c.line, Radius.control)) {
+            Layout(
+                content = {
+                    (listOf(t.head) + t.rows).forEachIndexed { r, row ->
+                        row.forEachIndexed { k, cell ->
+                            val end = t.align[k] == Align.End || (r > 0 && isFigure(cell))
+                            val align = when {
+                                end -> Alignment.TopEnd
+                                t.align[k] == Align.Center -> Alignment.TopCenter
+                                else -> Alignment.TopStart
+                            }
+                            val line = c.line
+                            Box(
+                                Modifier
+                                    .then(if (r == 0) Modifier.background(c.raised) else Modifier)
+                                    .drawBehind {
+                                        if (r > 0) drawLine(line, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx())
+                                        if (k > 0) drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                contentAlignment = align,
+                            ) {
+                                Text(
+                                    markdown(cell, c),
+                                    style = if (r == 0) Type.small.copy(fontWeight = FontWeight.SemiBold) else Type.small,
+                                    textAlign = if (end) TextAlign.End else if (t.align[k] == Align.Center) TextAlign.Center else TextAlign.Start,
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) { measurables, _ ->
+                val rows = measurables.chunked(cols)
+                val widths = IntArray(cols) { k ->
+                    val widest = rows.maxOf { it[k].maxIntrinsicWidth(Constraints.Infinity) }
+                    // A long word or address keeps its line, up to twice the cap.
+                    val word = rows.maxOf { it[k].minIntrinsicWidth(Constraints.Infinity) }
+                    widest.coerceAtMost(cap).coerceAtLeast(word.coerceAtMost(cap * 2))
+                }
+                val heights = rows.map { row -> row.indices.maxOf { k -> row[k].minIntrinsicHeight(widths[k]) } }
+                val placed = rows.mapIndexed { r, row -> row.mapIndexed { k, m -> m.measure(Constraints.fixed(widths[k], heights[r])) } }
+                layout(widths.sum(), heights.sum()) {
+                    var y = 0
+                    placed.forEachIndexed { r, row ->
+                        var x = 0
+                        row.forEachIndexed { k, p ->
+                            p.place(x, y)
+                            x += widths[k]
+                        }
+                        y += heights[r]
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Inline Markdown, as the iOS app reads it, for the text inside a block:
  * `code` in Geist Mono on a faint well, **strong**, *emphasis* and links.
  * Line breaks and everything else stay as written.
  */

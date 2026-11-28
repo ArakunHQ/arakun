@@ -81,14 +81,11 @@ fun EntryView(entry: Entry) {
 /** The agent's words, with the pictures it shows between them. */
 @Composable
 private fun AgentEntry(text: String) {
-    val c = Palette.current
     val parts = remember(text) { blocks(text) }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         parts.forEach { part ->
             when (part) {
-                is Block.Words -> SelectionContainer {
-                    Text(markdown(part.text, c), style = Type.body.copy(lineHeight = Type.body.lineHeight * 1.08f), modifier = Modifier.fillMaxWidth())
-                }
+                is Block.Words -> SelectionContainer { MarkdownView(part.text) }
                 is Block.Pic -> AgentPicture(part.url, part.alt)
             }
         }

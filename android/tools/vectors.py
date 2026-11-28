@@ -24,7 +24,7 @@ OUT = os.path.join(HERE, "..", "app", "src", "main", "res", "drawable")
 USED = """
 ai-idea alert-circle arrow-down01 arrow-left01 arrow-right01 arrow-up01
 cancel01 check-list checkmark-circle02 circle-dashed circle
-computer computer-terminal01 delete02 file-diff file01 folder01
+computer computer-terminal01 copy01 delete02 file-diff file01 folder01
 git-branch globe hand help-circle image01 link01 loading03 mark-cross more-horizontal
 notification01 notification-off01 pencil-edit01 pencil-edit02 refresh01 search01 share02 square square-lock02
 user wrench01

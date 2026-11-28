@@ -674,19 +674,14 @@ impl ExtensionsView {
                 } else {
                     &self.ms.official.data
                 };
-                source
-                    .iter()
-                    .flatten()
-                    .filter(|s| {
-                        self.ms.everything
-                            || self
-                                .ms
-                                .category
-                                .as_ref()
-                                .is_none_or(|c| s.official.as_ref() == Some(c))
-                    })
-                    .filter(|s| {
-                        self.ms.everything
+                // The registry searched its own entries already; Arakun's
+                // picks it lacks are matched here.
+                let searched = source.as_ref().map_or(0, Vec::len);
+                self.server_list()
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, s)| {
+                        (self.ms.everything && *i < searched)
                             || hit(format!(
                                 "{} {} {} {}",
                                 s.name,
@@ -695,7 +690,15 @@ impl ExtensionsView {
                                 s.official.as_deref().unwrap_or_default()
                             ))
                     })
-                    .cloned()
+                    .map(|(_, s)| s)
+                    .filter(|s| {
+                        self.ms.everything
+                            || self
+                                .ms
+                                .category
+                                .as_ref()
+                                .is_none_or(|c| s.official.as_ref() == Some(c))
+                    })
                     .map(Item::Server)
                     .collect()
             }
@@ -715,6 +718,21 @@ impl ExtensionsView {
             items.sort_by_key(|i| i.title().to_lowercase());
         }
         items
+    }
+
+    /// The MCP servers Discover shows, before any filter: the registry's (all
+    /// of it, or what companies publish), then Arakun's own picks it lacks,
+    /// one entry per server. Empty until the registry answers.
+    fn server_list(&self) -> Vec<RegistryServer> {
+        let source = if self.ms.everything {
+            &self.ms.registry
+        } else {
+            &self.ms.official.data
+        };
+        source
+            .as_deref()
+            .map(marketplace::with_catalog)
+            .unwrap_or_default()
     }
 
     /// Cards to a line, from the list's width at the last layout: as many as fit
@@ -778,12 +796,10 @@ impl ExtensionsView {
                             .as_ref()
                             .is_some_and(|x| x.plugins.iter().any(|i| i.id == p.id))
             }
-            Item::Server(s) => self.remote_has_server(&s.short_name()).unwrap_or_else(|| {
-                self.claude
-                    .data
-                    .as_ref()
-                    .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
-            }),
+            // Under its name, or another name for the same URL.
+            Item::Server(s) => self
+                .remote_has_server(&s.short_name())
+                .unwrap_or_else(|| !self.installed_servers(item).is_empty()),
             Item::Skill(k) => self.skill_installed(&k.skill_id),
         }
     }
@@ -812,10 +828,8 @@ impl ExtensionsView {
         })
     }
 
-    /// The servers of an installed item that wait for a sign-in on this
-    /// computer: a plugin's OAuth servers, or a registry server added without
-    /// a token. A paired server's sign-in opens a browser there, so not those.
-    fn awaiting_sign_in(&self, item: &Item) -> Vec<&Server> {
+    /// This computer's servers that are `item`'s, whatever their health.
+    fn installed_servers(&self, item: &Item) -> Vec<&Server> {
         if self.targets.target.is_some() {
             return Vec::new();
         }
@@ -825,8 +839,24 @@ impl ExtensionsView {
         let slug = self.ms.repo_has.as_ref().map(|h| h.slug.as_str());
         x.servers
             .iter()
-            .filter(|s| waits_for_sign_in(item, s, slug))
+            .filter(|s| belongs_to(item, s, slug))
             .collect()
+    }
+
+    /// Where `item` stands, for its card and its details.
+    pub(super) fn status(&self, item: &Item) -> ItemStatus {
+        let off = match item {
+            Item::Plugin(p) => {
+                self.targets.target.is_none()
+                    && self
+                        .claude
+                        .data
+                        .as_ref()
+                        .is_some_and(|x| x.plugins.iter().any(|i| i.id == p.id && !i.enabled))
+            }
+            _ => false,
+        };
+        item_status(self.installed(item), off, self.installed_servers(item))
     }
 
     /// Runs the server's sign-in in a terminal, and rereads until it is done.
@@ -835,66 +865,23 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// In the details of an installed item: what still waits for a sign-in,
-    /// with a button for each.
-    fn render_sign_ins(&self, item: &Item, cx: &mut Context<Self>) -> Option<Div> {
-        let waiting = self.awaiting_sign_in(item);
-        if waiting.is_empty() {
-            return None;
-        }
-        let warn = Tone::Warning.color();
-        let mut out = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(8.))
-            .px(crate::ui::sp(12.))
-            .py(crate::ui::sp(10.))
-            .rounded(crate::ui::rad(ui::RADIUS))
-            .bg(warn.opacity(0.10))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .ty(Type::Body)
-                    .text_color(theme::text())
-                    .child(icon("alert-circle", 14.).text_color(warn))
-                    .child(if waiting.len() == 1 {
-                        "Its MCP server needs you to sign in before Claude can use it.".to_string()
-                    } else {
-                        format!(
-                            "{} need you to sign in before Claude can use them.",
-                            plural(waiting.len(), "MCP server")
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .ty(Type::Caption)
-                    .text_color(theme::text_subtle())
-                    .child("Sign-in opens your browser once; Claude keeps it fresh after that."),
-            );
-        for (i, s) in waiting.iter().enumerate() {
-            let name = s.name.clone();
-            let label = if waiting.len() == 1 {
-                "Sign in".to_string()
-            } else {
-                format!("Sign in to {}", display_name(&name))
-            };
-            out = out.child(
-                div().flex().child(
-                    ui::button_with(
-                        ("ext-detail-sign-in", i),
-                        Some("user"),
-                        label,
-                        ButtonKind::Primary,
-                        true,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.sign_in(&name, cx))),
-                ),
-            );
-        }
-        Some(out)
+    /// In the details of an installed item: each of its servers that needs
+    /// you, with why and the buttons that fix it, as under MCP servers. A
+    /// paired server's sign-in opens a browser there, so not those.
+    fn render_fixes(&self, item: &Item, cx: &mut Context<Self>) -> Option<Div> {
+        let boxes: Vec<Div> = self
+            .installed_servers(item)
+            .into_iter()
+            .filter(|s| !matches!(s.health, Health::Connected | Health::Off))
+            .filter_map(|s| self.fix_box(s, cx))
+            .collect();
+        (!boxes.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .children(boxes)
+        })
     }
 
     fn select(&mut self, item: &Item, window: &mut Window, cx: &mut Context<Self>) {
@@ -931,7 +918,12 @@ impl ExtensionsView {
                     .count()
             }),
             Market::Registry if self.ms.everything => self.ms.registry.as_ref().map(Vec::len),
-            Market::Registry => self.ms.official.data.as_ref().map(Vec::len),
+            Market::Registry => self
+                .ms
+                .official
+                .data
+                .is_some()
+                .then(|| self.server_list().len()),
             Market::Skills => self.ms.skills.data.as_ref().map(Vec::len),
         }
     }
@@ -975,7 +967,7 @@ impl ExtensionsView {
                 "Categories"
             }
             Market::Registry if !self.ms.everything => {
-                for s in self.ms.official.data.iter().flatten() {
+                for s in self.server_list() {
                     if let Some(c) = &s.official {
                         add(c);
                     }
@@ -1526,31 +1518,13 @@ impl ExtensionsView {
             })
     }
 
-    /// What a card offers: Installed, a spinner, or Install.
+    /// What a card ends with: the item's state once it is installed, else a
+    /// spinner or Install. The details hold the fix for a state that needs one.
     fn card_action(&self, item: &Item, kind: ButtonKind, cx: &mut Context<Self>) -> AnyElement {
-        // Installed but not usable yet: the card signs in, so nobody has to
-        // find the server under Installed.
-        if let Some(s) = self.awaiting_sign_in(item).first() {
-            let name = s.name.clone();
-            return ui::button_with(
-                SharedString::from(format!("ext-card-sign-in-{}", item.key())),
-                Some("user"),
-                "Sign in",
-                kind,
-                true,
-            )
-            .tooltip(ui::tip_text(format!(
-                "Installed. {} needs you to sign in",
-                display_name(&name)
-            )))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.sign_in(&name, cx);
-            }))
-            .into_any_element();
-        }
-        if self.installed(item) {
-            return ui::state_pill("checkmark-circle02", "Installed", Tone::Success.color())
+        let status = self.status(item);
+        if status != ItemStatus::NotInstalled {
+            return ui::status_dot(status.word(), status.tone())
+                .flex_none()
                 .into_any_element();
         }
         // Discover installs for Claude Code: with Droid picked, the card stays
@@ -1794,7 +1768,12 @@ impl ExtensionsView {
             ),
         };
         let installed = self.installed(&item);
+        let status = self.status(&item);
         let (by, verified) = item.by();
+        let version = match &item {
+            Item::Server(s) if !s.version.is_empty() => Some(format!("v{}", s.version)),
+            _ => None,
+        };
         let mut panel = div()
             .id("ext-detail")
             .flex()
@@ -1822,7 +1801,22 @@ impl ExtensionsView {
                                     .text_color(theme::text())
                                     .child(item.title()),
                             )
-                            .child(by_line(by, verified)),
+                            .child(by_line(by, verified))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(crate::ui::sp(8.))
+                                    .child(ui::status_dot(status.word(), status.tone()))
+                                    .child(
+                                        div()
+                                            .ty(Type::Caption)
+                                            .text_color(theme::text_subtle())
+                                            .child(item.kind_word())
+                                            .children(version.map(|v| format!(" · {v}"))),
+                                    ),
+                            ),
                     )
                     .child(
                         ui::icon_button("ext-detail-close", "cancel01", 14., "Close")
@@ -1838,9 +1832,6 @@ impl ExtensionsView {
                 format!("{} installs", marketplace::short_count(n)),
                 Tone::Neutral,
             ));
-        }
-        if installed {
-            facts = facts.child(ui::badge("Installed", Tone::Success));
         }
         let description = match &item {
             Item::Skill(k) => match self.ms.located.get(&k.id) {
@@ -1879,7 +1870,7 @@ impl ExtensionsView {
         if let Some(picker) = self.render_where(item.kind(), cx) {
             panel = panel.child(picker);
         }
-        panel = panel.children(self.render_sign_ins(&item, cx));
+        panel = panel.children(self.render_fixes(&item, cx));
         match &item {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
@@ -2362,10 +2353,20 @@ impl ExtensionsView {
                             Some(s) => {
                                 format!("Claude Code on {} has a server of this name.", s.name)
                             }
-                            None => {
-                                "Already in Claude Code under this name: see it under MCP servers."
-                                    .to_string()
-                            }
+                            None => match self.installed_servers(&Item::Server(s.clone()))[..] {
+                                [] => format!(
+                                    "Added {}. Turn it off or remove it under MCP servers.",
+                                    self.done_where(ItemKind::Server)
+                                ),
+                                [one] => format!(
+                                    "In Claude Code as “{}”. Turn it off or remove it under MCP servers.",
+                                    one.name
+                                ),
+                                [one, ..] => format!(
+                                    "Set more than once in Claude Code; “{}” is one. See them under MCP servers.",
+                                    one.name
+                                ),
+                            },
                         },
                     ),
                 ),
@@ -2508,20 +2509,117 @@ impl ExtensionsView {
     }
 }
 
-/// Whether `s` is one of `item`'s servers and waits for a sign-in. `slug` is
-/// the repository's, which a server added for one repository is named after.
-fn waits_for_sign_in(item: &Item, s: &Server, slug: Option<&str>) -> bool {
-    if s.health != Health::NeedsAuth || s.unused_connector() {
+/// Whether `s` is one of `item`'s servers: a plugin's own, or a registry
+/// server under its name, its repository's name for it, or its URL's host.
+/// `slug` is the repository's, which a server added for one repository is
+/// named after. An unused claude.ai connector was not installed from here.
+fn belongs_to(item: &Item, s: &Server, slug: Option<&str>) -> bool {
+    if s.unused_connector() {
         return false;
     }
     match item {
         Item::Plugin(p) => s.scope == Scope::Plugin(p.name.clone()),
         Item::Server(r) => {
             let name = r.short_name();
-            s.name == name || slug.is_some_and(|slug| s.name == mirror::suffixed(&name, slug))
+            s.name == name
+                || slug.is_some_and(|slug| s.name == mirror::suffixed(&name, slug))
+                || (s.transport != "stdio"
+                    && r.hosts()
+                        .contains(&claude_ext::host(&s.target).to_lowercase()))
         }
         Item::Skill(_) => false,
     }
+}
+
+/// Where an item stands, as its card and its details say it: a dot and a
+/// word, never color alone.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ItemStatus {
+    NotInstalled,
+    Ready,
+    /// Turned off: the plugin, or the server in this folder.
+    Off,
+    /// The repository's `.mcp.json` shares it and nobody approved it yet.
+    NeedsApproval,
+    NeedsSignIn,
+    /// The word says why.
+    Broken(&'static str),
+}
+
+impl ItemStatus {
+    pub(super) fn word(&self) -> String {
+        match self {
+            ItemStatus::NotInstalled => "Not installed".into(),
+            ItemStatus::Ready => "Ready".into(),
+            ItemStatus::Off => "Off".into(),
+            ItemStatus::NeedsApproval => "Needs approval".into(),
+            ItemStatus::NeedsSignIn => "Needs sign-in".into(),
+            ItemStatus::Broken(why) => format!("Broken: {why}"),
+        }
+    }
+
+    pub(super) fn tone(&self) -> Tone {
+        match self {
+            ItemStatus::NotInstalled | ItemStatus::Off => Tone::Neutral,
+            ItemStatus::Ready => Tone::Success,
+            ItemStatus::NeedsApproval => Tone::Info,
+            ItemStatus::NeedsSignIn => Tone::Warning,
+            ItemStatus::Broken(_) => Tone::Danger,
+        }
+    }
+
+    /// Worse is higher: a card shows the worst of its servers.
+    fn rank(&self) -> u8 {
+        match self {
+            ItemStatus::NotInstalled => 0,
+            ItemStatus::Ready => 1,
+            ItemStatus::Off => 2,
+            ItemStatus::NeedsApproval => 3,
+            ItemStatus::NeedsSignIn => 4,
+            ItemStatus::Broken(_) => 5,
+        }
+    }
+}
+
+/// What one installed server's health means for the item it belongs to.
+fn server_status(s: &Server) -> ItemStatus {
+    match &s.health {
+        // Not checked is not a fault: the Installed page says so.
+        Health::Connected | Health::Unknown => ItemStatus::Ready,
+        Health::Off => ItemStatus::Off,
+        Health::Pending => ItemStatus::NeedsApproval,
+        Health::NeedsAuth => ItemStatus::NeedsSignIn,
+        Health::Failed(_) => ItemStatus::Broken(match &s.diagnosis {
+            Some(d) if matches!(d.status, 401 | 403) => "sign-in refused",
+            Some(d) if d.status == 0 => "can't be reached",
+            Some(_) => "server error",
+            None if s.transport == "stdio" => "won't start",
+            None => "not answering",
+        }),
+    }
+}
+
+/// An installed item's state: the worst of its servers, or Off when it is
+/// turned off.
+fn item_status<'a>(
+    installed: bool,
+    off: bool,
+    servers: impl IntoIterator<Item = &'a Server>,
+) -> ItemStatus {
+    if !installed {
+        return ItemStatus::NotInstalled;
+    }
+    let own = if off {
+        ItemStatus::Off
+    } else {
+        ItemStatus::Ready
+    };
+    servers
+        .into_iter()
+        .map(server_status)
+        .chain([own])
+        .max_by_key(ItemStatus::rank)
+        .unwrap_or(ItemStatus::Ready)
 }
 
 /// A spinner and what is happening, where a button was.
@@ -2678,6 +2776,15 @@ impl Item {
         }
     }
 
+    /// What it is, as the details name it.
+    fn kind_word(&self) -> &'static str {
+        match self {
+            Item::Plugin(_) => "Plugin",
+            Item::Server(_) => "MCP server",
+            Item::Skill(_) => "Skill",
+        }
+    }
+
     fn key(&self) -> &str {
         match self {
             Item::Plugin(p) => &p.id,
@@ -2821,99 +2928,6 @@ fn by_line(by: Option<String>, verified: bool) -> Div {
         })
 }
 
-/// A marketplace card: logo, name and line under it, what it does, tags and the action.
-pub(super) fn card(
-    mark: logos::Mark,
-    title: String,
-    by: Option<(String, bool)>,
-    sub: String,
-    description: String,
-    tags: Div,
-    action: AnyElement,
-) -> Div {
-    let description: String = if description.chars().count() > 150 {
-        description.chars().take(147).collect::<String>() + "…"
-    } else {
-        description
-    };
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_w_0()
-        .gap(crate::ui::sp(12.))
-        .p(crate::ui::sp(16.))
-        .rounded(crate::ui::rad(ui::RADIUS_LG))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::fill_raised())
-        .hover(|d| d.border_color(theme::border_strong()))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(12.))
-                .child(logos::tile(mark, 40.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .ty(Type::Heading)
-                                .text_color(theme::text())
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(crate::ui::sp(4.))
-                                .min_w_0()
-                                .ty(Type::Caption)
-                                .text_color(theme::text_subtle())
-                                .when_some(by, |d, (by, verified)| {
-                                    d.when(verified, |d| {
-                                        d.child(
-                                            icon("checkmark-circle02", 12.)
-                                                .text_color(Tone::Info.color()),
-                                        )
-                                    })
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .when(verified, |d| d.text_color(theme::text_muted()))
-                                            .child(format!("by {by}")),
-                                    )
-                                    .when(!sub.is_empty(), |d| d.child("·"))
-                                })
-                                .child(div().truncate().child(sub)),
-                        ),
-                ),
-        )
-        // Up to three lines; the line's cards stretch to the tallest one.
-        .child(
-            div()
-                .flex_1()
-                .max_h(px(54.))
-                .overflow_hidden()
-                .ty(Type::Body)
-                .text_color(theme::text_muted())
-                .child(description),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(8.))
-                .child(tags.flex_1().min_w_0().overflow_hidden())
-                .child(div().flex_none().child(action)),
-        )
-}
-
 /// The item's own logo, else its publisher's mark (logo, or initial in its color), else its own initial.
 fn mark_by(name: &str, hint: &str, publisher: Option<&str>) -> logos::Mark {
     let own = logos::mark(name, hint);
@@ -2921,38 +2935,6 @@ fn mark_by(name: &str, hint: &str, publisher: Option<&str>) -> logos::Mark {
         (logos::Mark::Letter { .. }, Some(p)) => logos::mark(p, ""),
         _ => own,
     }
-}
-
-/// Cards `per` to a line, the last line padded so every card is as wide.
-/// How narrow a card in `grid` gets before its line holds one card fewer.
-const CARD_MIN_W: f32 = 200.;
-
-pub(super) fn grid(cards: Vec<AnyElement>, per: usize) -> Div {
-    // `per` cards a line, or fewer when they would be narrower than
-    // CARD_MIN_W. Every cell has the same basis and the same growth, and
-    // `per` empty cells with no height follow the cards, so a short last line
-    // keeps the others' widths. Cards fill their cell's height.
-    let cell = || {
-        div()
-            .flex()
-            .flex_col()
-            .flex_grow(1.)
-            .flex_basis(gpui::relative(1. / (per as f32 + 1.)))
-            .min_w(px(CARD_MIN_W))
-    };
-    // The space between lines is each card's bottom margin, not a row gap,
-    // so a line of empty cells adds none; the last line's is taken back.
-    div()
-        .flex()
-        .flex_wrap()
-        .gap_x(crate::ui::sp(12.))
-        .mb(-crate::ui::sp(12.))
-        .children(
-            cards
-                .into_iter()
-                .map(|c| cell().mb(crate::ui::sp(12.)).child(c)),
-        )
-        .children((0..per).map(|_| cell()))
 }
 
 fn category_color(c: &str) -> u32 {
@@ -3085,46 +3067,81 @@ mod tests {
     }
 
     #[test]
-    fn a_plugins_server_waiting_for_a_sign_in_is_found() {
+    fn a_plugins_servers_are_its_own() {
         let posthog = plugin("posthog");
         let s = server(
             "plugin:posthog:posthog",
             Scope::Plugin("posthog".into()),
             Health::NeedsAuth,
         );
-        assert!(waits_for_sign_in(&posthog, &s, None));
-        // Signed in already, or another plugin's server.
-        let ok = server(
-            "plugin:posthog:posthog",
-            Scope::Plugin("posthog".into()),
-            Health::Connected,
-        );
-        assert!(!waits_for_sign_in(&posthog, &ok, None));
-        assert!(!waits_for_sign_in(&plugin("stripe"), &s, None));
+        assert!(belongs_to(&posthog, &s, None));
+        assert!(!belongs_to(&plugin("stripe"), &s, None));
     }
 
     #[test]
     fn a_registry_server_is_found_by_its_name_or_its_repos() {
         let linear = registry("app.linear/linear");
         let mine = server("linear", Scope::User, Health::NeedsAuth);
-        assert!(waits_for_sign_in(&linear, &mine, None));
+        assert!(belongs_to(&linear, &mine, None));
         let repo = server(
             &mirror::suffixed("linear", "arakun"),
             Scope::Local,
             Health::NeedsAuth,
         );
-        assert!(waits_for_sign_in(&linear, &repo, Some("arakun")));
-        assert!(!waits_for_sign_in(&linear, &repo, None));
+        assert!(belongs_to(&linear, &repo, Some("arakun")));
+        assert!(!belongs_to(&linear, &repo, None));
     }
 
     #[test]
-    fn an_unused_claude_ai_connector_is_not_asked_for() {
+    fn a_server_added_under_another_name_is_the_same_item() {
+        // Added by hand as "linear-work"; the catalog's Linear is that server.
+        let linear = marketplace::catalog_servers()
+            .into_iter()
+            .find(|s| s.name == "linear")
+            .map(Item::Server)
+            .unwrap();
+        let mut mine = server("linear-work", Scope::User, Health::Connected);
+        mine.target = "https://mcp.linear.app/sse".into();
+        assert!(belongs_to(&linear, &mine, None));
+        // A program on this computer has no host to match.
+        mine.transport = "stdio".into();
+        mine.target = "npx mcp.linear.app".into();
+        assert!(!belongs_to(&linear, &mine, None));
+    }
+
+    #[test]
+    fn an_unused_claude_ai_connector_is_not_installed() {
         // Offered by the account, not installed from here.
         let gmail = server("claude.ai Gmail", Scope::ClaudeAi, Health::NeedsAuth);
-        assert!(!waits_for_sign_in(
-            &registry("x/claude.ai Gmail"),
-            &gmail,
-            None
-        ));
+        assert!(!belongs_to(&registry("x/claude.ai Gmail"), &gmail, None));
+    }
+
+    #[test]
+    fn a_card_shows_the_worst_state_of_its_servers() {
+        let ok = server("a", Scope::User, Health::Connected);
+        let auth = server("b", Scope::User, Health::NeedsAuth);
+        let off = server("c", Scope::User, Health::Off);
+        let mut broken = server("d", Scope::User, Health::Failed("failed".into()));
+        broken.diagnosis = Some(claude_ext::Diagnosis {
+            status: 0,
+            message: String::new(),
+            oauth: false,
+        });
+        assert_eq!(
+            item_status(false, false, [&broken]),
+            ItemStatus::NotInstalled
+        );
+        assert_eq!(item_status(true, false, []), ItemStatus::Ready);
+        assert_eq!(item_status(true, false, [&ok]), ItemStatus::Ready);
+        assert_eq!(item_status(true, true, [&ok]), ItemStatus::Off);
+        assert_eq!(item_status(true, false, [&ok, &off]), ItemStatus::Off);
+        assert_eq!(
+            item_status(true, true, [&ok, &auth]),
+            ItemStatus::NeedsSignIn
+        );
+        let worst = item_status(true, false, [&auth, &broken, &off]);
+        assert_eq!(worst, ItemStatus::Broken("can't be reached"));
+        // The word says why, so the state never rests on color alone.
+        assert_eq!(worst.word(), "Broken: can't be reached");
     }
 }

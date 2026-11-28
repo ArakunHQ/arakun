@@ -346,6 +346,69 @@ impl RegistryServer {
             .map(str::to_string)
             .unwrap_or_else(|| ns.split('.').rev().collect::<Vec<_>>().join("."))
     }
+
+    /// The hosts of its remote installs: two entries with one host are one server.
+    pub fn hosts(&self) -> Vec<String> {
+        self.installs
+            .iter()
+            .filter_map(|i| match i {
+                Install::Remote { url, .. } => Some(super::claude_ext::host(url).to_lowercase()),
+                Install::Local { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Whether `other` is the same server: the same name in Claude, or a
+    /// remote install on the same host.
+    pub fn same_as(&self, other: &RegistryServer) -> bool {
+        if self.short_name() == other.short_name() {
+            return true;
+        }
+        let theirs = other.hosts();
+        self.hosts().iter().any(|h| theirs.contains(h))
+    }
+}
+
+/// Arakun's own picks (`claude_ext::CATALOG`), as registry entries, so the
+/// Marketplace shows them with the rest instead of in a list of their own.
+pub fn catalog_servers() -> Vec<RegistryServer> {
+    super::claude_ext::CATALOG
+        .iter()
+        .map(|&(name, url, about, _)| {
+            let host = super::claude_ext::host(url);
+            let site = host.strip_prefix("mcp.").unwrap_or(host);
+            let mut title = name.to_string();
+            if let Some(first) = title.get_mut(..1) {
+                first.make_ascii_uppercase();
+            }
+            RegistryServer {
+                name: name.to_string(),
+                title,
+                description: format!("{about}."),
+                version: String::new(),
+                website: Some(format!("https://{site}")),
+                repository: None,
+                installs: vec![Install::Remote {
+                    transport: "http".into(),
+                    url: url.to_string(),
+                    headers: Vec::new(),
+                }],
+                official: super::publishers::by_domain(host).map(str::to_string),
+            }
+        })
+        .collect()
+}
+
+/// `list` with the catalog's servers it does not have yet: one entry per
+/// server. The registry's entry wins, since it says more.
+pub fn with_catalog(list: &[RegistryServer]) -> Vec<RegistryServer> {
+    let mut out = list.to_vec();
+    for c in catalog_servers() {
+        if !out.iter().any(|s| s.same_as(&c)) {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Blocking: one page of the registry, `query` matching names; the cursor of the next.
@@ -857,6 +920,65 @@ fn done(name: &str, result: Result<()>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote_server(name: &str, url: &str) -> RegistryServer {
+        RegistryServer {
+            name: name.into(),
+            title: name.into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            website: None,
+            repository: None,
+            installs: vec![Install::Remote {
+                transport: "http".into(),
+                url: url.into(),
+                headers: Vec::new(),
+            }],
+            official: None,
+        }
+    }
+
+    #[test]
+    fn a_catalog_server_installs_like_a_registry_one() {
+        let all = catalog_servers();
+        let linear = all.iter().find(|s| s.name == "linear").unwrap();
+        assert_eq!(linear.short_name(), "linear");
+        assert_eq!(linear.title, "Linear");
+        assert_eq!(linear.hosts(), ["mcp.linear.app"]);
+        assert_eq!(linear.website.as_deref(), Some("https://linear.app"));
+        let cfg = config(&linear.installs[0], &HashMap::new()).unwrap();
+        assert_eq!(
+            cfg,
+            json!({"type": "http", "url": "https://mcp.linear.app/mcp"})
+        );
+    }
+
+    #[test]
+    fn a_server_in_the_registry_and_the_catalog_shows_once() {
+        // Another name, the same host: the registry's entry stays, alone.
+        let reg = remote_server("app.linear/linear-mcp", "https://mcp.linear.app/sse");
+        let merged = with_catalog(std::slice::from_ref(&reg));
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|s| s.hosts() == ["mcp.linear.app"])
+                .count(),
+            1
+        );
+        assert_eq!(merged[0], reg);
+        // The same name in Claude, another host: one server too.
+        let named = remote_server("com.example/notion", "https://example.com/mcp");
+        let merged = with_catalog(std::slice::from_ref(&named));
+        assert_eq!(
+            merged.iter().filter(|s| s.short_name() == "notion").count(),
+            1
+        );
+        // Nothing in common: both stay.
+        assert_eq!(
+            with_catalog(&[]).len(),
+            super::super::claude_ext::CATALOG.len()
+        );
+    }
 
     #[test]
     fn a_server_says_how_an_install_went() {

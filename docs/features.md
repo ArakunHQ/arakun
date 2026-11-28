@@ -811,7 +811,14 @@ again after a week) in its [data folder](storage-and-env.md).
   can't use stays in the list as "Not for Droid", with the reason. An item's details have
   an Agents card: one row per agent with the file it reads and, where Arakun can change
   it, a switch that turns the item off for that agent only. Discover installs for Claude
-  Code. Discover › Skills searches
+  Code. Each item there has one card and one details pane, whether you have it or not.
+  The card ends with Install or the item's state, a dot and a word: Ready, Needs
+  sign-in, Needs approval, Off, or Broken with the reason ("Broken: can't be reached").
+  It shows the worst state of the item's servers. The details pane says the same state
+  and holds the fix, with the buttons the MCP servers list has. Discover › MCP servers
+  also lists Arakun's own picks (Linear, Notion, Sentry and others), and a server found
+  both there and in the MCP Registry, or added under another name for the same URL,
+  shows once. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
   repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
   the repo's `.claude/skills` when Where (below) picks everyone in the project. A repository

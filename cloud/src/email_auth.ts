@@ -31,8 +31,8 @@ const MAX_BODY = 2048;
 /// deliver is never typed.
 const ADDRESS = /^[^\s@\p{Cc}]+@[^\s@\p{Cc}]+\.[^\s@\p{Cc}]+$/u;
 const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
-const CODE = /^[0-9]{6}$/;
-const WRONG_CODE = "the code is wrong or has run out; ask for a new one";
+export const CODE = /^[0-9]{6}$/;
+export const WRONG_CODE = "the code is wrong or has run out; ask for a new one";
 
 export async function emailAuth(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (request.method !== "POST") return null;
@@ -60,6 +60,14 @@ export function normalAddress(value: unknown): string | null {
 }
 
 async function sendCode(request: Request, env: Env): Promise<Response> {
+  const asked = await askedAddress(request, env);
+  if (asked instanceof Response) return asked;
+  return mailCode(env, asked, null, codeMail);
+}
+
+/// The address a request for a code names, after the limit per IP and the
+/// checks every code shares; or the error answer to give.
+export async function askedAddress(request: Request, env: Env): Promise<string | Response> {
   // Each code is a mail sent, so the limit per IP is lower than sign-in's.
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.EMAIL_CODE_LIMIT.limit({ key: ip })).success) return error(429, "too many codes asked for, try again in a minute");
@@ -70,8 +78,19 @@ async function sendCode(request: Request, env: Env): Promise<Response> {
   if (await disposable(address.slice(address.lastIndexOf("@") + 1), env.CONFIG)) {
     return error(400, "that address is from a throwaway mail service; use one you keep");
   }
-  if (!env.EMAIL || !env.EMAIL_FROM) return error(503, "sign-in by email is not set up");
+  return address;
+}
 
+/// Mails the address a new code, which then works only for what it was asked
+/// for: a sign-in when `forAccount` is null, else adding the address to that
+/// account. One address gets MAX_SENDS codes a window of either kind.
+export async function mailCode(
+  env: Env,
+  address: string,
+  forAccount: number | null,
+  mail: (from: string, to: string, code: string) => ReturnType<typeof codeMail>,
+): Promise<Response> {
+  if (!env.EMAIL || !env.EMAIL_FROM) return error(503, "sign-in by email is not set up");
   const t = now();
   const code = newCode();
   const [, saved] = await env.DB.batch([
@@ -82,20 +101,20 @@ async function sendCode(request: Request, env: Env): Promise<Response> {
     // the sends of the window, nothing changes and no mail goes; a window
     // that is over starts again with this send.
     env.DB.prepare(
-      `INSERT INTO email_codes (address, code_hash, expires_at, tries, sends, window_start) VALUES (?1, ?2, ?3, 0, 1, ?4)
-       ON CONFLICT (address) DO UPDATE SET code_hash = ?2, expires_at = ?3, tries = 0,
+      `INSERT INTO email_codes (address, code_hash, expires_at, tries, sends, window_start, for_account) VALUES (?1, ?2, ?3, 0, 1, ?4, ?7)
+       ON CONFLICT (address) DO UPDATE SET code_hash = ?2, expires_at = ?3, tries = 0, for_account = ?7,
          sends = CASE WHEN window_start <= ?4 - ?6 THEN 1 ELSE sends + 1 END,
          window_start = CASE WHEN window_start <= ?4 - ?6 THEN ?4 ELSE window_start END
        WHERE sends < ?5 OR window_start <= ?4 - ?6`,
-    ).bind(address, await codeHash(address, code), t + CODE_SECONDS, t, MAX_SENDS, SEND_WINDOW),
+    ).bind(address, await codeHash(address, code), t + CODE_SECONDS, t, MAX_SENDS, SEND_WINDOW, forAccount),
   ]);
   if (saved!.meta.changes === 0) return error(429, "too many codes for this address, try again in an hour");
 
   try {
-    await env.EMAIL.send(codeMail(env.EMAIL_FROM, address, code));
+    await env.EMAIL.send(mail(env.EMAIL_FROM, address, code));
   } catch (e) {
     // The code and the address stay out of the log.
-    console.error("sending a sign-in code failed:", (e as { code?: unknown }).code ?? (e as Error).message);
+    console.error("sending a code failed:", (e as { code?: unknown }).code ?? (e as Error).message);
     return error(502, "could not send the code, try again");
   }
   return Response.json({ sent: true, expires_in: CODE_SECONDS });
@@ -125,27 +144,29 @@ async function verify(request: Request, env: Env, web: boolean): Promise<Respons
     if (k !== undefined) kind = k;
   }
 
-  if (!(await useCode(env, address, code))) return error(401, WRONG_CODE);
+  if (!(await useCode(env, address, code, null))) return error(401, WRONG_CODE);
   const made = await newSession(env, { provider: "email", subject: address, login: address, email: address }, web ? platform(request.headers.get("User-Agent") ?? "") : (name ?? address), kind);
   if (!web) return signedIn(env, made);
   await endReplacedSession(request, env, made.account_id, made.session);
   return withSessionCookie(new Response(null, { status: 204 }), made.session);
 }
 
-/// Whether the code is the address's live one. Every try counts, right or
-/// wrong, before the code is compared, so tries at once cannot pass the limit.
-/// A right code is used up in a second write that only one request wins.
-async function useCode(env: Env, address: string, code: string): Promise<boolean> {
+/// Whether the code is the address's live one, asked for this: a sign-in when
+/// `forAccount` is null, else adding the address to that account. Every try
+/// counts, right or wrong, before the code is compared, so tries at once
+/// cannot pass the limit. A right code is used up in a second write that only
+/// one request wins.
+export async function useCode(env: Env, address: string, code: string, forAccount: number | null): Promise<boolean> {
   const t = now();
   const row = await env.DB.prepare(
-    "UPDATE email_codes SET tries = tries + 1 WHERE address = ? AND code_hash IS NOT NULL AND expires_at > ? AND tries < ? RETURNING code_hash",
+    "UPDATE email_codes SET tries = tries + 1 WHERE address = ? AND code_hash IS NOT NULL AND expires_at > ? AND tries < ? RETURNING code_hash, for_account",
   )
     .bind(address, t, MAX_TRIES)
-    .first<{ code_hash: string }>();
+    .first<{ code_hash: string; for_account: number | null }>();
   // Hashes are all one length, and the right one is never sent anywhere, so
   // comparing them leaks nothing.
   const hash = await codeHash(address, code);
-  if (!row || row.code_hash !== hash) return false;
+  if (!row || row.code_hash !== hash || row.for_account !== forAccount) return false;
   const used = await env.DB.prepare("UPDATE email_codes SET code_hash = NULL WHERE address = ? AND code_hash = ?").bind(address, hash).run();
   return used.meta.changes === 1;
 }
@@ -167,26 +188,31 @@ async function codeHash(address: string, code: string): Promise<string> {
 }
 
 export function codeMail(from: string, to: string, code: string) {
-  const text = [
-    `Your Arakun sign-in code is ${code}`,
-    "",
-    "Type it where you asked for it. It works once, for 10 minutes.",
-    "",
-    "If you did not ask for it, you can ignore this email. Nobody can sign in without the code.",
-  ].join("\n");
-  // The code is six digits, so nothing here needs escaping.
+  return mailWithCode(from, to, code, {
+    subject: `${code} is your Arakun sign-in code`,
+    lead: "Your Arakun sign-in code is",
+    use: "Type it where you asked for it. It works once, for 10 minutes.",
+    ignore: "If you did not ask for it, you can ignore this email. Nobody can sign in without the code.",
+  });
+}
+
+/// A mail of a six-digit code and three sentences around it, as text and HTML.
+/// The words are ours, never input, and the code is six digits, so nothing
+/// here needs escaping.
+export function mailWithCode(from: string, to: string, code: string, words: { subject: string; lead: string; use: string; ignore: string }) {
+  const text = [`${words.lead} ${code}`, "", words.use, "", words.ignore].join("\n");
   const html = `<!doctype html>
 <html><body style="margin:0;padding:32px 16px;background:#ffffff;color:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
 <div style="max-width:420px;margin:0 auto">
-<p style="font-size:15px;margin:0 0 16px">Your Arakun sign-in code is</p>
+<p style="font-size:15px;margin:0 0 16px">${words.lead}</p>
 <p style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:32px;letter-spacing:6px;font-weight:600;margin:0 0 16px">${code}</p>
-<p style="font-size:15px;margin:0 0 16px">Type it where you asked for it. It works once, for 10 minutes.</p>
-<p style="font-size:13px;color:#737373;margin:0">If you did not ask for it, you can ignore this email. Nobody can sign in without the code.</p>
+<p style="font-size:15px;margin:0 0 16px">${words.use}</p>
+<p style="font-size:13px;color:#737373;margin:0">${words.ignore}</p>
 </div></body></html>`;
-  return { from: { email: from, name: "Arakun" }, to, subject: `${code} is your Arakun sign-in code`, text, html };
+  return { from: { email: from, name: "Arakun" }, to, subject: words.subject, text, html };
 }
 
-async function readBody(request: Request): Promise<Record<string, unknown> | "too big" | null> {
+export async function readBody(request: Request): Promise<Record<string, unknown> | "too big" | null> {
   try {
     const text = await bodyText(request, MAX_BODY);
     if (text === null) return "too big";

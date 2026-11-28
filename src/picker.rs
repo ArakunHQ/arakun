@@ -588,7 +588,12 @@ impl FolderPicker {
             .rounded(crate::ui::rad(ui::RADIUS))
             .cursor_pointer()
             .when(selected, |d| d.bg(theme::selection()))
-            .when(!selected, |d| d.hover(|s| s.bg(theme::hover())))
+            .when(!selected, |d| {
+                d.child(ui::hover_fill(
+                    ui::motion::Fills::hover(theme::hover()),
+                    crate::ui::rad(ui::RADIUS),
+                ))
+            })
             .when(added, |d| d.opacity(0.55))
             .child(leading)
             .child(

@@ -332,7 +332,11 @@ pub fn chip(
         .when(!on, |d| {
             d.border_color(theme::border())
                 .text_color(theme::text_muted())
-                .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
+                .hover(|s| s.text_color(theme::text()))
+                .child(hover_fill(
+                    super::motion::Fills::hover(theme::fill_hover()),
+                    px(999.),
+                ))
         })
         .child(content)
 }
@@ -509,8 +513,17 @@ pub fn choice_row(
         .text_color(theme::text())
         .cursor_pointer()
         .map(crate::ui::focusable)
-        .hover(|d| d.bg(theme::fill_hover()))
-        .when(selected, |d| d.bg(theme::fill_selected()))
+        .child(hover_fill(
+            super::motion::Fills::new(
+                if selected {
+                    theme::fill_selected()
+                } else {
+                    theme::fill_hover().opacity(0.)
+                },
+                theme::fill_hover(),
+            ),
+            crate::ui::rad(RADIUS),
+        ))
         .child(radio(selected))
 }
 
@@ -538,8 +551,14 @@ pub fn submenu_row(
         .text_color(theme::text())
         .cursor_pointer()
         .map(crate::ui::focusable)
-        .when(open, |d| d.bg(theme::fill_hover()))
-        .hover(|d| d.bg(theme::fill_hover()))
+        .child(hover_fill(
+            if open {
+                super::motion::Fills::new(theme::fill_hover(), theme::fill_hover())
+            } else {
+                super::motion::Fills::hover(theme::fill_hover())
+            },
+            crate::ui::rad(RADIUS),
+        ))
         .child(div().flex_1().child(name.to_string()))
         .child(
             div()
@@ -570,7 +589,10 @@ pub fn switch_row(id: impl Into<ElementId>, name: &str, on: bool) -> gpui::State
         .text_color(theme::text())
         .cursor_pointer()
         .map(crate::ui::focusable)
-        .hover(|d| d.bg(theme::fill_hover()))
+        .child(hover_fill(
+            super::motion::Fills::hover(theme::fill_hover()),
+            crate::ui::rad(RADIUS),
+        ))
         .child(div().flex_1().child(name.to_string()))
         .child(switch(on))
 }
@@ -1037,7 +1059,11 @@ pub fn outline_tab(
         .when(!on, |d| {
             d.border_color(theme::border_subtle())
                 .text_color(theme::text_muted())
-                .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
+                .hover(|s| s.text_color(theme::text()))
+                .child(hover_fill(
+                    super::motion::Fills::hover(theme::fill_hover()),
+                    crate::ui::rad(RADIUS),
+                ))
         })
         .child(label)
         .when_some(count, |d, c| {
@@ -2432,6 +2458,186 @@ pub fn swatch(
         } else {
             theme::border()
         })
+}
+
+// ---------------------------------------------------------------------------
+// Hover fill
+
+/// The background of a row or button that fades on hover and press, where
+/// gpui's `.hover` switches it in one frame. Make it the first child of an
+/// element with an id, and give that element no background or hover
+/// background of its own: this draws both, under the other children.
+/// `radius` is the element's corner. Only the view it is in redraws, and only
+/// while it fades (see `motion::HoverFade`).
+pub fn hover_fill(fills: super::motion::Fills, radius: gpui::Pixels) -> HoverFill {
+    HoverFill { fills, radius }
+}
+
+/// See [`hover_fill`].
+pub struct HoverFill {
+    fills: super::motion::Fills,
+    radius: gpui::Pixels,
+}
+
+type FadeState = std::rc::Rc<std::cell::RefCell<super::motion::HoverFade>>;
+
+impl IntoElement for HoverFill {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for HoverFill {
+    /// The fill, and whether this is its first frame.
+    type RequestLayoutState = (AnyElement, bool);
+    type PrepaintState = gpui::Hitbox;
+
+    fn id(&self) -> Option<ElementId> {
+        // One per element: the parent's id keeps it apart from its siblings'.
+        Some("hover-fill".into())
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        let (state, fresh) = fade_state(id, window);
+        let (color, _) = state.borrow().now(&self.fills);
+        let mut fill = div()
+            .absolute()
+            .inset_0()
+            .rounded(self.radius)
+            .bg(color)
+            .into_any_element();
+        (fill.request_layout(window, cx), (fill, fresh))
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        (fill, _): &mut Self::RequestLayoutState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> gpui::Hitbox {
+        fill.prepaint(window, cx);
+        // Normal: it sees the pointer without taking it from the element
+        // it sits in or the children drawn over it.
+        window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        (fill, fresh): &mut Self::RequestLayoutState,
+        hitbox: &mut gpui::Hitbox,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        use super::motion::Pointer;
+
+        fill.paint(window, cx);
+        let (state, _) = fade_state(id, window);
+        let fills = self.fills;
+        let over = |hitbox: &gpui::Hitbox, window: &gpui::Window| {
+            hitbox.is_hovered(window) && !window.last_input_was_touch()
+        };
+        let view = window.current_view();
+
+        // The pointer can come or go without a move: a list scrolls under
+        // it, or a row appears where it rests.
+        let hovered = over(hitbox, window);
+        let mut changed = false;
+        {
+            let mut s = state.borrow_mut();
+            let want = if hovered {
+                Pointer::Over
+            } else {
+                Pointer::Away
+            };
+            if *fresh {
+                s.place(want);
+                changed = hovered;
+            } else if s.pointer() != Pointer::Down {
+                changed = s.point(want, &fills);
+            }
+        }
+        if changed || state.borrow().now(&fills).1 {
+            super::motion::redraw_on_tick(window);
+        }
+
+        let (st, hb) = (state.clone(), hitbox.clone());
+        window.on_mouse_event(move |_: &gpui::MouseMoveEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Capture {
+                return;
+            }
+            let mut s = st.borrow_mut();
+            if s.pointer() == Pointer::Down {
+                return;
+            }
+            let want = if over(&hb, window) {
+                Pointer::Over
+            } else {
+                Pointer::Away
+            };
+            if s.point(want, &fills) {
+                cx.notify(view);
+            }
+        });
+        let (st, hb) = (state.clone(), hitbox.clone());
+        window.on_mouse_event(move |e: &gpui::MouseDownEvent, phase, window, cx| {
+            // Capture: a child that handles the press itself stops it
+            // before the bubble reaches the fill under it.
+            if phase == gpui::DispatchPhase::Capture
+                && e.button == gpui::MouseButton::Left
+                && hb.is_hovered(window)
+                && st.borrow_mut().point(Pointer::Down, &fills)
+            {
+                cx.notify(view);
+            }
+        });
+        let hb = hitbox.clone();
+        window.on_mouse_event(move |e: &gpui::MouseUpEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Capture || e.button != gpui::MouseButton::Left {
+                return;
+            }
+            let mut s = state.borrow_mut();
+            if s.pointer() != Pointer::Down {
+                return;
+            }
+            let want = if over(&hb, window) {
+                Pointer::Over
+            } else {
+                Pointer::Away
+            };
+            if s.point(want, &fills) {
+                cx.notify(view);
+            }
+        });
+    }
+}
+
+/// The fade of the hover fill at `id`, shared with its mouse listeners, and
+/// whether it was made just now.
+fn fade_state(id: Option<&gpui::GlobalElementId>, window: &mut gpui::Window) -> (FadeState, bool) {
+    let id = id.expect("hover_fill has an id");
+    window.with_element_state(id, |s: Option<FadeState>, _| {
+        let fresh = s.is_none();
+        let s = s.unwrap_or_default();
+        ((s.clone(), fresh), s)
+    })
 }
 
 #[cfg(test)]

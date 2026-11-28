@@ -215,7 +215,10 @@ impl Shell {
             .py(crate::ui::sp(6.))
             .rounded(crate::ui::rad(8.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::selection_hover()))
+            .child(ui::hover_fill(
+                ui::motion::Fills::hover(theme::selection_hover()),
+                crate::ui::rad(8.),
+            ))
             .child(
                 div()
                     .flex()
@@ -277,7 +280,11 @@ fn header_action(id: &'static str, label: &str, danger: bool) -> gpui::Stateful<
         .rounded(crate::ui::rad(ui::RADIUS))
         .cursor_pointer()
         .text_color(color)
-        .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
+        .hover(|s| s.text_color(theme::text()))
+        .child(ui::hover_fill(
+            ui::motion::Fills::hover(theme::fill_hover()),
+            crate::ui::rad(ui::RADIUS),
+        ))
         .child(ui::text(Type::Label, color, label.to_string()))
 }
 
@@ -306,7 +313,10 @@ fn notice_row(n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement
         .py(crate::ui::sp(7.))
         .rounded(crate::ui::rad(8.))
         .when(opens, |d| d.cursor_pointer())
-        .hover(|s| s.bg(theme::selection_hover()))
+        .child(ui::hover_fill(
+            ui::motion::Fills::hover(theme::selection_hover()),
+            crate::ui::rad(8.),
+        ))
         .child(picture(n))
         .child(
             div()

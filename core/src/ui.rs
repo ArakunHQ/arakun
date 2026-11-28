@@ -182,7 +182,11 @@ pub fn tab(
         })
         .when(!active, |d| {
             d.text_color(theme::text_subtle())
-                .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                .hover(|s| s.text_color(theme::content()))
+                .child(hover_fill(
+                    motion::Fills::hover(theme::hover()),
+                    nested(RADIUS_XL, (BAR_H - TAB_H) / 2.),
+                ))
         })
 }
 
@@ -404,7 +408,10 @@ pub fn icon_button(
         .cursor_pointer()
         .map(focusable)
         .group("icon-button")
-        .hover(|s| s.bg(theme::fill_selected()))
+        .child(hover_fill(
+            motion::Fills::hover(theme::fill_selected()),
+            rad(RADIUS),
+        ))
         .child(hover_icon(
             name,
             icon_size,
@@ -856,7 +863,10 @@ pub fn close_button(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
         .rounded(rad(8.))
         .cursor_pointer()
         .map(focusable)
-        .hover(|s| s.bg(theme::fill_hover()))
+        .child(hover_fill(
+            motion::Fills::hover(theme::fill_hover()),
+            rad(8.),
+        ))
         .child(hover_icon(
             "cancel01",
             14.,
@@ -928,31 +938,39 @@ pub fn button_lead(
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
         .when(enabled, |d| d.cursor_pointer().map(focusable))
-        .when(!enabled, |d| d.opacity(0.4))
+        .when(!enabled, |d| d.opacity(0.4));
+    let danger = Hsla::from(theme::error());
+    let (fills, text) = match kind {
+        ButtonKind::Primary => (
+            motion::Fills::new(theme::content(), theme::mix(0.8)),
+            theme::background(),
+        ),
+        ButtonKind::Ghost => (motion::Fills::hover(theme::fill_hover()), theme::content()),
+        ButtonKind::Outline => (
+            motion::Fills::hover(theme::fill_hover()),
+            theme::text_muted(),
+        ),
+        ButtonKind::Danger => (
+            motion::Fills::new(danger.opacity(0.2), danger.opacity(0.3)),
+            danger,
+        ),
+    };
+    base.text_color(text)
+        .when(kind == ButtonKind::Outline, |d| {
+            d.border_1()
+                .border_color(theme::border_strong())
+                .when(enabled, |d| d.hover(|s| s.text_color(theme::content())))
+        })
+        // A disabled button keeps its rest fill and never answers the pointer.
+        .map(|d| {
+            if enabled {
+                d.child(hover_fill(fills, rad(RADIUS)))
+            } else {
+                d.bg(fills.rest)
+            }
+        })
         .when_some(leading, |d, lead| d.child(lead))
-        .child(div().min_w_0().truncate().child(label));
-    match kind {
-        ButtonKind::Primary => base
-            .bg(theme::content())
-            .text_color(theme::background())
-            .when(enabled, |d| d.hover(|s| s.bg(theme::mix(0.8)))),
-        ButtonKind::Ghost => base
-            .text_color(theme::content())
-            .when(enabled, |d| d.hover(|s| s.bg(theme::fill_hover()))),
-        ButtonKind::Outline => base
-            .border_1()
-            .border_color(theme::border_strong())
-            .text_color(theme::text_muted())
-            .when(enabled, |d| {
-                d.hover(|s| s.bg(theme::fill_hover()).text_color(theme::content()))
-            }),
-        ButtonKind::Danger => base
-            .bg(Hsla::from(theme::error()).opacity(0.2))
-            .text_color(theme::error())
-            .when(enabled, |d| {
-                d.hover(|s| s.bg(Hsla::from(theme::error()).opacity(0.3)))
-            }),
-    }
+        .child(div().min_w_0().truncate().child(label))
 }
 
 /// Floating menu surface, like the environment menu.
@@ -1008,9 +1026,10 @@ pub fn menu_item(
         .text_size(px(TEXT_MD))
         .text_color(color)
         .when(enabled, |d| {
-            d.cursor_pointer()
-                .map(focusable)
-                .hover(|s| s.bg(theme::selection_hover()))
+            d.cursor_pointer().map(focusable).child(hover_fill(
+                motion::Fills::hover(theme::selection_hover()),
+                menu_row_radius(),
+            ))
         })
         .when(!enabled, |d| d.opacity(0.4))
         .child(icon(icon_name, 14.).text_color(color))

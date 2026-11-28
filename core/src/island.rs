@@ -411,7 +411,20 @@ impl View {
         } else {
             (cut_w + 2. * self.ear(), h.max(cut_h))
         };
-        (w.min(WIN_W - 2. * SHOULDER), h)
+        let w = w.min(WIN_W - 2. * SHOULDER);
+        if let View::List(_) = self {
+            // The last row's bottom corners are concentric with the island's,
+            // and a corner can't be rounder than half its row: the last row
+            // grows until that radius fits, and the island with it. The radius
+            // grows with the height, so this settles in a few steps.
+            let base = h;
+            let mut h = h;
+            for _ in 0..4 {
+                h = base + (last_row_h(bottom_radius(edge, w, h)) - ROW_H);
+            }
+            return (w, h);
+        }
+        (w, h)
     }
 
     /// A list or a call: content in rows, which goes under a cutout whole.
@@ -2188,12 +2201,13 @@ impl Island {
         let n = self.feed.rows.len();
         // The last row sits ROW_INSET in from the island's bottom corners: its
         // own bottom corners follow them, concentric (the island's radius less
-        // the inset). Capped only so they and the row's top corners fit its
-        // height: capping at half the row made them flatter than the island's.
+        // the inset). The row is as tall as that radius needs (`last_row_h`);
+        // its text keeps the usual ROW_H at the top.
         let shown = n.min(MAX_ROWS);
         let (w, h) = View::List(shown).size(self.edge);
-        let last_radius =
-            (bottom_radius(self.edge, w, h) - ROW_INSET).clamp(ROW_RADIUS, ROW_H - ROW_RADIUS);
+        let bottom = bottom_radius(self.edge, w, h);
+        let last_radius = (bottom - ROW_INSET).max(ROW_RADIUS);
+        let last_h = last_row_h(bottom);
         let head = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -2234,16 +2248,18 @@ impl Island {
                     _ => 1.,
                 };
                 let key = a.key.clone();
+                let last = i + 1 == shown;
                 div()
                     .id(i)
-                    .h(px(ROW_H))
+                    .h(px(if last { last_h } else { ROW_H }))
+                    .when(last, |d| d.pb(px(last_h - ROW_H)))
                     .mx(px(ROW_INSET))
                     .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
                     .rounded(px(ROW_RADIUS))
-                    .when(i + 1 == shown, |d| d.rounded_b(px(last_radius)))
+                    .when(last, |d| d.rounded_b(px(last_radius)))
                     .hover(|s| s.bg(hsla(0., 0., 1., 0.06)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -2446,6 +2462,13 @@ const PILL_R: f32 = 20.;
 
 fn top_radius(h: f32) -> f32 {
     (h / 2.).min(PILL_R)
+}
+
+/// How tall the list's last row is when the island's bottom corners are
+/// `bottom`: tall enough that its own, `ROW_INSET` inside them, fit (a corner
+/// can't be rounder than half its box), and never shorter than a row.
+fn last_row_h(bottom: f32) -> f32 {
+    (2. * (bottom - ROW_INSET)).max(ROW_H)
 }
 
 /// The radius of the island's bottom corners at this size.
@@ -3117,6 +3140,27 @@ impl Render for Island {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_rows_corners_are_concentric_with_the_island() {
+        for n in 1..=MAX_ROWS {
+            let (w, h) = View::List(n).size(Edge::Flat);
+            let bottom = bottom_radius(Edge::Flat, w, h);
+            let radius = (bottom - ROW_INSET).max(ROW_RADIUS);
+            let row = last_row_h(bottom);
+            // The radius fits the row, so it is drawn as asked, not flattened.
+            assert!(
+                radius <= row / 2. + 0.01,
+                "{n} rows: {radius} in a {row} row"
+            );
+            // The island holds the head, the rows and the inset below them.
+            let rows = (n - 1) as f32 * ROW_H + row;
+            assert!(
+                (h - (HEAD_H + rows + ROW_INSET)).abs() < 0.5,
+                "{n} rows: {h}"
+            );
+        }
+    }
 
     fn row(key: &str, status: Status, updated: u64) -> Row {
         Row {

@@ -254,13 +254,18 @@ Manager (Windows Credentials, Generic Credentials).
   that separates them from the bar; on Linux and macOS they are 28 px squares with
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
-- **Private files:** on Linux and macOS, the data folder is 0700, and the files that
-  hold chat text (transcripts, `linked\`, `headless\`, `pastes\`, memory, the prompt
-  history, saved prompts and the state), `notices.json` (it can hold agent replies),
-  `cliproxy-plan.json` and the Claude seats' files in
-  `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
-  Windows has no such modes, so there they get the default access rules of
-  `%LOCALAPPDATA%\arakun\`. A seat's token is in the Credential Manager, not in
+- **Private files:** Arakun writes the files that hold chat text, sign-ins or keys
+  owner-only: the sessions and their transcripts, `linked\`, `headless\`, `pastes\`,
+  memory, the prompt history, saved prompts and the state, `notices.json` (it can hold
+  agent replies), `phone.json`, `servers.json`, the `sessions.json` files in `linear\`,
+  `doop\` and `posthog\`, the Claude seats' files in `seats\`, the CLIProxyAPI files
+  (`cliproxy-management-key`, `cliproxy-plan.json`) and the agents' logs in `agents\`.
+  On Linux and macOS such a file is mode 0600, and a folder Arakun creates for it is
+  0700. On Windows the file, and a folder Arakun creates for it, get an access list
+  with full access for your account and `SYSTEM` only, and inherit nothing from the
+  folder above. The file has it from the moment it is created. A folder that was
+  already there, such as `%LOCALAPPDATA%\arakun\` itself from an older version, keeps
+  the rules it had, as on Linux. A seat's token is in the Credential Manager, not in
   `seats\`.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,

@@ -1949,7 +1949,7 @@ impl Shell {
         env_path: &Path,
         id: &str,
         cx: &Context<Self>,
-        f: impl FnOnce(&[crate::agent::Entry], &Path) -> R,
+        f: impl FnOnce(&[std::sync::Arc<crate::agent::Entry>], &Path) -> R,
     ) -> R {
         match self.phone_thread(env_path, id) {
             Some(thread) => {

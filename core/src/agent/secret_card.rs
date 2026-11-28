@@ -412,6 +412,7 @@ mod tests {
         Entry, SessionMeta, ToolCall, ToolStatus, Transcript, Usage, parse_tool_content,
     };
     use super::*;
+    use std::sync::Arc;
 
     fn ask(args: &serde_json::Value) -> (Route, oneshot::Receiver<Outcome>, secret::Asked) {
         let (route, mut rx) = Route::open(Path::new("/p")).unwrap();
@@ -420,7 +421,7 @@ mod tests {
         (route, answer, asked)
     }
 
-    fn thread_file(meta: SessionMeta, entries: Vec<Entry>, queue: Vec<String>) -> String {
+    fn thread_file(meta: SessionMeta, entries: Vec<Arc<Entry>>, queue: Vec<String>) -> String {
         serde_json::to_string(&Transcript {
             version: 1,
             meta,
@@ -472,7 +473,7 @@ mod tests {
             .iter()
             .map(|c| json!({"type": "content", "content": c}))
             .collect();
-        t.entries.push(Entry::Tool(ToolCall {
+        t.entries.push(Arc::new(Entry::Tool(ToolCall {
             id: "toolu_1".into(),
             title: "mcp__arakun__request_secret".into(),
             kind: "other".into(),
@@ -489,7 +490,7 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
-        }));
+        })));
 
         let saved = thread_file(t.meta(), t.entries.clone(), t.queue.clone());
         for value in [USER, PASSWORD] {

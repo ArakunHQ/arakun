@@ -42,7 +42,7 @@ impl Shell {
                     None if status == Status::Working => String::new(),
                     None => self
                         .with_entries(&id, cx, |entries| {
-                            entries.iter().rev().find_map(|e| match e {
+                            entries.iter().rev().find_map(|e| match &**e {
                                 Entry::Agent { text } if !text.trim().is_empty() => {
                                     Some(text.trim().to_string())
                                 }
@@ -397,7 +397,12 @@ impl Shell {
     }
 
     /// `f` over a session's entries: its agent's when it is running, else its transcript's.
-    fn with_entries<R>(&self, id: &str, cx: &App, f: impl FnOnce(&[Entry]) -> R) -> Option<R> {
+    fn with_entries<R>(
+        &self,
+        id: &str,
+        cx: &App,
+        f: impl FnOnce(&[std::sync::Arc<Entry>]) -> R,
+    ) -> Option<R> {
         let live = self
             .projects
             .iter()

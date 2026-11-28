@@ -30,6 +30,7 @@
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 
@@ -92,7 +93,7 @@ pub fn pong() -> String {
 }
 
 /// The entries from `from` on, as the phone shows them.
-pub fn entries(all: &[Entry], from: usize, scope: &Scope) -> Vec<Value> {
+pub fn entries(all: &[Arc<Entry>], from: usize, scope: &Scope) -> Vec<Value> {
     all.get(from..)
         .unwrap_or_default()
         .iter()
@@ -155,8 +156,8 @@ fn image_file(path: &str, scope: &Scope) -> Option<String> {
 /// The file of an image a session names (`link`, as written), when its agent
 /// named it or a prompt mentioned it. Only those are sent, so asking cannot
 /// read any file the server can.
-pub fn named_image(all: &[Entry], cwd: &Path, link: &str) -> Option<PathBuf> {
-    let by_agent = all.iter().any(|e| match e {
+pub fn named_image(all: &[Arc<Entry>], cwd: &Path, link: &str) -> Option<PathBuf> {
+    let by_agent = all.iter().any(|e| match &**e {
         Entry::Agent { text } => crate::agent::markdown::image_files(text)
             .iter()
             .any(|l| l == link),
@@ -165,7 +166,7 @@ pub fn named_image(all: &[Entry], cwd: &Path, link: &str) -> Option<PathBuf> {
     if by_agent {
         return crate::agent::markdown::image_path(link, Some(cwd));
     }
-    let by_user = all.iter().any(|e| match e {
+    let by_user = all.iter().any(|e| match &**e {
         Entry::User { text, .. } => attach::image_mentions(text).iter().any(|l| l == link),
         _ => false,
     });
@@ -359,7 +360,7 @@ struct TurnChanges<'a> {
 }
 
 /// The turns that changed files, oldest first, with each file in first-touched order.
-fn turns_with_changes(all: &[Entry]) -> Vec<TurnChanges<'_>> {
+fn turns_with_changes(all: &[Arc<Entry>]) -> Vec<TurnChanges<'_>> {
     fn add<'a>(
         turn: &mut TurnChanges<'a>,
         path: &'a Path,
@@ -390,7 +391,7 @@ fn turns_with_changes(all: &[Entry]) -> Vec<TurnChanges<'_>> {
         files: Vec::new(),
     };
     for (i, e) in all.iter().enumerate() {
-        match e {
+        match &**e {
             Entry::User {
                 text,
                 at,
@@ -448,11 +449,11 @@ fn turns_with_changes(all: &[Entry]) -> Vec<TurnChanges<'_>> {
 
 /// How many files a session changed and the lines added and removed in all,
 /// for the chip that opens the changes.
-pub fn change_totals(all: &[Entry]) -> Value {
+pub fn change_totals(all: &[Arc<Entry>]) -> Value {
     let mut files: Vec<&Path> = Vec::new();
     let (mut added, mut removed) = (0u32, 0u32);
     for e in all {
-        match e {
+        match &**e {
             Entry::Tool(t) if t.status == ToolStatus::Completed => {
                 let mut any = false;
                 for c in &t.content {
@@ -485,7 +486,7 @@ pub fn change_totals(all: &[Entry]) -> Value {
 
 /// Every file a session changed, turn by turn with the newest first; the
 /// phone asks for a diff by its `(entry, index)`.
-pub fn changes(all: &[Entry], cwd: &Path) -> Value {
+pub fn changes(all: &[Arc<Entry>], cwd: &Path) -> Value {
     let turns: Vec<Value> = turns_with_changes(all)
         .iter()
         .rev()
@@ -509,8 +510,8 @@ pub fn changes(all: &[Entry], cwd: &Path) -> Value {
 
 /// One diff as the phone draws it: the changed lines with a little context,
 /// each as `[mark, line number, text]`, every hunk opened by its `@@` header string.
-pub fn diff_message(all: &[Entry], entry: usize, index: usize, cwd: &Path) -> Option<Value> {
-    let (path, old, new) = match all.get(entry)? {
+pub fn diff_message(all: &[Arc<Entry>], entry: usize, index: usize, cwd: &Path) -> Option<Value> {
+    let (path, old, new) = match &**all.get(entry)? {
         Entry::Tool(t) => match t.content.get(index)? {
             ToolContent::Diff {
                 path,
@@ -772,7 +773,7 @@ fn diff_counts(old: Option<&str>, new: &str) -> (usize, usize) {
 // Built here so the app and `arakun server` send the very same ones.
 
 /// `entries`: a watched session's entries from `from` on, and how many it has now.
-pub fn entries_message(id: &str, all: &[Entry], from: usize, scope: &Scope) -> String {
+pub fn entries_message(id: &str, all: &[Arc<Entry>], from: usize, scope: &Scope) -> String {
     json!({
         "type": "entries", "id": id, "from": from.min(all.len()), "count": all.len(),
         "entries": entries(all, from, scope),
@@ -979,7 +980,7 @@ pub struct SessionHead<'a> {
     pub place: &'a str,
 }
 
-fn session_head(head: &SessionHead, all: &[Entry], scope: &Scope) -> Value {
+fn session_head(head: &SessionHead, all: &[Arc<Entry>], scope: &Scope) -> Value {
     let from = all.len().saturating_sub(TAIL);
     json!({
         "type": "session", "id": head.id, "title": head.title, "agent": head.agent,
@@ -1020,7 +1021,12 @@ pub fn session_live(
 /// `session`: one that is not running, from its transcript's entries and
 /// the follow-ups that waited in it. Its thread holds those paused once it
 /// is back, so they show paused.
-pub fn session_saved(head: &SessionHead, all: &[Entry], queue: &[String], scope: &Scope) -> String {
+pub fn session_saved(
+    head: &SessionHead,
+    all: &[Arc<Entry>],
+    queue: &[String],
+    scope: &Scope,
+) -> String {
     let mut msg = session_head(head, all, scope);
     msg["queue"] = json!(queue);
     msg["queue_paused"] = json!(!queue.is_empty());
@@ -1212,7 +1218,7 @@ pub fn transcript_message(
     id: &str,
     agent: &str,
     cwd: &Path,
-    all: &[Entry],
+    all: &[Arc<Entry>],
     from: usize,
 ) -> Vec<String> {
     let from = from.min(all.len());
@@ -1441,13 +1447,13 @@ mod tests {
         std::fs::write(dir.join("shot.png"), b"png").unwrap();
         std::fs::write(dir.join("other.png"), b"other").unwrap();
         let all = vec![
-            Entry::Agent {
+            Arc::new(Entry::Agent {
                 text: "Here:\n\n![the shot](shot.png)\n\n![gone](missing.png)".into(),
-            },
+            }),
             // Only what the agent says is shown as images.
-            Entry::Thought {
+            Arc::new(Entry::Thought {
                 text: "![x](other.png)".into(),
-            },
+            }),
         ];
         let file = named_image(&all, &dir, "shot.png");
         assert_eq!(file, Some(dir.join("shot.png")));
@@ -1467,14 +1473,14 @@ mod tests {
         assert_eq!(named_image(&all, &dir, "../shot.png"), None);
         // And the ones a prompt mentioned, as the prompt wrote them.
         let mut all = all;
-        all.push(Entry::User {
+        all.push(Arc::new(Entry::User {
             text: "look at @other.png and email@shot.png".into(),
             at: 1,
             elapsed_ms: None,
             message_id: None,
             tokens: None,
             shell_changes: Vec::new(),
-        });
+        }));
         assert_eq!(
             named_image(&all, &dir, "other.png"),
             Some(dir.join("other.png"))
@@ -1585,10 +1591,10 @@ mod tests {
         assert!(!v.to_string().contains("hunter2"));
     }
 
-    fn edit(id: &str, path: &str, old: Option<&str>, new: &str, status: ToolStatus) -> Entry {
+    fn edit(id: &str, path: &str, old: Option<&str>, new: &str, status: ToolStatus) -> Arc<Entry> {
         let lines = diff::line_diff(old.unwrap_or(""), new);
         let (added, removed) = diff::stats(&lines);
-        Entry::Tool(ToolCall {
+        Arc::new(Entry::Tool(ToolCall {
             id: id.into(),
             title: format!("Edit {path}"),
             kind: "edit".into(),
@@ -1609,18 +1615,18 @@ mod tests {
             parent: None,
             tool_name: None,
             secret: None,
-        })
+        }))
     }
 
-    fn user(text: &str, shell_changes: Vec<crate::agent::ShellChange>) -> Entry {
-        Entry::User {
+    fn user(text: &str, shell_changes: Vec<crate::agent::ShellChange>) -> Arc<Entry> {
+        Arc::new(Entry::User {
             text: text.into(),
             at: 7,
             elapsed_ms: None,
             message_id: None,
             tokens: None,
             shell_changes,
-        }
+        })
     }
 
     #[test]
@@ -1813,24 +1819,20 @@ mod tests {
 
     #[test]
     fn entries_from_an_index() {
-        let all = vec![
-            Entry::Agent { text: "a".into() },
-            Entry::Agent { text: "b".into() },
-            Entry::Agent { text: "c".into() },
-        ];
+        let all = vec![said("a"), said("b"), said("c")];
         let s = scope(std::path::Path::new("."));
         assert_eq!(entries(&all, 1, &s).len(), 2);
         assert_eq!(entries(&all, 1, &s)[0]["text"], "b");
         assert!(entries(&all, 7, &s).is_empty());
     }
 
-    fn said(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn said(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
     #[test]
     fn a_transcript_answer_stops_near_its_size_and_says_where() {
-        let all: Vec<Entry> = (0..5).map(|_| said(&"x".repeat(40 * 1024))).collect();
+        let all: Vec<Arc<Entry>> = (0..5).map(|_| said(&"x".repeat(40 * 1024))).collect();
         let frames = transcript_message("s1", "claude", Path::new("/w/app"), &all, 1);
         assert_eq!(frames.len(), 1);
         let msg: Value = serde_json::from_str(&frames[0]).unwrap();
@@ -1936,7 +1938,9 @@ mod tests {
             (back[0].id.as_str(), back[0].state),
             ("a", SubagentState::Running)
         );
-        assert!(matches!(&back[0].entries[..], [Entry::Agent { text }] if text == "found it"));
+        assert!(
+            matches!(back[0].entries.as_slice(), [e] if matches!(&**e, Entry::Agent { text } if text == "found it"))
+        );
         assert_eq!(
             serde_json::to_value(&back[1].entries).unwrap(),
             serde_json::to_value(&sent[1].entries).unwrap()

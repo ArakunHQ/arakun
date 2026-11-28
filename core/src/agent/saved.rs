@@ -7,6 +7,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::{Entry, Thread};
@@ -18,7 +19,7 @@ struct Kept {
     path: PathBuf,
     /// When the file was written and how long it was: a save changes these.
     stamp: (SystemTime, u64),
-    entries: Vec<Entry>,
+    entries: Vec<Arc<Entry>>,
     cwd: PathBuf,
     /// The follow-ups that waited when it was saved.
     queue: Vec<String>,
@@ -68,7 +69,7 @@ impl LastRead {
     /// Runs `f` over the entries and the directory saved at `path`. A file
     /// that is missing or cannot be read has no entries, and is read again
     /// the next time: only a read that worked is kept.
-    pub fn with<R>(&self, path: &Path, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
+    pub fn with<R>(&self, path: &Path, f: impl FnOnce(&[Arc<Entry>], &Path) -> R) -> R {
         match self.kept(path) {
             Some(kept) => f(&kept.entries, &kept.cwd),
             None => f(&[], Path::new("")),
@@ -123,7 +124,7 @@ impl LastRead {
     /// Like [`LastRead::with`], but never reads the file: the caller read it
     /// off the main thread with [`read`]. The read kept for `path` answers
     /// even if a save landed since; with none, there are no entries.
-    pub fn with_kept<R>(&self, path: &Path, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
+    pub fn with_kept<R>(&self, path: &Path, f: impl FnOnce(&[Arc<Entry>], &Path) -> R) -> R {
         match self.peek(path) {
             Some(kept) => f(&kept.entries, &kept.cwd),
             None => f(&[], Path::new("")),

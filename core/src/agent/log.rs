@@ -1,5 +1,7 @@
 //! A transcript as plain text, for the commands that print one in a terminal.
 
+use std::sync::Arc;
+
 use super::{Entry, PlanStatus, ToolCall, ToolContent, ToolStatus};
 
 const USER_CHARS: usize = 1000;
@@ -8,8 +10,8 @@ const OUTPUT_LINES: usize = 8;
 const OUTPUT_CHARS: usize = 800;
 
 /// A session's last `n` entries as plain text, for `arakun agent log` and `arakun server log`.
-pub fn render_log(entries: &[Entry], n: usize) -> String {
-    let shown: Vec<String> = entries.iter().filter_map(render_entry).collect();
+pub fn render_log(entries: &[Arc<Entry>], n: usize) -> String {
+    let shown: Vec<String> = entries.iter().filter_map(|e| render_entry(e)).collect();
     shown[shown.len().saturating_sub(n)..].join("\n\n")
 }
 
@@ -143,7 +145,7 @@ mod tests {
 
     #[test]
     fn log_reads_as_plain_text() {
-        let entries = vec![
+        let entries = [
             Entry::User {
                 text: "fix the build".into(),
                 at: 1,
@@ -185,7 +187,8 @@ mod tests {
             Entry::Agent {
                 text: "Fixed.\n".into(),
             },
-        ];
+        ]
+        .map(Arc::new);
         let log = render_log(&entries, 30);
         let thought = format!("thought: {}…", "x".repeat(300));
         let output = (13..=20)

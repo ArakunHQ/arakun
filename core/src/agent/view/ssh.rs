@@ -126,9 +126,9 @@ enum Action {
     Share,
 }
 
-fn proposal(entries: &[Entry], after: usize) -> Option<(usize, String)> {
+fn proposal(entries: &[Arc<Entry>], after: usize) -> Option<(usize, String)> {
     for (offset, entry) in entries.get(after..)?.iter().enumerate().rev() {
-        match entry {
+        match &**entry {
             Entry::Agent { text } => {
                 return ssh_request::proposal(text).map(|cmd| (after + offset, cmd));
             }
@@ -965,8 +965,8 @@ impl ThreadView {
 mod tests {
     use super::*;
 
-    fn reply(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn reply(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
     #[test]

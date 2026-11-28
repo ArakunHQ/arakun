@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -110,7 +111,7 @@ struct Following {
     /// The environment it is in here.
     env_path: PathBuf,
     /// Its entries so far, whole, as the server's transcript holds them.
-    entries: Vec<Entry>,
+    entries: Vec<Arc<Entry>>,
     /// Its subagents that ran as child sessions, as the server last sent them.
     /// Their transcripts are not among the entries.
     subagents: Vec<SubagentRecord>,
@@ -128,7 +129,7 @@ struct Following {
     /// opening it and after each reconnect. It takes the place of `entries`
     /// only once all of it is here, so the view never falls back to a first
     /// page and fills up again.
-    refill: Option<Vec<Entry>>,
+    refill: Option<Vec<Arc<Entry>>>,
     /// Why the session could not be read in full, when it could not. Nothing
     /// more is asked for until it is opened again.
     broken: Option<String>,
@@ -937,7 +938,7 @@ struct Page {
     from: usize,
     to: usize,
     count: usize,
-    entries: Vec<Entry>,
+    entries: Vec<Arc<Entry>>,
 }
 
 /// Reads a `transcript` answer. An entry this app does not know (a server one
@@ -969,7 +970,7 @@ enum Next {
 }
 
 /// Puts a page into the entries so far. `asked` is the index it was asked from.
-fn merge(entries: &mut Vec<Entry>, page: Page, asked: usize) -> Next {
+fn merge(entries: &mut Vec<Arc<Entry>>, page: Page, asked: usize) -> Next {
     // The server answers from where it was asked, or from its last entry when
     // it has fewer. A page from further on answers an earlier question: one
     // sent before the session was opened again, or before a reconnect.
@@ -1010,10 +1011,13 @@ fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
 /// The images `entries` name or mention to ask the server for, each with the last entry
 /// naming it: the ones not asked for yet, and the ones named again since they
 /// were. The files are the server's: one at the same path here is another.
-fn images_to_ask(entries: &[Entry], asked: &HashMap<String, ImageCopy>) -> Vec<(String, usize)> {
+fn images_to_ask(
+    entries: &[Arc<Entry>],
+    asked: &HashMap<String, ImageCopy>,
+) -> Vec<(String, usize)> {
     let mut last: Vec<(String, usize)> = Vec::new();
     for (at, e) in entries.iter().enumerate() {
-        let links = match e {
+        let links = match &**e {
             Entry::Agent { text } => crate::agent::markdown::image_files(text),
             // As the prompt is shown: a mention in a pasted block is not one.
             Entry::User { text, .. } => {
@@ -4122,7 +4126,7 @@ mod tests {
 
     #[test]
     fn images_are_asked_for_once_and_again_when_named_again() {
-        let agent = |text: &str| Entry::Agent { text: text.into() };
+        let agent = |text: &str| Arc::new(Entry::Agent { text: text.into() });
         let mut entries = vec![
             agent("![a](shot.png)\n\n![c](https://x.dev/c.png)"),
             agent("![again](shot.png)\n\n![d](/srv/out/d.png)"),
@@ -4153,14 +4157,14 @@ mod tests {
             [("shot.png".to_string(), 2)]
         );
         // The images a prompt mentions are the server's too.
-        entries.push(Entry::User {
+        entries.push(Arc::new(Entry::User {
             text: "compare @shot.png with @\"my shots/b.jpg\" and @notes.md".into(),
             at: 1,
             elapsed_ms: None,
             message_id: None,
             tokens: None,
             shell_changes: Vec::new(),
-        });
+        }));
         assert_eq!(
             images_to_ask(&entries, &asked),
             [
@@ -4282,14 +4286,14 @@ mod tests {
         assert!(!deleting_already(&deleting, "other", "/w/fix"));
     }
 
-    fn said(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn said(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
-    fn texts(entries: &[Entry]) -> Vec<&str> {
+    fn texts(entries: &[Arc<Entry>]) -> Vec<&str> {
         entries
             .iter()
-            .map(|e| match e {
+            .map(|e| match &**e {
                 Entry::Agent { text } => text.as_str(),
                 _ => "?",
             })

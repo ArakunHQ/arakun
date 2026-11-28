@@ -704,7 +704,7 @@ pub enum CheckAnswer {
 pub struct Transcript {
     pub version: u32,
     pub meta: SessionMeta,
-    pub entries: Vec<Entry>,
+    pub entries: Vec<Arc<Entry>>,
     /// What the session used so far, for agents that do not report totals
     /// again when a session is reopened (Claude Code).
     #[serde(default)]
@@ -770,7 +770,7 @@ pub struct Thread {
     meta: SessionMeta,
     status: ThreadStatus,
     status_detail: Option<SharedString>,
-    entries: Vec<Entry>,
+    entries: Vec<Arc<Entry>>,
     tool_index: HashMap<String, usize>,
     /// What files looked like before the running tool calls that rewrite them.
     replaced: HashMap<(String, PathBuf), Option<String>>,
@@ -1106,24 +1106,30 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 /// Another agent's history, ready to sit above `kind`'s: nothing in it can be
 /// rewound (those ids belong to the other agent), what was cut off stays
 /// failed, and a line says who goes on.
-fn continued_entries(mut entries: Vec<Entry>, kind: AgentKind) -> Vec<Entry> {
+fn continued_entries(mut entries: Vec<Arc<Entry>>, kind: AgentKind) -> Vec<Arc<Entry>> {
     for e in &mut entries {
-        match e {
-            Entry::User { message_id, .. } => *message_id = None,
-            Entry::Tool(tool)
-                if matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress) =>
-            {
-                tool.status = ToolStatus::Failed;
+        let changes = match &**e {
+            Entry::User { message_id, .. } => message_id.is_some(),
+            Entry::Tool(tool) => {
+                matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
             }
+            _ => false,
+        };
+        if !changes {
+            continue;
+        }
+        match Arc::make_mut(e) {
+            Entry::User { message_id, .. } => *message_id = None,
+            Entry::Tool(tool) => tool.status = ToolStatus::Failed,
             _ => {}
         }
     }
-    entries.push(Entry::Notice {
+    entries.push(Arc::new(Entry::Notice {
         text: format!("Continued with {}", kind.label()),
         error: false,
         mark: None,
         places: Vec::new(),
-    });
+    }));
     entries
 }
 
@@ -1159,21 +1165,21 @@ impl Thread {
         if t.interrupted {
             // Tools cut off with the turn never finish now.
             for e in entries.iter_mut() {
-                if let Entry::Tool(tool) = e
+                if let Entry::Tool(tool) = Arc::make_mut(e)
                     && matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
                 {
                     tool.status = ToolStatus::Failed;
                 }
             }
             if !t.resume {
-                entries.push(Entry::Notice {
+                entries.push(Arc::new(Entry::Notice {
                     text:
                         "Arakun closed while this turn was running. Send a message to pick it up."
                             .into(),
                     error: false,
                     mark: None,
                     places: Vec::new(),
-                });
+                }));
             }
         }
         Ok(Restored(t))
@@ -1206,7 +1212,7 @@ impl Thread {
         kind: AgentKind,
         cwd: PathBuf,
         title: String,
-        earlier: Vec<Entry>,
+        earlier: Vec<Arc<Entry>>,
         handoff: String,
         cx: &mut App,
     ) -> Entity<Thread> {
@@ -1421,7 +1427,7 @@ impl Thread {
         }
     }
 
-    pub fn entries(&self) -> &[Entry] {
+    pub fn entries(&self) -> &[Arc<Entry>] {
         &self.entries
     }
 
@@ -1595,13 +1601,16 @@ impl Thread {
             places,
         };
         match self.entries.get_mut(ix) {
-            Some(
-                entry @ Entry::Notice {
-                    mark: Some(NoticeMark::Busy),
-                    ..
-                },
-            ) => {
-                *entry = notice;
+            Some(entry)
+                if matches!(
+                    &**entry,
+                    Entry::Notice {
+                        mark: Some(NoticeMark::Busy),
+                        ..
+                    }
+                ) =>
+            {
+                *entry = Arc::new(notice);
                 self.entries_changed(ix, cx);
             }
             _ => {
@@ -1615,10 +1624,10 @@ impl Thread {
         let start = self
             .entries
             .iter()
-            .rposition(|e| matches!(e, Entry::User { .. }))
+            .rposition(|e| matches!(&**e, Entry::User { .. }))
             .map_or(0, |i| i + 1);
         self.entries[start..].iter().any(|e| {
-            matches!(e, Entry::Tool(t) if t.status == ToolStatus::Completed
+            matches!(&**e, Entry::Tool(t) if t.status == ToolStatus::Completed
                 && (matches!(t.kind.as_str(), "edit" | "delete" | "move")
                     || t.content.iter().any(|c| matches!(c, ToolContent::Diff { .. }))))
         })
@@ -1630,19 +1639,19 @@ impl Thread {
         let start = self
             .entries
             .iter()
-            .rposition(|e| matches!(e, Entry::User { .. }))?;
-        let Entry::User { at, .. } = &self.entries[start] else {
+            .rposition(|e| matches!(&**e, Entry::User { .. }))?;
+        let Entry::User { at, .. } = &*self.entries[start] else {
             return None;
         };
         self.entries[start + 1..]
             .iter()
-            .any(|e| matches!(e, Entry::Tool(t) if t.kind == "execute"))
+            .any(|e| matches!(&**e, Entry::Tool(t) if t.kind == "execute"))
             .then_some(*at)
     }
 
     /// Lines added and removed across every edit this session made.
     pub fn diff_stats(&self) -> (u32, u32) {
-        self.entries.iter().fold((0, 0), |(a, r), e| match e {
+        self.entries.iter().fold((0, 0), |(a, r), e| match &**e {
             Entry::Tool(t) if t.status == ToolStatus::Completed => (a + t.added, r + t.removed),
             Entry::User { shell_changes, .. } => shell_changes
                 .iter()
@@ -1718,11 +1727,18 @@ impl Thread {
 
     // ---- persistence -----------------------------------------------------
 
+    /// A snapshot to save or send. The entries are shared, not copied: an entry
+    /// that changes later is copied then (see `Arc::make_mut`).
     pub fn transcript(&self, cx: &App) -> Transcript {
+        self.transcript_of(self.entries.clone(), cx)
+    }
+
+    /// The transcript as it is, with `entries` in place of its own.
+    pub(super) fn transcript_of(&self, entries: Vec<Arc<Entry>>, cx: &App) -> Transcript {
         Transcript {
             version: 1,
             meta: self.meta(),
-            entries: self.entries.clone(),
+            entries,
             usage: self.usage.clone(),
             fork_point: self.fork_point.clone(),
             interrupted: self.is_busy(),
@@ -1781,13 +1797,14 @@ impl Thread {
         Ok(())
     }
 
-    fn set_entries(&mut self, mut entries: Vec<Entry>) {
+    fn set_entries(&mut self, mut entries: Vec<Arc<Entry>>) {
         // Whatever was still going when the transcript was saved is not anymore.
         for e in &mut entries {
             if let Entry::Notice {
-                mark: mark @ Some(NoticeMark::Busy),
+                mark: Some(NoticeMark::Busy),
                 ..
-            } = e
+            } = &**e
+                && let Entry::Notice { mark, .. } = Arc::make_mut(e)
             {
                 *mark = None;
             }
@@ -1798,7 +1815,7 @@ impl Thread {
             .entries
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| match e {
+            .filter_map(|(i, e)| match &**e {
                 Entry::Tool(t) => Some((t.id.clone(), i)),
                 _ => None,
             })
@@ -1811,7 +1828,7 @@ impl Thread {
     fn entries_changed(&mut self, from: usize, cx: &mut Context<Self>) {
         self.meta.updated = unix_now();
         if self.turn_started.is_some()
-            && let Some(Entry::Tool(t)) = self.entries.get(from)
+            && let Some(Entry::Tool(t)) = self.entries.get(from).map(Arc::as_ref)
             && matches!(t.status, ToolStatus::Completed | ToolStatus::Failed)
         {
             let turn = self.turn_user.map_or(0, |ix| ix + 1);
@@ -1846,7 +1863,7 @@ impl Thread {
         if let Entry::Tool(t) = &entry {
             self.tool_index.insert(t.id.clone(), ix);
         }
-        self.entries.push(entry);
+        self.entries.push(Arc::new(entry));
         self.entries_changed(ix, cx);
         ix
     }
@@ -2573,7 +2590,8 @@ impl Thread {
         } else {
             if let Some(ix) = self.turn_user
                 && self.backend == Backend::Native
-                && let Some(Entry::User { message_id: id, .. }) = self.entries.get_mut(ix)
+                && let Some(Entry::User { message_id: id, .. }) =
+                    self.entries.get_mut(ix).map(Arc::make_mut)
             {
                 *id = message_id.clone();
             }
@@ -2629,7 +2647,7 @@ impl Thread {
             || self
                 .entries
                 .iter()
-                .filter(|e| matches!(e, Entry::User { .. }))
+                .filter(|e| matches!(&***e, Entry::User { .. }))
                 .count()
                 <= 1;
         // Claude has it in its system prompt, so its prompts go out as typed.
@@ -2855,7 +2873,7 @@ impl Thread {
         if let Some(url) = self
             .entries
             .get(from..)
-            .and_then(|e| e.iter().rev().find_map(pr_in_entry))
+            .and_then(|e| e.iter().rev().find_map(|e| pr_in_entry(e)))
             && self.meta.pr.as_deref() != Some(url.as_str())
         {
             self.meta.pr = Some(url);
@@ -2870,7 +2888,7 @@ impl Thread {
         if let Some(ix) = self.turn_user
             && let Some(Entry::User {
                 elapsed_ms, tokens, ..
-            }) = self.entries.get_mut(ix)
+            }) = self.entries.get_mut(ix).map(Arc::make_mut)
         {
             *elapsed_ms = elapsed;
             if used > 0 {
@@ -2895,7 +2913,7 @@ impl Thread {
             .get(ix + 1..)
             .unwrap_or(&[])
             .iter()
-            .any(|e| matches!(e, Entry::Tool(t) if t.kind == "execute"));
+            .any(|e| matches!(&**e, Entry::Tool(t) if t.kind == "execute"));
         if !ran_shell {
             return;
         }
@@ -2927,12 +2945,12 @@ impl Thread {
         };
         let turn = &after[..after
             .iter()
-            .position(|e| matches!(e, Entry::User { .. }))
+            .position(|e| matches!(&**e, Entry::User { .. }))
             .unwrap_or(after.len())];
         // What the edit tools changed already shows with their own diffs.
         let edited: Vec<PathBuf> = turn
             .iter()
-            .filter_map(|e| match e {
+            .filter_map(|e| match &**e {
                 Entry::Tool(t) => Some(t.content.iter()),
                 _ => None,
             })
@@ -2950,7 +2968,8 @@ impl Thread {
         if changes.is_empty() {
             return;
         }
-        let Some(Entry::User { shell_changes, .. }) = self.entries.get_mut(ix) else {
+        let Some(Entry::User { shell_changes, .. }) = self.entries.get_mut(ix).map(Arc::make_mut)
+        else {
             return;
         };
         *shell_changes = changes;
@@ -3744,7 +3763,7 @@ impl Thread {
                 let known = |t: &Thread| {
                     t.tool_index
                         .get(&tool_call_id)
-                        .and_then(|&i| match &t.entries[i] {
+                        .and_then(|&i| match &*t.entries[i] {
                             Entry::Tool(t) => Some(t.title.clone()),
                             _ => None,
                         })
@@ -3959,7 +3978,7 @@ impl Thread {
             .entries
             .iter()
             .rev()
-            .find_map(|e| match e {
+            .find_map(|e| match &**e {
                 Entry::Tool(t)
                     if t.secret.as_deref() == Some(secret.as_str())
                         && matches!(t.status, ToolStatus::Pending | ToolStatus::InProgress) =>
@@ -4015,7 +4034,7 @@ impl Thread {
 
     /// The secret file the tool call `id` reads, if it is one.
     fn tool_secret(&self, id: &str) -> Option<String> {
-        match self.entries.get(*self.tool_index.get(id)?)? {
+        match &**self.entries.get(*self.tool_index.get(id)?)? {
             Entry::Tool(t) => t.secret.clone(),
             _ => None,
         }
@@ -4220,15 +4239,15 @@ impl Thread {
         let turn_start = self
             .entries
             .iter()
-            .rposition(|e| matches!(e, Entry::User { .. }))
+            .rposition(|e| matches!(&**e, Entry::User { .. }))
             .unwrap_or(0);
         let existing = self.entries[turn_start..]
             .iter()
-            .position(|e| matches!(e, Entry::Plan { .. }))
+            .position(|e| matches!(&**e, Entry::Plan { .. }))
             .map(|i| i + turn_start);
         match existing {
             Some(ix) => {
-                self.entries[ix] = Entry::Plan { entries };
+                self.entries[ix] = Arc::new(Entry::Plan { entries });
                 self.entries_changed(ix, cx);
             }
             None => {
@@ -4259,7 +4278,15 @@ impl Thread {
             self.last_message_id = message_id;
         }
         let last = self.entries.len().wrapping_sub(1);
-        let target = match (role, self.entries.last_mut()) {
+        // Only the entry that grows is copied, and only if a saved transcript still shares it.
+        let grows = matches!(
+            (role, self.entries.last().map(Arc::as_ref)),
+            (0, Some(Entry::User { .. }))
+                | (1, Some(Entry::Agent { .. }))
+                | (2, Some(Entry::Thought { .. }))
+        ) && !(role == 1 && new_message);
+        let last_entry = self.entries.last_mut().filter(|_| grows).map(Arc::make_mut);
+        let target = match (role, last_entry) {
             (0, Some(Entry::User { text, .. })) => Some(text),
             (1, Some(Entry::Agent { text })) if !new_message => Some(text),
             (2, Some(Entry::Thought { text })) => Some(text),
@@ -4323,7 +4350,7 @@ impl Thread {
                 cx,
             ),
         };
-        let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
+        let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut) else {
             return;
         };
         if let Some(title) = str_of(u, "title") {
@@ -4344,7 +4371,7 @@ impl Thread {
         }
         let status = t.status;
         self.clock_tool(&id, status);
-        let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
+        let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut) else {
             return;
         };
         if let Some(content) = u.get("content").filter(|c| c.is_array()) {
@@ -4388,7 +4415,7 @@ impl Thread {
 
     /// What a tool call that asked for a password says back, as "Answered".
     pub(super) fn mask_answered(&mut self, ix: usize) {
-        if let Some(Entry::Tool(t)) = self.entries.get_mut(ix) {
+        if let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut) {
             t.hide_answer();
         }
     }
@@ -4397,7 +4424,7 @@ impl Thread {
     /// which would count every line as new. So the file is read the first time
     /// the call shows up, before it runs, and stands in for the missing text.
     fn fill_replaced(&mut self, ix: usize) {
-        let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
+        let Some(Entry::Tool(t)) = self.entries.get_mut(ix).map(Arc::make_mut) else {
             return;
         };
         let done = matches!(t.status, ToolStatus::Completed | ToolStatus::Failed);
@@ -4630,9 +4657,9 @@ fn recount(t: &mut ToolCall) {
 /// rewritten line as new. Rebuilds the missing text from the session's own
 /// history (the last write or edit of that file), else from the file as git
 /// had it when the turn began. New files keep counting in full.
-fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
+fn fill_replaced_history(entries: &mut [Arc<Entry>], cwd: &Path) {
     let missing = entries.iter().any(|e| {
-        matches!(e, Entry::Tool(t) if t.content.iter().any(|c| matches!(c, ToolContent::Diff { old_text: None, .. })))
+        matches!(&**e, Entry::Tool(t) if t.content.iter().any(|c| matches!(c, ToolContent::Diff { old_text: None, .. })))
     });
     if !missing {
         return;
@@ -4654,7 +4681,8 @@ fn fill_replaced_history(entries: &mut [Entry], cwd: &Path) {
     let mut known: HashMap<PathBuf, String> = HashMap::new();
     let mut turn_at = 0;
     for e in entries.iter_mut() {
-        let t = match e {
+        // The entries were just read from a file, so nothing else holds them and this copies nothing.
+        let t = match Arc::make_mut(e) {
             Entry::User { at, .. } => {
                 turn_at = *at;
                 continue;
@@ -4845,9 +4873,9 @@ fn queued_at(queue: &[String], index: usize, text: &str) -> Option<usize> {
 /// Files the finished edits in `entries` touched, and those their turns'
 /// shell commands changed, absolute (relative ones are in `cwd`), in
 /// first-touched order.
-pub fn edited_files(entries: &[Entry], cwd: &Path) -> Vec<PathBuf> {
+pub fn edited_files(entries: &[Arc<Entry>], cwd: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    for e in entries {
+    for e in entries.iter().map(Arc::as_ref) {
         if let Entry::User { shell_changes, .. } = e {
             for c in shell_changes {
                 if !out.contains(&c.path) {
@@ -5315,7 +5343,7 @@ mod tests {
 
     #[test]
     fn edited_files_are_absolute_and_listed_once() {
-        let entries = vec![
+        let entries = [
             write("t1", Path::new("src/a.rs"), None, "x"),
             write("t2", Path::new("/p/src/a.rs"), Some("x"), "y"),
             write("t3", Path::new("/p/b.rs"), None, "z"),
@@ -5334,7 +5362,8 @@ mod tests {
                     removed: 0,
                 }],
             },
-        ];
+        ]
+        .map(Arc::new);
         assert_eq!(
             edited_files(&entries, Path::new("/p")),
             [
@@ -5370,7 +5399,7 @@ mod tests {
         if let Entry::Tool(t) = &mut running {
             t.status = ToolStatus::InProgress;
         }
-        let earlier = vec![
+        let earlier = [
             Entry::User {
                 text: "fix it".into(),
                 at: 1,
@@ -5383,17 +5412,46 @@ mod tests {
             Entry::Agent {
                 text: "on it".into(),
             },
-        ];
-        let entries = continued_entries(earlier, AgentKind::Claude);
+        ]
+        .map(Arc::new);
+        let entries = continued_entries(earlier.into(), AgentKind::Claude);
         assert_eq!(entries.len(), 4);
         assert!(
-            matches!(&entries[0], Entry::User { text, message_id: None, .. } if text == "fix it")
+            matches!(&*entries[0], Entry::User { text, message_id: None, .. } if text == "fix it")
         );
-        assert!(matches!(&entries[1], Entry::Tool(t) if t.status == ToolStatus::Failed));
-        assert!(matches!(&entries[2], Entry::Agent { text } if text == "on it"));
+        assert!(matches!(&*entries[1], Entry::Tool(t) if t.status == ToolStatus::Failed));
+        assert!(matches!(&*entries[2], Entry::Agent { text } if text == "on it"));
         assert!(
-            matches!(&entries[3], Entry::Notice { text, error: false, .. } if text == "Continued with Claude Code")
+            matches!(&*entries[3], Entry::Notice { text, error: false, .. } if text == "Continued with Claude Code")
         );
+    }
+
+    #[test]
+    fn a_saved_snapshot_shares_entries_and_a_change_copies_only_that_one() {
+        let said = Arc::new(Entry::Agent { text: "hi".into() });
+        let busy = Arc::new(Entry::Notice {
+            text: "Working".into(),
+            error: false,
+            mark: Some(NoticeMark::Busy),
+            places: Vec::new(),
+        });
+        let snapshot = vec![said, busy];
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.set_entries(snapshot.clone());
+        assert!(Arc::ptr_eq(&t.entries[0], &snapshot[0]));
+        // Clearing the busy mark copies that entry; the snapshot keeps its own.
+        assert!(!Arc::ptr_eq(&t.entries[1], &snapshot[1]));
+        assert!(matches!(&*t.entries[1], Entry::Notice { mark: None, .. }));
+        assert!(matches!(
+            &*snapshot[1],
+            Entry::Notice {
+                mark: Some(NoticeMark::Busy),
+                ..
+            }
+        ));
+        // An entry that needs no change stays shared when a session is continued.
+        let continued = continued_entries(snapshot.clone(), AgentKind::Codex);
+        assert!(Arc::ptr_eq(&continued[0], &snapshot[0]));
     }
 
     #[test]
@@ -5496,7 +5554,7 @@ mod tests {
         let (a, b) = (repo.join("a.txt"), repo.join("new.txt"));
         let v2 = tracked.replace("line 50\n", "line 50 changed\n");
         let v3 = v2.replace("line 7\n", "line seven\n");
-        let mut entries = vec![
+        let mut entries = [
             Entry::User {
                 text: "go".into(),
                 at: unix_now() + 5,
@@ -5510,11 +5568,12 @@ mod tests {
             write("2", &a, Some("line 1\n"), "first\n"),
             write("3", &a, None, &v3.replacen("line 1\n", "first\n", 1)),
             write("4", &b, None, "x\ny\n"),
-        ];
+        ]
+        .map(Arc::new);
         fill_replaced_history(&mut entries, &repo);
         let counts: Vec<(u32, u32)> = entries[1..]
             .iter()
-            .map(|e| match e {
+            .map(|e| match &**e {
                 Entry::Tool(t) => (t.added, t.removed),
                 _ => unreachable!(),
             })
@@ -5606,9 +5665,9 @@ mod tests {
             Thread::read_restored(&path).unwrap().0
         };
         let t = saved(false);
-        assert!(matches!(&t.entries[0], Entry::Tool(t) if t.status == ToolStatus::Failed));
+        assert!(matches!(&*t.entries[0], Entry::Tool(t) if t.status == ToolStatus::Failed));
         assert!(
-            matches!(&t.entries[1], Entry::Notice { text, .. } if text.starts_with("Arakun closed"))
+            matches!(&*t.entries[1], Entry::Notice { text, .. } if text.starts_with("Arakun closed"))
         );
         // `arakun restart` picks the turn up by itself, so there is nothing to say.
         let t = saved(true);

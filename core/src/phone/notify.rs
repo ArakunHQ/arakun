@@ -3,6 +3,7 @@
 //! when: `Notifier` holds a notice until the person is away from the computer.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::agent::{AskUserRequest, Entry, PermissionRequest, ToolCall};
@@ -240,12 +241,12 @@ const PLAN_LINES: usize = 3;
 /// The last thing the agent said in the last turn, as plain text.
 /// `push::notice` cuts it to fit. An answer from before the last prompt is
 /// the previous turn's, so the search stops there.
-pub fn finished_body(entries: &[Entry]) -> String {
+pub fn finished_body(entries: &[Arc<Entry>]) -> String {
     let turn = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::User { .. }))
+        .rposition(|e| matches!(&**e, Entry::User { .. }))
         .map_or(entries, |at| &entries[at + 1..]);
-    let text = turn.iter().rev().find_map(|e| match e {
+    let text = turn.iter().rev().find_map(|e| match &**e {
         Entry::Agent { text } => Some(plain(text)),
         _ => None,
     });
@@ -280,12 +281,12 @@ pub fn permission_body(p: &PermissionRequest, tool: Option<&ToolCall>) -> String
 /// What a session waiting for the user says: the permission it asks, with the
 /// tool it is for found in `entries`, or its question. Both senders use it.
 pub fn input_body(
-    entries: &[Entry],
+    entries: &[Arc<Entry>],
     permission: Option<&PermissionRequest>,
     question: Option<&AskUserRequest>,
 ) -> String {
     if let Some(p) = permission {
-        let tool = entries.iter().find_map(|e| match e {
+        let tool = entries.iter().find_map(|e| match &**e {
             Entry::Tool(tc) if tc.id == p.tool_call_id => Some(tc),
             _ => None,
         });
@@ -310,8 +311,8 @@ pub fn question_body(q: &AskUserRequest) -> String {
 }
 
 /// How long the last turn took, in whole seconds, once it has settled.
-pub fn turn_secs(entries: &[Entry]) -> Option<u64> {
-    entries.iter().rev().find_map(|e| match e {
+pub fn turn_secs(entries: &[Arc<Entry>]) -> Option<u64> {
+    entries.iter().rev().find_map(|e| match &**e {
         Entry::User { elapsed_ms, .. } => Some(elapsed_ms.map(|ms| ms / 1000)),
         _ => None,
     })?
@@ -401,19 +402,19 @@ mod tests {
     use crate::agent::{Question, SpecPlan, ToolStatus};
     use crate::phone::{Door, push};
 
-    fn user(elapsed_ms: Option<u64>) -> Entry {
-        Entry::User {
+    fn user(elapsed_ms: Option<u64>) -> Arc<Entry> {
+        Arc::new(Entry::User {
             text: "go".into(),
             at: 0,
             elapsed_ms,
             message_id: None,
             tokens: None,
             shell_changes: Vec::new(),
-        }
+        })
     }
 
-    fn agent(text: &str) -> Entry {
-        Entry::Agent { text: text.into() }
+    fn agent(text: &str) -> Arc<Entry> {
+        Arc::new(Entry::Agent { text: text.into() })
     }
 
     fn call(kind: &str, title: &str) -> ToolCall {
@@ -537,7 +538,7 @@ mod tests {
         p.tool_call_id = "t".into();
         let mut tc = call("execute", "Run command");
         tc.raw_input = Some(serde_json::json!({ "command": "cargo test" }));
-        let entries = [Entry::Tool(tc)];
+        let entries = [Arc::new(Entry::Tool(tc))];
         assert_eq!(
             input_body(&entries, Some(&p), None),
             "Run command: cargo test"

@@ -10,6 +10,7 @@
 //! child thread too, so the sidebar lists every subagent the same way.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, Context, Entity};
@@ -112,7 +113,7 @@ pub struct SubagentRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub earlier: Vec<String>,
     #[serde(default)]
-    pub entries: Vec<Entry>,
+    pub entries: Vec<Arc<Entry>>,
 }
 
 pub struct Subagent {
@@ -299,8 +300,9 @@ impl Thread {
             .take()
             .map(|t| t.elapsed().as_millis() as u64);
         if let Some(ix) = self.turn_user
-            && let Some(Entry::User { elapsed_ms, .. }) = self.entries.get_mut(ix)
             && elapsed.is_some()
+            && let Some(Entry::User { elapsed_ms, .. }) =
+                self.entries.get_mut(ix).map(Arc::make_mut)
         {
             *elapsed_ms = elapsed;
             self.entries_changed(ix, cx);
@@ -331,7 +333,7 @@ impl Thread {
     fn put_tool(&mut self, tool: ToolCall, cx: &mut Context<Self>) {
         match self.tool_index.get(&tool.id) {
             Some(&ix) => {
-                self.entries[ix] = Entry::Tool(tool);
+                self.entries[ix] = Arc::new(Entry::Tool(tool));
                 self.entries_changed(ix, cx);
             }
             None => {
@@ -341,15 +343,14 @@ impl Thread {
     }
 
     /// Shows `entries` as the whole transcript, redrawing what changed.
-    fn show_entries(&mut self, entries: Vec<Entry>, cx: &mut Context<Self>) {
+    fn show_entries(&mut self, entries: Vec<Arc<Entry>>, cx: &mut Context<Self>) {
         let status = self.status.clone();
-        let mut t = self.transcript(cx);
-        t.entries = entries;
+        let t = self.transcript_of(entries, cx);
         self.show_transcript(t, status, cx);
         self.turn_user = self
             .entries
             .iter()
-            .position(|e| matches!(e, Entry::User { .. }));
+            .position(|e| matches!(&**e, Entry::User { .. }));
     }
 
     // ---- updates from the agent ------------------------------------------
@@ -638,8 +639,9 @@ impl Thread {
         let status = state.call_status();
         let set = move |t: &mut Thread, cx: &mut Context<Thread>| {
             if let Some(&ix) = t.tool_index.get(&marker)
-                && let Some(Entry::Tool(call)) = t.entries.get_mut(ix)
+                && let Some(Entry::Tool(call)) = t.entries.get(ix).map(Arc::as_ref)
                 && call.status != status
+                && let Some(Entry::Tool(call)) = t.entries.get_mut(ix).map(Arc::make_mut)
             {
                 call.status = status;
                 t.entries_changed(ix, cx);
@@ -736,7 +738,7 @@ impl Thread {
         if self.parent.is_some() {
             return;
         }
-        let Some(Entry::Tool(t)) = self.entries.get(ix) else {
+        let Some(Entry::Tool(t)) = self.entries.get(ix).map(Arc::as_ref) else {
             return;
         };
         if t.id.starts_with(MARKER) {
@@ -897,7 +899,7 @@ impl Thread {
                         c.turn_user = c
                             .entries
                             .iter()
-                            .position(|e| matches!(e, Entry::User { .. }));
+                            .position(|e| matches!(&**e, Entry::User { .. }));
                         c.follow_state(state, cx);
                     });
                     self.subagents.push(Subagent {
@@ -935,10 +937,10 @@ impl Thread {
 
     /// Mirrors every Task call in the transcript, with the time of the prompt it answered.
     fn mirror_all(&mut self, cx: &mut Context<Self>) {
-        let mut calls: Vec<(String, u64, Vec<Entry>)> = Vec::new();
+        let mut calls: Vec<(String, u64, Vec<Arc<Entry>>)> = Vec::new();
         let mut at = unix_now();
         for e in &self.entries {
-            match e {
+            match &**e {
                 Entry::User { at: a, .. } => at = *a,
                 Entry::Tool(t) if t.is_subagent() && !t.id.starts_with(MARKER) => {
                     calls.push((t.id.clone(), at, Vec::new()))
@@ -970,14 +972,14 @@ impl Thread {
             if !s.task.is_empty() {
                 entries.insert(
                     0,
-                    Entry::User {
+                    Arc::new(Entry::User {
                         text: s.task.clone(),
                         at,
                         elapsed_ms: None,
                         message_id: None,
                         tokens: None,
                         shell_changes: Vec::new(),
-                    },
+                    }),
                 );
             }
             let thread = s.thread.clone();

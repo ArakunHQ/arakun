@@ -103,7 +103,7 @@ struct Printer {
 }
 
 impl Printer {
-    fn print(&mut self, entries: &[Entry], from: usize) {
+    fn print(&mut self, entries: &[std::sync::Arc<Entry>], from: usize) {
         if entries.len() < self.printed.len() {
             self.printed.clear();
             self.tools.clear();
@@ -117,7 +117,7 @@ impl Printer {
                 self.printed.push((0, 0));
                 self.tools.push(String::new());
             }
-            let (role, text) = match e {
+            let (role, text) = match &**e {
                 Entry::User { text, .. } => (1, text),
                 Entry::Agent { text } => (2, text),
                 Entry::Thought { text } => (3, text),
@@ -225,7 +225,7 @@ fn report(
             c.entries().len(),
             c.entries()
                 .iter()
-                .filter(|e| matches!(e, Entry::Tool(_)))
+                .filter(|e| matches!(&***e, Entry::Tool(_)))
                 .count()
         );
     }
@@ -419,7 +419,7 @@ fn main() {
                                     if let ThreadEvent::EntriesChanged { from } = ev
                                         && let Some(e) = child.read(cx).entries().get(*from)
                                     {
-                                        let line = match e {
+                                        let line = match &**e {
                                             Entry::User { text, .. } => format!("user {:?}", text.chars().take(60).collect::<String>()),
                                             Entry::Agent { text } => format!("agent {text:?}"),
                                             Entry::Tool(t) => format!("tool {:?} {}", t.status, t.title),

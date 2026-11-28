@@ -18,6 +18,7 @@
 //! token inside the sealed channel.
 
 pub mod e2e;
+pub mod host;
 pub mod identity;
 pub mod lan;
 pub mod linear;

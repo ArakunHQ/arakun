@@ -19,6 +19,7 @@ use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::cloud;
 use crate::island::AlertKind;
 use crate::model::{Environment, TabKind};
+use crate::phone::host::{self, DEVICE_SETTINGS, SessionHost};
 use crate::phone::notify::{self, Kind, Notifier, Presence};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
@@ -163,14 +164,11 @@ fn old_key_still_listed(e: &cloud::Error) -> String {
     )
 }
 
-/// The settings a phone can pick: the model, then the reasoning (its choices depend on the model).
-const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
-
 impl Shell {
     /// The `options` answer for a phone: what a new `agent` session in the
     /// environment at `env_path` starts on, and its choices.
     pub(super) fn phone_options(&self, env_path: &Path, agent: AgentKind) -> String {
-        let list = PHONE_SETTINGS
+        let list = DEVICE_SETTINGS
             .into_iter()
             .filter_map(|s| Some((s, self.draft_choices(env_path, agent, s)?)))
             .collect();
@@ -1373,6 +1371,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let host = &mut PhoneHost {
+            shell: self,
+            window,
+        };
+        let Some(msg) = host::dispatch(host, client, msg, cx) else {
+            return;
+        };
         match msg {
             ClientMsg::Open {
                 session, append, ..
@@ -1461,32 +1466,6 @@ impl Shell {
                     cx.notify();
                 }
             }
-            // A piece of a photo: base64, kept by upload id until the last one
-            // lands. Then it is saved as a pasted image, and the id a prompt
-            // names is worth that file.
-            ClientMsg::Upload {
-                session: _,
-                upload,
-                name,
-                part,
-                of,
-                data,
-            } => {
-                let Some(link) = &mut self.phone else { return };
-                let saved =
-                    link.uploads
-                        .piece(&upload, &name, part, of, &data, super::composer::save_image);
-                if let Some(path) = saved {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy())
-                        .unwrap_or_default();
-                    self.phone_send(
-                        client,
-                        json!({ "type": "uploaded", "upload": upload, "name": name }).to_string(),
-                    );
-                }
-            }
             ClientMsg::Start {
                 env,
                 agent,
@@ -1561,132 +1540,6 @@ impl Shell {
                 let reply = self.phone_options(&path, agent);
                 self.phone_send(client, reply);
             }
-            ClientMsg::Settings { session } => {
-                let Some((env_path, sid)) = self.phone_session(&session) else {
-                    return;
-                };
-                self.ensure_live(&env_path, &sid, window, cx);
-                let list = match self.phone_thread(&env_path, &sid) {
-                    Some(thread) => {
-                        let t = thread.read(cx);
-                        PHONE_SETTINGS
-                            .into_iter()
-                            .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
-                            .collect()
-                    }
-                    None => Vec::new(),
-                };
-                let reply =
-                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
-                self.phone_send(client, reply.to_string());
-            }
-            ClientMsg::Setting {
-                session,
-                key,
-                value,
-            } => {
-                let (Some(s), Some((env_path, sid))) =
-                    (Setting::from_key(&key), self.phone_session(&session))
-                else {
-                    return;
-                };
-                let Some(thread) = self.phone_thread(&env_path, &sid) else {
-                    self.phone_send(client, wire::error("that session is not running"));
-                    return;
-                };
-                thread.update(cx, |t, cx| t.set_setting(s, &value, cx));
-                // The environment remembers it too, as when picked on the desktop.
-                let agent = self
-                    .find_env(&env_path)
-                    .and_then(|e| e.sessions.iter().find(|x| *x.id == *sid))
-                    .map(|x| x.agent);
-                if let Some(agent) = agent {
-                    self.remember_setting(&env_path, agent, s, &value, cx);
-                }
-                let t = thread.read(cx);
-                let list = PHONE_SETTINGS
-                    .into_iter()
-                    .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
-                    .collect();
-                let reply =
-                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
-                self.phone_send(client, reply.to_string());
-            }
-            // Esc in this app pauses the queue, for a phone through it too.
-            ClientMsg::Cancel { session, .. } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    thread.update(cx, |t, cx| t.cancel(cx));
-                }
-            }
-            ClientMsg::Unqueue {
-                session,
-                index,
-                text,
-                now,
-            } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx));
-                }
-            }
-            ClientMsg::ResumeQueue { session } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    thread.update(cx, |t, cx| t.resume_queue(cx));
-                }
-            }
-            ClientMsg::Permission { session, option } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    thread.update(cx, |t, cx| t.respond_permission(&option, cx));
-                }
-            }
-            ClientMsg::Answer { session, answers } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    let fits = thread
-                        .read(cx)
-                        .pending_question()
-                        .is_some_and(|q| q.questions.len() == answers.len());
-                    if fits {
-                        thread.update(cx, |t, cx| t.answer_question(answers, cx));
-                    } else {
-                        self.phone_send(client, wire::error("that question is gone"));
-                    }
-                }
-            }
-            ClientMsg::SkipQuestion { session } => {
-                if let Some((env_path, sid)) = self.phone_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &sid)
-                {
-                    thread.update(cx, |t, cx| t.skip_question(cx));
-                }
-            }
-            ClientMsg::Secret {
-                session,
-                id,
-                values,
-            } => {
-                let private = self.phone.as_ref().is_some_and(|l| l.server.private());
-                let answered = match self
-                    .phone_session(&session)
-                    .and_then(|(env_path, sid)| self.phone_thread(&env_path, &sid))
-                {
-                    Some(thread) => {
-                        thread.update(cx, |t, cx| t.answer_secret(id, values, private, cx))
-                    }
-                    None => Err("that session is not running".into()),
-                };
-                if let Err(e) = answered {
-                    self.phone_send(client, wire::error(&e));
-                }
-            }
             ClientMsg::Changes { session } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
@@ -1751,15 +1604,6 @@ impl Shell {
                     link.last_usage = usage.clone();
                 }
                 self.phone_send(client, usage);
-            }
-            ClientMsg::Visible { visible } => {
-                if let Some(link) = &mut self.phone {
-                    if visible {
-                        link.hidden.remove(&client);
-                    } else {
-                        link.hidden.insert(client);
-                    }
-                }
             }
             // Said by an app to the servers it follows. This app reads its
             // own idle time, and a phone's would not be about this computer.
@@ -1827,7 +1671,19 @@ impl Shell {
                 let reply = crate::git_call::reply(reference, Err(why));
                 self.phone_send(client, reply.to_string());
             }
-            ClientMsg::Ping => {}
+            // Handled by `host::dispatch`.
+            ClientMsg::Upload { .. }
+            | ClientMsg::Settings { .. }
+            | ClientMsg::Setting { .. }
+            | ClientMsg::Cancel { .. }
+            | ClientMsg::Unqueue { .. }
+            | ClientMsg::ResumeQueue { .. }
+            | ClientMsg::Permission { .. }
+            | ClientMsg::Answer { .. }
+            | ClientMsg::SkipQuestion { .. }
+            | ClientMsg::Secret { .. }
+            | ClientMsg::Visible { .. }
+            | ClientMsg::Ping => {}
         }
     }
 
@@ -2508,6 +2364,97 @@ fn tailscale_address(port: u16) -> Address {
             what: "Your tailnet does not issue HTTPS certificates yet. Turn on HTTPS Certificates in its DNS settings.".into(),
             link: Some(("Open DNS settings", tailscale::ADMIN_DNS_URL.into())),
         },
+    }
+}
+
+/// The app as a `SessionHost` for its phones, with the window it starts a
+/// session's agent in.
+struct PhoneHost<'a> {
+    shell: &'a mut Shell,
+    window: &'a mut Window,
+}
+
+impl SessionHost for PhoneHost<'_> {
+    type Owner = Shell;
+
+    fn reply(&mut self, client: ClientId, msg: String) {
+        self.shell.phone_send(client, msg);
+    }
+
+    fn has_session(&self, session: &str) -> bool {
+        self.shell.phone_session(session).is_some()
+    }
+
+    fn thread(&self, session: &str) -> Option<gpui::Entity<Thread>> {
+        let (env_path, sid) = self.shell.phone_session(session)?;
+        self.shell.phone_thread(&env_path, &sid)
+    }
+
+    fn live_thread(
+        &mut self,
+        session: &str,
+        cx: &mut Context<Shell>,
+    ) -> Option<gpui::Entity<Thread>> {
+        let (env_path, sid) = self.shell.phone_session(session)?;
+        self.shell.ensure_live(&env_path, &sid, self.window, cx);
+        self.shell.phone_thread(&env_path, &sid)
+    }
+
+    // Esc in this app pauses the queue, for a phone through it too.
+    fn stop(&mut self, thread: &gpui::Entity<Thread>, _keep_queue: bool, cx: &mut Context<Shell>) {
+        thread.update(cx, |t, cx| t.cancel(cx));
+    }
+
+    // The environment remembers it too, as when picked on the desktop.
+    fn remember_setting(
+        &mut self,
+        session: &str,
+        s: Setting,
+        value: &str,
+        cx: &mut Context<Shell>,
+    ) {
+        let Some((env_path, sid)) = self.shell.phone_session(session) else {
+            return;
+        };
+        let agent = self
+            .shell
+            .find_env(&env_path)
+            .and_then(|e| e.sessions.iter().find(|x| *x.id == *sid))
+            .map(|x| x.agent);
+        if let Some(agent) = agent {
+            self.shell.remember_setting(&env_path, agent, s, value, cx);
+        }
+    }
+
+    fn private(&self) -> bool {
+        self.shell
+            .phone
+            .as_ref()
+            .is_some_and(|l| l.server.private())
+    }
+
+    // Saved as a pasted image, so the id a prompt names is worth that file.
+    fn upload_piece(
+        &mut self,
+        upload: &str,
+        name: &str,
+        part: usize,
+        of: usize,
+        data: &str,
+    ) -> Option<PathBuf> {
+        let link = self.shell.phone.as_mut()?;
+        link.uploads
+            .piece(upload, name, part, of, data, super::composer::save_image)
+    }
+
+    fn set_visible(&mut self, client: ClientId, visible: bool) {
+        if let Some(link) = &mut self.shell.phone {
+            if visible {
+                link.hidden.remove(&client);
+            } else {
+                link.hidden.insert(client);
+            }
+        }
     }
 }
 

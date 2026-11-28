@@ -37,6 +37,9 @@ use crate::agent::{
 };
 use crate::clone_source;
 use crate::model::{Status, unix_now};
+use crate::phone::host::{
+    self, DEVICE_SETTINGS, SessionHost, answer_question, device_setting, session_error,
+};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
     self, Access, ClientId, ClientMsg, Incoming, Reach, Server, Transport, notify, push, tailscale,
@@ -66,10 +69,6 @@ const TERM_CHUNK: usize = 32 * 1024;
 /// How long a terminal no device follows keeps running: through a laptop's
 /// sleep, but not forever once the app that opened it is gone.
 const TERM_ALONE: Duration = Duration::from_secs(60 * 60);
-
-/// The settings a device can pick: the model, then the reasoning (its choices
-/// depend on the model).
-const DEVICE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
 
 /// What `arakun server serve` was started with; what is left out stays as the
 /// last run had it.
@@ -2954,6 +2953,9 @@ impl Daemon {
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
         let gone = |session: &str| session_error(session, "that session is gone");
         self.desktops.heard(client, &msg);
+        let Some(msg) = host::dispatch(self, client, msg, cx) else {
+            return;
+        };
         match msg {
             ClientMsg::Open {
                 session,
@@ -3039,31 +3041,6 @@ impl Daemon {
                     self.transport.send(client, session_error(&session, &e));
                 }
             }
-            ClientMsg::Upload {
-                session: _,
-                upload,
-                name,
-                part,
-                of,
-                data,
-            } => {
-                let dir = self.store.uploads_dir();
-                let saved = self
-                    .uploads
-                    .piece(&upload, &name, part, of, &data, |bytes, ext| {
-                        save_upload(&dir, bytes, ext)
-                    });
-                if let Some(path) = saved {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy())
-                        .unwrap_or_default();
-                    self.transport.send(
-                        client,
-                        json!({ "type": "uploaded", "upload": upload, "name": name }).to_string(),
-                    );
-                }
-            }
             ClientMsg::Start {
                 env,
                 agent,
@@ -3139,111 +3116,6 @@ impl Daemon {
                     "settings": wire::settings(list),
                 });
                 self.transport.send(client, reply.to_string());
-            }
-            ClientMsg::Settings { session } => {
-                if self.store.session(&session).is_none() {
-                    return;
-                }
-                let list = match self.ensure_live(&session, cx) {
-                    Ok(thread) => session_settings(thread.read(cx)),
-                    Err(_) => Vec::new(),
-                };
-                let reply =
-                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
-                self.transport.send(client, reply.to_string());
-            }
-            ClientMsg::Setting {
-                session,
-                key,
-                value,
-            } => {
-                let Some(s) = device_setting(&key) else {
-                    self.transport.send(
-                        client,
-                        session_error(&session, "that setting is not one a device changes"),
-                    );
-                    return;
-                };
-                let Some(thread) = self.thread(&session) else {
-                    self.transport.send(
-                        client,
-                        session_error(&session, "that session is not running"),
-                    );
-                    return;
-                };
-                thread.update(cx, |t, cx| t.set_setting(s, &value, cx));
-                // The place remembers it too, for its next session of this agent.
-                if let Some((place, agent)) = self
-                    .store
-                    .session(&session)
-                    .map(|r| (r.place.clone(), r.agent))
-                    && let Some(place) = self.store.place_mut(&place)
-                {
-                    place.pick(agent, s, &value);
-                    self.save_store();
-                }
-                let list = session_settings(thread.read(cx));
-                let reply =
-                    json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
-                self.transport.send(client, reply.to_string());
-            }
-            ClientMsg::Cancel {
-                session,
-                keep_queue,
-            } => {
-                if let Some(thread) = self.thread(&session) {
-                    if keep_queue {
-                        thread.update(cx, |t, cx| t.cancel(cx));
-                    } else {
-                        stop_turn(&thread, cx);
-                    }
-                }
-            }
-            ClientMsg::Unqueue {
-                session,
-                index,
-                text,
-                now,
-            } => match self.queue_thread(&session, now, cx) {
-                Ok(thread) => thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx)),
-                Err(e) => self.transport.send(client, session_error(&session, &e)),
-            },
-            ClientMsg::ResumeQueue { session } => match self.queue_thread(&session, true, cx) {
-                Ok(thread) => thread.update(cx, |t, cx| t.resume_queue(cx)),
-                Err(e) => self.transport.send(client, session_error(&session, &e)),
-            },
-            ClientMsg::Permission { session, option } => {
-                if let Some(thread) = self.thread(&session) {
-                    thread.update(cx, |t, cx| t.respond_permission(&option, cx));
-                }
-            }
-            ClientMsg::Answer { session, answers } => {
-                if let Some(thread) = self.thread(&session)
-                    && let Err(e) = answer_question(&thread, answers, cx)
-                {
-                    self.transport.send(client, session_error(&session, &e));
-                }
-            }
-            ClientMsg::SkipQuestion { session } => {
-                if let Some(thread) = self.thread(&session) {
-                    thread.update(cx, |t, cx| t.skip_question(cx));
-                }
-            }
-            ClientMsg::Secret {
-                session,
-                id,
-                values,
-            } => {
-                let private = self.transport.private();
-                let answered = match self.thread(&session) {
-                    Some(thread) => {
-                        thread.update(cx, |t, cx| t.answer_secret(id, values, private, cx))
-                    }
-                    None => Err("that session is not running".into()),
-                };
-                if let Err(e) = answered {
-                    self.transport.send(client, session_error(&session, &e));
-                }
             }
             ClientMsg::Fork { session } => match self.thread_to_change(&session, cx) {
                 Ok(thread) => {
@@ -3510,13 +3382,6 @@ impl Daemon {
                     wire::error("only a paired device has sign-ins here"),
                 ),
             },
-            ClientMsg::Visible { visible } => {
-                if visible {
-                    self.hidden.remove(&client);
-                } else {
-                    self.hidden.insert(client);
-                }
-            }
             // Only the desktop app says this; phones have no idle time to tell.
             ClientMsg::Idle { secs } => self.heard_idle.heard(client, secs, Instant::now()),
             ClientMsg::AddPlace { path } => self.add_device_place(client, path, cx),
@@ -3740,7 +3605,19 @@ impl Daemon {
                 place,
                 call,
             } => self.git(client, reference, place, call, cx),
-            ClientMsg::Ping => {}
+            // Handled by `host::dispatch`.
+            ClientMsg::Upload { .. }
+            | ClientMsg::Settings { .. }
+            | ClientMsg::Setting { .. }
+            | ClientMsg::Cancel { .. }
+            | ClientMsg::Unqueue { .. }
+            | ClientMsg::ResumeQueue { .. }
+            | ClientMsg::Permission { .. }
+            | ClientMsg::Answer { .. }
+            | ClientMsg::SkipQuestion { .. }
+            | ClientMsg::Secret { .. }
+            | ClientMsg::Visible { .. }
+            | ClientMsg::Ping => {}
         }
     }
 
@@ -4811,10 +4688,80 @@ impl Daemon {
     }
 }
 
-/// An error about session `session`, which a device shows in that session.
-/// A device that does not look for `id` shows it as any other error.
-fn session_error(session: &str, message: &str) -> String {
-    json!({ "type": "error", "id": session, "message": message }).to_string()
+impl SessionHost for Daemon {
+    type Owner = Daemon;
+
+    fn reply(&mut self, client: ClientId, msg: String) {
+        self.transport.send(client, msg);
+    }
+
+    fn has_session(&self, session: &str) -> bool {
+        self.store.session(session).is_some()
+    }
+
+    fn thread(&self, session: &str) -> Option<Entity<Thread>> {
+        Daemon::thread(self, session)
+    }
+
+    fn live_thread(&mut self, session: &str, cx: &mut Context<Self>) -> Option<Entity<Thread>> {
+        self.ensure_live(session, cx).ok()
+    }
+
+    fn queue_thread(
+        &mut self,
+        session: &str,
+        starts_turn: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Thread>, String> {
+        Daemon::queue_thread(self, session, starts_turn, cx)
+    }
+
+    fn stop(&mut self, thread: &Entity<Thread>, keep_queue: bool, cx: &mut Context<Self>) {
+        if keep_queue {
+            thread.update(cx, |t, cx| t.cancel(cx));
+        } else {
+            stop_turn(thread, cx);
+        }
+    }
+
+    fn remember_setting(&mut self, session: &str, s: Setting, value: &str, _: &mut Context<Self>) {
+        if let Some((place, agent)) = self
+            .store
+            .session(session)
+            .map(|r| (r.place.clone(), r.agent))
+            && let Some(place) = self.store.place_mut(&place)
+        {
+            place.pick(agent, s, value);
+            self.save_store();
+        }
+    }
+
+    fn private(&self) -> bool {
+        self.transport.private()
+    }
+
+    fn upload_piece(
+        &mut self,
+        upload: &str,
+        name: &str,
+        part: usize,
+        of: usize,
+        data: &str,
+    ) -> Option<PathBuf> {
+        let dir = self.store.uploads_dir();
+        self.uploads
+            .piece(upload, name, part, of, data, |bytes, ext| {
+                save_upload(&dir, bytes, ext)
+            })
+    }
+
+    fn set_visible(&mut self, client: ClientId, visible: bool) {
+        if visible {
+            self.hidden.remove(&client);
+        } else {
+            self.hidden.insert(client);
+        }
+    }
 }
 
 /// A rewind a device asked of a session (`ClientMsg::Rewind`).
@@ -4932,23 +4879,6 @@ fn secret_request(
     .detach();
 }
 
-/// Answers the questionnaire a session waits on: one answer for each question.
-fn answer_question(
-    thread: &Entity<Thread>,
-    answers: Vec<String>,
-    cx: &mut Context<Daemon>,
-) -> Result<(), String> {
-    let fits = thread
-        .read(cx)
-        .pending_question()
-        .is_some_and(|q| q.questions.len() == answers.len());
-    if !fits {
-        return Err("that question is gone".into());
-    }
-    thread.update(cx, |t, cx| t.answer_question(answers, cx));
-    Ok(())
-}
-
 /// The setting `key` names, when it is one a device may pick.
 /// Why a session with follow-ups still to run is not handed over: the new
 /// agent would not get them.
@@ -4960,18 +4890,6 @@ fn waiting_follow_ups() -> String {
 /// conversation was being written for the new agent.
 fn conversation(entries: &[Entry]) -> serde_json::Value {
     serde_json::to_value(entries).unwrap_or_default()
-}
-
-fn device_setting(key: &str) -> Option<Setting> {
-    Setting::from_key(key).filter(|s| DEVICE_SETTINGS.contains(s))
-}
-
-/// A running session's settings a device can change, with their choices.
-fn session_settings(t: &Thread) -> Vec<(Setting, (String, Vec<SettingOption>))> {
-    DEVICE_SETTINGS
-        .into_iter()
-        .filter_map(|s| Some((s, t.setting(s).filter(|(_, o)| !o.is_empty())?)))
-        .collect()
 }
 
 /// What the next `agent` session of `place` starts with for a setting, and its choices.

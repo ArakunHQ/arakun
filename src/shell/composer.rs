@@ -31,7 +31,8 @@ const DRAFT_SAVE_DELAY: Duration = Duration::from_millis(600);
 #[derive(Default)]
 pub(super) struct EnvDraft {
     pub text: crate::draft::Draft,
-    /// Images and PDFs waiting above the text, sent along with the draft.
+    /// Files waiting above the text, images as pictures and the rest as
+    /// chips, sent with the draft as `@` mentions.
     pub files: Vec<PathBuf>,
     /// Large pastes, sent with the draft.
     pub pastes: Vec<paste::Paste>,
@@ -930,8 +931,8 @@ impl Shell {
             .update(cx, |c, _| f(&mut c.draft_mut(env).text))
     }
 
-    /// Opens the system's file picker; the picked files go into the draft as
-    /// `@` mentions, and images and PDFs among them are sent along with the prompt.
+    /// Opens the system's file picker; the picked files wait above the text
+    /// and go with the prompt as `@` mentions.
     fn attach_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.composer.update(cx, |c, _| c.close_completion());

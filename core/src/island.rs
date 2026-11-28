@@ -90,6 +90,8 @@ const BIG_W: f32 = 46.;
 const ROW_H: f32 = 34.;
 /// A row's gap to the island's sides and, for the last, its bottom.
 const ROW_INSET: f32 = 6.;
+/// A list row's corners, but the bottom ones of the last row.
+const ROW_RADIUS: f32 = 10.;
 const HEAD_H: f32 = 40.;
 /// The most rows the list shows, and dots the working state does.
 pub const MAX_ROWS: usize = 6;
@@ -2185,10 +2187,13 @@ impl Island {
         let dim = hsla(0., 0., 1., 0.5);
         let n = self.feed.rows.len();
         // The last row sits ROW_INSET in from the island's bottom corners: its
-        // own bottom corners follow them, concentric, instead of a fixed 10.
+        // own bottom corners follow them, concentric (the island's radius less
+        // the inset). Capped only so they and the row's top corners fit its
+        // height: capping at half the row made them flatter than the island's.
         let shown = n.min(MAX_ROWS);
         let (w, h) = View::List(shown).size(self.edge);
-        let last_radius = (bottom_radius(self.edge, w, h) - ROW_INSET).clamp(10., ROW_H / 2.);
+        let last_radius =
+            (bottom_radius(self.edge, w, h) - ROW_INSET).clamp(ROW_RADIUS, ROW_H - ROW_RADIUS);
         let head = div()
             .h(px(HEAD_H))
             .flex_none()
@@ -2237,7 +2242,7 @@ impl Island {
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(10.))
+                    .rounded(px(ROW_RADIUS))
                     .when(i + 1 == shown, |d| d.rounded_b(px(last_radius)))
                     .hover(|s| s.bg(hsla(0., 0., 1., 0.06)))
                     .on_mouse_down(

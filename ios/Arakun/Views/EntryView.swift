@@ -41,11 +41,7 @@ struct EntryView: View {
                 ForEach(Array(MarkdownPiece.split(text).enumerated()), id: \.offset) { _, piece in
                     switch piece {
                     case .text(let words):
-                        Text(markdown(words))
-                            .font(.body16)
-                            .lineSpacing(3)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        MarkdownView(words)
                     case .picture(let picture):
                         PictureView(picture: picture)
                     }
@@ -101,22 +97,6 @@ struct EntryView: View {
     private func compactedText(_ before: Int?, _ after: Int?) -> String {
         guard let before, let after else { return "Compacted" }
         return "Compacted \(before.formatted()) → \(after.formatted()) tokens"
-    }
-
-    private func markdown(_ s: String) -> AttributedString {
-        var a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
-        // Inline code in Geist Mono, on a faint well.
-        for run in a.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            a[run.range].font = .mono(14.5)
-            a[run.range].backgroundColor = Color.lineStrong.opacity(0.6)
-        }
-        for run in a.runs where run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
-            a[run.range].font = .geist(16, .semibold)
-        }
-        for run in a.runs where run.link != nil {
-            a[run.range].foregroundColor = Color.amberInk
-        }
-        return a
     }
 }
 

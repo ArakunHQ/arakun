@@ -5,8 +5,8 @@ in it.
 
 ## Headless agents
 
-`arakun agent run` starts an agent in its own process that keeps
-going with the app closed. Its tools run inside a sandbox (workspace writable, the
+`arakun agent start --headless` (or `arakun agent run`, the same) starts an agent
+in its own process that keeps going with the app closed. Its tools run inside a sandbox (workspace writable, the
 rest read-only, no credentials, no network unless `--allow net`), and a policy
 (`--policy readonly|workspace|full`) decides which tool calls need your approval
 (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and

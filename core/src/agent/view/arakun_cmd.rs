@@ -150,10 +150,11 @@ fn page(rest: &[&str]) -> Option<ArakunCall> {
 fn agent(rest: &[&str]) -> Option<ArakunCall> {
     let (sub, rest) = rest.split_first()?;
     let flags = [
-        "--model", "--effort", "--dir", "--title", "--policy", "--resume",
+        "--model", "--effort", "--dir", "--title", "--policy", "--resume", "--agent", "--mode",
+        "--allow", "--read",
     ];
     let (action, target, mono) = match *sub {
-        "new" | "run" => {
+        "start" | "new" | "run" => {
             // The title says it shorter than the prompt.
             let title = rest
                 .iter()
@@ -163,10 +164,10 @@ fn agent(rest: &[&str]) -> Option<ArakunCall> {
                 Some(t) => t.to_string(),
                 None => positional_until_command(rest, &flags).join(" "),
             };
-            let action = if *sub == "new" {
-                "New agent"
-            } else {
-                "Run agent"
+            let action = match *sub {
+                "start" => "Start agent",
+                "new" => "New agent",
+                _ => "Run agent",
             };
             (action, target, false)
         }
@@ -428,6 +429,10 @@ mod tests {
         assert_eq!(
             read("arakun agent new --effort high look at --why CI"),
             ("New agent", "look at --why CI".into())
+        );
+        assert_eq!(
+            read("arakun agent start --agent claude --headless --mode plan fix CI"),
+            ("Start agent", "fix CI".into())
         );
         assert_eq!(
             read("arakun agent wait --timeout 60 a1"),

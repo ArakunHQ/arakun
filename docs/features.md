@@ -283,7 +283,7 @@ sees the project's skills.
   saved across restarts. The panel is not a boundary: an agent that isn't
   sandboxed runs as you and can reach your `ssh-agent` without it. Sandbox the
   project to keep your SSH keys from the agent.
-- **Headless and sandboxed agents.** `arakun agent run` starts an agent that keeps going
+- **Headless and sandboxed agents.** `arakun agent start --headless` starts an agent that keeps going
   with the app closed, and Sandbox agents keeps a project's agents away from your
   logins and secret files. See [Headless and sandboxed agents](headless.md).
 - **Server.** `arakun server` is Arakun without a window, for a machine nobody sits at:

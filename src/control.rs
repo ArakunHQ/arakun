@@ -622,6 +622,15 @@ fn cli(args: Vec<String>) -> Cli {
     } else {
         rest
     };
+    // `agent start` is `agent new`, `agent run` or `server new`, by where it starts.
+    let rest = match rest.split_first() {
+        Some((sub, tail)) if first == "agent" && sub == "start" => match start_args(tail) {
+            Ok(Start::Here(args)) => args,
+            Ok(Start::Server(args)) => return Cli::Exit(crate::server::cli(&args)),
+            Err(stop) => return stopped("agent start", stop),
+        },
+        _ => rest,
+    };
     let request = |cmd: &str, args: Vec<String>| Request {
         cmd: cmd.into(),
         args,
@@ -1245,6 +1254,178 @@ fn agent_args(rest: &[String]) -> Result<AgentCmd, Stop> {
     Ok(AgentCmd::Send(args))
 }
 
+/// Where `arakun agent start` starts its agent.
+#[derive(Debug, PartialEq)]
+enum Start {
+    /// The arguments of `agent new` (in the window) or `agent run` (headless),
+    /// the subcommand first.
+    Here(Vec<String>),
+    /// The arguments of `server new`, for the server running on this machine.
+    Server(Vec<String>),
+}
+
+/// The flags of `agent new`, `agent run` and `server new`: which take a value,
+/// and which of the three take each.
+const START_FLAGS: &[(&str, bool, [bool; 3])] = &[
+    // (flag, takes a value, [window, headless, server])
+    ("--model", true, [true, true, true]),
+    ("--effort", true, [true, true, true]),
+    ("--dir", true, [true, true, true]),
+    ("--cwd", true, [false, true, true]),
+    ("--title", true, [true, true, true]),
+    ("--mode", true, [true, false, false]),
+    ("--ask", false, [true, false, false]),
+    ("--resume", true, [false, true, false]),
+    ("--policy", true, [false, true, false]),
+    ("--allow", true, [false, true, false]),
+    ("--read", true, [false, true, false]),
+    ("--append-system-prompt", true, [false, true, false]),
+    ("--timeout", true, [false, true, false]),
+    ("--result", true, [false, true, false]),
+    ("--no-sandbox", false, [false, true, false]),
+    ("--yes", false, [false, true, false]),
+    ("--wait", false, [false, true, false]),
+];
+
+/// The agents the window starts, by the prefix `agent new --model` gives them.
+/// OpenCode takes its `provider/model` as it is.
+const WINDOW_AGENTS: &str = "claude, opencode or workers-ai";
+
+/// `arakun agent start [--agent <a>] [--headless | --server] [flags…] <prompt…>`
+/// as the command it is: `--agent` becomes the model's prefix for the window
+/// and for headless runs, and goes to the server as it is.
+fn start_args(rest: &[String]) -> Result<Start, Stop> {
+    let value = |i: usize| -> Result<String, Stop> {
+        rest.get(i)
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .ok_or(Stop::Usage)
+    };
+    let (mut agent, mut headless, mut server) = (String::new(), false, false);
+    let mut flags: Vec<(String, Option<String>)> = Vec::new();
+    let mut i = 0;
+    while let Some(arg) = rest.get(i) {
+        match arg.as_str() {
+            "--agent" => {
+                agent = value(i + 1)?;
+                i += 2;
+            }
+            "--headless" => {
+                headless = true;
+                i += 1;
+            }
+            "--server" => {
+                server = true;
+                i += 1;
+            }
+            _ => match START_FLAGS.iter().find(|(f, ..)| f == arg) {
+                Some((_, true, _)) => {
+                    flags.push((arg.clone(), Some(value(i + 1)?)));
+                    i += 2;
+                }
+                Some((_, false, _)) => {
+                    flags.push((arg.clone(), None));
+                    i += 1;
+                }
+                None => break,
+            },
+        }
+    }
+    // The prompt, with the `--` that lets it start with a dash.
+    let skip = match rest.get(i) {
+        Some(arg) => flags_end(arg)?,
+        None => return Err(Stop::Usage),
+    };
+    let prompt = &rest[i + skip..];
+    if prompt.join(" ").trim().is_empty() {
+        return Err(Stop::Usage);
+    }
+    let (place, name) = match (headless, server) {
+        (true, true) => {
+            return Err(Stop::Message(
+                "agent start: --headless or --server, not both".into(),
+            ));
+        }
+        (true, false) => (1, "--headless"),
+        (false, true) => (2, "--server"),
+        (false, false) => (0, "the window"),
+    };
+    for (flag, _) in &flags {
+        let takes = START_FLAGS.iter().any(|(f, _, on)| f == flag && on[place]);
+        if !takes {
+            return Err(Stop::Message(format!(
+                "agent start: {flag} does not go with {name}"
+            )));
+        }
+    }
+    let workers_ai = crate::agent::workers_ai::CLI_PREFIX;
+    let at = flags.iter().position(|(f, _)| f == "--model");
+    let given = at.and_then(|i| flags[i].1.clone()).unwrap_or_default();
+    let prefixed = |prefix: &str| {
+        if given.starts_with(prefix) {
+            given.clone()
+        } else {
+            format!("{prefix}{given}")
+        }
+    };
+    let model = match (place, agent.as_str()) {
+        (2, _) | (_, "") => None,
+        (_, "workers-ai") if given.is_empty() => Some(format!(
+            "{workers_ai}{}",
+            crate::agent::workers_ai::MODELS[0].id
+        )),
+        (_, "workers-ai") => Some(prefixed(workers_ai)),
+        (1, other) => {
+            return Err(Stop::Message(format!(
+                "agent start: --headless runs workers-ai agents, not {other}"
+            )));
+        }
+        // `claude/` alone: the app starts Claude Code on its default model.
+        (_, "claude") => Some(prefixed("claude/")),
+        (_, "opencode") if given.starts_with("claude/") || given.starts_with(workers_ai) => {
+            return Err(Stop::Message(format!(
+                "agent start: --model {given} is not an OpenCode model"
+            )));
+        }
+        (_, "opencode") => None,
+        (_, other) => {
+            return Err(Stop::Message(format!(
+                "agent start: the window starts {WINDOW_AGENTS}, not {other}; \
+                 --server starts it on the Arakun server running here"
+            )));
+        }
+    };
+    match (model, at) {
+        (Some(m), Some(i)) => flags[i].1 = Some(m),
+        (Some(m), None) => flags.push(("--model".into(), Some(m))),
+        (None, _) => {}
+    }
+    let mut out = vec![
+        match place {
+            1 => "run",
+            _ => "new",
+        }
+        .to_string(),
+    ];
+    if place == 2 && !agent.is_empty() {
+        out.extend(["--agent".to_string(), agent]);
+    }
+    for (flag, v) in flags {
+        out.push(flag);
+        out.extend(v);
+    }
+    // The server's parser has no `--`: everything after its flags is the prompt.
+    if skip == 1 && place != 2 {
+        out.push("--".into());
+    }
+    out.extend(prompt.iter().cloned());
+    Ok(if place == 2 {
+        Start::Server(out)
+    } else {
+        Start::Here(out)
+    })
+}
+
 /// `arakun agent wait`: polls the session until it stops working, then prints
 /// its status and the agent's last message; fails when it ended in an error or
 /// the time runs out.
@@ -1744,6 +1925,8 @@ mod tests {
             &["agent", "new", "--model", "m", "--help", "fix"],
             &["agent", "run", "--help"],
             &["agent", "run", "--wait", "--help", "fix"],
+            &["agent", "start", "--help"],
+            &["agent", "start", "--headless", "--help"],
             &["agent", "log", "--help"],
             &["agent", "log", "-n", "5", "--help"],
             &["agent", "send", "--help"],
@@ -1763,8 +1946,83 @@ mod tests {
             &["page", "--json"],
             &["agent", "new", "--modle", "m", "fix"],
             &["agent", "run", "--modle", "m", "fix"],
+            &["agent", "start", "--modle", "m", "fix"],
+            &["agent", "start", "--server", "--headless", "fix"],
         ] {
             assert!(matches!(cli(args), Cli::Exit(2)), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn agent_start_picks_new_run_or_server_new() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let start = |a: &[&str]| start_args(&v(a));
+        let here = |a: &[&str]| Ok(Start::Here(v(a)));
+        let wa = crate::agent::workers_ai::CLI_PREFIX;
+        let first = format!("{wa}{}", crate::agent::workers_ai::MODELS[0].id);
+        // In the window, as `agent new`; the agent becomes the model's prefix.
+        assert_eq!(start(&["fix", "it"]), here(&["new", "fix", "it"]));
+        assert_eq!(
+            start(&["--agent", "claude", "--ask", "fix"]),
+            here(&["new", "--ask", "--model", "claude/", "fix"])
+        );
+        assert_eq!(
+            start(&["--model", "opus", "--agent", "claude", "fix"]),
+            here(&["new", "--model", "claude/opus", "fix"])
+        );
+        assert_eq!(
+            start(&["--agent", "claude", "--model", "claude/opus", "fix"]),
+            here(&["new", "--model", "claude/opus", "fix"])
+        );
+        assert_eq!(
+            start(&["--agent", "workers-ai", "fix"]),
+            here(&["new", "--model", &first, "fix"])
+        );
+        assert_eq!(
+            start(&["--agent", "opencode", "--model", "openai/gpt", "fix"]),
+            here(&["new", "--model", "openai/gpt", "fix"])
+        );
+        // Headless, as `agent run`.
+        assert_eq!(
+            start(&["--headless", "--wait", "--policy", "full", "--", "-x"]),
+            here(&["run", "--wait", "--policy", "full", "--", "-x"])
+        );
+        assert_eq!(
+            start(&[
+                "--agent",
+                "workers-ai",
+                "--headless",
+                "--model",
+                "@cf/m",
+                "go"
+            ]),
+            here(&["run", "--model", &format!("{wa}@cf/m"), "go"])
+        );
+        // On the server, as `server new`, the agent as it is and no `--`.
+        assert_eq!(
+            start(&["--server", "--agent", "droid", "--cwd", "x", "--", "--fix"]),
+            Ok(Start::Server(v(&[
+                "new", "--agent", "droid", "--cwd", "x", "--fix"
+            ])))
+        );
+        // Mistakes stop it before anything starts.
+        assert_eq!(start(&["--headless", "--help"]), Err(Stop::Help));
+        assert_eq!(
+            start(&["--modle", "m", "x"]),
+            Err(Stop::Flag("--modle".into()))
+        );
+        assert_eq!(start(&["--server"]), Err(Stop::Usage));
+        assert_eq!(start(&["--agent"]), Err(Stop::Usage));
+        for bad in [
+            &["--headless", "--server", "x"][..],
+            &["--headless", "--agent", "claude", "x"],
+            &["--agent", "droid", "x"],
+            &["--ask", "--headless", "x"],
+            &["--server", "--policy", "full", "x"],
+            &["--wait", "x"],
+            &["--agent", "opencode", "--model", "claude/opus", "x"],
+        ] {
+            assert!(matches!(start(bad), Err(Stop::Message(_))), "{bad:?}");
         }
     }
 

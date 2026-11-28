@@ -131,7 +131,8 @@ impl Shell {
                 crate::agent::acp_option(&crate::agent::catalog::claude_options(), Setting::Model)
                     .map(|o| o.options.iter().map(|c| c.id.to_string()).collect())
                     .unwrap_or_default();
-            if !offered.is_empty() && !offered.iter().any(|m| m == claude) {
+            // `claude/` alone (`agent start --agent claude`) keeps Claude Code's default.
+            if !claude.is_empty() && !offered.is_empty() && !offered.iter().any(|m| m == claude) {
                 return Reply::err(format!(
                     "Claude doesn't offer {claude}; pick one of: {}",
                     offered.join(", ")
@@ -158,7 +159,10 @@ impl Shell {
                 t => t.to_string(),
             }
             .into();
-            let mut extra = vec![(Setting::Model, claude.to_string())];
+            let mut extra = Vec::new();
+            if !claude.is_empty() {
+                extra.push((Setting::Model, claude.to_string()));
+            }
             if !effort.is_empty() {
                 extra.push((Setting::Effort, effort.to_string()));
             }
@@ -184,7 +188,12 @@ impl Shell {
             };
             self.save(cx);
             cx.notify();
-            return Reply::ok(format!("{id}  claude/{claude}  {}", env_path.display()));
+            let model = format!("claude/{claude}");
+            return Reply::ok(format!(
+                "{id}  {}  {}",
+                model.trim_end_matches('/'),
+                env_path.display()
+            ));
         }
         let native = model
             .strip_prefix(workers_ai::CLI_PREFIX)

@@ -353,7 +353,7 @@ Manager (Windows Credentials, Generic Credentials).
 
 ## Not available on Windows
 
-- **Headless agents (`arakun agent run`):** their sandbox is bubblewrap on Linux
+- **Headless agents (`arakun agent start --headless`):** their sandbox is bubblewrap on Linux
   and Seatbelt on macOS; Windows has neither.
 - **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in the
   Marketplace tab are Linux-only; on Windows they print a notice instead of running.

@@ -23,6 +23,7 @@ use gpui::{
 use super::api::{DeviceRow, InviteRow, InviteeState, MemberRow, Role};
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
+use super::store::DeviceError;
 use super::{Access, Teams};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
@@ -816,6 +817,14 @@ impl TeamsView {
     /// Shows a pane, with the cursor in its field when it has one.
     fn show(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         self.team_menu = false;
+        // A notice belongs to the page it came from: one about a channel
+        // means nothing on Devices. It comes back if its cause does.
+        if pane != self.pane {
+            self.hub.update(cx, |h, _| {
+                h.error = None;
+                h.info = None;
+            });
+        }
         if let Some(t) = self.selected_team() {
             self.last_team = Some(t.to_string());
         }
@@ -4391,6 +4400,44 @@ impl TeamsView {
         )
     }
 
+    /// This device could not be set up: what went wrong, by kind, and the
+    /// way past it.
+    fn render_device_failed(
+        &self,
+        e: &DeviceError,
+        retry: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (icon, title) = device_failure_title(e);
+        let mut body = crate::redact::text(&e.to_string()).into_owned();
+        let action = if let DeviceError::KeysLost(_) = e {
+            body.push_str(
+                " Restore the keyring entry and try again, or set this computer up as a new \
+                 device. A new device starts with an empty cache, and another of your \
+                 devices has to approve it.",
+            );
+            div()
+                .flex()
+                .gap(ui::sp(8.))
+                .child(retry)
+                .child(
+                    ui::button(
+                        "teams-new-device",
+                        "Set up as a new device",
+                        ButtonKind::Primary,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.hub.update(cx, |h, cx| h.new_device(cx))),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            retry
+        };
+        Self::centered(ui::empty_state(icon, title, &body, Some(action)))
+    }
+
     /// The sheet once this device is registered.
     fn render_ready(&mut self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
@@ -4687,12 +4734,10 @@ impl Render for TeamsView {
                     let (code, id) = (code.clone(), id.clone());
                     self.render_unendorsed(&code, &id, cx)
                 }
-                (DeviceState::Failed(e), _) => Self::centered(ui::empty_state(
-                    "alert-circle",
-                    "Can't reach the Teams server",
-                    &crate::redact::text(e),
-                    Some(retry("teams-retry-device", cx)),
-                )),
+                (DeviceState::Failed(e), _) => {
+                    let e = e.clone();
+                    self.render_device_failed(&e, retry("teams-retry-device", cx), cx)
+                }
                 (_, Load::Unreachable(e)) if empty => Self::centered(ui::empty_state(
                     "alert-circle",
                     "Can't reach the Teams server",
@@ -5091,9 +5136,38 @@ fn when(at: u64) -> String {
     }
 }
 
+/// The icon and title for a device that could not be set up. Only the server
+/// kind is about the network; the rest happened on this computer.
+fn device_failure_title(e: &DeviceError) -> (&'static str, &'static str) {
+    match e {
+        DeviceError::Server(_) => ("alert-circle", "Can't reach the Teams server"),
+        DeviceError::NoKeyring(_) => ("square-lock02", "No keyring for this device's keys"),
+        DeviceError::Keyring(_) => ("square-lock02", "The keyring didn't open"),
+        DeviceError::KeysLost(_) => ("shield-alert", "This device's Teams keys are missing"),
+        DeviceError::Local(_) => ("computer", "Can't set up this device"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_server_failure_reads_as_the_network() {
+        let titles = [
+            DeviceError::Server("x".into()),
+            DeviceError::NoKeyring("x".into()),
+            DeviceError::Keyring("x".into()),
+            DeviceError::KeysLost("x".into()),
+            DeviceError::Local("x".into()),
+        ]
+        .map(|e| device_failure_title(&e).1);
+        let network = titles.iter().filter(|t| t.contains("Teams server")).count();
+        assert_eq!(network, 1);
+        assert_eq!(titles[0], "Can't reach the Teams server");
+        let distinct: HashSet<_> = titles.iter().collect();
+        assert_eq!(distinct.len(), titles.len());
+    }
 
     #[test]
     fn the_list_is_told_only_the_rows_that_changed() {

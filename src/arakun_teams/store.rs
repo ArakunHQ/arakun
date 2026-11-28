@@ -85,8 +85,9 @@ struct Entry {
 pub fn load_device(
     base: &str,
     github_id: u64,
-    trusted_devices: impl FnOnce() -> Result<Vec<DeviceRow>, String>,
-) -> Result<Local, String> {
+    trusted_devices: impl FnOnce() -> Result<Vec<DeviceRow>, DeviceError>,
+    fresh: bool,
+) -> Result<Local, DeviceError> {
     let state = std::env::var_os("ARAKUN_STATE");
     let state = state
         .as_deref()
@@ -103,17 +104,94 @@ pub fn load_device(
     // one account. The application already holds the state lock across processes.
     static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = INIT.lock().map_err(|_| "Teams device setup failed.")?;
+    if fresh {
+        return fresh_device(&scope, read_entry, write_entry);
+    }
     load_in(&scope, read_entry, write_entry, trusted_devices)
+}
+
+/// Why this device could not be set up. The kind picks what the Team tab says
+/// and what it offers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceError {
+    /// The Teams server did not answer, or not with what was asked.
+    Server(String),
+    /// There is no keyring to keep this device's keys in.
+    NoKeyring(String),
+    /// The keyring is there, but it would not give or keep the keys.
+    Keyring(String),
+    /// The keys of this account's cache are gone, so the cache can't be
+    /// opened. Setting up as a new device is the way past it.
+    KeysLost(String),
+    /// Anything else on this computer, such as a cache that won't open.
+    Local(String),
+}
+
+impl std::fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceError::Server(e)
+            | DeviceError::NoKeyring(e)
+            | DeviceError::Keyring(e)
+            | DeviceError::KeysLost(e)
+            | DeviceError::Local(e) => f.write_str(e),
+        }
+    }
+}
+
+impl From<String> for DeviceError {
+    fn from(e: String) -> Self {
+        DeviceError::Local(e)
+    }
+}
+
+impl From<&str> for DeviceError {
+    fn from(e: &str) -> Self {
+        DeviceError::Local(e.to_string())
+    }
+}
+
+/// A new device for `scope`, for when its keys are lost. The cache they
+/// opened moves aside, kept in case the keys come back. An entry that is still
+/// there is never replaced: its keys are not lost.
+fn fresh_device(
+    scope: &Scope,
+    read: impl Fn(&str) -> Result<Option<String>, DeviceError>,
+    write: impl FnOnce(&str, &str) -> Result<(), DeviceError>,
+) -> Result<Local, DeviceError> {
+    if read(&scope.entry)?.is_some() {
+        return Err(DeviceError::Local(
+            "This device's Teams keys are in the keyring again. Try again to use them.".into(),
+        ));
+    }
+    if scope.file.try_exists().map_err(|e| e.to_string())? {
+        let aside = lost_name(&scope.file);
+        std::fs::rename(&scope.file, &aside)
+            .map_err(|e| format!("Could not move the old Teams cache aside: {e}"))?;
+    }
+    new_device(scope, false, write)
+}
+
+/// A name next to `file` that is not taken, for a cache whose keys are lost.
+fn lost_name(file: &Path) -> PathBuf {
+    let base = file.with_extension("keys.lost");
+    (1..)
+        .map(|n| match n {
+            1 => base.clone(),
+            n => file.with_extension(format!("keys.lost-{n}")),
+        })
+        .find(|p| !p.exists())
+        .expect("an unbounded range")
 }
 
 fn load_in(
     scope: &Scope,
-    read: impl Fn(&str) -> Result<Option<String>, String>,
-    write: impl FnOnce(&str, &str) -> Result<(), String>,
-    trusted_devices: impl FnOnce() -> Result<Vec<DeviceRow>, String>,
-) -> Result<Local, String> {
+    read: impl Fn(&str) -> Result<Option<String>, DeviceError>,
+    write: impl FnOnce(&str, &str) -> Result<(), DeviceError>,
+    trusted_devices: impl FnOnce() -> Result<Vec<DeviceRow>, DeviceError>,
+) -> Result<Local, DeviceError> {
     if let Some(text) = read(&scope.entry)? {
-        return Local::from_entry(&text, &scope.file);
+        return Ok(Local::from_entry(&text, &scope.file)?);
     }
     let cached = scope.file.try_exists().map_err(|e| e.to_string())?;
     // The same account at the former default address: its own entry, so no
@@ -139,7 +217,10 @@ fn load_in(
                 // An account with no devices is not the owner, so it sets
                 // up beside the file and leaves it alone.
                 if !trusted_devices()?.is_empty() {
-                    return Err("The old Teams cache exists, but its device keys could not be found. Restore the keyring entry and try again.".into());
+                    return Err(DeviceError::KeysLost(
+                        "The old Teams cache exists, but its device keys could not be found."
+                            .into(),
+                    ));
                 }
                 return new_device(scope, cached, write);
             }
@@ -177,10 +258,12 @@ fn load_in(
 fn new_device(
     scope: &Scope,
     cached: bool,
-    write: impl FnOnce(&str, &str) -> Result<(), String>,
-) -> Result<Local, String> {
+    write: impl FnOnce(&str, &str) -> Result<(), DeviceError>,
+) -> Result<Local, DeviceError> {
     if cached {
-        return Err("The Teams cache exists, but its device keys are missing. Restore the keyring entry to open it.".into());
+        return Err(DeviceError::KeysLost(
+            "The Teams cache exists, but its device keys are missing.".into(),
+        ));
     }
     let device = Device::generate();
     let file_key = crypto::new_team_key();
@@ -201,20 +284,39 @@ const BAD_ENTRY: &str = "The keyring's Teams device entry could not be read.";
 
 // A locked keyring, a missing one and malformed bytes are errors, not an absent
 // entry: only an absent entry permits creation of a new device.
-fn read_entry(account: &str) -> Result<Option<String>, String> {
+fn read_entry(account: &str) -> Result<Option<String>, DeviceError> {
+    use crate::platform::keyring::Error;
     match crate::platform::keyring::read(account) {
-        Ok(Some(text)) if text.is_empty() => Err(BAD_ENTRY.to_string()),
+        Ok(Some(text)) if text.is_empty() => Err(BAD_ENTRY.into()),
         Ok(entry) => Ok(entry),
-        Err(e) => Err(format!(
+        Err(Error::Unavailable(e)) => Err(no_keyring(&e)),
+        Err(Error::Failed(e)) => Err(DeviceError::Keyring(format!(
             "The keyring could not read this device's Teams keys: {e}. Unlock the keyring and try again."
-        )),
+        ))),
     }
 }
 
 // Only called after the entry read as absent, so replacing never loses a device.
-fn write_entry(account: &str, text: &str) -> Result<(), String> {
-    crate::platform::keyring::store(account, "arakun: Teams device keys", text)
-        .map_err(|e| format!("The keyring could not keep this device's Teams keys: {e}"))
+fn write_entry(account: &str, text: &str) -> Result<(), DeviceError> {
+    use crate::platform::keyring::Error;
+    crate::platform::keyring::store(account, "arakun: Teams device keys", text).map_err(|e| match e
+    {
+        Error::Unavailable(e) => no_keyring(&e),
+        Error::Failed(e) => DeviceError::Keyring(format!(
+            "The keyring could not keep this device's Teams keys: {e}"
+        )),
+    })
+}
+
+/// These keys have no file to fall back to, unlike Arakun's other secrets, so
+/// the person has to be told what is missing.
+fn no_keyring(e: &str) -> DeviceError {
+    let what = if cfg!(any(windows, target_os = "macos")) {
+        "Teams keeps this device's keys in the system keyring, and it could not be reached"
+    } else {
+        "Teams keeps this device's keys in the system keyring, and there is none. Install a Secret Service, such as gnome-keyring, KWallet or KeePassXC, make sure it runs, and try again"
+    };
+    DeviceError::NoKeyring(format!("{what} ({e})."))
 }
 
 fn read_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
@@ -662,8 +764,8 @@ mod tests {
         fn load(
             &self,
             scope: &Scope,
-            rows: impl FnOnce() -> Result<Vec<DeviceRow>, String>,
-        ) -> Result<Local, String> {
+            rows: impl FnOnce() -> Result<Vec<DeviceRow>, DeviceError>,
+        ) -> Result<Local, DeviceError> {
             load_in(
                 scope,
                 |name| Ok(self.ring.borrow().get(name).cloned()),
@@ -722,7 +824,7 @@ mod tests {
         }
     }
 
-    fn no_lookup() -> Result<Vec<DeviceRow>, String> {
+    fn no_lookup() -> Result<Vec<DeviceRow>, DeviceError> {
         panic!("no device lookup is needed")
     }
 
@@ -829,6 +931,50 @@ mod tests {
         let state = Scope::new(DEFAULT_URL, 7, Some("/tmp/dev/state-2.json"), &f.dir);
         assert_ne!(state.entry, f.scope(7).entry);
         assert_ne!(state.file, f.scope(7).file);
+    }
+
+    #[test]
+    fn lost_keys_say_so_and_a_new_device_keeps_the_old_cache_aside() {
+        let f = Fixture::new();
+        let scope = f.scope(7);
+        let old = f.load(&scope, no_lookup).unwrap();
+        let mut kept = old.read().unwrap();
+        kept.put_key("shared", 1, &[9; 32]);
+        old.sealer().write(&kept).unwrap();
+        f.ring.borrow_mut().remove(&scope.entry);
+        assert!(matches!(
+            f.load(&scope, no_lookup),
+            Err(DeviceError::KeysLost(_))
+        ));
+        let fresh = || {
+            fresh_device(
+                &scope,
+                |name| Ok(f.ring.borrow().get(name).cloned()),
+                |name, text| {
+                    f.ring.borrow_mut().insert(name.into(), text.into());
+                    Ok(())
+                },
+            )
+        };
+        let new = fresh().unwrap();
+        assert_ne!(new.device.id(), old.device.id());
+        assert!(new.read().unwrap().key("shared", 1).is_none());
+        // The old cache is kept, and still opens should its keys come back.
+        let aside = scope.file.with_extension("keys.lost");
+        let bytes = std::fs::read(&aside).unwrap();
+        assert_eq!(old.open(&bytes).unwrap(), kept);
+        assert_eq!(
+            f.load(&scope, no_lookup).unwrap().device.id(),
+            new.device.id()
+        );
+        // Keys in the keyring are never replaced.
+        assert!(fresh().is_err());
+        // A second loss does not overwrite the first cache moved aside.
+        new.sealer().write(&new.read().unwrap()).unwrap();
+        f.ring.borrow_mut().remove(&scope.entry);
+        fresh().unwrap();
+        assert_eq!(std::fs::read(&aside).unwrap(), bytes);
+        assert!(scope.file.with_extension("keys.lost-2").exists());
     }
 
     #[test]

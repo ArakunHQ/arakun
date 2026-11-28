@@ -951,7 +951,9 @@ again after a week) in its [data folder](storage-and-env.md).
   which opens Settings › Account.
 
   The Team tab is an end-to-end encrypted team chat. Each account on this
-  profile has its own device key pairs in the system keyring. Messages and
+  profile has its own device key pairs in the system keyring. Unlike a session, they
+  are never kept outside the keyring: on Linux without a Secret Service (gnome-keyring,
+  KWallet or KeePassXC), the Team tab says so instead of setting up. Messages and
   channel names are sealed on the device, and the server never sees them or the
   team keys. It does see team names, who is in which team and with which role,
   device names, invites, and who sent a message when and how large it was (see
@@ -1061,7 +1063,12 @@ again after a week) in its [data folder](storage-and-env.md).
   team keys and trusted device roots are kept in `teams-<account>-<scope>.keys` next
   to the state, sealed with a key from the keyring. The scope identifies the server
   and profile. A lost cache can recover only the key envelopes the server still has
-  for this device, not its local trust records. Signing out discards unsent drafts.
+  for this device, not its local trust records. If the keyring entry is gone but the
+  cache is not, the Team tab says the keys are missing and offers **Set up as a new
+  device**: the old cache moves aside to `teams-<account>-<scope>.keys.lost` and this
+  computer starts again as a new device, which another of your devices approves.
+  A notice above the chat goes away when you open another page.
+  Signing out discards unsent drafts.
   A test Arakun with its own `ARAKUN_STATE` (such as `arakun dev`) keeps its own
   Teams session, device and keys. With `ARAKUN_TEAMS_FIXTURE` (a stand-in account
   for testing), `ARAKUN_TEAMS_FIXTURE_SIGN_IN=ok`, `expired` or `denied` starts

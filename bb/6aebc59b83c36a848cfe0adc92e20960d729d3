@@ -1,0 +1,28 @@
+Cargo.toml
+  s_6fd3c9446623b2::t_f0e9ad6f6f5876 3
+release-notes/v0.30.0.md
+  s_6fd3c9446623b2::t_900a7bdc1caecc 27,29-34
+  s_6fd3c9446623b2::t_f0e9ad6f6f5876 1-26,28
+server/Cargo.toml
+  s_6fd3c9446623b2::t_f0e9ad6f6f5876 13
+core/Cargo.toml
+  s_6fd3c9446623b2::t_f0e9ad6f6f5876 9
+Cargo.lock
+  s_6fd3c9446623b2::t_b30dda0206949d 285,330,373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bb6aebc59b83c36a848cfe0adc92e20960d729d3",
+  "prompts": {},
+  "sessions": {
+    "s_6fd3c9446623b2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e2ac78c-5713-495e-8ff2-364d75ef14d4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

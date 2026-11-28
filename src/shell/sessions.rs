@@ -2418,14 +2418,33 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.forget_sessions_keeping(sessions, &Default::default(), window, cx);
+    }
+
+    /// `forget_sessions`, keeping the files of `kept`: the ids of sessions
+    /// still listed, and of those they continue.
+    pub(super) fn forget_sessions_keeping(
+        &mut self,
+        sessions: Vec<Session>,
+        kept: &std::collections::HashSet<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let removed: Vec<String> = sessions.iter().map(|s| s.id.to_string()).collect();
         self.linear_sessions_removed(&removed, window, cx);
         for live in sessions.iter().filter_map(|s| s.live.as_ref()) {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        let own = sessions.iter().map(|s| s.id.to_string()).collect();
-        let ids = sessions.iter().flat_map(session_file_ids).collect();
+        let own = removed
+            .into_iter()
+            .filter(|id| !kept.contains(id))
+            .collect();
+        let ids = sessions
+            .iter()
+            .flat_map(session_file_ids)
+            .filter(|id| !kept.contains(id))
+            .collect();
         discard_session_files(own, ids, cx);
     }
 

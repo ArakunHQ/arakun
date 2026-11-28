@@ -255,6 +255,18 @@ impl Store {
         let _ = std::fs::remove_file(self.transcript_path(id));
     }
 
+    /// The sessions done and idle for `days`: not working or waiting for an
+    /// answer, and last used that long ago. The daemon leaves out the ones a
+    /// device shows or whose agent still runs.
+    pub fn idle_for(&self, days: u16, now: u64) -> Vec<String> {
+        self.sessions
+            .iter()
+            .filter(|s| !matches!(s.status, Status::Working | Status::NeedsInput))
+            .filter(|s| days > 0 && now.saturating_sub(s.updated) >= u64::from(days) * 86_400)
+            .map(|s| s.id.clone())
+            .collect()
+    }
+
     /// What [`Housekeeping::run`] needs, taken now so it can run off the
     /// daemon's thread. `also` are sessions running that the list may not
     /// hold yet.
@@ -414,6 +426,38 @@ fn without_userinfo(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sessions_idle_for_the_days_picked_are_found() {
+        const DAY: u64 = 86_400;
+        let now = 400 * DAY;
+        let record = |id: &str, updated: u64, status: Status| Record {
+            id: id.into(),
+            title: String::new(),
+            agent: AgentKind::Claude,
+            place: PathBuf::from("/p"),
+            created: 0,
+            updated,
+            added: 0,
+            removed: 0,
+            meta: None,
+            failed: false,
+            status,
+        };
+        let store = Store {
+            sessions: vec![
+                record("old", now - 31 * DAY, Status::Idle),
+                record("failed", now - 31 * DAY, Status::Error),
+                record("recent", now - 2 * DAY, Status::Idle),
+                record("working", now - 31 * DAY, Status::Working),
+                record("asking", now - 31 * DAY, Status::NeedsInput),
+            ],
+            ..Store::default()
+        };
+        assert_eq!(store.idle_for(30, now), ["old", "failed"]);
+        assert!(store.idle_for(90, now).is_empty());
+        assert!(store.idle_for(0, now).is_empty(), "off");
+    }
 
     #[test]
     fn an_origin_leaves_its_token_on_the_server() {

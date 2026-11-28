@@ -158,6 +158,14 @@ copy of it, rename it back, and start a version that can read it.
   a commit that isn't in the pull request, an agent working or waiting for you, an
   automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
   would have gone, a notice suggests it once.
+- **Archived sessions removed.** Settings › Branches › Remove archived sessions after
+  (Off, 30 days, 90 days or 1 year) removes an archived session once that long has passed
+  since it was archived or last used, whichever is later. Its transcript, its linked note
+  and the images pasted into it are deleted too. Arakun looks when it starts and then once a day. A session
+  stays when it is working, waiting for you or open in a tab (pinned or not), and the
+  files of a session another one continued stay with that one. Off by default, so
+  sessions stay until you remove them. A server's sessions follow the same setting on
+  the server (see [Arakun server](server.md)).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
 - **Running servers.** While a local server runs in one of your projects, the status

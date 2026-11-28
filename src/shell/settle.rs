@@ -203,6 +203,7 @@ impl Shell {
             if let Some(status) = settled_status(s.status, s.updated, merged_at, open) {
                 s.status = status;
                 s.settled = true;
+                s.settled_at = crate::model::unix_now();
                 ids.push(s.id.clone());
             }
         }
@@ -252,6 +253,7 @@ impl Shell {
             if let Some(status) = archived_status(s.status) {
                 s.status = status;
                 s.settled = true;
+                s.settled_at = crate::model::unix_now();
                 retire.push(s.id.to_string());
             }
         }

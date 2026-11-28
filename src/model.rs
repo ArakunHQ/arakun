@@ -307,6 +307,9 @@ pub struct Session {
     /// Archived, by hand or once its pull request merged (`crate::settle`):
     /// the sessions list leaves it out until it is used again or restored.
     pub settled: bool,
+    /// Unix seconds it was last archived; 0 when it was archived before
+    /// Arakun kept the time, or never.
+    pub settled_at: u64,
     /// It finished a turn while the user looked elsewhere. Until they open
     /// it, it waits on them like a question would.
     pub unread: bool,
@@ -348,6 +351,7 @@ impl Session {
             auto_allow: false,
             continues: Vec::new(),
             settled: false,
+            settled_at: 0,
             unread: false,
             live: None,
         }

@@ -85,6 +85,15 @@ pub struct Branches {
     pub archive_after_merge: bool,
     /// Remove old environments by themselves (`cleanup`).
     pub remove_old_environments: Cleanup,
+    /// Days an archived session is kept before it and its files go; `None`
+    /// keeps it until removed by hand. The app counts from when it was
+    /// archived or last used; `arakun server` from when a session it lists
+    /// was last used.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "keep_days"
+    )]
+    pub remove_archived_sessions: Option<u16>,
 }
 
 impl Default for Branches {
@@ -93,8 +102,23 @@ impl Default for Branches {
             namer: Namer::default(),
             archive_after_merge: true,
             remove_old_environments: Cleanup::Unset,
+            remove_archived_sessions: None,
         }
     }
+}
+
+/// `remove_archived_sessions` from the file. Anything but a number of days
+/// (`"off"`, 0, a hand edit gone wrong) keeps sessions, rather than the whole
+/// file set aside.
+fn keep_days<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .filter(|&d| d > 0)
+            .map(|d| d.min(u64::from(u16::MAX)) as u16),
+        serde_json::Value::String(s) => s.trim().parse::<u16>().ok().filter(|&d| d > 0),
+        _ => None,
+    })
 }
 
 /// Where web links open.
@@ -457,6 +481,32 @@ fn migrate(dir: &Path, path: &Path) -> Settings {
 mod tests {
     use super::*;
     use crate::stored::tests::scratch;
+
+    #[test]
+    fn archived_sessions_stay_unless_a_number_of_days_is_set() {
+        let read = |json: &str| -> Option<u16> {
+            let s: Settings = serde_json::from_str(&format!(
+                r#"{{"branches":{{"remove_archived_sessions":{json}}}}}"#
+            ))
+            .unwrap();
+            s.branches.remove_archived_sessions
+        };
+        assert_eq!(read("90"), Some(90));
+        assert_eq!(read("\"30\""), Some(30));
+        assert_eq!(read("365"), Some(365));
+        assert_eq!(read("0"), None);
+        assert_eq!(read("\"off\""), None);
+        assert_eq!(read("true"), None);
+        assert_eq!(read("null"), None);
+        assert_eq!(Settings::default().branches.remove_archived_sessions, None);
+        // Off leaves nothing in the file.
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert!(json["branches"].get("remove_archived_sessions").is_none());
+        let mut on = Settings::default();
+        on.branches.remove_archived_sessions = Some(30);
+        let json = serde_json::to_value(&on).unwrap();
+        assert_eq!(json["branches"]["remove_archived_sessions"], 30);
+    }
 
     #[test]
     fn an_empty_file_is_the_defaults() {

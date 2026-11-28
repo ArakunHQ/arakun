@@ -640,7 +640,11 @@ impl Shell {
                 .text_color(theme::text_subtle())
                 .when(collapsible, |d| {
                     d.cursor_pointer()
-                        .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                        .hover(|s| s.text_color(theme::content()))
+                        .child(ui::hover_fill(
+                            ui::motion::Fills::hover(theme::hover()),
+                            crate::ui::rad(8.),
+                        ))
                         // Saved, so it opens folded next time, but not a step
                         // to undo: folding is using the sidebar, not editing it.
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -867,7 +871,11 @@ impl Shell {
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                .hover(|s| s.text_color(theme::content()))
+                .child(ui::hover_fill(
+                    ui::motion::Fills::hover(theme::fill_selected()),
+                    crate::ui::rad(8.),
+                ))
                 .when(narrow, |d| {
                     d.justify_center()
                         .px(crate::ui::sp(0.))
@@ -1038,7 +1046,11 @@ impl Shell {
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text())
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                .hover(|s| s.text_color(theme::content()))
+                .child(ui::hover_fill(
+                    ui::motion::Fills::hover(theme::fill_selected()),
+                    crate::ui::rad(8.),
+                ))
                 // Outlined like a button, so signing in doesn't read as a
                 // gray label among the rows.
                 .when(!narrow, |d| {
@@ -1097,7 +1109,10 @@ impl Shell {
                     .p(crate::ui::sp(6.))
                     .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()))
+                    .child(ui::hover_fill(
+                        ui::motion::Fills::hover(theme::fill_selected()),
+                        crate::ui::rad(8.),
+                    ))
                     .when(narrow, |d| {
                         d.justify_center().tooltip(ui::tip_text(shown.clone()))
                     })
@@ -1176,7 +1191,10 @@ impl Shell {
                     .p(crate::ui::sp(6.))
                     .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()))
+                    .child(ui::hover_fill(
+                        ui::motion::Fills::hover(theme::fill_selected()),
+                        crate::ui::rad(8.),
+                    ))
                     .when(narrow, |d| {
                         d.justify_center().tooltip(ui::tip_text(shown.clone()))
                     })

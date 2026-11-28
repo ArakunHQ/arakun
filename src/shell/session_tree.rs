@@ -1270,6 +1270,10 @@ impl Shell {
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
             .aria_expanded(open)
             .aria_selected(keyed)
+            .child(ui::hover_fill(
+                ui::motion::Fills::hover(theme::hover()),
+                crate::ui::rad(8.),
+            ))
             .when(keyed, |d| d.child(keys::key_ring()))
             .relative()
             .flex()
@@ -1282,7 +1286,6 @@ impl Shell {
             .text_size(px(ui::TEXT_MD))
             .font_weight(FontWeight::MEDIUM)
             .text_color(theme::text())
-            .hover(|s| s.bg(theme::hover()))
             .child(
                 icon(
                     if open {
@@ -1388,7 +1391,11 @@ impl Shell {
             .cursor_pointer()
             .text_size(px(ui::TEXT_SM))
             .text_color(theme::text_faint())
-            .hover(|s| s.bg(theme::hover()).text_color(theme::text_muted()))
+            .hover(|s| s.text_color(theme::text_muted()))
+            .child(ui::hover_fill(
+                ui::motion::Fills::hover(theme::hover()),
+                crate::ui::rad(8.),
+            ))
             .child(
                 div()
                     .flex()
@@ -1535,7 +1542,11 @@ impl Shell {
             })
             .when(selected, |d| d.bg(theme::selection()))
             .when(!selected, |d| {
-                d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                d.hover(|s| s.text_color(theme::content()))
+                    .child(ui::hover_fill(
+                        ui::motion::Fills::hover(theme::hover()),
+                        crate::ui::rad(8.),
+                    ))
             })
             .children(mark.map(|mark| {
                 div()

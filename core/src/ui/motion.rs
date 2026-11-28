@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationElement, AnimationExt as _, AnyElement, App, Bounds, ContentMask, Element,
-    ElementId, EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels,
-    Styled, Window, px,
+    ElementId, EntityId, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels,
+    Rgba, Styled, Window, px,
 };
 
 /// Tooltips and small menus: there before the hand has stopped.
@@ -25,6 +25,12 @@ pub const FAST: Duration = Duration::from_millis(140);
 pub const BASE: Duration = Duration::from_millis(220);
 /// Things that travel: a row sliding to its new place.
 pub const SLOW: Duration = Duration::from_millis(280);
+
+/// A hover color coming in: quick enough that a row under the pointer
+/// answers at once, slow enough that sweeping over a list glides.
+pub const HOVER: Duration = Duration::from_millis(90);
+/// A hover or press color going back to rest, a little slower than it came.
+pub const HOVER_OUT: Duration = Duration::from_millis(150);
 
 /// Starts fast and lands softly. For anything arriving or moving.
 pub fn ease_out(t: f32) -> f32 {
@@ -304,6 +310,132 @@ impl<K: PartialEq> Slide<K> {
             content: if self.whole { self.full } else { width },
             moving: true,
         }
+    }
+}
+
+/// What the pointer does to a row or button.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Pointer {
+    #[default]
+    Away,
+    Over,
+    Down,
+}
+
+/// The backgrounds of a row or button: at rest, under the pointer, pressed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Fills {
+    pub rest: Hsla,
+    pub hover: Hsla,
+    pub press: Hsla,
+}
+
+/// How much further than its hover a press goes from rest.
+const PRESS: f32 = 1.6;
+
+impl Fills {
+    /// `rest` and `hover`, with a press one step past the hover in the same
+    /// direction: a ghost row darkens further, a white button dims further.
+    pub fn new(rest: impl Into<Hsla>, hover: impl Into<Hsla>) -> Self {
+        let (rest, hover) = (rest.into(), hover.into());
+        Self {
+            rest,
+            hover,
+            press: mix(rest, hover, PRESS),
+        }
+    }
+
+    /// Nothing at rest, `hover` under the pointer.
+    pub fn hover(hover: impl Into<Hsla>) -> Self {
+        let hover = hover.into();
+        Self::new(hover.opacity(0.), hover)
+    }
+
+    fn of(&self, p: Pointer) -> Hsla {
+        match p {
+            Pointer::Away => self.rest,
+            Pointer::Over => self.hover,
+            Pointer::Down => self.press,
+        }
+    }
+}
+
+/// Mixes `a` toward `b` by `t` with premultiplied alpha, so fading from
+/// transparent does not pass through a darker or tinted color. A `t` above 1
+/// goes past `b`; each channel stops at its end.
+pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (a, b) = (Rgba::from(a), Rgba::from(b));
+    let alpha = (a.a + (b.a - a.a) * t).clamp(0., 1.);
+    if alpha <= f32::EPSILON {
+        return Hsla::from(Rgba { a: 0., ..b });
+    }
+    let ch = |x: f32, y: f32| ((x * a.a + (y * b.a - x * a.a) * t) / alpha).clamp(0., 1.);
+    Hsla::from(Rgba {
+        r: ch(a.r, b.r),
+        g: ch(a.g, b.g),
+        b: ch(a.b, b.b),
+        a: alpha,
+    })
+}
+
+/// Where a hover fill is: what the pointer does, and the fade toward its
+/// color. gpui switches `.hover` styles in one frame; `ui::hover_fill`
+/// draws through this instead. A press shows at once, so a click never waits.
+#[derive(Clone, Debug, Default)]
+pub struct HoverFade {
+    pointer: Pointer,
+    /// The color the fade started from, when, and how long it takes.
+    from: Option<(Hsla, Instant, Duration)>,
+}
+
+impl HoverFade {
+    pub fn pointer(&self) -> Pointer {
+        self.pointer
+    }
+
+    /// Moves to `p` now. Returns whether it changed, so the view redraws.
+    pub fn point(&mut self, p: Pointer, fills: &Fills) -> bool {
+        self.set(p, fills, Instant::now(), reduced())
+    }
+
+    /// Moves to `p` with no fade: for the first frame of a row that appears
+    /// under the pointer.
+    pub fn place(&mut self, p: Pointer) {
+        self.pointer = p;
+        self.from = None;
+    }
+
+    fn set(&mut self, p: Pointer, fills: &Fills, at: Instant, reduced: bool) -> bool {
+        if p == self.pointer {
+            return false;
+        }
+        let duration = match (self.pointer, p) {
+            (_, Pointer::Down) => Duration::ZERO,
+            (Pointer::Down, Pointer::Over) | (_, Pointer::Away) => HOVER_OUT,
+            (_, Pointer::Over) => HOVER,
+        };
+        // A fade turned back halfway starts from where it is.
+        let (now, _) = self.color(fills, at);
+        self.from = (!reduced && !duration.is_zero()).then_some((now, at, duration));
+        self.pointer = p;
+        true
+    }
+
+    /// The fill now, and whether it still fades.
+    pub fn now(&self, fills: &Fills) -> (Hsla, bool) {
+        self.color(fills, Instant::now())
+    }
+
+    fn color(&self, fills: &Fills, at: Instant) -> (Hsla, bool) {
+        let to = fills.of(self.pointer);
+        let Some((from, since, duration)) = self.from else {
+            return (to, false);
+        };
+        let t = at.saturating_duration_since(since).as_secs_f32() / duration.as_secs_f32();
+        if t >= 1. {
+            return (to, false);
+        }
+        (mix(from, to, ease_out(t)), true)
     }
 }
 
@@ -1039,6 +1171,69 @@ mod tests {
         let mid = s.step(2, 400., start + BASE / 2, false);
         assert!(mid.moving);
         assert_eq!(mid.content, mid.width);
+    }
+
+    fn fills() -> Fills {
+        Fills::hover(gpui::hsla(0., 0., 1., 0.1))
+    }
+
+    #[test]
+    fn a_hover_fades_in_and_out_and_a_press_shows_at_once() {
+        let start = Instant::now();
+        let f = fills();
+        let mut h = HoverFade::default();
+        assert_eq!(h.color(&f, start), (f.rest, false));
+        assert!(h.set(Pointer::Over, &f, start, false));
+        assert!(!h.set(Pointer::Over, &f, start, false));
+        let (c, moving) = h.color(&f, start + HOVER / 2);
+        assert!(moving);
+        assert!(c.a > 0. && c.a < f.hover.a, "{c:?}");
+        assert_eq!(h.color(&f, start + HOVER), (f.hover, false));
+        // A press is there the moment the button goes down.
+        let t = start + HOVER;
+        h.set(Pointer::Down, &f, t, false);
+        assert_eq!(h.color(&f, t), (f.press, false));
+        // And fades back on release, slower than a hover came in.
+        h.set(Pointer::Over, &f, t, false);
+        assert!(h.color(&f, t + HOVER).1);
+        assert_eq!(h.color(&f, t + HOVER_OUT).0, f.hover);
+    }
+
+    #[test]
+    fn a_hover_turned_back_halfway_starts_from_where_it_is() {
+        let start = Instant::now();
+        let f = fills();
+        let mut h = HoverFade::default();
+        h.set(Pointer::Over, &f, start, false);
+        let half = start + HOVER / 2;
+        let (c, _) = h.color(&f, half);
+        h.set(Pointer::Away, &f, half, false);
+        let (back, moving) = h.color(&f, half);
+        assert!(moving);
+        assert!((back.a - c.a).abs() < 1e-4);
+    }
+
+    #[test]
+    fn reduced_motion_switches_hover_colors_at_once() {
+        let start = Instant::now();
+        let f = fills();
+        let mut h = HoverFade::default();
+        h.set(Pointer::Over, &f, start, true);
+        assert_eq!(h.color(&f, start), (f.hover, false));
+        h.set(Pointer::Away, &f, start, true);
+        assert_eq!(h.color(&f, start), (f.rest, false));
+    }
+
+    #[test]
+    fn colors_mix_without_darkening_through_transparent() {
+        let white = gpui::hsla(0., 0., 1., 0.2);
+        let half = mix(white.opacity(0.), white, 0.5);
+        assert!((half.a - 0.1).abs() < 1e-4);
+        assert!((half.l - 1.).abs() < 1e-3, "{half:?}");
+        // A press goes past the hover, the same way it went from rest.
+        let f = Fills::new(gpui::hsla(0., 0., 1., 1.), gpui::hsla(0., 0., 1., 0.8));
+        assert!(f.press.a < 0.8 && f.press.a > 0.6, "{:?}", f.press);
+        assert!(Fills::hover(white).press.a > white.a);
     }
 
     #[test]

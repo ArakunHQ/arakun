@@ -76,9 +76,15 @@ class Dev:
             raise RuntimeError(f"arakun dev {' '.join(map(str, args))}: {p.stderr.strip() or p.stdout.strip()}")
         return p.stdout.strip()
 
+    def find_root(self):
+        """The test Arakun's folder (`instance.json`, `arakun.log`). Newer
+        builds keep the socket deeper inside it, in `data/arakun/`."""
+        sock = Path(self.run("socket"))
+        self.root = next((p for p in sock.parents if p.name == "dev"), sock.parent)
+
     def start(self, size="1440x900"):
         self.run("stop", check=False)
-        self.root = Path(self.run("socket")).parent
+        self.find_root()
         self.run("start", ".", "--size", size, timeout=90)
 
     def stop(self):
@@ -291,7 +297,7 @@ def fake_agent(tmp):
 def perf_run(binary, only, workdir, agent):
     dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1", "ARAKUN_CLAUDE_ACP": agent})
     dev.run("stop", check=False)
-    dev.root = Path(dev.run("socket")).parent
+    dev.find_root()
     found = {"wall": time.time()}
     t0 = time.monotonic()
     watcher = threading.Thread(target=watch_first_frame, args=(dev.log_file, t0, found))

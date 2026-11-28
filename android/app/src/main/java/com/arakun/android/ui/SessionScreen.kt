@@ -38,6 +38,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.arakun.android.AppModel
 import com.arakun.android.R
+import com.arakun.android.Shot
 import com.arakun.kit.Entry
 import com.arakun.kit.LiveSession
 import com.arakun.kit.SessionStatus
@@ -70,6 +72,8 @@ fun SessionScreen(model: AppModel, id: String) {
     val c = Palette.current
     val s = model.session?.takeIf { it.id == id }
     val draft = rememberTextFieldState()
+    // Photos waiting to go with the next prompt; they stay when a send fails.
+    val shots = remember(id) { mutableStateListOf<Shot>() }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var unseen by remember { mutableStateOf(false) }
@@ -213,13 +217,18 @@ fun SessionScreen(model: AppModel, id: String) {
                     }
                     val say = { now: Boolean ->
                         val text = draft.text.trim().toString()
-                        if (text.isNotEmpty()) {
-                            // Offline the prompt stays in the box, to send again.
-                            if (model.say(text, now)) draft.clearText()
+                        // Offline the prompt and its photos stay in the box, to send again.
+                        if (model.say(text, now, shots.toList())) {
+                            draft.clearText()
+                            shots.clear()
                         }
                     }
                     Composer(
                         draft = draft,
+                        shots = shots,
+                        addShot = { if (shots.size < MAX_SHOTS) shots.add(it) },
+                        removeShot = { shots.removeAt(it) },
+                        failed = { model.notice = it },
                         working = s?.status == SessionStatus.WORKING,
                         linked = linked,
                         send = { say(false) },
@@ -359,6 +368,10 @@ private fun WorkingLine(since: Long) {
 @Composable
 private fun Composer(
     draft: TextFieldState,
+    shots: List<Shot>,
+    addShot: (Shot) -> Unit,
+    removeShot: (Int) -> Unit,
+    failed: (String) -> Unit,
     working: Boolean,
     linked: Boolean,
     send: () -> Unit,
@@ -368,63 +381,64 @@ private fun Composer(
 ) {
     val c = Palette.current
     var typing by remember { mutableStateOf(false) }
-    val empty = draft.text.isBlank()
+    val empty = draft.text.isBlank() && shots.isEmpty()
     val shape = RoundedCornerShape(Radius.card)
-    Row(
-        Modifier.fillMaxWidth().background(c.raised, shape).border(1.dp, if (typing) c.lineStrong else c.line, shape),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Field(
-            state = draft,
-            placeholder = if (working) "Queue a follow-up" else "Message the agent",
-            style = Type.body,
-            lines = TextFieldLineLimits.MultiLine(maxHeightInLines = 6),
-            padding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
-            modifier = Modifier.weight(1f).onFocusChanged { typing = it.isFocused },
-        )
-        if (working && empty) {
-            // Offline the cancel would be dropped, as a message would.
-            Row(
-                Modifier
-                    .padding(6.dp)
-                    .alpha(if (linked) 1f else 0.5f)
-                    .heightIn(min = 34.dp)
-                    .border(1.dp, c.failure.copy(alpha = 0.5f), RoundedCornerShape(Radius.control))
-                    .tap(enabled = linked, onClick = stop)
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                BrandIcon(R.drawable.ic_square, 14.dp, c.failure)
-                Text("Stop", style = geist(14f, FontWeight.Medium), color = c.failure)
-            }
-        } else {
-            val ready = !empty && linked
-            if (working) {
-                // Send alone queues it behind the turn; this goes now.
-                Box(
+    Column(Modifier.fillMaxWidth().background(c.raised, shape).border(1.dp, if (typing) c.lineStrong else c.line, shape)) {
+        ShotChips(shots, removeShot, Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            PhotoButton(shots.size, addShot, failed)
+            Field(
+                state = draft,
+                placeholder = if (working) "Queue a follow-up" else "Message the agent",
+                style = Type.body,
+                lines = TextFieldLineLimits.MultiLine(maxHeightInLines = 6),
+                padding = PaddingValues(start = 2.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
+                modifier = Modifier.weight(1f).onFocusChanged { typing = it.isFocused },
+            )
+            if (working && empty) {
+                // Offline the cancel would be dropped, as a message would.
+                Row(
                     Modifier
-                        .padding(top = 6.dp, bottom = 6.dp, start = 6.dp)
-                        .alpha(if (ready) 1f else 0.5f)
-                        .size(34.dp)
+                        .padding(6.dp)
+                        .alpha(if (linked) 1f else 0.5f)
+                        .heightIn(min = 34.dp)
                         .border(1.dp, c.failure.copy(alpha = 0.5f), RoundedCornerShape(Radius.control))
-                        .tap(enabled = ready, onClick = stopAndSend)
-                        .semantics { contentDescription = "Stop and send" },
-                    contentAlignment = Alignment.Center,
+                        .tap(enabled = linked, onClick = stop)
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BrandIcon(R.drawable.ic_square, 14.dp, c.failure)
+                    Text("Stop", style = geist(14f, FontWeight.Medium), color = c.failure)
                 }
-            }
-            Box(
-                Modifier
-                    .padding(6.dp)
-                    .size(34.dp)
-                    .background(if (ready) Brand.amber else c.lineStrong, RoundedCornerShape(Radius.control))
-                    .tap(enabled = ready, onClick = send)
-                    .semantics { contentDescription = "Send" },
-                contentAlignment = Alignment.Center,
-            ) {
-                BrandIcon(R.drawable.ic_arrow_up01, 18.dp, if (ready) Brand.onAmber else c.textFaint)
+            } else {
+                val ready = !empty && linked
+                if (working) {
+                    // Send alone queues it behind the turn; this goes now.
+                    Box(
+                        Modifier
+                            .padding(top = 6.dp, bottom = 6.dp, start = 6.dp)
+                            .alpha(if (ready) 1f else 0.5f)
+                            .size(34.dp)
+                            .border(1.dp, c.failure.copy(alpha = 0.5f), RoundedCornerShape(Radius.control))
+                            .tap(enabled = ready, onClick = stopAndSend)
+                            .semantics { contentDescription = "Stop and send" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BrandIcon(R.drawable.ic_square, 14.dp, c.failure)
+                    }
+                }
+                Box(
+                    Modifier
+                        .padding(6.dp)
+                        .size(34.dp)
+                        .background(if (ready) Brand.amber else c.lineStrong, RoundedCornerShape(Radius.control))
+                        .tap(enabled = ready, onClick = send)
+                        .semantics { contentDescription = "Send" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BrandIcon(R.drawable.ic_arrow_up01, 18.dp, if (ready) Brand.onAmber else c.textFaint)
+                }
             }
         }
     }

@@ -32,6 +32,7 @@ import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -44,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.arakun.android.AppModel
 import com.arakun.android.R
+import com.arakun.android.Shot
 import com.arakun.kit.Place
 
 /** A new session in one of the places the computer offers, with its first prompt. */
@@ -54,6 +56,8 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
     var placePath by rememberSaveable { mutableStateOf(model.places.firstOrNull()?.path ?: "") }
     val text = rememberTextFieldState()
     var writing by remember { mutableStateOf(false) }
+    // Photos for the first prompt; they stay while a start does not go out.
+    val shots = remember { mutableStateListOf<Shot>() }
     val sheet = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded))
 
     LaunchedEffect(model.places) {
@@ -67,7 +71,7 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
     }
 
     val prompt = text.text.trim().toString()
-    val sendable = model.places.any { it.path == placePath } && prompt.isNotEmpty() && model.isLinked
+    val sendable = model.places.any { it.path == placePath } && (prompt.isNotEmpty() || shots.isNotEmpty()) && model.isLinked
     // The pending start and its doubt live in the model, so closing and
     // opening the sheet again neither unlocks it nor hides the warning. A
     // refusal ends the start, which lets the form be sent again.
@@ -125,6 +129,15 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
                             .onFocusChanged { writing = it.isFocused }
                             .card(c.raised, if (writing) c.lineStrong else c.line),
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PhotoButton(
+                            shots.size,
+                            add = { if (shots.size < MAX_SHOTS) shots.add(it) },
+                            failed = { model.notice = it },
+                            modifier = Modifier.card(),
+                        )
+                        ShotChips(shots, remove = { shots.removeAt(it) })
+                    }
                 }
             }
             if (unsure) {
@@ -138,7 +151,7 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
             PrimaryButton(
                 onClick = {
                     val p = model.places.firstOrNull { it.path == placePath } ?: return@PrimaryButton
-                    model.startSession(p, prompt)
+                    if (model.startSession(p, prompt, shots.toList())) shots.clear()
                 },
                 enabled = ready,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),

@@ -103,6 +103,8 @@ sealed interface Entry {
         val added: Int,
         val removed: Int,
         val diffs: List<Diff>,
+        /** The subagent it ran under (OpenCode's and Droid's Task call), if any. */
+        val parent: String? = null,
     ) : Entry
 
     data class Diff(val path: String, val added: Int, val removed: Int)
@@ -132,6 +134,7 @@ sealed interface Entry {
                 command = j["command"].string, output = j["output"].string, exitCode = j["exit_code"].int,
                 added = j["added"].int ?: 0, removed = j["removed"].int ?: 0,
                 diffs = j["diffs"].array.map { Diff(it["path"].str, it["added"].int ?: 0, it["removed"].int ?: 0) },
+                parent = j["parent"].string,
             )
             "plan" -> Plan(j["entries"].array.map { PlanItem(it["content"].str, it["status"].str) })
             "notice" -> Notice(j["text"].str, j["error"].bool)
@@ -248,14 +251,8 @@ data class LiveSession(
 
     /** An `entries` message: from `from` on changed, or older ones (`older`). */
     fun applyEntries(j: JsonElement): LiveSession {
-        val at = j["from"].int ?: 0
-        val list = j["entries"].array.map(Entry::of)
-        val newCount = j["count"].int ?: count
-        return when {
-            j["older"].bool -> copy(entries = list.take(maxOf(0, from - at)) + entries, from = at, count = newCount)
-            at <= from -> copy(from = at, entries = list, count = newCount)
-            else -> copy(entries = entries.take(at - from) + list, count = newCount)
-        }
+        val (newFrom, newEntries) = page(from, entries, j)
+        return copy(from = newFrom, entries = newEntries, count = j["count"].int ?: count)
     }
 
     /** A `state` message (and the same fields of a `session` one). */
@@ -370,5 +367,75 @@ data class FileDiff(
                 cut = j["cut"].int ?: 0,
             )
         }
+    }
+}
+
+/**
+ * Entries `from until from+entries.size` after an `entries` or
+ * `subagent_entries` message: from its `from` on changed, or older ones
+ * (`older`) put in front.
+ */
+internal fun page(from: Int, entries: List<Entry>, j: JsonElement): Pair<Int, List<Entry>> {
+    val at = j["from"].int ?: 0
+    val list = j["entries"].array.map(Entry::of)
+    return when {
+        j["older"].bool -> at to list.take(maxOf(0, from - at)) + entries
+        // Nothing loaded yet: the first tail says where it starts.
+        at <= from || entries.isEmpty() -> at to list
+        else -> from to entries.take(at - from) + list
+    }
+}
+
+/** A subagent of the open session, as a `subagents` message lists it. */
+data class Subagent(
+    val id: String,
+    val name: String,
+    val task: String,
+    /** running, completed, failed or cancelled. */
+    val state: String,
+    val started: Long,
+    /** Null while it runs. */
+    val ended: Long?,
+    /** The tool call in the session that started it: its row there. */
+    val call: String?,
+    /** The subagent that started it, when another one did. */
+    val host: String?,
+) {
+    val running: Boolean get() = state == "running"
+
+    companion object {
+        /** The subagents of a `subagents` message, in the order they started. */
+        fun list(j: JsonElement): List<Subagent> = j["subagents"].array.map {
+            Subagent(
+                id = it["id"].str,
+                name = it["name"].str,
+                task = it["task"].str,
+                state = it["state"].str,
+                started = it["started"].millis(),
+                ended = it["ended"].double?.let { s -> (s * 1000).toLong() },
+                call = it["call"].string,
+                host = it["host"].string,
+            )
+        }
+    }
+}
+
+/**
+ * The transcript of one subagent open on the phone, paged as a session's is:
+ * its loaded entries `from until from+entries.size` of `count`.
+ */
+data class SubagentTranscript(
+    /** The session it belongs to. */
+    val session: String,
+    val id: String,
+    val count: Int = 0,
+    val from: Int = 0,
+    val entries: List<Entry> = emptyList(),
+) {
+    /** A `subagent_entries` message; one for another subagent changes nothing. */
+    fun apply(j: JsonElement): SubagentTranscript {
+        if (j["id"].str != session || j["subagent"].str != id) return this
+        val (newFrom, newEntries) = page(from, entries, j)
+        return copy(from = newFrom, entries = newEntries, count = j["count"].int ?: count)
     }
 }

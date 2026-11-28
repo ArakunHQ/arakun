@@ -93,9 +93,12 @@ public enum Entry: Equatable, Sendable {
         public let added: Int
         public let removed: Int
         public let diffs: [(path: String, added: Int, removed: Int)]
+        /// The subagent it ran under (OpenCode's and Droid's Task call), if any.
+        public var parent: String? = nil
 
         public static func == (a: Tool, b: Tool) -> Bool {
             a.id == b.id && a.title == b.title && a.kind == b.kind && a.status == b.status
+                && a.parent == b.parent
                 && a.output == b.output && a.command == b.command && a.exitCode == b.exitCode
                 && a.added == b.added && a.removed == b.removed
                 && a.diffs.count == b.diffs.count
@@ -122,7 +125,8 @@ public enum Entry: Equatable, Sendable {
                 id: j["id"].str, title: j["title"].str, kind: j["kind"].str, status: j["status"].str,
                 command: j["command"].string, output: j["output"].string, exitCode: j["exit_code"].int,
                 added: j["added"].int ?? 0, removed: j["removed"].int ?? 0,
-                diffs: j["diffs"].array.map { ($0["path"].str, $0["added"].int ?? 0, $0["removed"].int ?? 0) }))
+                diffs: j["diffs"].array.map { ($0["path"].str, $0["added"].int ?? 0, $0["removed"].int ?? 0) },
+                parent: j["parent"].string))
         case "plan":
             self = .plan(j["entries"].array.map { PlanItem(content: $0["content"].str, status: $0["status"].str) })
         case "notice": self = .notice(text: j["text"].str, error: j["error"].bool)
@@ -254,18 +258,8 @@ public struct LiveSession: Sendable {
 
     /// An `entries` message: from `from` on changed, or older ones (`older`).
     public mutating func apply(entries j: JSON) {
-        let at = j["from"].int ?? 0
-        let list = j["entries"].array.map(Entry.init)
         count = j["count"].int ?? count
-        if j["older"].bool {
-            entries = Array(list.prefix(max(0, from - at))) + entries
-            from = at
-        } else if at <= from {
-            from = at
-            entries = list
-        } else {
-            entries = Array(entries.prefix(at - from)) + list
-        }
+        (from, entries) = page(from: from, entries: entries, j)
     }
 
     /// A `state` message (and the same fields of a `session` one).
@@ -280,6 +274,84 @@ public struct LiveSession: Sendable {
         turnStarted = j["elapsed_ms"].double.map { Date().addingTimeInterval(-$0 / 1000) }
         let c = j["changes"]
         changes = (c["files"].int ?? 0, c["added"].int ?? 0, c["removed"].int ?? 0)
+    }
+}
+
+/// Entries `from..<from+entries.count` after an `entries` or
+/// `subagent_entries` message: from its `from` on changed, or older ones
+/// (`older`) put in front.
+func page(from: Int, entries: [Entry], _ j: JSON) -> (Int, [Entry]) {
+    let at = j["from"].int ?? 0
+    let list = j["entries"].array.map(Entry.init)
+    if j["older"].bool {
+        return (at, Array(list.prefix(max(0, from - at))) + entries)
+    } else if at <= from || entries.isEmpty {
+        // Nothing loaded yet: the first tail says where it starts.
+        return (at, list)
+    } else {
+        return (from, Array(entries.prefix(at - from)) + list)
+    }
+}
+
+/// A subagent of the open session, as a `subagents` message lists it.
+public struct Subagent: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let task: String
+    /// running, completed, failed or cancelled.
+    public let state: String
+    public let started: Date
+    /// Nil while it runs.
+    public let ended: Date?
+    /// The tool call in the session that started it: its row there.
+    public let call: String?
+    /// The subagent that started it, when another one did.
+    public let host: String?
+
+    public var isRunning: Bool { state == "running" }
+
+    public init(_ j: JSON) {
+        id = j["id"].str
+        name = j["name"].str
+        task = j["task"].str
+        state = j["state"].str
+        started = Date(timeIntervalSince1970: j["started"].double ?? 0)
+        ended = j["ended"].double.map { Date(timeIntervalSince1970: $0) }
+        call = j["call"].string
+        host = j["host"].string
+    }
+
+    /// The subagents of a `subagents` message, in the order they started.
+    public static func list(_ j: JSON) -> [Subagent] {
+        j["subagents"].array.map(Subagent.init)
+    }
+}
+
+/// The transcript of one subagent open on the phone, paged as a session's
+/// is: its loaded entries `from..<from+entries.count` of `count`.
+public struct SubagentTranscript: Equatable, Sendable {
+    /// The session it belongs to.
+    public let session: String
+    public let id: String
+    public var count = 0
+    public var from = 0
+    public var entries: [Entry] = []
+
+    public init(session: String, id: String) {
+        self.session = session
+        self.id = id
+    }
+
+    /// Whether a `subagent_entries` message is for it.
+    public func owns(_ j: JSON) -> Bool {
+        j["id"].str == session && j["subagent"].str == id
+    }
+
+    /// A `subagent_entries` message; one for another subagent changes nothing.
+    public mutating func apply(_ j: JSON) {
+        guard owns(j) else { return }
+        count = j["count"].int ?? count
+        (from, entries) = page(from: from, entries: entries, j)
     }
 }
 

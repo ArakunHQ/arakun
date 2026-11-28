@@ -33,6 +33,8 @@ import com.arakun.kit.RelayLink
 import com.arakun.kit.SessionCheck
 import com.arakun.kit.SignedIn
 import com.arakun.kit.SignedInDevice
+import com.arakun.kit.Subagent
+import com.arakun.kit.SubagentTranscript
 import com.arakun.kit.WebPush
 import com.arakun.kit.bool
 import com.arakun.kit.get
@@ -154,6 +156,16 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var session by mutableStateOf<LiveSession?>(null)
         private set
     var loadingOlder by mutableStateOf(false)
+        private set
+
+    /** The subagents of the session on screen, as the computer last listed them. */
+    var subagents by mutableStateOf<List<Subagent>>(emptyList())
+        private set
+
+    /** The subagent whose transcript is open, kept live by the computer. */
+    var subagent by mutableStateOf<SubagentTranscript?>(null)
+        private set
+    var loadingOlderSubagent by mutableStateOf(false)
         private set
 
     /** The files the session on screen changed, turn by turn, once asked for. */
@@ -552,6 +564,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         session = null
         openWhenLinked = null
         loadingOlder = false
+        forgetChanges()
         starting = false
         startUnsure = false
     }
@@ -729,6 +742,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         // The computer answers an `entries` request at most once, so asking
         // again after a drop is safe.
         loadingOlder = false
+        loadingOlderSubagent = false
         if (starting) {
             starting = false
             startUnsure = true
@@ -811,6 +825,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     session?.let { send("type" to "open", "session" to it.id) }
                 }
+                // A new connection watches nothing: the open subagent is asked for again.
+                subagent?.let { send("type" to "subagent", "session" to it.session, "subagent" to it.id) }
                 link?.let {
                     tellPush(it)
                     loadMuted(it)
@@ -861,6 +877,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 session = session?.applyEntries(msg)
             }
             "state" -> if (session?.id == id) session = session?.applyState(msg)
+            "subagents" -> if (session?.id == id) subagents = Subagent.list(msg)
+            "subagent_entries" -> if (subagent?.session == id && subagent?.id == msg["subagent"].str) {
+                if (msg["older"].bool) loadingOlderSubagent = false
+                subagent = subagent?.apply(msg)
+            }
             "changes" -> if (session?.id == id) changes = ChangedTurn.list(msg)
             "diff" -> if (session?.id == id) FileDiff.of(msg)?.let { diffs = diffs + (it.ref to it) }
             "started" -> {
@@ -912,6 +933,31 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private fun forgetChanges() {
         changes = null
         diffs = emptyMap()
+        subagents = emptyList()
+        subagent = null
+        loadingOlderSubagent = false
+    }
+
+    /** Opens a subagent's transcript: its last entries, then every change, fill [subagent]. */
+    fun openSubagent(id: String) {
+        val s = session ?: return
+        subagent = SubagentTranscript(s.id, id)
+        loadingOlderSubagent = false
+        send("type" to "subagent", "session" to s.id, "subagent" to id)
+    }
+
+    fun closeSubagent() {
+        val t = subagent ?: return
+        subagent = null
+        loadingOlderSubagent = false
+        send("type" to "subagent", "session" to t.session)
+    }
+
+    fun loadOlderSubagent() {
+        val t = subagent ?: return
+        if (t.from <= 0 || loadingOlderSubagent || !canSend) return
+        loadingOlderSubagent = true
+        send("type" to "entries", "session" to t.session, "subagent" to t.id, "from" to maxOf(0, t.from - 50), "to" to t.from)
     }
 
     /** Asks for the list of what the session changed; the answer fills [changes]. */

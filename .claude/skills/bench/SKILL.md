@@ -10,8 +10,32 @@ description: Benchmark Arakun with tools/bench/bench.py - frame times, CPU and m
 
 | Suite | What it runs | What it measures |
 | --- | --- | --- |
-| `perf` | A test Arakun (`arakun dev`) on a fixed scratch project, with `ZED_MEASUREMENTS=1` so GPUI logs each frame's draw time. Scenarios: idle, palette, sidebar, zoom, scroll, terminal, working (Linux only: a fake agent, `fake_acp.py`, holds a session at work in a focused window) | Time to first frame, frames drawn, p50/p95/p99/max frame time, frames over 16.7 ms, CPU % and memory |
+| `perf` | A test Arakun (`arakun dev`) on a fixed scratch project, with `ZED_MEASUREMENTS=1` so GPUI logs each frame's draw time. Scenarios are in the table below | Time to first frame, frames drawn, p50/p95/p99/max frame time, frames over 16.7 ms, CPU % (of the app, and of the programs it ran, such as git) and memory |
 | `agent` | Each task in `tools/bench/tasks/` copied to a scratch git repo, its prompt given to Claude Code, then a hidden check run | Pass rate, time, turns, tokens, cost. Runner `arakun` runs the session in a test Arakun; `claude` runs bare `claude -p` as the baseline |
+
+## Perf scenarios
+
+They run in this order, in one test Arakun per run, except `large`.
+
+| Scenario | What it does | What it catches |
+| --- | --- | --- |
+| `idle` | Nothing, 10 s, on the home page | Anything that draws or polls with nothing happening |
+| `palette`, `sidebar`, `zoom` | Opens and closes them | Slow frames in common actions |
+| `scroll` | Scrolls a 6,000-line file tab | File view frame time |
+| `terminal` | About 4 MB of output in a dock terminal | Terminal throughput |
+| `changes` | 3,000 untracked files and one of 64 MB in the project, idle for two of the Changes poll's 15 s rounds | The Changes poll (#603); its git runs show as `child_cpu_pct` |
+| `iso` | The Isometric tab playing, 10 s | Rasterizing on the UI thread (#609) |
+| `working` | A fake agent (`fake_acp.py`) holds a session at work in a focused window | Looping animations (#601) |
+| `transcript` | 40 edits with whole-file diffs, three expanded, while the reply streams | Diff cards redone every frame (#600), streaming cost (#607) |
+| `permission` | The same edits, then an edit of a 3,000-line file waiting for permission | The permission card's diff and beacon (#600, #601) |
+| `asleep` (long) | Waits 160 s untouched for the mascot to sleep, then measures 30 s | An idle window that keeps drawing (#602) |
+| `soak` (long) | 3 minutes of rounds of the actions above, sampling memory | `rss_growth_mb` after the first round: leaks |
+| `large` | Starts again from a seed: 60 sessions with long transcripts, 300 headless sessions, 500 prompts of history; then 10 s idle | Startup and idle cost of a large state (#605, #606) |
+
+`working`, `transcript`, `permission`, `asleep` and `soak` run on Linux only, where the
+bench can give the window the focus. The long ones run only with `--all` or when
+`--only` names them. `large` records its seed once per `perf` call: one session made
+by the app with the fake agent, copied, so the files match the build under test.
 
 ## Perf: check a change for regressions
 
@@ -44,6 +68,10 @@ To add a scenario, write a `scenario_<name>(dev)` in `bench.py` that drives the 
 with `dev.run("key", …)`, `dev.run("type", …)`, `dev.run("scroll", …)` or any
 `arakun dev` command, and add it to `SCENARIOS`. The run frames it from the log
 offsets around it, so keep it self-contained and leave the app as it found it.
+Preparation that must not count goes in `SETUP`, cleanup in `TEARDOWN`. A scenario
+may return a dict of extra metrics; name them so `compare` knows which way is worse
+(`WORSE_UP`). To have the fake agent do something new, add a word for the prompt
+to `fake_acp.py`.
 
 ## Perf: compare two releases
 

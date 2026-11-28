@@ -252,9 +252,12 @@ tools/bench/bench.py compare target/bench/before.json target/bench/after.json --
 tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
 ```
 
-`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood, on Linux a session
-at work) in a test Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took
-for each frame.
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood, a repository
+full of untracked files, the Isometric tab, a start from a large saved state, and on Linux
+a session at work, a long transcript of edits streaming or waiting on a permission) in a
+test Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`--all` adds the long ones: an idle window with the mascot asleep, and the memory over a
+long session.
 `agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
 `--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
 agent never saw. It uses your Claude account or API key, so it costs money. The

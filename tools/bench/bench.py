@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmarks Arakun: how fast the app is, and how well Claude works in it.
 
-    tools/bench/bench.py perf  [--bin B] [--runs N] [--only a,b] [--label L] [--out F]
+    tools/bench/bench.py perf  [--bin B] [--runs N] [--only a,b | --all] [--label L] [--out F]
     tools/bench/bench.py agent [--bin B] [--model M] [--runner arakun,claude]
                                [--tasks a,b] [--repeat N] [--timeout S] [--out F]
     tools/bench/bench.py compare <before.json> <after.json> [--markdown]
@@ -10,8 +10,11 @@
 perf starts a test Arakun (`arakun dev start`) on a fixed scratch project with
 ZED_MEASUREMENTS=1, so GPUI logs how long each frame took to draw. It then plays
 scenarios through `arakun dev` (palette, sidebar, zoom, a terminal flood, a long
-file scrolled) and reads, per scenario, the frames from the log and the CPU time
-and memory of the process. Linux runs it on Xvfb; macOS in an unfocused window.
+file scrolled, untracked files, the Isometric tab, a fake agent's long transcript)
+and reads, per scenario, the frames from the log and the CPU time and memory of
+the process. `large` starts it again from a large saved state. --all adds the
+long scenarios (the mascot asleep, a soak). Linux runs it on Xvfb; macOS in an
+unfocused window.
 
 agent copies each task in tools/bench/tasks/ to a scratch git repository and
 gives its prompt to Claude Code, then runs the task's hidden check. The arakun
@@ -76,9 +79,15 @@ class Dev:
             raise RuntimeError(f"arakun dev {' '.join(map(str, args))}: {p.stderr.strip() or p.stdout.strip()}")
         return p.stdout.strip()
 
+    def find_root(self):
+        """The test Arakun's folder (`instance.json`, `arakun.log`). Newer
+        builds keep the socket deeper inside it, in `data/arakun/`."""
+        sock = Path(self.run("socket"))
+        self.root = next((p for p in sock.parents if p.name == "dev"), sock.parent)
+
     def start(self, size="1440x900"):
         self.run("stop", check=False)
-        self.root = Path(self.run("socket")).parent
+        self.find_root()
         self.run("start", ".", "--size", size, timeout=90)
 
     def stop(self):
@@ -118,6 +127,16 @@ def cpu_seconds(pid):
     for part in out.replace("-", ":").split(":"):
         secs = secs * 60 + float(part or 0)
     return secs
+
+
+def child_cpu_seconds(pid):
+    """CPU time of the programs a process ran and waited for (git, shells).
+    Linux only; 0 elsewhere."""
+    stat = Path(f"/proc/{pid}/stat")
+    if not stat.exists():
+        return 0.0
+    fields = stat.read_text().rsplit(")", 1)[1].split()
+    return (int(fields[13]) + int(fields[14])) / os.sysconf("SC_CLK_TCK")
 
 
 def rss_mb(pid):
@@ -236,17 +255,162 @@ def focus_window(dev):
                        capture_output=True)
 
 
-def scenario_working(dev):
-    # A session the fake agent (fake_acp.py) holds at work, opened in a focused
-    # window: its beacon, spinner and shimmer loop, and the mascot moves, as
-    # while a real agent works.
-    reply = dev.run("agent", "new", "--model", "claude/haiku", "--title", "bench", "--", "Fix the tests")
+def open_session(dev, title, prompt):
+    """Starts a session of the fake agent (fake_acp.py) and shows it in a focused
+    window; gives its id. The prompt's words pick what the agent does."""
+    reply = dev.run("agent", "new", "--model", "claude/haiku", "--title", title, "--", prompt)
     sid = reply.split()[0]
-    dev.run("wait", "--text", "bench", "--timeout", "20")
-    dev.run("click", "bench", "--nth", "1")
+    dev.run("wait", "--text", title, "--timeout", "20")
+    dev.run("click", title, "--nth", "1")
     focus_window(dev)
+    return sid
+
+
+def scenario_working(dev):
+    # A session the fake agent holds at work: its beacon, spinner and shimmer
+    # loop, and the mascot moves, as while a real agent works.
+    sid = open_session(dev, "bench", "Fix the tests")
     time.sleep(10)
     dev.run("agent", "stop", sid, check=False)
+
+
+def text_at(dev, pattern):
+    """Where text matching `pattern` shows, as (x, y), lowest on screen first."""
+    found = []
+    for line in dev.run("text", check=False).splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and re.search(pattern, parts[2]):
+            found.append((int(parts[0]), int(parts[1])))
+    return sorted(found, key=lambda p: -p[1])
+
+
+def scenario_transcript(dev):
+    # A long transcript of edits, each with a diff of a whole file, while the
+    # reply streams below it (#600, #601, #607). The last edits are expanded,
+    # so their diff cards are on screen with every streamed word.
+    go = Path(dev.cwd) / ".bench-stream"
+    go.unlink(missing_ok=True)
+    sid = open_session(dev, "edits", "Fix every module bench-edits")
+    # Each edit is in an "Edited a file" group; only the last group is open.
+    # Open the two above it, then expand the edits, lowest first: expanding
+    # moves what is below, not what is above.
+    rows = text_at(dev, r"Edit src/module_")
+    if rows:
+        for x, y in [p for p in text_at(dev, r"Edited a file") if p[1] < rows[0][1] - 40][:2]:
+            dev.run("click", x, y, check=False)
+    for x, y in text_at(dev, r"Edit src/module_")[:3]:
+        dev.run("click", x, y, check=False)
+    # Off the bottom, so the transcript stays put while the reply grows.
+    dev.run("scroll", 720, 400, -200)
+    go.touch()
+    time.sleep(10)
+    dev.run("agent", "stop", sid, check=False)
+
+
+def scenario_permission(dev):
+    # The same transcript, then an edit of a 3,000-line file that waits for
+    # permission: its card shows the diff while its beacon animates (#600, #601).
+    sid = open_session(dev, "asks", "Fix every module bench-ask")
+    dev.run("wait", "--text", "Allow", "--timeout", "20", check=False)
+    time.sleep(10)
+    dev.run("agent", "stop", sid, check=False)
+
+
+# How often the Changes poll runs with no session at work (POLL_IDLE in
+# src/shell.rs).
+POLL_IDLE_S = 15
+
+
+def make_untracked(dev):
+    # Thousands of small untracked files and one of 64 MB, as a new build folder
+    # that is not ignored: the Changes poll reads them every few seconds (#603).
+    junk = Path(dev.cwd) / "untracked"
+    for d in range(20):
+        sub = junk / f"d{d:02}"
+        sub.mkdir(parents=True, exist_ok=True)
+        for f in range(150):
+            (sub / f"f{f:03}.txt").write_text(f"untracked {d} {f}\n" * 40)
+    line = b"0123456789abcdef" * 7 + b"\n"
+    with open(junk / "big.log", "wb") as f:
+        f.write(line * (64 * 1024 * 1024 // len(line)))
+    focus_window(dev)
+    # A poll to find them, so the measured part is the steady state.
+    time.sleep(POLL_IDLE_S + 1)
+
+
+def scenario_changes(dev):
+    time.sleep(2 * POLL_IDLE_S + 1)
+
+
+def remove_untracked(dev):
+    shutil.rmtree(Path(dev.cwd) / "untracked", ignore_errors=True)
+
+
+def scenario_iso(dev):
+    # The Isometric tab with its first scene playing (#609).
+    dev.run("key", "ctrl-k")
+    dev.run("type", "Isometric")
+    time.sleep(0.3)
+    dev.run("key", "enter")
+    time.sleep(1.0)
+    focus_window(dev)
+    time.sleep(10)
+
+
+def close_tab(dev):
+    dev.run("key", "ctrl-w", check=False)
+    time.sleep(0.5)
+
+
+# The mascot falls asleep after this long without input (SLEEP_AFTER in
+# core/src/mascot.rs).
+MASCOT_SLEEPS_S = 150
+
+
+def wait_for_sleep(dev):
+    focus_window(dev)
+    time.sleep(MASCOT_SLEEPS_S + 10)
+
+
+def scenario_asleep(dev):
+    # A focused window nobody touches, the mascot asleep: it should draw next
+    # to nothing (#602).
+    time.sleep(30)
+
+
+SOAK_S = 180
+
+
+def scenario_soak(dev):
+    # A long session of the other scenarios' actions, round after round, with
+    # the memory sampled as it goes: what it keeps after each round is a leak.
+    t0 = time.monotonic()
+    samples = [rss_mb(dev.pid())]
+    n = 0
+    while time.monotonic() - t0 < SOAK_S:
+        n += 1
+        (Path(dev.cwd) / ".bench-stream").touch()  # stream at once
+        sid = open_session(dev, f"soak{n}", "Fix every module bench-edits")
+        time.sleep(3)
+        dev.run("agent", "stop", sid, check=False)
+        dev.run("open", "long.rs")
+        for dy in [800] * 5 + [-800] * 5:
+            dev.run("scroll", 720, 450, dy)
+        close_tab(dev)
+        scenario_palette(dev)
+        reply = dev.run("run", f"seq 1 20000; echo soak-{n}")
+        m = re.search(r"terminal (\d+)", reply)
+        if m:
+            dev.run("logs", m.group(1), "--until", f"soak-{n}", "--timeout", "30", check=False)
+        samples.append(rss_mb(dev.pid()))
+    return {
+        "rounds": n,
+        "rss_start_mb": round(samples[0], 1),
+        "rss_max_mb": round(max(samples), 1),
+        # From the end of the first round, so what the first use loads once
+        # (fonts, syntaxes, the session view) is not counted as growth.
+        "rss_growth_mb": round(samples[-1] - samples[1], 1),
+    }
 
 
 SCENARIOS = {
@@ -256,10 +420,25 @@ SCENARIOS = {
     "zoom": scenario_zoom,
     "scroll": scenario_scroll,
     "terminal": scenario_terminal,
+    "changes": scenario_changes,
+    "iso": scenario_iso,
     # Only Linux can give the test window the focus (focus_window); on macOS the
     # session would still its loops and the numbers would mean nothing.
-    **({"working": scenario_working} if platform.system() == "Linux" else {}),
+    **({
+        "working": scenario_working,
+        "transcript": scenario_transcript,
+        "permission": scenario_permission,
+        "asleep": scenario_asleep,
+        "soak": scenario_soak,
+    } if platform.system() == "Linux" else {}),
+    # Not a scenario in the running app: a second start from a large seed (cmd_perf).
+    "large": None,
 }
+# Run before and after a scenario, outside the time it is measured.
+SETUP = {"changes": make_untracked, "asleep": wait_for_sleep}
+TEARDOWN = {"changes": remove_untracked, "iso": close_tab}
+# Minutes each: they run only when --only names them, or with --all.
+LONG = {"asleep", "soak"}
 
 
 def watch_first_frame(log_file, t0, found):
@@ -288,15 +467,15 @@ def fake_agent(tmp):
     return str(launcher)
 
 
-def perf_run(binary, only, workdir, agent):
+def perf_run(binary, only, workdir, agent, seed=None):
     dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1", "ARAKUN_CLAUDE_ACP": agent})
     dev.run("stop", check=False)
-    dev.root = Path(dev.run("socket")).parent
+    dev.find_root()
     found = {"wall": time.time()}
     t0 = time.monotonic()
     watcher = threading.Thread(target=watch_first_frame, args=(dev.log_file, t0, found))
     watcher.start()
-    dev.run("start", ".", "--size", "1440x900", timeout=90)
+    dev.run("start", ".", "--size", "1440x900", *(["--seed", seed] if seed else []), timeout=90)
     ready_ms = (time.monotonic() - t0) * 1000
     watcher.join()
     out = {"startup": {"first_frame_ms": round(found.get("ms", 0.0), 1), "ready_ms": round(ready_ms, 1)}}
@@ -306,8 +485,10 @@ def perf_run(binary, only, workdir, agent):
         out["startup"]["rss_mb"] = round(rss_mb(pid), 1)
         for name in only:
             log(f"  {name}")
-            a, c, t = log_size(dev.log_file), cpu_seconds(pid), time.monotonic()
-            SCENARIOS[name](dev)
+            if name in SETUP:
+                SETUP[name](dev)
+            a, c, k, t = log_size(dev.log_file), cpu_seconds(pid), child_cpu_seconds(pid), time.monotonic()
+            extra = SCENARIOS[name](dev) or {}
             time.sleep(0.5)  # the last frame of the scenario
             b, wall = log_size(dev.log_file), time.monotonic() - t
             used = cpu_seconds(pid) - c
@@ -316,11 +497,90 @@ def perf_run(binary, only, workdir, agent):
                 "wall_s": round(wall, 2),
                 "cpu_s": round(used, 3),
                 "cpu_pct": round(100 * used / wall, 1),
+                # git and the other programs it ran and waited for.
+                "child_cpu_pct": round(100 * (child_cpu_seconds(pid) - k) / wall, 1),
                 "rss_mb": round(rss_mb(pid), 1),
+                **extra,
             }
+            if name in TEARDOWN:
+                TEARDOWN[name](dev)
     finally:
         dev.stop()
     return out
+
+
+# What the large seed holds (#605, #608): window sessions with a long
+# transcript each, headless sessions, and a full prompt history.
+SEED_SESSIONS = 60
+SEED_HEADLESS = 300
+SEED_HISTORY = 500
+
+
+def make_seed(binary, workdir, agent, seed):
+    """A data folder for `arakun dev start --seed`, of a person who has used
+    Arakun a long time. One session is made by the app with the fake agent, so
+    its files are in the format of the build under test; the rest are copies."""
+    log("  recording the large seed")
+    dev = Dev(binary, workdir, {"ARAKUN_CLAUDE_ACP": agent})
+    dev.start()
+    try:
+        sid = dev.run("agent", "new", "--model", "claude/haiku", "--title", "seed", "--", "Fix it bench-done")
+        sid = sid.split()[0]
+        dev.run("agent", "wait", "--timeout", "60", sid, check=False)
+        data = dev.root / "data" / "arakun"
+        # The state and transcript are saved off the UI thread, a moment later.
+        deadline = time.monotonic() + 20
+        while True:
+            state = json.loads((data / "state.json").read_text())
+            sessions = [s for env in state["projects"][0]["envs"] for s in env.get("sessions", [])]
+            recorded = next((s for s in sessions if s.get("title") == "seed"), None)
+            transcript = recorded and data / "sessions" / f"{recorded['id']}.json"
+            if transcript and transcript.exists() and transcript.stat().st_size > 1_000_000:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError("the seed session was never saved with its transcript")
+            time.sleep(0.5)
+        body = transcript.read_bytes()
+    finally:
+        dev.stop()
+
+    out = Path(seed) / "data" / "arakun"
+    (out / "sessions").mkdir(parents=True, exist_ok=True)
+    env = state["projects"][0]["envs"][0]
+    env["sessions"] = []
+    for n in range(SEED_SESSIONS):
+        s = json.loads(json.dumps(recorded))
+        s["id"] = f"{recorded['id']}-seed{n:03}"
+        s["title"] = f"Seed session {n}"
+        env["sessions"].append(s)
+        (out / "sessions" / f"{s['id']}.json").write_bytes(body)
+    (Path(seed) / "state.json").write_text(json.dumps(state))
+    words = " ".join(WORDS_FOR_HISTORY)
+    history = [f"Prompt {n}: {words}" for n in range(SEED_HISTORY)]
+    (out / "history.json").write_text(json.dumps(history))
+    now_s = int(time.time())
+    for n in range(SEED_HEADLESS):
+        hid = f"bench-headless-{n:04}"
+        d = out / "headless" / hid
+        d.mkdir(parents=True)
+        (d / "meta.json").write_text(json.dumps({
+            "id": hid, "agent": "workers-ai", "model": "workers-ai/@cf/bench", "policy": "workspace",
+            "cwd": str(workdir), "title": f"Headless {n}", "created": now_s - 86_400 - n * 60,
+            "updated": now_s - 86_400 - n * 60 + 30, "status": "idle", "last": "Done",
+        }))
+        (d / "transcript.json").write_bytes(body)
+
+
+WORDS_FOR_HISTORY = ("Read the failing test, find where the parser drops the last line, fix it, "
+                     "then run the whole suite and tell me what else changed. ").split() * 8
+
+
+def large_run(binary, workdir, agent, seed):
+    """Startup from the large seed, then the app left idle on it."""
+    run = perf_run(binary, ["idle"], workdir, agent, seed=seed)
+    s = run["startup"]
+    return {"first_frame_ms": s["first_frame_ms"], "ready_ms": s["ready_ms"], "startup_rss_mb": s["rss_mb"],
+            **{f"idle_{k}": v for k, v in run["idle"].items() if k != "wall_s"}}
 
 
 def median_runs(runs):
@@ -335,18 +595,40 @@ def median_runs(runs):
 
 def cmd_perf(args):
     binary = resolve_bin(args.bin)
-    only = args.only.split(",") if args.only else list(SCENARIOS)
+    if args.only:
+        only = args.only.split(",")
+    else:
+        only = [s for s in SCENARIOS if args.all or s not in LONG]
     bad = [s for s in only if s not in SCENARIOS]
     if bad:
         sys.exit(f"unknown scenario {', '.join(bad)}; pick from {', '.join(SCENARIOS)}")
+    in_app = [s for s in only if s != "large"]
     runs = []
     with tempfile.TemporaryDirectory(prefix="arakun-bench-") as tmp:
         fixture = Path(tmp) / "project"
         make_fixture(fixture)
         agent = fake_agent(tmp)
+        seed = None
+        if "large" in only:
+            # A release from before `dev start --seed` can't start from one;
+            # the other scenarios still compare.
+            usage = subprocess.run([str(binary), "dev", "help"], capture_output=True, text=True).stdout
+            seed = Path(tmp) / "seed" if "--seed" in usage else None
+            if not seed:
+                log("  skipping large: this build can't start from a seed")
+            try:
+                if seed:
+                    make_seed(binary, fixture, agent, seed)
+            except (RuntimeError, OSError, KeyError, subprocess.TimeoutExpired) as e:
+                log(f"  skipping large: {e}")
+                seed = None
         for i in range(args.runs):
             log(f"perf run {i + 1}/{args.runs}")
-            runs.append(perf_run(binary, only, fixture, agent))
+            run = perf_run(binary, in_app, fixture, agent) if in_app else {}
+            if seed:
+                log("  large")
+                run["large"] = large_run(binary, fixture, agent, seed)
+            runs.append(run)
     result = {**meta("perf", binary), "runs": runs, "summary": median_runs(runs)}
     if args.label:
         result["label"] = args.label
@@ -359,11 +641,22 @@ def print_perf(summary):
     if "startup" in summary:
         s = summary["startup"]
         print(f"startup: first frame {s.get('first_frame_ms')} ms, ready {s.get('ready_ms')} ms, {s.get('rss_mb')} MB")
+    if "large" in summary:
+        s = summary["large"]
+        print(f"large:   first frame {s.get('first_frame_ms')} ms, ready {s.get('ready_ms')} ms, "
+              f"{s.get('startup_rss_mb')} MB; idle after it {s.get('idle_cpu_pct')} % CPU, "
+              f"{s.get('idle_frames')} frames")
     heads = ["frames", "p50 ms", "p95 ms", "max ms", ">16.7 ms", "cpu %", "rss MB"]
-    print(f"{'scenario':<10}" + "".join(f"{h:>10}" for h in heads))
+    print(f"{'scenario':<11}" + "".join(f"{h:>10}" for h in heads))
     for scen, m in summary.items():
-        if scen != "startup":
-            print(f"{scen:<10}" + "".join(f"{m.get(c, 0):>10}" for c in cols))
+        if scen not in ("startup", "large"):
+            print(f"{scen:<11}" + "".join(f"{m.get(c, 0):>10}" for c in cols))
+    for scen, m in summary.items():
+        if m.get("child_cpu_pct", 0) >= 1:
+            print(f"{scen}: programs it ran used {m['child_cpu_pct']} % CPU")
+        if "rss_growth_mb" in m:
+            print(f"{scen}: {m['rounds']} rounds, {m['rss_start_mb']} MB at the start, "
+                  f"{m['rss_growth_mb']:+} MB after the first round, {m['rss_max_mb']} MB at most")
 
 
 # ---------------------------------------------------------------- agent
@@ -548,7 +841,12 @@ def print_agent(summary):
 
 # Perf metrics where up is worse, and how much noise to forgive.
 WORSE_UP = {"frame_p50_ms", "frame_p95_ms", "frame_p99_ms", "frame_mean_ms", "frames_over_budget",
-            "cpu_pct", "cpu_s", "rss_mb", "first_frame_ms", "ready_ms"}
+            "cpu_pct", "cpu_s", "child_cpu_pct", "rss_mb", "first_frame_ms", "ready_ms",
+            "startup_rss_mb", "rss_max_mb", "rss_growth_mb", "idle_frame_p50_ms", "idle_frame_p95_ms",
+            "idle_frame_p99_ms", "idle_frame_mean_ms", "idle_frames_over_budget", "idle_cpu_pct",
+            "idle_cpu_s", "idle_child_cpu_pct", "idle_rss_mb"}
+# Where the app should sit still, so any frame drawn is worse.
+QUIET = {"idle", "asleep"}
 
 
 def cmd_compare(args):
@@ -565,7 +863,8 @@ def cmd_compare(args):
             change = (new - old) / old * 100 if old else (float("inf") if new > old else 0.0)
             flag = ""
             # An idle app should draw nothing, so there any frame is worse.
-            up_is_worse = metric in WORSE_UP or (group == "idle" and metric == "frames")
+            up_is_worse = metric in WORSE_UP or (metric == "frames" and group in QUIET) or (
+                metric == "idle_frames" and group == "large")
             # Small absolute changes are noise even when the percentage is large.
             if up_is_worse and change > args.threshold and new - old > noise_floor(metric):
                 flag = "worse"
@@ -593,9 +892,9 @@ def cmd_compare(args):
 def noise_floor(metric):
     if metric.endswith("_ms"):
         return 0.5
-    if metric == "rss_mb":
+    if metric.endswith("_mb"):
         return 5
-    if metric == "cpu_pct":
+    if metric.endswith("cpu_pct"):
         return 2
     return 1
 
@@ -651,6 +950,7 @@ def main():
     p.add_argument("--bin", help="the arakun to test (default: target/release, else target/debug)")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--only", help=f"scenarios, comma-separated: {','.join(SCENARIOS)}")
+    p.add_argument("--all", action="store_true", help=f"also the long scenarios: {','.join(sorted(LONG))}")
     p.add_argument("--label", help="a name for the build, such as its release tag; compare shows it")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_perf)

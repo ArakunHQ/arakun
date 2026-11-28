@@ -43,10 +43,11 @@ import com.arakun.kit.DiffLine
 import com.arakun.kit.FileDiff
 import com.arakun.kit.LiveSession
 
-/** What is open over a session: the files it changed, or one file's diffs. */
+/** What is open over a session: the files it changed, one file's diffs, or its model and reasoning. */
 sealed interface ChangesSheet {
     data object Files : ChangesSheet
     data class Diff(val file: ChangedFile) : ChangesSheet
+    data object Settings : ChangesSheet
 }
 
 /** The sheet over the session, in the session's own chrome. `open(null)` closes it. */
@@ -63,12 +64,13 @@ fun ChangesSheetView(model: AppModel, s: LiveSession, sheet: ChangesSheet, open:
             ChangesSheet.Files -> FilesSheet(model, s, open)
             // A diff goes back to the list it was picked from.
             is ChangesSheet.Diff -> DiffSheet(model, sheet.file) { open(ChangesSheet.Files) }
+            ChangesSheet.Settings -> SettingsSheet(model, s) { open(null) }
         }
     }
 }
 
 @Composable
-private fun SheetTopBar(title: String, sub: String, onBack: () -> Unit) {
+internal fun SheetTopBar(title: String, sub: String, action: (@Composable () -> Unit)? = null, onBack: () -> Unit) {
     val c = Palette.current
     Box(
         Modifier
@@ -83,6 +85,7 @@ private fun SheetTopBar(title: String, sub: String, onBack: () -> Unit) {
         Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) {
             IconTap(R.drawable.ic_arrow_left01, "Back", c.text, onClick = onBack)
         }
+        if (action != null) Box(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) { action() }
         Column(
             Modifier.align(Alignment.Center).widthIn(max = 260.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -95,7 +98,7 @@ private fun SheetTopBar(title: String, sub: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun Waiting(model: AppModel) {
+internal fun Waiting(model: AppModel) {
     val c = Palette.current
     Column(
         Modifier.fillMaxWidth().padding(top = 60.dp),
@@ -190,7 +193,7 @@ private fun FileRow(f: ChangedFile, onClick: () -> Unit) {
 private fun DiffSheet(model: AppModel, file: ChangedFile, onBack: () -> Unit) {
     // Again when the link comes back, for the ones that did not come.
     LaunchedEffect(file, model.canSend) { model.loadDiffs(file.diffs) }
-    SheetTopBar(file.name, "Read-only · edit on the computer", onBack)
+    SheetTopBar(file.name, "Read-only · edit on the computer", onBack = onBack)
     val n = file.diffs.size
     SelectionContainer {
         LazyColumn(Modifier.fillMaxSize().navigationBarsPadding(), contentPadding = PaddingValues(vertical = 8.dp)) {

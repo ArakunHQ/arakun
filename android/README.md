@@ -13,6 +13,7 @@ android/
     RelayLink.kt     the WebSocket to the relay, pings, {req}/{res}, {part} (phone/relay.js)
     Pairing.kt       why a channel ended, and what an opened link gets told
     Models.kt        inbox, session, entries, state, changes, diffs (core/src/phone/wire.rs)
+    Settings.kt      a session's model and reasoning, a new one's options, plan limits
     WebPush.kt       this phone's push keys, opening a sealed notice (core/src/phone/push.rs)
   app/               the app: sign-in, computers, inbox, a live session and what it changed, new session
   tools/vectors.py   the brand's SVG icons and the raccoon as vector drawables
@@ -183,11 +184,17 @@ says "Relay links are no longer used. Sign in to reach your computers."
   one-time allow is held, an allow for the session asks twice), answer the agent's
   questions, give a secret the agent asks for (masked, and only over an encrypted
   connection; otherwise only Decline), load older entries.
-- Start a session in any place the computer offers.
+- The files a session changed, turn by turn, and each diff, read-only.
+- Start a session in any place the computer offers, with the agent, model and reasoning
+  you pick there (the computer lists what each agent offers).
+- Change a running session's model and reasoning (the settings button in its top bar);
+  a pick applies from the next message on. The header shows how full its context is,
+  and its tokens and cost.
+- Plan limits, from the inbox's menu: how full each agent's windows are and when they
+  reset, read again every minute while the screen is open.
 - Attach photos to a prompt or a new session, from the system photo picker (no storage
   permission) or the camera. They are scaled down and sent as JPEG; a send that does
   not go out keeps them in the composer.
 - Notifications when a turn finishes, the agent needs you, or something goes wrong.
 
-Not yet: diffs, session settings, plan limits, and pairing on Same Wi-Fi or
-Tailscale inside the app.
+Not yet: pairing on Same Wi-Fi or Tailscale inside the app.

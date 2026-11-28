@@ -27,7 +27,7 @@ cancel01 check-list checkmark-circle02 circle-dashed circle
 computer computer-terminal01 copy01 delete02 file-diff file01 folder01
 git-branch globe hand help-circle image-add01 image01 link01 loading03 mark-cross more-horizontal
 notification01 notification-off01 pencil-edit01 pencil-edit02 refresh01 search01 share02 square square-lock02
-user wrench01
+user wrench01 settings01 gauge
 """.split()
 
 SVG = "{http://www.w3.org/2000/svg}"

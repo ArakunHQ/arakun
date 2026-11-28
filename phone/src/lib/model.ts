@@ -77,6 +77,8 @@ export type ServerMessage =
   | { type: "usage"; agents: unknown[] }
   | ({ type: "session"; id: string; from: number; count: number; entries: Entry[] } & Partial<Omit<Session, "id" | "from" | "count" | "entries">>)
   | { type: "entries"; id: string; from: number; count: number; entries: Entry[]; older?: boolean }
+  /** Only the words of entry `n` changed: their first `at` UTF-16 units stay, then `text`. */
+  | { type: "append"; id: string; n: number; at: number; text: string }
   | { type: "commands"; id: string; commands: unknown[] }
   | { type: "subagents"; id: string; subagents: unknown[] }
   | ({ type: "state"; id: string } & Partial<Omit<Session, "id" | "from" | "count" | "entries">>)
@@ -231,6 +233,17 @@ export function reduce(s: LinkState, msg: ServerMessage, now: number = Date.now(
         entries = old.entries.slice(0, msg.from - old.from).concat(msg.entries);
       }
       return { ...s, session: { ...old, count: msg.count, from, entries } };
+    }
+    case "append": {
+      if (!forOpen(s, msg)) return s;
+      const old = s.session;
+      const i = msg.n - old.from;
+      const e = old.entries[i];
+      // Not loaded here, or not words: the next whole `entries` puts it right.
+      if (!e || typeof e.text !== "string" || e.text.length < msg.at) return s;
+      const entries = old.entries.slice();
+      entries[i] = { ...e, text: e.text.slice(0, msg.at) + msg.text };
+      return { ...s, session: { ...old, entries } };
     }
     case "commands":
       return forOpen(s, msg) ? { ...s, commands: msg.commands } : s;

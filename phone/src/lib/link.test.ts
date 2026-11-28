@@ -232,14 +232,14 @@ describe("messages", () => {
   it("open sends and starts the session; linked opens it again", async () => {
     const { link: l, ws } = await linkedLocal();
     l.send({ type: "open", session: "s1" });
-    expect(ws.sent).toContainEqual({ type: "open", session: "s1" });
+    expect(ws.sent).toContainEqual({ type: "open", session: "s1", append: true });
     expect(l.getState().session).toMatchObject({ id: "s1", entries: [] });
     ws.say({ type: "entries", id: "s1", from: 0, count: 1, entries: [{ n: 0 }] });
     ws.end("gone");
     await vi.advanceTimersByTimeAsync(500);
     last().open();
     await flush();
-    expect(last().sent).toContainEqual({ type: "open", session: "s1" });
+    expect(last().sent).toContainEqual({ type: "open", session: "s1", append: true });
     expect(l.getState().session!.entries).toEqual([{ n: 0 }]);
   });
 
@@ -274,7 +274,7 @@ describe("messages", () => {
     l.subscribeEvents((e) => events.push(e));
     ws.say({ type: "started", id: "s5" });
     expect(l.getState().session).toMatchObject({ id: "s5" });
-    expect(ws.sent).toContainEqual({ type: "open", session: "s5" });
+    expect(ws.sent).toContainEqual({ type: "open", session: "s5", append: true });
     expect(events).toContainEqual({ type: "started", id: "s5" });
   });
 });

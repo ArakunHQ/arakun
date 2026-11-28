@@ -101,6 +101,10 @@ pub enum ClientMsg {
         session: String,
         #[serde(default)]
         keep: bool,
+        /// Takes `append` in place of `entries` when only the words of the
+        /// last entry changed. A server without it sends `entries`.
+        #[serde(default)]
+        append: bool,
     },
     /// Stop watching `session`, or every session when it says none (back to
     /// the inbox).

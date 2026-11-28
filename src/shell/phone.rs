@@ -65,6 +65,9 @@ pub(super) struct PhoneLink {
     access: phone::Shared,
     /// The session each phone is looking at.
     watching: HashMap<ClientId, SharedString>,
+    /// What each watched session's entries were last sent as, to send a
+    /// streaming reply's new words only.
+    entry_stream: wire::EntryStream,
     /// Phones whose page left the screen: they still get updates, but a push too.
     hidden: HashSet<ClientId>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
@@ -1152,6 +1155,7 @@ impl Shell {
             _remote: watch,
             access,
             watching: HashMap::new(),
+            entry_stream: wire::EntryStream::default(),
             hidden: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
@@ -1308,6 +1312,7 @@ impl Shell {
                 self.servers_phone_left(Some(id));
                 if let Some(link) = &mut self.phone {
                     link.hidden.remove(&id);
+                    link.entry_stream.forget_client(id);
                 }
                 self.sync_phone_view(cx);
             }
@@ -1369,7 +1374,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match msg {
-            ClientMsg::Open { session, .. } => {
+            ClientMsg::Open {
+                session, append, ..
+            } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
@@ -1391,6 +1398,9 @@ impl Shell {
                 let path = env_path.clone();
                 self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
                     let reply = this.phone_session_json(&path, &sid, &pid, cx);
+                    if let Some(link) = &mut this.phone {
+                        link.entry_stream.opened(client, &pid, append);
+                    }
                     this.phone_send(client, reply);
                 });
             }
@@ -1869,6 +1879,9 @@ impl Shell {
         let Some(id) = link.watching.remove(&client) else {
             return;
         };
+        if !link.watching.values().any(|w| *w == id) {
+            link.entry_stream.forget_session(&id);
+        }
         self.servers_look_away(super::servers::Watcher::Phone(client));
         if let Some((env_path, sid)) = self.phone_session(&id) {
             self.retire_if_hidden(&env_path, &sid, cx);
@@ -2205,13 +2218,18 @@ impl Shell {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::entries_message(
-                &id,
-                t.entries(),
-                from,
-                &self.phone_scope(&env_path, t.cwd()),
-            );
-            self.phone_send_watchers(&id, msg);
+            let scope = self.phone_scope(&env_path, t.cwd());
+            let Some(link) = &mut self.phone else {
+                return;
+            };
+            let flush = link.entry_stream.flush(&id, t.entries(), from, &scope);
+            for (client, watched) in &link.watching {
+                if *watched == id
+                    && let Some(msg) = link.entry_stream.message_for(*client, &flush)
+                {
+                    link.server.send(*client, msg);
+                }
+            }
         }
         for id in states {
             let Some((env_path, sid)) = self.phone_session(&id) else {

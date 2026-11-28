@@ -6,6 +6,9 @@
 //! - `inbox`: every session of every project, with its status.
 //! - `session`: a session just opened: its tail of entries and its state.
 //! - `entries`: entries from `from` on changed; `count` is the new total.
+//! - `append`: only the words of the last entry `n` changed: they are their
+//!   first `at` UTF-16 units as the client has them, then `text`. Only to a
+//!   client that opened the session with `append` (see [`EntryStream`]).
 //! - `state`: a watched session's status, permission or usage changed.
 //! - `usage`: both agents' plan limits, on request and when they change.
 //! - `transcript`: a session's entries whole, on request: for the app, which
@@ -24,6 +27,8 @@
 //! the [`ACKS_HEADER`] on its own socket, and with `acks` in its `ok` or
 //! `paired` through the relay.
 
+use std::cell::OnceCell;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -35,6 +40,8 @@ use crate::agent::{
     Thread, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
+
+use super::ClientId;
 
 /// What entries are read against: the session's directory, which the `@path`
 /// mentions in prompts are relative to, and the key that signs image links.
@@ -227,6 +234,15 @@ pub fn usage(u: &Usage) -> Value {
     })
 }
 
+/// The type and the text of an entry that is only words, as [`entry`] sends it.
+fn words(e: &Entry, scope: &Scope) -> Option<(&'static str, String)> {
+    match e {
+        Entry::Agent { text } => Some(("agent", agent_images(text, scope))),
+        Entry::Thought { text } => Some(("thought", tail(text, CLIP))),
+        _ => None,
+    }
+}
+
 pub fn entry(e: &Entry, scope: &Scope) -> Value {
     match e {
         Entry::User {
@@ -260,8 +276,10 @@ pub fn entry(e: &Entry, scope: &Scope) -> Value {
                 "edits": shell_changes.iter().map(|c| json!({ "path": c.path, "added": c.added, "removed": c.removed })).collect::<Vec<_>>(),
             })
         }
-        Entry::Agent { text } => json!({ "type": "agent", "text": agent_images(text, scope) }),
-        Entry::Thought { text } => json!({ "type": "thought", "text": tail(text, CLIP) }),
+        Entry::Agent { .. } | Entry::Thought { .. } => {
+            let (kind, text) = words(e, scope).unwrap_or_default();
+            json!({ "type": kind, "text": text })
+        }
         Entry::Tool(t) => {
             let mut texts = Vec::new();
             let mut diffs = Vec::new();
@@ -760,6 +778,131 @@ pub fn entries_message(id: &str, all: &[Entry], from: usize, scope: &Scope) -> S
         "entries": entries(all, from, scope),
     })
     .to_string()
+}
+
+/// The last entry of a session as its watchers last got it, when it is only
+/// words: the next flush may send just what they grew by.
+#[derive(Debug, Clone, PartialEq)]
+struct Streamed {
+    n: usize,
+    count: usize,
+    kind: &'static str,
+    text: String,
+}
+
+/// Sends a session's changed entries to the clients watching it. A reply
+/// streams in as one entry whose words grow every flush; sending that entry
+/// whole each time costs the square of its length. A client that opened the
+/// session with `append` gets only the new words instead; the rest still get
+/// `entries`, as before.
+#[derive(Default)]
+pub struct EntryStream {
+    appenders: HashSet<ClientId>,
+    last: HashMap<String, Streamed>,
+}
+
+/// What one flush of a session sends: an `append` when it can, the `entries`
+/// message (built once, when a client needs it) otherwise.
+pub struct EntryFlush<'a> {
+    id: &'a str,
+    all: &'a [Entry],
+    from: usize,
+    scope: &'a Scope,
+    /// `Some(None)`: the words are as they were, so an appender gets nothing.
+    append: Option<Option<String>>,
+    entries: OnceCell<String>,
+}
+
+impl EntryStream {
+    /// `client` watches `session` now, taking `append` or not. The next flush
+    /// of it goes whole: what the client was sent on opening may be newer than
+    /// what the others last got.
+    pub fn opened(&mut self, client: ClientId, session: &str, append: bool) {
+        if append {
+            self.appenders.insert(client);
+        } else {
+            self.appenders.remove(&client);
+        }
+        self.last.remove(session);
+    }
+
+    pub fn forget_client(&mut self, client: ClientId) {
+        self.appenders.remove(&client);
+    }
+
+    /// Nobody watches `session` any more.
+    pub fn forget_session(&mut self, session: &str) {
+        self.last.remove(session);
+    }
+
+    /// The entries of session `id` changed from `from` on. Call it once per
+    /// flush, whoever watches: it notes what they now have.
+    pub fn flush<'a>(
+        &mut self,
+        id: &'a str,
+        all: &'a [Entry],
+        from: usize,
+        scope: &'a Scope,
+    ) -> EntryFlush<'a> {
+        let before = self.last.remove(id);
+        let now = all.last().and_then(|e| {
+            let (kind, text) = words(e, scope)?;
+            Some(Streamed {
+                n: all.len() - 1,
+                count: all.len(),
+                kind,
+                text,
+            })
+        });
+        let append = match (&before, &now) {
+            (Some(b), Some(n))
+                if from == n.n && b.n == n.n && b.count == n.count && b.kind == n.kind =>
+            {
+                Some(append_message(id, n.n, &b.text, &n.text))
+            }
+            _ => None,
+        };
+        if let Some(now) = now {
+            self.last.insert(id.to_string(), now);
+        }
+        EntryFlush {
+            id,
+            all,
+            from,
+            scope,
+            append,
+            entries: OnceCell::new(),
+        }
+    }
+
+    /// What `client` gets of `flush`, if anything.
+    pub fn message_for(&self, client: ClientId, flush: &EntryFlush) -> Option<String> {
+        if self.appenders.contains(&client)
+            && let Some(append) = &flush.append
+        {
+            return append.clone();
+        }
+        let entries = flush
+            .entries
+            .get_or_init(|| entries_message(flush.id, flush.all, flush.from, flush.scope));
+        Some(entries.clone())
+    }
+}
+
+/// `append` for entry `n`, whose words went from `old` to `new`; `None` when
+/// they are the same.
+fn append_message(id: &str, n: usize, old: &str, new: &str) -> Option<String> {
+    let same = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(old.len().min(new.len()), |((i, _), _)| i);
+    if same == old.len() && same == new.len() {
+        return None;
+    }
+    // UTF-16 units: what JavaScript, Kotlin and Swift strings count with ease.
+    let at = new[..same].encode_utf16().count();
+    Some(json!({ "type": "append", "id": id, "n": n, "at": at, "text": &new[same..] }).to_string())
 }
 
 /// `state`: what changed around a watched session's entries. `private`
@@ -1835,5 +1978,81 @@ mod tests {
             line(Status::Idle, Some("Run ls?")),
             line(Status::Idle, Some("Run rm?"))
         );
+    }
+
+    fn agent(text: &str) -> Entry {
+        Entry::Agent { text: text.into() }
+    }
+
+    fn sent(stream: &EntryStream, client: ClientId, flush: &EntryFlush) -> Option<Value> {
+        stream
+            .message_for(client, flush)
+            .map(|m| serde_json::from_str(&m).unwrap())
+    }
+
+    #[test]
+    fn a_streaming_reply_goes_as_its_new_words_to_a_client_that_takes_append() {
+        let scope = scope(std::path::Path::new("/p"));
+        let mut stream = EntryStream::default();
+        stream.opened(1, "s", true);
+        stream.opened(2, "s", false);
+        let mut all = vec![agent("hi")];
+        // The first flush after opening goes whole to both.
+        let f = stream.flush("s", &all, 0, &scope);
+        assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
+        assert_eq!(sent(&stream, 2, &f).unwrap()["type"], "entries");
+
+        all[0] = agent("hi there");
+        let f = stream.flush("s", &all, 0, &scope);
+        assert_eq!(
+            sent(&stream, 1, &f).unwrap(),
+            json!({ "type": "append", "id": "s", "n": 0, "at": 2, "text": " there" })
+        );
+        assert_eq!(
+            sent(&stream, 2, &f).unwrap()["entries"][0]["text"],
+            "hi there"
+        );
+
+        // Nothing new in the words: nothing for the one that takes append.
+        let f = stream.flush("s", &all, 0, &scope);
+        assert_eq!(sent(&stream, 1, &f), None);
+        assert_eq!(sent(&stream, 2, &f).unwrap()["type"], "entries");
+    }
+
+    #[test]
+    fn an_append_counts_utf16_units_and_can_take_words_back() {
+        // "é" is one unit and "😀" two; the words changed after them.
+        let m: Value =
+            serde_json::from_str(&append_message("s", 3, "é😀ab", "é😀ax!").unwrap()).unwrap();
+        assert_eq!(m["at"], 4);
+        assert_eq!(m["text"], "x!");
+        assert_eq!(m["n"], 3);
+        assert_eq!(append_message("s", 0, "same", "same"), None);
+    }
+
+    #[test]
+    fn a_new_entry_or_an_earlier_change_goes_whole() {
+        let scope = scope(std::path::Path::new("/p"));
+        let mut stream = EntryStream::default();
+        stream.opened(1, "s", true);
+        let mut all = vec![agent("a")];
+        stream.flush("s", &all, 0, &scope);
+        // A new entry: the count changed.
+        all.push(agent("b"));
+        let f = stream.flush("s", &all, 1, &scope);
+        assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
+        // An earlier entry changed along with the last.
+        all[0] = agent("a2");
+        all[1] = agent("b2");
+        let f = stream.flush("s", &all, 0, &scope);
+        assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
+        // A thought in place of the words: another kind.
+        all[1] = Entry::Thought { text: "b2".into() };
+        let f = stream.flush("s", &all, 1, &scope);
+        assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
+        // Opened again: whole, since what it got on opening may be newer.
+        stream.opened(1, "s", true);
+        let f = stream.flush("s", &all, 1, &scope);
+        assert_eq!(sent(&stream, 1, &f).unwrap()["type"], "entries");
     }
 }

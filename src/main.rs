@@ -3,7 +3,7 @@ use arakun_core::{
     accept, account, agent, assets, browser, caret, cli, clone_source, cloud, durable, explorer,
     fetch, frame_timer, git, git_call, guard, highlight, housekeep, input, island, mascot,
     password_manager, paths, phone, platform, poll, private_socket, redact, schedule, secret,
-    secret_store, secrets, server, settings, signals, terminal, theme, ui, when, zoom,
+    secret_store, secrets, server, settings, signals, terminal, theme, ui, when, widget, zoom,
 };
 #[cfg(test)]
 mod a11y_lint;
@@ -116,6 +116,7 @@ mod usage_history;
 mod usage_view;
 mod usage_where;
 mod voice;
+mod widget_blocks;
 mod window_error;
 #[cfg(test)]
 mod words_lint;

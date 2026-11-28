@@ -59,6 +59,17 @@ function words({ action, detail }: LogEntry): string {
       return "replaced the authenticator app";
     case "operator.totp.reset":
       return "reset the authenticator app";
+    case "widget.list":
+      if (has("id") && has("version")) return `listed the widget ${detail!.id} ${detail!.version}${detail!.signed ? ", verified" : ""}`;
+      break;
+    case "widget.pull":
+      if (has("id")) return `pulled the widget ${detail!.id}${detail!.version ? ` ${detail!.version}` : ""}`;
+      break;
+    case "widget.unpull":
+      if (has("id")) return `listed the widget ${detail!.id}${detail!.version ? ` ${detail!.version}` : ""} again`;
+      break;
+    case "widget.report.close":
+      return "decided a widget report";
   }
   return String(action);
 }
@@ -71,7 +82,7 @@ function Entry({ entry }: { entry: LogEntry }) {
       <span className="log-what">{words(entry)}</span>
       {entry.account_id === null ? (
         // An operator's own change names no account when they have none.
-        !entry.action.startsWith("operator.") && <span className="muted">everyone</span>
+        !entry.action.startsWith("operator.") && !entry.action.startsWith("widget.") && <span className="muted">everyone</span>
       ) : (
         <Link className="log-account" to="/users/$accountId" params={{ accountId: String(entry.account_id) }}>
           {entry.login ? entry.login : `Account ${entry.account_id}`}

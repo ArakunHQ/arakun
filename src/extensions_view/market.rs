@@ -28,6 +28,8 @@ pub(super) enum Market {
     Registry,
     /// skills.sh.
     Skills,
+    /// Community widgets, from Arakun's widget index.
+    Widgets,
 }
 
 /// What GitHub says of a skill picked on skills.sh.
@@ -118,7 +120,12 @@ impl ExtensionsView {
                 self.search_registry(false, cx)
             }
             Market::Skills => self.search_skills(cx),
+            Market::Widgets => self.load_widgets(cx),
             _ => {}
+        }
+        // The Community widgets shelf shows over Plugins.
+        if self.market == Market::Plugins {
+            self.load_widgets(cx);
         }
     }
 
@@ -713,6 +720,8 @@ impl ExtensionsView {
                 .cloned()
                 .map(Item::Skill)
                 .collect(),
+            // The Widgets page lists its own cards (`widgets.rs`).
+            Market::Widgets => Vec::new(),
         };
         if self.ms.sort == Sort::Name {
             items.sort_by_key(|i| i.title().to_lowercase());
@@ -925,6 +934,7 @@ impl ExtensionsView {
                 .is_some()
                 .then(|| self.server_list().len()),
             Market::Skills => self.ms.skills.data.as_ref().map(Vec::len),
+            Market::Widgets => self.widget_count(),
         }
     }
 
@@ -974,7 +984,7 @@ impl ExtensionsView {
                 }
                 "Companies"
             }
-            Market::Registry => return Vec::new(),
+            Market::Registry | Market::Widgets => return Vec::new(),
             Market::Skills => {
                 for s in self.ms.skills.data.iter().flatten() {
                     add(&s.source);
@@ -1000,6 +1010,7 @@ impl ExtensionsView {
             let (lead, label) = match self.market {
                 Market::Plugins => (Lead::Dot(rgb(category_color(&g)).into()), capitalize(&g)),
                 Market::Registry => (Lead::Mark(logos::mark(&g, "")), g.clone()),
+                Market::Widgets => (Lead::Mark(logos::mark(&g, "")), g.clone()),
                 Market::Skills => {
                     let owner = g.split('/').next().unwrap_or_default();
                     (
@@ -1028,6 +1039,9 @@ impl ExtensionsView {
     /// filters, then a virtual list of card lines (only the visible ones are
     /// laid out, however many there are), and the picked item on the right.
     pub(super) fn render_market(&self, cx: &mut Context<Self>) -> Div {
+        if self.market == Market::Widgets {
+            return self.render_widgets(cx);
+        }
         let items = Rc::new(self.market_items(cx));
         let detail = self.render_detail(cx);
         let per = self.market_columns(cx);
@@ -1039,11 +1053,13 @@ impl ExtensionsView {
             Market::Registry if self.ms.everything => self.ms.registry.is_none(),
             Market::Registry => self.ms.official.data.is_none(),
             Market::Skills => self.ms.skills.data.is_none() && self.ms.skills.loading(),
+            Market::Widgets => self.ws.cards.data.is_none(),
         };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
             Market::Registry => self.ms.registry_error.clone(),
             Market::Skills => self.ms.skills.error.clone(),
+            Market::Widgets => self.ws.cards.error.clone(),
         };
         let query = self.query.read(cx).text().trim().to_string();
         // The most installed, larger, when there is room for two side by side,
@@ -1060,6 +1076,11 @@ impl ExtensionsView {
             0
         };
         let top = self.top_signature();
+        // Over Plugins, before anything narrows the list.
+        let shelf = self.market == Market::Plugins
+            && self.ms.category.is_none()
+            && query.is_empty()
+            && self.widget_count().is_some_and(|n| n > 0);
 
         let main: AnyElement = if loading || items.is_empty() {
             // No list now: the next one starts over, even for the same search.
@@ -1072,6 +1093,7 @@ impl ExtensionsView {
                         Market::Registry if self.ms.everything => "Asking the MCP Registry…".into(),
                         Market::Registry => "Gathering what each company publishes…".into(),
                         Market::Skills => "Asking skills.sh…".into(),
+                        Market::Widgets => "Reading Arakun's widget index…".into(),
                     })
                     .into_any_element(),
                 }
@@ -1122,6 +1144,9 @@ impl ExtensionsView {
             if top.is_some() {
                 rows.push(Row::Top);
             }
+            if shelf {
+                rows.push(Row::Shelf);
+            }
             if featured > 0 {
                 rows.push(Row::Featured);
             }
@@ -1143,6 +1168,7 @@ impl ExtensionsView {
                     query,
                     per,
                     featured,
+                    shelf,
                 },
                 rows.len(),
                 top,
@@ -1197,6 +1223,9 @@ impl ExtensionsView {
     ) -> AnyElement {
         match row {
             Row::Top => self.render_top(cx).into_any_element(),
+            Row::Shelf => self
+                .render_widget_shelf(per, cx)
+                .map_or_else(|| div().into_any_element(), IntoElement::into_any_element),
             Row::Featured => {
                 let mut line = div().flex().w_full().gap(crate::ui::sp(GAP));
                 for item in items.iter().take(featured) {
@@ -1396,12 +1425,14 @@ impl ExtensionsView {
                 Market::Registry if self.ms.everything => self.ms.registry_loading,
                 Market::Registry => self.ms.official.loading(),
                 Market::Skills => self.ms.skills.loading(),
+                Market::Widgets => self.ws.cards.loading(),
             };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
             Market::Skills => self.ms.skills.error.clone(),
             // The registry is read from here; installing from it needs the server.
             Market::Registry => self.server_refused().or(self.ms.registry_error.clone()),
+            Market::Widgets => self.ws.cards.error.clone(),
         };
         let title = match (self.market, &self.ms.category) {
             (_, Some(c)) if self.market == Market::Plugins => capitalize(c),
@@ -1415,6 +1446,7 @@ impl ExtensionsView {
                 .skills_repo
                 .clone()
                 .unwrap_or_else(|| "skills.sh".to_string()),
+            (Market::Widgets, None) => "Community widgets".to_string(),
         };
         let mut scope = ui::segmented();
         for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
@@ -1757,6 +1789,8 @@ impl ExtensionsView {
                     .clone(),
             ),
             Market::Registry => Item::Server(self.ms.installing.as_ref()?.server.clone()),
+            // The Widgets page draws its own details.
+            Market::Widgets => return None,
             Market::Skills => Item::Skill(
                 self.ms
                     .skills
@@ -2651,6 +2685,8 @@ fn looks_secret(input: &Input) -> bool {
 enum Row {
     /// The last error or notice, and a server that needs you.
     Top,
+    /// The Community widgets shelf, over Plugins.
+    Shelf,
     Featured,
     /// The list's title, Official or All, and the sort.
     Head,
@@ -2670,6 +2706,8 @@ pub(super) struct RowsKey {
     query: String,
     per: usize,
     featured: usize,
+    /// The Community widgets shelf is a row.
+    shelf: bool,
 }
 
 /// What the rows were last laid out for: the key, how many there were, and
@@ -2963,6 +3001,7 @@ mod tests {
             query: query.to_string(),
             per: 2,
             featured: 2,
+            shelf: false,
         }
     }
 

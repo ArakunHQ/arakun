@@ -36,6 +36,8 @@ use crate::ui::{self, ButtonKind, Tone, Type, icon};
 mod agents;
 mod market;
 mod remote;
+mod widget_index;
+mod widgets;
 
 use agents::{Agent, Show, Use, Uses};
 use market::{Market, MarketState};
@@ -201,6 +203,8 @@ pub struct ExtensionsView {
     kind: Kind,
     market: Market,
     ms: MarketState,
+    /// Community widgets in Discover.
+    ws: widgets::WidgetState,
     query: Entity<TextInput>,
     scroll: ScrollHandle,
     error: Option<SharedString>,
@@ -278,6 +282,7 @@ impl ExtensionsView {
             kind: Kind::Marketplace,
             market: Market::Plugins,
             ms: MarketState::default(),
+            ws: Default::default(),
             query,
             scroll: ScrollHandle::new(),
             error: None,
@@ -391,6 +396,8 @@ impl ExtensionsView {
             self.ms.failed_at = None;
             // A failed skills.sh search too, for the same words.
             self.ms.skills.error = None;
+            // And the widget index.
+            self.ws.cards.error = None;
             self.open_market(cx);
         }
         self.load_claude(cx);
@@ -2841,6 +2848,12 @@ impl ExtensionsView {
             (Market::Plugins, "market:plugins", "Plugins", "cube"),
             (Market::Registry, "market:registry", "MCP servers", "link01"),
             (Market::Skills, "market:skills", "Skills", "sparkles"),
+            (
+                Market::Widgets,
+                "market:widgets",
+                "Widgets",
+                "dashboard-square01",
+            ),
         ] {
             let on = self.kind == Kind::Marketplace && self.market == m;
             out.push(Line::Entry(
@@ -2931,6 +2944,7 @@ impl ExtensionsView {
             "market:plugins" => self.show_market(Market::Plugins, cx),
             "market:registry" => self.show_market(Market::Registry, cx),
             "market:skills" => self.show_market(Market::Skills, cx),
+            "market:widgets" => self.show_market(Market::Widgets, cx),
             "target:" => self.pick_target(None, cx),
             "cat:" => self.pick_category(None, cx),
             _ => {

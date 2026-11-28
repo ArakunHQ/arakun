@@ -30,7 +30,11 @@ export type LogAction =
   | "beta.decline"
   | "operator.totp.add"
   | "operator.totp.replace"
-  | "operator.totp.reset";
+  | "operator.totp.reset"
+  | "widget.list"
+  | "widget.pull"
+  | "widget.unpull"
+  | "widget.report.close";
 
 export interface Operator {
   id: number | null;

@@ -30,6 +30,7 @@
 //   PUT    /admin/beta/signups/<account_id>/<platform>/admit   → marks one admitted, { by? }
 //   PUT    /admin/beta/signups/<account_id>/<platform>/decline → declines one, { by? }
 //   …      /admin/operators/<github_id>/totp[/use] → the panel operators' authenticator keys (admin_totp.ts)
+//   …      /admin/widgets/…                        → list, sign and pull community widgets, and decide reports (widgets.ts)
 //
 // Accounts are named by their account ID, not a GitHub ID. The flag, block
 // and plan routes answer 404 for an ID with no account; to set one up before
@@ -54,6 +55,7 @@ import { holdAccount, listAllMachines, releaseAccount, resumeEveryone, sleepMach
 import { accountFor, GITHUB_ACCOUNT } from "./auth";
 import { recheckAccount } from "./machines";
 import { createNotice, deleteNotice } from "./notices";
+import { adminWidgets } from "./widgets";
 import { GITHUB_ID_OF, NUMERIC_ID, bearer, error, flagList, flagsQuery, isObject, jsonBody, now, sha256, type Env } from "./util";
 
 const FLAG = /^[a-z][a-z0-9_]{0,31}$/;
@@ -106,6 +108,8 @@ export async function admin(request: Request, env: Env, url: URL): Promise<Respo
   if (signup && request.method === "PUT") return decideSignup(request, env, signup[1]!, signup[2]!, signup[3] as "admit" | "decline", op);
   const totp = /^\/admin\/operators\/([^/]+)\/totp(\/use)?$/.exec(path);
   if (totp) return (await operatorTotp(request, env, op, totp[1]!, !!totp[2])) ?? error(404, "not found");
+  const widget = await adminWidgets(request, env, url, op);
+  if (widget) return widget;
   return error(404, "not found");
 }
 

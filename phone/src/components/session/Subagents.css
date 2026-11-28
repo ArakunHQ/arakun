@@ -1,0 +1,37 @@
+/* A subagent's card in the transcript, in place of its Task or Agent row: who,
+   its state and clock, its task, and its latest step. A tap opens its transcript. */
+.subcard {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; margin: 2px 0 4px; padding: 8px 12px; min-height: 44px;
+  border-radius: var(--radius-lg); background: var(--color-raised); border: 1px solid var(--color-border-subtle);
+  text-align: left; color: var(--color-text-subtle); font-size: var(--text-md);
+}
+.subcard:active { background: var(--color-fill-hover); }
+.subcard .sctop { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.subcard .scname { flex: 1; min-width: 0; font-size: var(--text-lg); font-weight: 600; color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subcard .scstate { flex: none; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--color-text-faint); }
+.subcard .sctop svg { flex: none; color: var(--color-text-subtle); transform: rotate(-90deg); }
+.subcard .sctask { color: var(--color-text-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.subcard .scstep { font: var(--text-sm) var(--font-mono); color: var(--color-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subcard .st { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--color-text-faint); }
+.subcard.running .st { background: none; border: 2px solid var(--color-border); border-top-color: var(--color-link); animation: spin 0.8s linear infinite; }
+.subcard.completed .st { background: var(--color-success); }
+.subcard.failed .st { background: var(--color-error); }
+.subcard.failed .scstate { color: var(--color-error); }
+
+/* Over the composer while subagents run on after the turn. */
+.bgsub {
+  display: flex; align-items: center; gap: 8px; margin: 6px var(--gr) 0 var(--gl); padding: 6px 14px; border-radius: 999px;
+  font-size: var(--text-md); color: var(--color-text-muted); background: var(--color-raised); box-shadow: inset 0 0 0 1px var(--color-border-subtle);
+}
+.bgsub::before { content: ""; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--color-link); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+
+/* A subagent's transcript, over the session: read-only, Back goes to it. */
+.subview { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; padding: var(--top) 0 var(--bot); background: var(--color-background); }
+.subview > .hdr { padding: 4px var(--gr) 10px var(--gl); border-bottom: 1px solid var(--color-border-subtle); }
+.subview .subempty { padding: 24px var(--gr) 0 var(--gl); text-align: center; font-size: var(--text-md); color: var(--color-text-faint); }
+@media (min-width: 768px) {
+  .subview { --gl: max(32px, env(safe-area-inset-left, 0px)); --gr: max(32px, env(safe-area-inset-right, 0px)); }
+}
+@media (min-width: 1200px) {
+  .subview { --gl: max(0px, calc(50% - 380px)); --gr: max(0px, calc(50% - 380px)); }
+}

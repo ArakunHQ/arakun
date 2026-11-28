@@ -5,7 +5,8 @@ import { createContext, Fragment, memo, type ReactNode, useContext } from "react
 import { clock, fmtElapsed } from "../../lib/format";
 import { Icon } from "../../lib/icons";
 import { Markdown } from "../../lib/markdown";
-import type { Entry } from "../../lib/model";
+import { type Entry, subagentOf } from "../../lib/model";
+import { SubagentCard, SubagentContext } from "./Subagents";
 import "./transcript.css";
 
 /** What an entry needs from the screen: pictures, the full-screen views, the changes sheet. */
@@ -202,6 +203,13 @@ function ToolEntry({ e }: { e: Entry }) {
   );
 }
 
+/** A Task or Agent call whose subagent the computer listed is its card; any other call stays a row. */
+function ToolOrSubagent({ e }: { e: Entry }) {
+  const sub = useContext(SubagentContext);
+  const a = sub ? subagentOf(e, sub.subagents) : undefined;
+  return a ? <SubagentCard a={a} /> : <ToolEntry e={e} />;
+}
+
 function Body({ e, edits }: { e: Entry; edits: Edits | null }) {
   const h = useContext(EntryContext);
   switch (e.type) {
@@ -224,7 +232,7 @@ function Body({ e, edits }: { e: Entry; edits: Edits | null }) {
         </details>
       );
     case "tool":
-      return <ToolEntry e={e} />;
+      return <ToolOrSubagent e={e} />;
     case "plan":
       return (
         <ul>

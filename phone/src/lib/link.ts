@@ -17,6 +17,7 @@ import {
   reduce,
   type ServerMessage,
   tookMe,
+  watchSubagent,
 } from "./model";
 import { openSealed, type SealedLink } from "./sealed";
 import { forgetToken, keepPin, loadPin, loadToken } from "./token";
@@ -124,6 +125,8 @@ export function createLink(opts: LinkOptions): Link {
     set({ ...state, connected: true, pcOffline: null });
     retry = RETRY_FIRST_MS;
     if (state.session) raw({ type: "open", session: state.session.id });
+    // A new connection watches no subagent: the open one is asked for again.
+    if (state.session && state.subagent) raw({ type: "subagent", session: state.session.id, subagent: state.subagent.id });
     // The socket stays up in the background; the computer must know, or it
     // would skip the push for the session shown here.
     if (document.visibilityState !== "visible") raw({ type: "visible", visible: false });
@@ -295,6 +298,8 @@ export function createLink(opts: LinkOptions): Link {
       } else if (msg.type === "close") {
         noticeOpen = "";
         set(closeSession(state));
+      } else if (msg.type === "subagent") {
+        set(watchSubagent(state, typeof msg.subagent === "string" ? msg.subagent : null));
       }
       raw(msg);
     },

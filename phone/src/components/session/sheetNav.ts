@@ -16,12 +16,15 @@ declare module "@tanstack/history" {
   interface HistoryState {
     /** Set on a step that opened a sheet: the sheet it was opened over, "" for none. */
     sheetFrom?: string;
+    /** Set on a step that opened a subagent's transcript over the session. */
+    subagentFrom?: boolean;
   }
 }
 
-/** The session route's search: only a sheet it knows. */
-export function validateSessionSearch(search: Record<string, unknown>): { sheet?: SheetKind } {
-  return typeof search.sheet === "string" && KINDS.includes(search.sheet) ? { sheet: search.sheet as SheetKind } : {};
+/** The session route's search: only a sheet it knows, or the subagent whose transcript is open. */
+export function validateSessionSearch(search: Record<string, unknown>): { sheet?: SheetKind; subagent?: string } {
+  if (typeof search.sheet === "string" && KINDS.includes(search.sheet)) return { sheet: search.sheet as SheetKind };
+  return typeof search.subagent === "string" && search.subagent ? { subagent: search.subagent } : {};
 }
 
 type Diff = Extract<SheetState, { kind: "diff" }>;

@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { closeSession, emptyLink, type Entry, type LinkState, openSession, reduce, type ServerMessage, tookMe } from "./model";
+import {
+  closeSession,
+  emptyLink,
+  type Entry,
+  type LinkState,
+  openSession,
+  reduce,
+  type ServerMessage,
+  type Subagent,
+  subagentOf,
+  tookMe,
+  watchSubagent,
+} from "./model";
 
 const NOW = 1_700_000_000_000;
 
 const s1 = { id: "s1", title: "Fix the build", agent: "claude", status: "working" as const, project: "app" };
+const AGENT: Subagent = { id: "a", name: "Explore", task: "Find the bug", state: "running", started: 7, ended: null, call: "call-a", host: null };
 const place = { path: "/w/app", project: "app", env: "app", agent: "claude" };
 
 // A session opened by hand with `count` entries loaded from `from`.
@@ -128,10 +141,59 @@ describe("reduce", () => {
   it("commands and subagents are kept for the open session", () => {
     let s = opened(0, []);
     s = run(s, { type: "commands", id: "s1", commands: [{ name: "/review" }] });
-    s = run(s, { type: "subagents", id: "s1", subagents: [{ id: "a" }] });
+    s = run(s, { type: "subagents", id: "s1", subagents: [AGENT] });
     expect(s.commands).toEqual([{ name: "/review" }]);
-    expect(s.subagents).toEqual([{ id: "a" }]);
+    expect(s.subagents).toEqual([AGENT]);
     expect(run(s, { type: "commands", id: "x", commands: [] })).toBe(s);
+  });
+
+  it("a subagent's transcript comes as its tail, then changes and older pages", () => {
+    let s = watchSubagent(opened(0, []), "a");
+    expect(s.subagent).toEqual({ id: "a", loaded: false, count: 0, from: 0, entries: [] });
+    const tail = (from: number, entries: Entry[], count: number, older?: boolean): ServerMessage => ({
+      type: "subagent_entries",
+      id: "s1",
+      subagent: "a",
+      from,
+      count,
+      entries,
+      ...(older ? { older } : {}),
+    });
+    s = run(s, tail(30, [{ n: 30 }, { n: 31 }], 32));
+    expect(s.subagent).toEqual({ id: "a", loaded: true, count: 32, from: 30, entries: [{ n: 30 }, { n: 31 }] });
+    // The last one changed and one came after it.
+    s = run(s, tail(31, [{ n: "31b" }, { n: 32 }], 33));
+    expect(s.subagent?.entries).toEqual([{ n: 30 }, { n: "31b" }, { n: 32 }]);
+    // An older page goes in front.
+    s = run(s, tail(28, [{ n: 28 }, { n: 29 }], 33, true));
+    expect(s.subagent).toMatchObject({ from: 28, count: 33 });
+    expect(s.subagent?.entries.map((e) => e.n)).toEqual([28, 29, 30, "31b", 32]);
+  });
+
+  it("subagent entries for another subagent or session are ignored", () => {
+    const s = watchSubagent(opened(0, []), "a");
+    expect(run(s, { type: "subagent_entries", id: "s1", subagent: "b", from: 0, count: 1, entries: [{}] })).toBe(s);
+    expect(run(s, { type: "subagent_entries", id: "x", subagent: "a", from: 0, count: 1, entries: [{}] })).toBe(s);
+    const none = opened(0, []);
+    expect(run(none, { type: "subagent_entries", id: "s1", subagent: "a", from: 0, count: 1, entries: [{}] })).toBe(none);
+  });
+
+  it("closing the session or the subagent forgets its transcript", () => {
+    const s = watchSubagent(opened(0, []), "a");
+    expect(watchSubagent(s, null).subagent).toBeNull();
+    expect(watchSubagent(s, "a")).toBe(s);
+    expect(closeSession(s).subagent).toBeNull();
+    expect(openSession(s, "s2").subagent).toBeNull();
+  });
+
+  it("a tool row finds the subagent it started", () => {
+    const list = [AGENT, { ...AGENT, id: "child", call: null }, { ...AGENT, id: "task9", call: "task9" }];
+    expect(subagentOf({ type: "tool", id: "call-a" }, list)?.id).toBe("a");
+    // AIR's stand-in names the child session.
+    expect(subagentOf({ type: "tool", id: "subagent:child" }, list)?.id).toBe("child");
+    expect(subagentOf({ type: "tool", id: "task9" }, list)?.id).toBe("task9");
+    expect(subagentOf({ type: "tool", id: "other" }, list)).toBeUndefined();
+    expect(subagentOf({ type: "agent", id: "call-a" }, list)).toBeUndefined();
   });
 
   it("state merges into the open session", () => {

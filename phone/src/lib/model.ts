@@ -71,6 +71,33 @@ export interface Me {
 
 export type Setting = Record<string, unknown>;
 
+/** A subagent of the open session, as the computer lists it (`brief`, no transcript). */
+export interface Subagent {
+  id: string;
+  name: string;
+  task: string;
+  /** running, completed, failed or cancelled. */
+  state: string;
+  /** Unix seconds. */
+  started: number;
+  /** Null while it runs. */
+  ended?: number | null;
+  /** The tool call in the session that started it: its row there. */
+  call?: string | null;
+  /** The subagent that started it, when another one did. */
+  host?: string | null;
+}
+
+/** The transcript of the subagent open on this phone: entries `from..from+entries.length` of `count`. */
+export interface SubagentTranscript {
+  id: string;
+  /** The computer has sent some of it. */
+  loaded: boolean;
+  count: number;
+  from: number;
+  entries: Entry[];
+}
+
 export type ServerMessage =
   | { type: "pong" }
   | { type: "inbox"; host: string; sessions: InboxSession[]; places?: Place[] }
@@ -80,7 +107,8 @@ export type ServerMessage =
   /** Only the words of entry `n` changed: their first `at` UTF-16 units stay, then `text`. */
   | { type: "append"; id: string; n: number; at: number; text: string }
   | { type: "commands"; id: string; commands: unknown[] }
-  | { type: "subagents"; id: string; subagents: unknown[] }
+  | { type: "subagents"; id: string; subagents: Subagent[]; brief?: boolean }
+  | { type: "subagent_entries"; id: string; subagent: string; from: number; count: number; entries: Entry[]; older?: boolean }
   | ({ type: "state"; id: string } & Partial<Omit<Session, "id" | "from" | "count" | "entries">>)
   | { type: "changes"; id: string; turns: unknown[] }
   | { type: "diff"; id: string; entry: number; index: number; [k: string]: unknown }
@@ -111,7 +139,9 @@ export interface LinkState {
   pcOffline: number | null;
   // The rest belongs to the open session and goes when it closes.
   commands: unknown[];
-  subagents: unknown[];
+  subagents: Subagent[];
+  /** The subagent whose transcript is open, kept live by the computer. */
+  subagent: SubagentTranscript | null;
   /** The turns of the list of changes, once asked for. */
   changes: unknown[] | null;
   /** Diffs asked for, by `${entry}:${index}`. */
@@ -160,7 +190,34 @@ export function emptyLink(): LinkState {
 }
 
 function sessionParts() {
-  return { commands: [], subagents: [], changes: null, diffs: {}, settings: null };
+  return { commands: [], subagents: [] as Subagent[], subagent: null, changes: null, diffs: {}, settings: null };
+}
+
+/** Subagent `id`'s transcript opened (null: closed), empty until the computer sends it. */
+export function watchSubagent(s: LinkState, id: string | null): LinkState {
+  if (!id) return s.subagent ? { ...s, subagent: null } : s;
+  if (s.subagent?.id === id) return s;
+  return { ...s, subagent: { id, loaded: false, count: 0, from: 0, entries: [] } };
+}
+
+/**
+ * A subagent's entries after `subagent_entries`: from its `from` on changed,
+ * or older ones (`older`) put in front of what is loaded.
+ */
+function page(from: number, entries: Entry[], msg: { from: number; entries: Entry[]; older?: boolean }): { from: number; entries: Entry[] } {
+  if (msg.older) return { from: msg.from, entries: msg.entries.slice(0, Math.max(0, from - msg.from)).concat(entries) };
+  // Nothing loaded yet: the first tail says where it starts.
+  if (msg.from <= from || entries.length === 0) return { from: msg.from, entries: msg.entries };
+  return { from, entries: entries.slice(0, msg.from - from).concat(msg.entries) };
+}
+
+/** The subagent that tool entry `e` started, if the computer listed one for it. */
+export function subagentOf(e: Entry, subagents: Subagent[]): Subagent | undefined {
+  if (e.type !== "tool" || typeof e.id !== "string") return undefined;
+  const id = e.id;
+  // AIR leaves the Agent call out and stands in for it with `subagent:<child>`.
+  const child = id.startsWith("subagent:") ? id.slice("subagent:".length) : null;
+  return subagents.find((a) => a.call === id || a.id === id || a.id === child);
 }
 
 /** The session `id` opened, filled from its inbox row until the computer answers. */
@@ -248,7 +305,12 @@ export function reduce(s: LinkState, msg: ServerMessage, now: number = Date.now(
     case "commands":
       return forOpen(s, msg) ? { ...s, commands: msg.commands } : s;
     case "subagents":
-      return forOpen(s, msg) ? { ...s, subagents: msg.subagents } : s;
+      return forOpen(s, msg) && Array.isArray(msg.subagents) ? { ...s, subagents: msg.subagents } : s;
+    case "subagent_entries": {
+      if (!forOpen(s, msg) || s.subagent?.id !== msg.subagent) return s;
+      const old = s.subagent;
+      return { ...s, subagent: { ...old, loaded: true, count: msg.count, ...page(old.from, old.entries, msg) } };
+    }
     case "state": {
       if (!forOpen(s, msg)) return s;
       const { type: _, ...fields } = msg;

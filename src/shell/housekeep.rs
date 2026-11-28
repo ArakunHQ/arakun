@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, Context};
+use gpui::{AppContext as _, Context, Window};
 
 use super::{Shell, servers, sessions};
 use crate::state;
@@ -22,12 +22,14 @@ fn due(last: Option<Instant>, now: Instant) -> bool {
 impl Shell {
     /// Called when the window opens and on the scheduler's tick; runs the
     /// cleanup at most every [`EVERY`], off this thread.
-    pub(super) fn housekeep(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn housekeep(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         if !due(self.housekept_at, now) {
             return;
         }
         self.housekept_at = Some(now);
+        // Before the sessions are listed: their files go with them.
+        self.clean_up_sessions(window, cx);
         // From the state in memory, not from the state file: a refresh can
         // have saved one without a worktree removed outside Arakun, and a
         // save may still be queued. A session dropped that way is only

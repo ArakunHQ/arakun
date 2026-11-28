@@ -209,6 +209,55 @@ pub fn remove_clean_worktree(repo: &Path, dir: &Path) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Archived sessions
+
+/// The choices Settings offers for archived sessions, in days; 0 is off.
+pub const SESSION_CHOICES: [u16; 4] = [0, 30, 90, 365];
+
+/// Days an archived session is kept; `None` keeps it until removed by hand.
+pub fn session_days() -> Option<u16> {
+    crate::settings::read(|s| s.branches.remove_archived_sessions)
+}
+
+/// Removes archived sessions after `days`, or keeps them with 0.
+pub fn set_session_days(days: u16) {
+    crate::settings::change(|s| s.branches.remove_archived_sessions = (days > 0).then_some(days));
+}
+
+/// "Off", "30 days", "1 year".
+pub fn session_label(days: u16) -> String {
+    match days {
+        365 => "1 year".into(),
+        d => label(d.min(u16::from(u8::MAX)) as u8),
+    }
+}
+
+/// What the shell knows about a session, for the archived session cleanup.
+#[derive(Clone, Copy, Debug)]
+pub struct SeenSession {
+    pub settled: bool,
+    /// Unix seconds it was archived; 0 when that is not known.
+    pub settled_at: u64,
+    /// Unix seconds of its last activity.
+    pub updated: u64,
+    /// An agent is working or waiting for an answer.
+    pub busy: bool,
+    /// It has a tab, pinned or not.
+    pub open: bool,
+}
+
+/// Whether an archived session sat `days` since it was archived or last
+/// used, whichever is later, and may go with its files.
+pub fn session_expired(s: SeenSession, days: u16, now: u64) -> bool {
+    let since = s.settled_at.max(s.updated);
+    s.settled
+        && !s.busy
+        && !s.open
+        && days > 0
+        && now.saturating_sub(since) >= u64::from(days) * 86_400
+}
+
+// ---------------------------------------------------------------------------
 // Files left behind
 
 /// How long a copy of a server's image stays in the temp folder. It is
@@ -274,6 +323,51 @@ mod tests {
     use super::*;
 
     const DAY: u64 = 86_400;
+
+    #[test]
+    fn an_archived_session_goes_after_the_days_picked() {
+        let now = 400 * DAY;
+        let old = SeenSession {
+            settled: true,
+            settled_at: now - 31 * DAY,
+            updated: now - 40 * DAY,
+            busy: false,
+            open: false,
+        };
+        assert!(session_expired(old, 30, now));
+        assert!(!session_expired(old, 90, now));
+        assert!(!session_expired(old, 0, now), "off");
+        // Counted from the later of archived and last used.
+        let used_since = SeenSession {
+            updated: now - 10 * DAY,
+            ..old
+        };
+        assert!(!session_expired(used_since, 30, now));
+        let archived_lately = SeenSession {
+            settled_at: now - 5 * DAY,
+            ..old
+        };
+        assert!(!session_expired(archived_lately, 30, now));
+        // Archived before the time was kept: last use counts.
+        let unknown = SeenSession {
+            settled_at: 0,
+            ..old
+        };
+        assert!(session_expired(unknown, 30, now));
+        for kept in [
+            SeenSession {
+                settled: false,
+                ..old
+            },
+            SeenSession { busy: true, ..old },
+            SeenSession { open: true, ..old },
+        ] {
+            assert!(!session_expired(kept, 30, now), "{kept:?}");
+        }
+        assert_eq!(session_label(0), "Off");
+        assert_eq!(session_label(90), "90 days");
+        assert_eq!(session_label(365), "1 year");
+    }
 
     fn seen(used: u64) -> Seen {
         Seen {

@@ -235,6 +235,14 @@ arakun server service install   # keep it running; see Keep it running
   issues from Linear it runs). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
+- **How long sessions stay.** A session stays until you remove it,
+  unless `branches.remove_archived_sessions` in the data folder's `settings.json` is a
+  number of days: 30, 90 or 365 in Settings › Branches › Remove archived sessions after,
+  or any number when you edit the file by hand. Once a day the server then removes
+  each session it lists that last ran that many days ago, with its transcript. A
+  session stays when it is working, waiting for an answer, or open on a device.
+  Linked notes stay, since a session that took over from one still reads it. Off by
+  default.
 - **The local socket.** The commands above reach the server over `server.sock` in
   that folder, which only your user can open. It is also what keeps a second server
   off the same folder.

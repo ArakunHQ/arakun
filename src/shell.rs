@@ -1153,7 +1153,7 @@ impl Shell {
             state::make_chat_files_private()
         }))
         .detach();
-        this.housekeep(cx);
+        this.housekeep(window, cx);
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
         // The system close (the title bar's X, Alt+F4, Super+W) goes through the

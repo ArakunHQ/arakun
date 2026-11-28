@@ -27,6 +27,13 @@ settings in a file of its own (`redacted`, `show-secrets`, `drive-any-page`, `no
 `open-links`, `update-channel`, `settle-after-merge`, `env-cleanup` and
 `branch-namer.json`); the first start moves them into `settings.json` and removes them.
 
+A session's transcript (`sessions/`), its linked note (`linked/`) and the images pasted
+into it (`pastes/`) stay until you remove the session. If Settings › Branches › Remove
+archived sessions after is set (`branches.remove_archived_sessions` in `settings.json`,
+in days), an archived session goes with its files once that long has passed since it
+was archived or last used. When an environment or project goes, its sessions' files
+go with it. The files of a session no state lists any more are deleted a week later.
+
 <!-- paths: generated from core/src/paths.rs -->
 
 ### This Arakun's own

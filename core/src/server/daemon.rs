@@ -1385,6 +1385,7 @@ impl Daemon {
             return;
         }
         self.housekept_at = Some(Instant::now());
+        self.remove_idle_sessions(cx);
         let job = self.store.housekeeping(self.live.keys());
         cx.background_spawn(crate::guard::task(async move {
             let removed = job.run();
@@ -1393,6 +1394,43 @@ impl Daemon {
             }
         }))
         .detach();
+    }
+
+    /// Removes the sessions done and idle for the days `settings.json` picks
+    /// (`branches.remove_archived_sessions`), with their transcripts. One a
+    /// device shows, or whose agent still runs, stays. Linked notes stay: a
+    /// session that took over from one still reads it.
+    fn remove_idle_sessions(&mut self, cx: &mut Context<Self>) {
+        let Some(days) = crate::settings::read(|s| s.branches.remove_archived_sessions) else {
+            return;
+        };
+        let now = crate::model::unix_now();
+        let old: Vec<String> = self
+            .store
+            .idle_for(days, now)
+            .into_iter()
+            .filter(|id| !self.watched(id))
+            .filter(|id| {
+                self.thread(id).is_none_or(|t| {
+                    let t = t.read(cx);
+                    !matches!(status_of(t), Status::Working | Status::NeedsInput)
+                        && !t.in_background()
+                })
+            })
+            .collect();
+        if old.is_empty() {
+            return;
+        }
+        for id in &old {
+            self.drop_session(id, cx);
+        }
+        self.linear_sessions_removed(&old, cx);
+        self.save_store();
+        self.inbox_changed(cx);
+        eprintln!(
+            "arakun server: removed {} sessions idle for {days} days",
+            old.len()
+        );
     }
 
     /// The tick's part: while a relay device gets pushes, the account is

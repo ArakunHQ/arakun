@@ -1521,6 +1521,22 @@ impl SettingsDialog {
                         })),
                     );
                 }
+                let current_session_days = crate::cleanup::session_days().unwrap_or(0);
+                let mut session_days = ui::segmented();
+                for (i, d) in crate::cleanup::SESSION_CHOICES.into_iter().enumerate() {
+                    session_days = session_days.child(
+                        ui::segment(
+                            (reg::entry(Id::RemoveArchivedSessions).key, i),
+                            None,
+                            crate::cleanup::session_label(d),
+                            d == current_session_days,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::cleanup::set_session_days(d);
+                            cx.notify();
+                        })),
+                    );
+                }
                 let naming_model = row(
                     reg::entry(Id::NamingModel).label,
                     match self.namer.choice {
@@ -1550,6 +1566,7 @@ impl SettingsDialog {
                         vec![
                             (Id::ArchiveAfterMerge, self.switch_row(Id::ArchiveAfterMerge, cx)),
                             (Id::RemoveOldEnvironments, reg_stacked(Id::RemoveOldEnvironments, days)),
+                            (Id::RemoveArchivedSessions, reg_stacked(Id::RemoveArchivedSessions, session_days)),
                         ],
                     ),
                 ])

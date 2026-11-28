@@ -483,6 +483,9 @@ pub struct SessionState {
     pub continues: Vec<crate::model::Earlier>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub settled: bool,
+    /// Unix seconds it was archived, for the archived session cleanup.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub settled_at: u64,
     /// It finished a turn the user has not looked at yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unread: bool,
@@ -1178,6 +1181,7 @@ pub fn snapshot_with(
                                     auto_allow: s.auto_allow,
                                     continues: s.continues.clone(),
                                     settled: s.settled,
+                                    settled_at: s.settled_at,
                                     unread: s.unread,
                                 })
                                 .collect(),
@@ -1359,6 +1363,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip, Drafts) 
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
                             session.settled = s.settled;
+                            session.settled_at = s.settled_at;
                             session.unread = s.unread;
                             session.status = Status::Idle;
                             session

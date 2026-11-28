@@ -145,6 +145,85 @@ impl Shell {
         .detach();
     }
 
+    /// Part of the daily cleanup (`housekeep`): removes the archived sessions
+    /// that sat for the days picked in Settings > Branches, and deletes their
+    /// transcripts, linked notes and pasted images. A server's sessions are
+    /// left to the server.
+    pub(super) fn clean_up_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(days) = cleanup::session_days() else {
+            return;
+        };
+        let old = self.old_sessions(days, cx);
+        if old.is_empty() {
+            return;
+        }
+        let mut removed = Vec::new();
+        let mut pids = Vec::new();
+        for (path, id) in &old {
+            pids.push(self.phone_id(path, id).to_string());
+            if let Some(env) = self.find_env_mut(path)
+                && let Some(i) = env.session_index(id)
+            {
+                removed.push(env.sessions.remove(i));
+            }
+        }
+        if removed.is_empty() {
+            return;
+        }
+        self.forget_phone_sessions(&pids);
+        // A session still listed may continue one that goes: its files stay.
+        let kept: std::collections::HashSet<String> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .flat_map(super::sessions::session_file_ids)
+            .collect();
+        let n = removed.len();
+        self.forget_sessions_keeping(removed, &kept, window, cx);
+        self.save(cx);
+        let title = match n {
+            1 => "Removed an archived session".to_string(),
+            n => format!("Removed {n} archived sessions"),
+        };
+        let body = format!(
+            "Archived for more than {}, with their transcripts. Settings > Branches says how long archived sessions stay.",
+            cleanup::session_label(days).to_lowercase()
+        );
+        self.notify(
+            AlertKind::Info,
+            &title,
+            &body,
+            Some(Open::BranchSettings),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// (environment, session) of each archived session of this computer past
+    /// `days`: none working, waiting for an answer, or with a tab.
+    fn old_sessions(&self, days: u16, cx: &gpui::App) -> Vec<(PathBuf, String)> {
+        let now = unix_now();
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .filter(|e| e.remote.is_none())
+            .flat_map(|e| e.sessions.iter().map(move |s| (e, s)))
+            .filter(|(_, s)| {
+                let seen = cleanup::SeenSession {
+                    settled: s.settled,
+                    settled_at: s.settled_at,
+                    updated: s.updated,
+                    busy: matches!(s.status, Status::Working | Status::NeedsInput)
+                        || s.live.as_ref().is_some_and(|l| l.thread.read(cx).is_busy()),
+                    open: self.strip.session_tab(&s.id).is_some(),
+                };
+                cleanup::session_expired(seen, days, now)
+            })
+            .map(|(e, s)| (e.path.clone(), s.id.to_string()))
+            .collect()
+    }
+
     /// (repository, worktree) of each environment unused for `days`, before
     /// git and GitHub are asked.
     fn old_envs(&self, days: u8) -> Vec<(PathBuf, PathBuf)> {

@@ -75,6 +75,51 @@ class ModelTest {
     }
 
     @Test
+    fun readsTheSubagentsOfASession() {
+        val list = Subagent.list(
+            json(
+                """
+                {"type":"subagents","id":"s1","brief":true,"subagents":[
+                 {"id":"a","name":"Explore","task":"Find the bug","state":"running","started":7,"ended":null,"call":"toolu_1","host":null},
+                 {"id":"b","name":"Review","task":"","state":"completed","started":8,"ended":9,"call":null,"host":"a","new_field":1}]}
+                """,
+            ),
+        )
+        assertEquals(listOf("a", "b"), list.map { it.id })
+        assertEquals(true, list[0].running)
+        assertEquals(7_000L, list[0].started)
+        assertNull(list[0].ended)
+        assertEquals("toolu_1", list[0].call)
+        assertEquals(9_000L, list[1].ended)
+        assertEquals("a", list[1].host)
+        assertEquals(emptyList<Subagent>(), Subagent.list(json("""{"type":"subagents","id":"s1"}""")))
+    }
+
+    @Test
+    fun aToolNamesTheSubagentItRanUnder() {
+        val under = Entry.of(json("""{"type":"tool","id":"t","title":"x","kind":"read","status":"completed","parent":"task1"}"""))
+        assertEquals("task1", (under as Entry.Tool).parent)
+        val alone = Entry.of(json("""{"type":"tool","id":"t","title":"x","kind":"read","status":"completed"}"""))
+        assertNull((alone as Entry.Tool).parent)
+    }
+
+    @Test
+    fun aSubagentsTranscriptPagesAsASessionDoes() {
+        var t = SubagentTranscript("s1", "a")
+        t = t.apply(json("""{"type":"subagent_entries","id":"s1","subagent":"a","from":2,"count":4,"entries":[{"type":"agent","text":"c"},{"type":"agent","text":"d"}]}"""))
+        assertEquals(2, t.from)
+        t = t.apply(json("""{"type":"subagent_entries","id":"s1","subagent":"a","from":0,"count":4,"older":true,"entries":[{"type":"agent","text":"a"},{"type":"agent","text":"b"}]}"""))
+        assertEquals(0, t.from)
+        assertEquals(listOf("a", "b", "c", "d").map(Entry::Agent), t.entries)
+        t = t.apply(json("""{"type":"subagent_entries","id":"s1","subagent":"a","from":3,"count":5,"entries":[{"type":"agent","text":"D"},{"type":"agent","text":"e"}]}"""))
+        assertEquals(listOf("a", "b", "c", "D", "e").map(Entry::Agent), t.entries)
+        assertEquals(5, t.count)
+        // Another subagent's, or another session's, leaves it alone.
+        assertEquals(t, t.apply(json("""{"type":"subagent_entries","id":"s1","subagent":"b","from":0,"count":1,"entries":[{"type":"agent","text":"x"}]}""")))
+        assertEquals(t, t.apply(json("""{"type":"subagent_entries","id":"s2","subagent":"a","from":0,"count":1,"entries":[{"type":"agent","text":"x"}]}""")))
+    }
+
+    @Test
     fun readsAPermissionAndAQuestion() {
         val s = LiveSession("s1", "", "").applyState(
             json(

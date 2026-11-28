@@ -85,6 +85,11 @@ final class AppModel {
     private(set) var changes: [ChangedTurn]?
     /// The session's diffs that came, by the place each was asked by.
     private(set) var diffs: [DiffRef: FileDiff] = [:]
+    /// The subagents of the session on screen, as the computer last listed them.
+    private(set) var subagents: [Subagent] = []
+    /// The subagent whose transcript is open, kept live by the computer.
+    private(set) var subagent: SubagentTranscript?
+    var loadingOlderSubagent = false
     /// A message worth a moment on screen.
     var notice: String?
     /// A session asked for before the link was up (from a started session).
@@ -601,6 +606,7 @@ final class AppModel {
         session = nil
         openWhenLinked = nil
         loadingOlder = false
+        forgetChanges()
         starting = false
         notices = nil
         muted = []
@@ -648,6 +654,7 @@ final class AppModel {
         // The computer answers an `entries` request at most once, so asking
         // again after a drop is safe.
         loadingOlder = false
+        loadingOlderSubagent = false
         if starting {
             starting = false
             notice = "The connection dropped while the session was starting. Check the inbox before you start it again."
@@ -717,6 +724,8 @@ final class AppModel {
             retry = .milliseconds(500)
             limitTries = 0
             if let s = session { link?.send(["type": "open", "session": s.id]) }
+            // A new connection watches nothing: the open subagent is asked for again.
+            if let t = subagent { link?.send(["type": "subagent", "session": t.session, "subagent": t.id]) }
             if let id = openWhenLinked {
                 openWhenLinked = nil
                 open(id)
@@ -764,6 +773,13 @@ final class AppModel {
         case "state":
             guard session?.id == msg["id"].str else { return }
             session?.apply(state: msg)
+        case "subagents":
+            guard session?.id == msg["id"].str else { return }
+            subagents = Subagent.list(msg)
+        case "subagent_entries":
+            guard subagent?.owns(msg) == true else { return }
+            if msg["older"].bool { loadingOlderSubagent = false }
+            subagent?.apply(msg)
         case "changes":
             guard session?.id == msg["id"].str else { return }
             changes = ChangedTurn.list(msg)
@@ -815,6 +831,30 @@ final class AppModel {
     private func forgetChanges() {
         changes = nil
         diffs = [:]
+        subagents = []
+        subagent = nil
+        loadingOlderSubagent = false
+    }
+
+    /// Opens a subagent's transcript: its last entries, then every change, fill `subagent`.
+    func openSubagent(_ id: String) {
+        guard let s = session else { return }
+        subagent = SubagentTranscript(session: s.id, id: id)
+        loadingOlderSubagent = false
+        send(["type": "subagent", "session": s.id, "subagent": id])
+    }
+
+    func closeSubagent() {
+        guard let t = subagent else { return }
+        subagent = nil
+        loadingOlderSubagent = false
+        send(["type": "subagent", "session": t.session])
+    }
+
+    func loadOlderSubagent() {
+        guard let t = subagent, t.from > 0, !loadingOlderSubagent, canSend else { return }
+        loadingOlderSubagent = true
+        send(["type": "entries", "session": t.session, "subagent": t.id, "from": max(0, t.from - 50), "to": t.from])
     }
 
     /// Asks for the list of what the session changed; the answer fills `changes`.

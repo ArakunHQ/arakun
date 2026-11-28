@@ -128,4 +128,47 @@ struct ModelTests {
         // Without its place there is nowhere to show it.
         #expect(FileDiff(json(#"{"type":"diff","path":"a"}"#)) == nil)
     }
+
+    @Test func readsTheSubagentsOfASession() {
+        let list = Subagent.list(json(#"""
+        {"type":"subagents","id":"s1","brief":true,"subagents":[
+         {"id":"a","name":"Explore","task":"Find the bug","state":"running","started":7,"ended":null,"call":"toolu_1","host":null},
+         {"id":"b","name":"Review","task":"","state":"completed","started":8,"ended":9,"call":null,"host":"a","new_field":1}]}
+        """#))
+        #expect(list.map(\.id) == ["a", "b"])
+        #expect(list[0].isRunning)
+        #expect(list[0].started == Date(timeIntervalSince1970: 7))
+        #expect(list[0].ended == nil)
+        #expect(list[0].call == "toolu_1")
+        #expect(list[1].ended == Date(timeIntervalSince1970: 9))
+        #expect(list[1].host == "a")
+        #expect(Subagent.list(json(#"{"type":"subagents","id":"s1"}"#)).isEmpty)
+    }
+
+    @Test func aToolNamesTheSubagentItRanUnder() {
+        let under = Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"read","status":"completed","parent":"task1"}"#))
+        guard case .tool(let t) = under else { Issue.record("not a tool entry"); return }
+        #expect(t.parent == "task1")
+        let alone = Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"read","status":"completed"}"#))
+        guard case .tool(let a) = alone else { Issue.record("not a tool entry"); return }
+        #expect(a.parent == nil)
+        #expect(under != alone)
+    }
+
+    @Test func aSubagentsTranscriptPagesAsASessionDoes() {
+        var t = SubagentTranscript(session: "s1", id: "a")
+        t.apply(json(#"{"type":"subagent_entries","id":"s1","subagent":"a","from":2,"count":4,"entries":[{"type":"agent","text":"c"},{"type":"agent","text":"d"}]}"#))
+        #expect(t.from == 2)
+        t.apply(json(#"{"type":"subagent_entries","id":"s1","subagent":"a","from":0,"count":4,"older":true,"entries":[{"type":"agent","text":"a"},{"type":"agent","text":"b"}]}"#))
+        #expect(t.from == 0)
+        #expect(t.entries == ["a", "b", "c", "d"].map(Entry.agent))
+        t.apply(json(#"{"type":"subagent_entries","id":"s1","subagent":"a","from":3,"count":5,"entries":[{"type":"agent","text":"D"},{"type":"agent","text":"e"}]}"#))
+        #expect(t.entries == ["a", "b", "c", "D", "e"].map(Entry.agent))
+        #expect(t.count == 5)
+        // Another subagent's, or another session's, leaves it alone.
+        let before = t
+        t.apply(json(#"{"type":"subagent_entries","id":"s1","subagent":"b","from":0,"count":1,"entries":[{"type":"agent","text":"x"}]}"#))
+        t.apply(json(#"{"type":"subagent_entries","id":"s2","subagent":"a","from":0,"count":1,"entries":[{"type":"agent","text":"x"}]}"#))
+        #expect(t == before)
+    }
 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,7 +21,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -117,6 +117,10 @@ fun SessionScreen(model: AppModel, id: String) {
                 canMute = model.isLinked,
                 knowsMuting = model.knowsMuting,
                 onMute = { model.mute(id, !model.isMuted(id)) },
+                onSettings = {
+                    focus.clearFocus()
+                    sheet = ChangesSheet.Settings
+                },
                 onBack = model::close,
             )
             Box(Modifier.weight(1f)) {
@@ -271,6 +275,7 @@ private fun SessionTopBar(
     canMute: Boolean,
     knowsMuting: Boolean,
     onMute: () -> Unit,
+    onSettings: () -> Unit,
     onBack: () -> Unit,
 ) {
     val c = Palette.current
@@ -288,9 +293,10 @@ private fun SessionTopBar(
         Box(Modifier.align(Alignment.CenterStart).padding(start = 4.dp)) {
             IconTap(R.drawable.ic_arrow_left01, "Back", c.text, onClick = onBack)
         }
-        // A computer from before muting has no `/mute`: no switch for it.
-        if (knowsMuting) {
-            Box(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+        Row(Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+            IconTap(R.drawable.ic_settings01, "Model and reasoning", c.text, enabled = s != null, onClick = onSettings)
+            // A computer from before muting has no `/mute`: no switch for it.
+            if (knowsMuting) {
                 IconTap(
                     if (muted) R.drawable.ic_notification_off01 else R.drawable.ic_notification01,
                     if (muted) "Unmute" else "Mute",
@@ -301,7 +307,8 @@ private fun SessionTopBar(
             }
         }
         Column(
-            Modifier.align(Alignment.Center).widthIn(max = 260.dp),
+            // Clear of the buttons on both sides, so it stays centred.
+            Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 104.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
@@ -331,7 +338,8 @@ private fun SessionTopBar(
 private fun SessionHeader(s: LiveSession, openChanges: () -> Unit) {
     val c = Palette.current
     Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        s.usage?.let { Text(it, style = mono(11.5f), color = c.textFaint) }
+        s.contextPercent?.let { ContextBar(it) }
+        s.usage?.let { Text(it, style = mono(11.5f), color = c.textFaint, modifier = Modifier.weight(1f, fill = false)) }
         Spacer(Modifier.weight(1f))
         if (s.changes.files > 0) {
             // The counts open the list of files; the outline says they can be tapped.
@@ -351,6 +359,26 @@ private fun SessionHeader(s: LiveSession, openChanges: () -> Unit) {
                 BrandIcon(R.drawable.ic_arrow_right01, 11.dp, c.textFaint)
             }
         }
+    }
+}
+
+/** How full the agent's context is; it turns to a warning as it nears the end. */
+@Composable
+private fun ContextBar(percent: Int) {
+    val c = Palette.current
+    val fill = when {
+        percent >= 90 -> c.failure
+        percent >= 70 -> c.attention
+        else -> c.textMuted
+    }
+    Box(
+        Modifier
+            .padding(end = 8.dp)
+            .size(32.dp, 4.dp)
+            .background(c.line, RoundedCornerShape(2.dp))
+            .semantics { contentDescription = "Context $percent% full" },
+    ) {
+        Box(Modifier.fillMaxHeight().fillMaxWidth(percent / 100f).background(fill, RoundedCornerShape(2.dp)))
     }
 }
 

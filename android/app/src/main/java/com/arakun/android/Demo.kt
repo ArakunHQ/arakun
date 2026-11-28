@@ -63,7 +63,7 @@ data class Demo(val signIn: Boolean, val machines: Boolean, val open: String?, v
 
         /** A session in `status`, as the computer would send it. */
         fun session(at: Long, status: SessionStatus) = """
-        {"from":0,"count":7,"status":"${wire(status)}","usage":{"summary":"48k tokens · ${'$'}0.41"},
+        {"from":0,"count":7,"status":"${wire(status)}","usage":{"summary":"48k tok · ${'$'}0.41 · 31% context","context_percent":31,"tokens":48000},
          "changes":{"files":3,"added":42,"removed":7},"elapsed_ms":95000,
          "entries":[
           {"type":"user","text":"Pairing links fail with limit:phones. Find out why and fix it.","at":$at,"elapsed_ms":null,"pastes":[]},
@@ -83,6 +83,31 @@ data class Demo(val signIn: Boolean, val machines: Boolean, val open: String?, v
           {"path":"cloud/src/relay/relay.ts","name":"relay.ts","added":12,"removed":5,"diffs":[[6,0],[6,1]]},
           {"path":"cloud/test/relay.test.ts","name":"relay.test.ts","added":28,"removed":0,"diffs":[[7,0]]},
           {"path":"README.md","name":"README.md","added":2,"removed":2,"diffs":[[8,0]]}]}]}
+        """
+
+        /** The model and reasoning a sample session or a new one offers, as wire::settings writes them. */
+        val settings = """
+        [{"key":"modelId","label":"Model","current":"opus","options":[
+          {"id":"opus","name":"Opus 5.5","detail":"Most capable","disabled":null},
+          {"id":"sonnet","name":"Sonnet 5.5","detail":"Fast and capable","disabled":null},
+          {"id":"haiku","name":"Haiku 5.5","detail":"Fastest","disabled":null}]},
+         {"key":"reasoningEffort","label":"Reasoning","current":"high","options":[
+          {"id":"low","name":"Low","detail":null,"disabled":null},
+          {"id":"medium","name":"Medium","detail":null,"disabled":null},
+          {"id":"high","name":"High","detail":null,"disabled":null},
+          {"id":"max","name":"Max","detail":"Slowest","disabled":null}]}]
+        """
+
+        /** Both agents' plan limits, as wire::plan_usage writes them. */
+        fun usage(now: Long) = """
+        {"type":"usage","agents":[
+         {"agent":"claude","name":"Claude Code","signed_in":true,"plan":"Max 20x","rows":[
+           {"label":"Current session","percent":38,"detail":"resets in 2 h 10 min"},
+           {"label":"Week, all models","percent":74,"detail":"resets Monday"}],
+          "idle":["Week, Opus"],"note":null,"tone":"normal","at":${now - 90}},
+         {"agent":"droid","name":"Droid","signed_in":true,"plan":"Standard","rows":[
+           {"label":"Standard · 5 hours","percent":12,"detail":"resets in 4 h"}],
+          "idle":["Standard · week"],"balance":"${'$'}4.20","note":"Standard tokens left this window.","tone":"normal","at":${now - 90}}]}
         """
 
         /** One of the sample diffs; they differ only in where they are. */

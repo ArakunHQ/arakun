@@ -27,13 +27,16 @@ import com.arakun.kit.Machine
 import com.arakun.kit.Me
 import com.arakun.kit.Notice
 import com.arakun.kit.PermissionAsk
+import com.arakun.kit.PlanLimits
 import com.arakun.kit.Photos
 import com.arakun.kit.Place
 import com.arakun.kit.Poll
 import com.arakun.kit.RelayLink
 import com.arakun.kit.SessionCheck
+import com.arakun.kit.SettingSet
 import com.arakun.kit.SignedIn
 import com.arakun.kit.SignedInDevice
+import com.arakun.kit.StartOptions
 import com.arakun.kit.Subagent
 import com.arakun.kit.SubagentTranscript
 import com.arakun.kit.WebPush
@@ -175,6 +178,18 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** The session's diffs that came, by the place each was asked by. */
     var diffs by mutableStateOf<Map<DiffRef, FileDiff>>(emptyMap())
+        private set
+
+    /** The model and reasoning of the session on screen, once asked for; empty when its agent offers none yet. */
+    var settings by mutableStateOf<List<SettingSet>?>(null)
+        private set
+
+    /** What a new session would start with, for the place and agent asked about last. */
+    var startOptions by mutableStateOf<StartOptions?>(null)
+        private set
+
+    /** Both agents' plan limits on the computer open, once asked for. */
+    var planLimits by mutableStateOf<PlanLimits?>(null)
         private set
 
     /** A message worth a moment on screen. */
@@ -576,6 +591,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         openWhenLinked = null
         loadingOlder = false
         forgetChanges()
+        startOptions = null
+        planLimits = null
         starting = false
         startUnsure = false
     }
@@ -895,6 +912,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             }
             "changes" -> if (session?.id == id) changes = ChangedTurn.list(msg)
             "diff" -> if (session?.id == id) FileDiff.of(msg)?.let { diffs = diffs + (it.ref to it) }
+            "settings" -> if (session?.id == id) settings = SettingSet.list(msg["settings"])
+            "options" -> startOptions = StartOptions.of(msg)
+            "usage" -> planLimits = PlanLimits.of(msg)
             "started" -> {
                 starting = false
                 startUnsure = false
@@ -945,6 +965,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         pictures.clear()
         changes = null
         diffs = emptyMap()
+        settings = null
         subagents = emptyList()
         subagent = null
         loadingOlderSubagent = false
@@ -991,6 +1012,49 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             return
         }
         missing.forEach { send("type" to "diff", "session" to s.id, "entry" to it.entry, "index" to it.index) }
+    }
+
+    /** Asks for the model and reasoning of the session on screen; the answer fills [settings]. */
+    fun loadSettings() {
+        val s = session ?: return
+        demo?.let {
+            if (settings == null) settings = SettingSet.list(parseJson(Demo.settings)!!)
+            return
+        }
+        send("type" to "settings", "session" to s.id)
+    }
+
+    /**
+     * Changes one of the session's settings, from its next message on. Whether
+     * it went out; the computer answers with all of them, as they are then.
+     */
+    fun setSetting(key: String, value: String): Boolean {
+        val s = session ?: return false
+        if (!canSend) return false
+        demo?.let {
+            settings = settings?.map { if (it.key == key) it.copy(current = value) else it }
+            return true
+        }
+        send("type" to "setting", "session" to s.id, "key" to key, "value" to value)
+        return true
+    }
+
+    /** Asks what a new `agent` session at `place` would start with; the answer fills [startOptions]. */
+    fun loadOptions(place: Place, agent: String) {
+        demo?.let {
+            startOptions = StartOptions(place.path, agent, SettingSet.list(parseJson(Demo.settings)!!))
+            return
+        }
+        send("type" to "options", "env" to place.path, "agent" to agent)
+    }
+
+    /** Asks for both agents' plan limits; the answer fills [planLimits]. */
+    fun loadUsage() {
+        demo?.let {
+            planLimits = PlanLimits.of(parseJson(Demo.usage(System.currentTimeMillis() / 1000))!!)
+            return
+        }
+        send("type" to "usage")
     }
 
     fun loadOlder() {
@@ -1103,8 +1167,18 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         session = s.copy(secret = null)
     }
 
-    /** Whether the start went out; the form keeps its prompt when it did not. */
-    fun startSession(place: Place, text: String, shots: List<Shot> = emptyList()): Boolean {
+    /**
+     * Whether the start went out; the form keeps its prompt when it did not.
+     * `settings` are the model and reasoning picked, by key; the rest stay as
+     * the agent would start.
+     */
+    fun startSession(
+        place: Place,
+        text: String,
+        shots: List<Shot> = emptyList(),
+        agent: String = place.agent,
+        settings: Map<String, String> = emptyMap(),
+    ): Boolean {
         // One start at a time: the sheet can close and open again while one waits.
         if (!canSend || starting) return false
         if (demo != null) {
@@ -1115,8 +1189,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         starting = true
         startUnsure = false
         startedFrom = session?.id
-        val fields = mutableListOf<Pair<String, Any?>>("type" to "start", "env" to place.path, "agent" to place.agent)
+        val fields = mutableListOf<Pair<String, Any?>>("type" to "start", "env" to place.path, "agent" to agent)
         fields += "text" to Photos.textFor(text, shots.size)
+        val pairs = SettingSet.startPairs(settings)
+        if (pairs.isNotEmpty()) fields += "settings" to pairs
         if (shots.isNotEmpty()) fields += "uploads" to upload("", shots)
         send(*fields.toTypedArray())
         return true
@@ -1289,20 +1365,33 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
         /** For what must still happen when the view model is gone; it lives as long as the process. */
         val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
+}
 
-        fun message(vararg fields: Pair<String, Any?>): JsonObject = buildJsonObject {
-            for ((k, v) in fields) {
-                put(
-                    k,
-                    when (v) {
-                        is String -> JsonPrimitive(v)
-                        is Number -> JsonPrimitive(v)
-                        is Boolean -> JsonPrimitive(v)
-                        is List<*> -> buildJsonArray { v.forEach { add(JsonPrimitive(it.toString())) } }
-                        else -> kotlinx.serialization.json.JsonNull
-                    },
-                )
-            }
-        }
+/**
+ * A message to the computer from `fields`: strings, numbers, booleans, lists of
+ * strings and lists of pairs (`[key, value]` arrays); anything else is null.
+ */
+internal fun message(vararg fields: Pair<String, Any?>): JsonObject = buildJsonObject {
+    for ((k, v) in fields) {
+        put(
+            k,
+            when (v) {
+                is String -> JsonPrimitive(v)
+                is Number -> JsonPrimitive(v)
+                is Boolean -> JsonPrimitive(v)
+                // A pair is a [key, value] array, as `start`'s settings are.
+                is List<*> -> buildJsonArray {
+                    v.forEach {
+                        if (it is Pair<*, *>) {
+                            add(buildJsonArray { add(JsonPrimitive(it.first.toString())); add(JsonPrimitive(it.second.toString())) })
+                        } else {
+                            add(JsonPrimitive(it.toString()))
+                        }
+                    }
+                }
+                else -> kotlinx.serialization.json.JsonNull
+            },
+        )
     }
 }

@@ -229,6 +229,10 @@ data class LiveSession(
     val question: QuestionAsk? = null,
     val secret: SecretAsk? = null,
     val usage: String? = null,
+    /** How full the agent's context is, 0 to 100, when it says. */
+    val contextPercent: Int? = null,
+    /** New tokens in and out so far, when any. */
+    val tokens: Long? = null,
     /** Prompts the computer holds until the turn ends. */
     val queue: List<String> = emptyList(),
     /** A Stop paused [queue]: it waits until resumed. */
@@ -273,6 +277,8 @@ data class LiveSession(
             question = QuestionAsk.of(j["question"]),
             secret = SecretAsk.of(j["secret"]),
             usage = j["usage"]["summary"].string,
+            contextPercent = j["usage"]["context_percent"].int?.coerceIn(0, 100),
+            tokens = j["usage"]["tokens"].double?.toLong()?.takeIf { it > 0 },
             queue = j["queue"].array.map { it.str },
             queuePaused = j["queue_paused"].bool,
             title = j["title"].string?.takeIf { it.isNotEmpty() } ?: title,

@@ -1,5 +1,6 @@
 package com.arakun.android.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -51,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +76,7 @@ fun InboxScreen(model: AppModel) {
     var starting by rememberSaveable { mutableStateOf(false) }
     val query = rememberTextFieldState()
     var account by rememberSaveable { mutableStateOf(false) }
+    var limits by rememberSaveable { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -98,11 +101,19 @@ fun InboxScreen(model: AppModel) {
     val mood = inboxMood(model)
     val insets = WindowInsets.safeDrawing.asPaddingValues()
 
-    Column(Modifier.fillMaxSize().background(c.ground).statusBarsPadding()) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(c.ground)
+            .statusBarsPadding()
+            // Under the plan limits the inbox is not there for a screen reader either.
+            .then(if (limits) Modifier.clearAndSetSemantics {} else Modifier),
+    ) {
         TopBar(
             model = model,
             onNew = { starting = true },
             onAccount = { account = true },
+            onLimits = { limits = true },
         )
         PullToRefreshBox(
             isRefreshing = refreshing,
@@ -147,6 +158,10 @@ fun InboxScreen(model: AppModel) {
         NewSessionSheet(model, onDismiss = { starting = false })
     }
     if (account) AccountSheet(model, onDismiss = { account = false })
+    if (limits) {
+        PlanLimitsScreen(model) { limits = false }
+        BackHandler { limits = false }
+    }
 }
 
 /** The raccoon's mood for the whole computer: what most needs you wins. */
@@ -159,7 +174,7 @@ private fun inboxMood(model: AppModel): Mood = when {
 }
 
 @Composable
-private fun TopBar(model: AppModel, onNew: () -> Unit, onAccount: () -> Unit) {
+private fun TopBar(model: AppModel, onNew: () -> Unit, onAccount: () -> Unit, onLimits: () -> Unit) {
     val c = Palette.current
     var menu by remember { mutableStateOf(false) }
     Row(
@@ -199,6 +214,14 @@ private fun TopBar(model: AppModel, onNew: () -> Unit, onAccount: () -> Unit) {
                     onClick = {
                         menu = false
                         onAccount()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Plan limits", style = Type.callout) },
+                    leadingIcon = { BrandIcon(R.drawable.ic_gauge, 18.dp, c.text) },
+                    onClick = {
+                        menu = false
+                        onLimits()
                     },
                 )
                 DropdownMenuItem(

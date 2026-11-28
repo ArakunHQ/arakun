@@ -2,6 +2,7 @@ package com.arakun.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -46,7 +47,10 @@ import androidx.compose.ui.unit.dp
 import com.arakun.android.AppModel
 import com.arakun.android.R
 import com.arakun.android.Shot
+import com.arakun.kit.AGENTS
 import com.arakun.kit.Place
+import com.arakun.kit.SettingSet
+import com.arakun.kit.startAgent
 
 /** A new session in one of the places the computer offers, with its first prompt. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -54,6 +58,10 @@ import com.arakun.kit.Place
 fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
     val c = Palette.current
     var placePath by rememberSaveable { mutableStateOf(model.places.firstOrNull()?.path ?: "") }
+    val place = model.places.firstOrNull { it.path == placePath }
+    var agent by rememberSaveable { mutableStateOf(place?.startAgent() ?: AGENTS.first().first) }
+    // The model and reasoning picked, by key; the rest stay as the agent would start.
+    var picked by remember { mutableStateOf(emptyMap<String, String>()) }
     val text = rememberTextFieldState()
     var writing by remember { mutableStateOf(false) }
     // Photos for the first prompt; they stay while a start does not go out.
@@ -62,8 +70,17 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
 
     LaunchedEffect(model.places) {
         // The chosen place went away: fall back to the first one left.
-        if (model.places.none { it.path == placePath }) placePath = model.places.firstOrNull()?.path ?: ""
+        if (model.places.none { it.path == placePath }) {
+            val first = model.places.firstOrNull()
+            placePath = first?.path ?: ""
+            agent = first?.startAgent() ?: agent
+            picked = emptyMap()
+        }
     }
+    // What this agent offers there; asked again when the link comes back, as one sent offline is dropped.
+    LaunchedEffect(placePath, agent, model.canSend) { place?.let { model.loadOptions(it, agent) } }
+    val options = model.startOptions?.takeIf { it.env == placePath && it.agent == agent }?.settings?.filter { it.options.isNotEmpty() }
+
     LaunchedEffect(model.session?.id) {
         // Started, even from an earlier showing of the sheet: the session
         // opens over the inbox.
@@ -112,9 +129,38 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
                     Column(Modifier.fillMaxWidth().card().selectableGroup()) {
                         model.places.forEachIndexed { i, p ->
                             if (i > 0) Box(Modifier.padding(start = 44.dp).fillMaxWidth().height(1.dp).background(c.line))
-                            PlaceRow(p, p.path == placePath) { placePath = p.path }
+                            PlaceRow(p, p.path == placePath) {
+                                if (p.path != placePath) {
+                                    placePath = p.path
+                                    // Each place starts its own agent; what was picked was for the other.
+                                    agent = p.startAgent()
+                                    picked = emptyMap()
+                                }
+                            }
                         }
                     }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Eyebrow("Agent")
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).selectableGroup(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        AGENTS.forEach { (id, name) ->
+                            AgentChip(name, id == agent) {
+                                if (id != agent) {
+                                    agent = id
+                                    picked = emptyMap()
+                                }
+                            }
+                        }
+                    }
+                }
+                when {
+                    options != null -> options.forEach { set ->
+                        SettingRows(set, set.on(picked[set.key]), enabled = true) { id -> picked = SettingSet.pick(picked, set.key, id) }
+                    }
+                    model.canSend -> Text("Loading models…", style = Type.callout, color = c.textMuted)
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Eyebrow("Prompt")
@@ -151,7 +197,7 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
             PrimaryButton(
                 onClick = {
                     val p = model.places.firstOrNull { it.path == placePath } ?: return@PrimaryButton
-                    if (model.startSession(p, prompt, shots.toList())) shots.clear()
+                    if (model.startSession(p, prompt, shots.toList(), agent, picked)) shots.clear()
                 },
                 enabled = ready,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -167,6 +213,21 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun AgentChip(name: String, on: Boolean, pick: () -> Unit) {
+    val c = Palette.current
+    Text(
+        name,
+        style = geist(14f, FontWeight.Medium),
+        color = if (on) c.text else c.textMuted,
+        modifier = Modifier
+            .card(if (on) c.raised else c.ground, if (on) c.amberInk else c.line, Radius.control)
+            .selectable(selected = on, role = Role.RadioButton, onClick = pick)
+            .heightIn(min = 40.dp)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    )
 }
 
 @Composable

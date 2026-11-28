@@ -33,6 +33,9 @@ archived sessions after is set (`branches.remove_archived_sessions` in `settings
 in days), an archived session goes with its files once that long has passed since it
 was archived or last used. When an environment or project goes, its sessions' files
 go with it. The files of a session no state lists any more are deleted a week later.
+An image pasted into the composer, or sent from the phone, that no session's transcript or
+linked note and no saved draft mentions is deleted once it is a week old, such as one you
+took out of a draft. Arakun looks when it starts and then once a day.
 
 <!-- paths: generated from core/src/paths.rs -->
 

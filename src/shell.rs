@@ -3035,6 +3035,10 @@ impl Shell {
             },
             &self.sidebar,
         );
+        let pilot = {
+            let p = self.pilot.read(cx);
+            p.config().is_some() || p.config_problem().is_some()
+        };
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 droid,
@@ -3044,6 +3048,7 @@ impl Shell {
                 coderspace,
                 views_on,
                 project,
+                pilot,
                 window,
                 cx,
             )
@@ -3179,6 +3184,10 @@ impl Shell {
                 SettingsEvent::OpenProfile => {
                     this.close_modal(window, cx);
                     this.open_profile(None, window, cx);
+                }
+                SettingsEvent::OpenPilot => {
+                    this.close_modal(window, cx);
+                    this.open_pilot_connect(window, cx);
                 }
                 SettingsEvent::OpenUsage => {
                     this.close_modal(window, cx);

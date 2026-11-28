@@ -1460,9 +1460,10 @@ impl Shell {
         use crate::settings_registry as reg;
         for e in reg::ALL.iter().filter(|e| e.available()) {
             let on = e.on();
+            // One a variable decides opens on its row, which says which.
             let target = match on {
-                Some(_) => Target::Setting(Setting::Row(e.id)),
-                None => Target::OpenSetting(e.id),
+                Some(_) if e.forced().is_none() => Target::Setting(Setting::Row(e.id)),
+                _ => Target::OpenSetting(e.id),
             };
             let path = e.path();
             let mut item = Item::new(format!("setting:{}", e.key), Kind::Setting, e.label, target)
@@ -1666,7 +1667,9 @@ impl Shell {
         match s {
             Setting::Row(id) => {
                 let on = !crate::settings_registry::entry(id).on().unwrap_or(false);
-                crate::settings_registry::set(id, on);
+                if crate::settings_registry::set(id, on).is_none() {
+                    return;
+                }
                 self.after_setting(id, window, cx);
             }
             Setting::Glass => {

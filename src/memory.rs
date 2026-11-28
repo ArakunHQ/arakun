@@ -861,7 +861,7 @@ pub fn record_session(
     edited: &[PathBuf],
     since: u64,
 ) -> std::io::Result<()> {
-    if std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off") {
+    if !crate::settings::memory() {
         return Ok(());
     }
     let project = project_of(dir);

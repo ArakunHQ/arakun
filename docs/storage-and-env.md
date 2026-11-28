@@ -157,15 +157,15 @@ treat it like the files the agent worked on before you share it.
 | Variable | What it does |
 |---|---|
 | `ARAKUN_STATE` | Another state file. That Arakun keeps its own files, socket and sign-ins next to it. `arakun dev` sets it. |
-| `ARAKUN_MEMORY` | `off` keeps memory out of prompts and stops saving it. |
+| `ARAKUN_MEMORY` | `off` keeps memory out of prompts and stops recording sessions in it, whatever Settings › General › Agents › Memory says. `on` keeps it in prompts even with Notes to agents off. |
 | `ARAKUN_MEMORY_DIR` | Another folder for memory. Default: `memory` in the data folder. |
 | `ARAKUN_USAGE_LOG` | Another file for the usage log. Default: `usage.jsonl` in the data folder. |
 | `ARAKUN_SERVER_DIR` | Another folder for `arakun server` (an absolute path), to run a second server. Default: `server` in the data folder. |
 | `ARAKUN_TEAMS_URL` | Another Arakun cloud server for the relay and sign-in. Default: `https://app.arakun.dev`. It must be `https://`, except for localhost. |
 | `ARAKUN_TELEMETRY` | `0` turns crash reports, usage counts and feedback off and skips the question. `1` turns crash reports and usage counts on. `DO_NOT_TRACK=1` wins over it. |
-| `ARAKUN_UPDATES` | `0` turns update checks off for one run. |
+| `ARAKUN_UPDATES` | `0` turns update checks off for one run. Settings › General › Updates says so and doesn't change. |
 | `ARAKUN_REDACTED` | `1` turns redacted mode on for one run. |
-| `ARAKUN_NOTIFY` | `off` stops Arakun's desktop notifications. |
+| `ARAKUN_NOTIFY` | `off` stops Arakun's desktop notifications, whatever Settings › General › Notices says. |
 | `ARAKUN_NOTICES` | Linux: the apps whose desktop notifications show on the island, comma-separated. Default: `discord`. `0` turns it off. |
 | `ARAKUN_ISLAND_EDGE` | The screen's cutout, when the island reads it wrong: `flat`, `notch:<width>x<height>` or `pill:<width>x<height>+<gap to the top>`, in points. |
 | `ARAKUN_GITHUB` | `readonly` reads GitHub but sends nothing and marks nothing read. `off` doesn't read GitHub. `arakun dev` sets `readonly`. |
@@ -177,7 +177,7 @@ treat it like the files the agent worked on before you share it.
 
 | Variable | What it does |
 |---|---|
-| `ARAKUN_AGENT_HINT` | `off` leaves out the note about the `arakun` command in agents' system prompts. `arakun server` sets `off` for itself. |
+| `ARAKUN_AGENT_HINT` | `off` leaves out the note about the `arakun` command in agents' system prompts, as Settings › General › Agents › Notes to agents does. `arakun server` sets `off` for itself. |
 | `ARAKUN_CLAUDE_ACP` | A command that starts another Claude Code adapter instead of the one installed with npm. |
 | `ARAKUN_CODEX_ACP` | A command that starts another Codex adapter instead of the one installed with npm. |
 | `ARAKUN_DROID_BIN` | Another `droid` binary. |

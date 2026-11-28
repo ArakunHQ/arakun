@@ -340,13 +340,13 @@ pub fn links_in_arakun() -> bool {
     }
 }
 
-pub fn set_links_in_arakun(on: bool) {
+pub fn set_links_in_arakun(on: bool) -> crate::settings::Saving {
     let choice = if on {
         crate::settings::OpenLinks::Arakun
     } else {
         crate::settings::OpenLinks::System
     };
-    crate::settings::change(|s| s.general.open_links = Some(choice));
+    crate::settings::change(|s| s.general.open_links = Some(choice))
 }
 
 #[cfg(test)]

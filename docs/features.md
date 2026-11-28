@@ -230,7 +230,8 @@ sees the project's skills.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
   global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
-  project's sessions, worth keeping as a script of the project.
+  project's sessions, worth keeping as a script of the project. Settings › General › Agents
+  turns it off.
 - **Secrets on a card.** When an agent needs something only you can give, such as a
   login, an API token, a PIN or a pairing code, it asks with a card in the session
   instead of a message. The card shows what it is, why the agent needs it and, when

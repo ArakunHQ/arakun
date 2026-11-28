@@ -11,6 +11,8 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 beforeEach(async () => {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM linear_deliveries"),
+    env.DB.prepare("DELETE FROM linear_picks"),
+    env.DB.prepare("DELETE FROM linear_repositories"),
     env.DB.prepare("DELETE FROM linear_routes"),
     env.DB.prepare("DELETE FROM linear_links"),
     env.DB.prepare("DELETE FROM linear_workspaces"),

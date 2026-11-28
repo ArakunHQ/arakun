@@ -84,6 +84,10 @@ pub struct Delivery {
     /// For `Created`: the comment that mentioned Arakun, when a mention
     /// started the session. An id only: its text is read from Linear.
     pub comment: Option<String>,
+    /// For `Created`: the GitHub repository (`owner/name`) the delegator
+    /// picked in Linear when no route took the issue. Only a hint: the
+    /// computer starts only in a project of its own with that repository.
+    pub repository: Option<String>,
     /// The follow-up's text, when the relay had it at hand.
     pub body: Option<String>,
     /// A new delegation's guidance for agents, when the relay had it at
@@ -103,6 +107,7 @@ impl fmt::Debug for Delivery {
             .field("activity", &self.activity)
             .field("reason", &self.reason)
             .field("comment", &self.comment)
+            .field("repository", &self.repository.is_some())
             .field("body", &self.body.as_ref().map(|_| "…"))
             .field("guidance", &self.guidance.len())
             .finish()
@@ -154,6 +159,13 @@ pub fn parse(msg: &Value) -> Option<Delivery> {
         .and_then(Value::as_str)
         .filter(|c| !c.is_empty() && c.chars().count() <= MAX_ID)
         .map(str::to_string);
+    // Like the mention, a repository that is not a name leaves none: the
+    // computer then refuses the delegation as unmapped.
+    let repository = msg
+        .get("repository")
+        .and_then(Value::as_str)
+        .filter(|r| kind == DeliveryKind::Created && is_repository(r))
+        .map(str::to_string);
     // A body too long to trust is left out; the delivery still counts.
     let body = optional("body")?
         .filter(|b| b.chars().count() <= MAX_BODY)
@@ -167,9 +179,28 @@ pub fn parse(msg: &Value) -> Option<Delivery> {
         activity,
         reason,
         comment,
+        repository,
         body,
         guidance: guidance(msg.get("guidance")),
     })
+}
+
+/// Whether `s` is a GitHub `owner/name`, as the relay's Worker takes them.
+pub fn is_repository(s: &str) -> bool {
+    let Some((owner, name)) = s.split_once('/') else {
+        return false;
+    };
+    let owner_ok = (1..=39).contains(&owner.len())
+        && !owner.starts_with('-')
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    let name_ok = (1..=100).contains(&name.len())
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+    owner_ok && name_ok
 }
 
 /// The rules in a frame's `guidance`. Guidance is a bonus: anything not
@@ -247,6 +278,7 @@ mod tests {
                 activity: Some("5b0c1f9e-0000-4000-8000-000000000004".into()),
                 reason: None,
                 comment: None,
+                repository: None,
                 body: Some("Please also fix the tests.".into()),
                 guidance: Vec::new(),
             }
@@ -426,5 +458,26 @@ mod tests {
         let shown = format!("{:?}", parse(&msg).unwrap());
         assert!(!shown.contains("Secret"), "{shown}");
         assert!(shown.contains("guidance: 1"), "{shown}");
+    }
+
+    #[test]
+    fn a_picked_repository_comes_only_with_a_delegation() {
+        let created = |r: Value| {
+            let mut msg = with("kind", json!("created"));
+            msg["repository"] = r;
+            parse(&msg).unwrap().repository
+        };
+        assert_eq!(created(json!("acme/web")), Some("acme/web".into()));
+        assert_eq!(created(json!("acme/web/x")), None);
+        assert_eq!(created(json!("../etc")), None);
+        assert_eq!(created(json!(7)), None);
+        assert_eq!(created(Value::Null), None);
+        assert_eq!(
+            parse(&with("repository", json!("acme/web")))
+                .unwrap()
+                .repository,
+            None
+        );
+        assert!(is_repository("a-b/c.d_e") && !is_repository("-a/b") && !is_repository("a/.b"));
     }
 }

@@ -203,6 +203,62 @@ impl Delegation {
 pub struct Routes {
     pub teams: Vec<String>,
     pub projects: Vec<String>,
+    /// The GitHub repositories (`owner/name`) of the projects here. When no
+    /// route takes an issue, the server offers them in Linear to pick from.
+    pub repositories: Vec<String>,
+}
+
+impl Routes {
+    /// Whether there is anything to send: empty routes only clear.
+    pub fn is_empty(&self) -> bool {
+        self.teams.is_empty() && self.projects.is_empty() && self.repositories.is_empty()
+    }
+}
+
+/// The most repositories offered from one computer, as the server takes.
+pub const MAX_REPOSITORIES: usize = 50;
+
+/// Blocking: the GitHub repository (`owner/name`) of the project at `dir`,
+/// from its `origin` remote. None for a project not on GitHub.
+pub fn github_repository(dir: &Path) -> Option<String> {
+    let source = crate::clone_source::parse_clone_source(&crate::git::origin_url(dir)?)?;
+    let name = source.label.to_string();
+    (source.on_github && crate::phone::linear::is_repository(&name)).then_some(name)
+}
+
+/// Blocking: each project in `dirs` with its GitHub repository, leaving out
+/// those not on GitHub.
+pub fn repositories_of(dirs: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    dirs.iter()
+        .filter_map(|d| github_repository(d).map(|r| (d.clone(), r)))
+        .collect()
+}
+
+/// What this computer offers in Linear when no route takes an issue: the
+/// repositories of its projects, once each, at most [`MAX_REPOSITORIES`].
+/// None when off. Only names leave this computer, never a path.
+pub fn offered(d: &Delegation, projects: &[(PathBuf, String)]) -> Vec<String> {
+    if !d.enabled {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (_, r) in projects {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(r)) {
+            out.push(r.clone());
+        }
+    }
+    out.sort_by_key(|r| r.to_lowercase());
+    out.truncate(MAX_REPOSITORIES);
+    out
+}
+
+/// The project here whose repository is `repository`, the one the person
+/// picked in Linear. GitHub names ignore case.
+pub fn project_of_repository(repository: &str, projects: &[(PathBuf, String)]) -> Option<PathBuf> {
+    projects
+        .iter()
+        .find(|(_, r)| r.eq_ignore_ascii_case(repository))
+        .map(|(p, _)| p.clone())
 }
 
 /// Empty when off. Otherwise the targets of `workspace` whose project is
@@ -232,6 +288,48 @@ pub fn routes(d: &Delegation, workspace: &str, local_projects: &[PathBuf]) -> Ro
 /// The Arakun project of the mapping is no longer open here.
 pub fn broken(m: &Mapping, local_projects: &[PathBuf]) -> bool {
     !local_projects.contains(&m.project)
+}
+
+/// [`target_for`], and for an unmapped issue the project the person picked
+/// in Linear (`picked`, found by [`project_of_repository`]) when it is open
+/// here. A mapping always wins over a pick, and a pick never mends a mapping
+/// whose project is gone.
+pub fn target_or_picked(
+    d: &Delegation,
+    workspace: &str,
+    team: &str,
+    project: Option<&str>,
+    local: &[PathBuf],
+    picked: Option<&Path>,
+) -> Result<PathBuf, Refusal> {
+    match target_for(d, workspace, team, project, local) {
+        Ok(m) => Ok(m.project.clone()),
+        Err(Refusal::Unmapped) => picked
+            .filter(|p| local.iter().any(|l| l == p))
+            .map(Path::to_path_buf)
+            .ok_or(Refusal::Unmapped),
+        Err(r) => Err(r),
+    }
+}
+
+/// Saves "always use this project for the team": the answer to the question
+/// a picked run asks. False when the team is mapped already, to this
+/// project or another: the mapping the person made stays.
+pub fn remember_team(
+    d: &mut Delegation,
+    workspace: &str,
+    team: &str,
+    team_name: &str,
+    project: &Path,
+) -> bool {
+    d.add(Mapping {
+        workspace: workspace.to_string(),
+        kind: Kind::Team,
+        target: team.to_string(),
+        name: team_name.to_string(),
+        project: project.to_path_buf(),
+        server: None,
+    })
 }
 
 /// Where an issue goes. The project mapping wins: it is the narrower choice.
@@ -480,6 +578,92 @@ mod tests {
             Err(Refusal::Unmapped)
         );
     }
+    fn repos(list: &[(&str, &str)]) -> Vec<(PathBuf, String)> {
+        list.iter()
+            .map(|(p, r)| (PathBuf::from(p), r.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn offered_repositories_are_names_once_each_and_none_when_off() {
+        let projects = repos(&[
+            ("/p/b", "acme/web"),
+            ("/p/a", "Acme/Web"),
+            ("/p/c", "acme/api"),
+        ]);
+        let mut d = on(vec![]);
+        assert_eq!(offered(&d, &projects), ["acme/api", "acme/web"]);
+        d.enabled = false;
+        assert!(offered(&d, &projects).is_empty());
+        let many: Vec<(PathBuf, String)> = (0..MAX_REPOSITORIES + 5)
+            .map(|i| (PathBuf::from(format!("/p/{i}")), format!("acme/r{i:03}")))
+            .collect();
+        assert_eq!(offered(&on(vec![]), &many).len(), MAX_REPOSITORIES);
+    }
+
+    #[test]
+    fn a_pick_starts_only_in_a_project_here_and_never_over_a_mapping() {
+        let projects = repos(&[("/p/a", "acme/web"), ("/p/b", "acme/api")]);
+        let local = [p("/p/a"), p("/p/b")];
+        let picked = project_of_repository("ACME/API", &projects);
+        assert_eq!(picked, Some(p("/p/b")));
+        assert_eq!(project_of_repository("other/api", &projects), None);
+        // Unmapped: the pick takes it.
+        let d = on(vec![]);
+        assert_eq!(
+            target_or_picked(&d, "w1", "t1", None, &local, picked.as_deref()),
+            Ok(p("/p/b"))
+        );
+        // A pick of a project that is not open here is no pick.
+        assert_eq!(
+            target_or_picked(&d, "w1", "t1", None, &[p("/p/a")], picked.as_deref()),
+            Err(Refusal::Unmapped)
+        );
+        assert_eq!(
+            target_or_picked(&d, "w1", "t1", None, &local, None),
+            Err(Refusal::Unmapped)
+        );
+        // A mapping made since wins over the pick.
+        let mapped = on(vec![team("w1", "t1", "/p/a")]);
+        assert_eq!(
+            target_or_picked(&mapped, "w1", "t1", None, &local, picked.as_deref()),
+            Ok(p("/p/a"))
+        );
+        // Off is off, and a gone project stays refused.
+        let mut off = on(vec![]);
+        off.enabled = false;
+        assert_eq!(
+            target_or_picked(&off, "w1", "t1", None, &local, picked.as_deref()),
+            Err(Refusal::Off)
+        );
+        let gone = on(vec![team("w1", "t1", "/p/gone")]);
+        assert_eq!(
+            target_or_picked(&gone, "w1", "t1", None, &local, picked.as_deref()),
+            Err(Refusal::ProjectGone)
+        );
+    }
+
+    #[test]
+    fn always_saves_a_team_mapping_but_never_over_one() {
+        let mut d = on(vec![]);
+        assert!(remember_team(&mut d, "w1", "t1", "Engineering", &p("/p/a")));
+        assert_eq!(
+            project_for(&d, "w1", "t1", None).unwrap().name,
+            "Engineering"
+        );
+        assert!(!remember_team(
+            &mut d,
+            "w1",
+            "t1",
+            "Engineering",
+            &p("/p/b")
+        ));
+        assert_eq!(
+            project_for(&d, "w1", "t1", None).unwrap().project,
+            p("/p/a")
+        );
+    }
+
     #[test]
     fn the_guard_refuses_when_the_project_is_gone() {
         // The project mapping wins even when gone: its team's is not a fallback.

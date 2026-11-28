@@ -356,3 +356,26 @@ export async function startIssue(env: Env, organizationId: string, issueId: stri
     { id: issueId, input },
   );
 }
+
+/// Linear's ranking of `repositories` (`owner/name` on GitHub) for an issue,
+/// best first, from the issue and its linked pull requests. Only names it
+/// was given come back; one it left out goes last, in the order given.
+export async function rankRepositories(env: Env, organizationId: string, issueId: string, agentSessionId: string, repositories: string[]): Promise<string[]> {
+  const data = await asApp<{ issueRepositorySuggestions?: { suggestions?: { repositoryFullName?: unknown; confidence?: unknown }[] | null } | null }>(
+    env,
+    organizationId,
+    `query($issueId: String!, $agentSessionId: String!, $candidates: [CandidateRepository!]!) {
+       issueRepositorySuggestions(issueId: $issueId, agentSessionId: $agentSessionId, candidateRepositories: $candidates) {
+         suggestions { repositoryFullName confidence }
+       } }`,
+    { issueId, agentSessionId, candidates: repositories.map((r) => ({ hostname: "github.com", repositoryFullName: r })) },
+  );
+  const given = new Map(repositories.map((r) => [r.toLowerCase(), r]));
+  const ranked = (data.issueRepositorySuggestions?.suggestions ?? [])
+    .filter((s): s is { repositoryFullName: string; confidence: unknown } => typeof s?.repositoryFullName === "string")
+    .map((s) => ({ name: given.get(s.repositoryFullName.toLowerCase()), confidence: typeof s.confidence === "number" ? s.confidence : 0 }))
+    .filter((s): s is { name: string; confidence: number } => s.name !== undefined)
+    .sort((a, b) => b.confidence - a.confidence)
+    .map((s) => s.name);
+  return [...new Set([...ranked, ...repositories])];
+}

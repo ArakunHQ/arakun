@@ -742,6 +742,8 @@ mod tests {
             kept: Vec::new(),
             comment: None,
             guidance: Vec::new(),
+            picked: None,
+            remember: None,
         }
     }
 

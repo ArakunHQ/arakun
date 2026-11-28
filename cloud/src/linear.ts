@@ -7,7 +7,9 @@
 //                           Linear still takes its token
 //   POST /linear/link     → proves a Linear user with the user's own token
 //   DELETE /linear/link/<organization_id>
-//   PUT /linear/routes    → what a computer takes: Linear teams and projects
+//   PUT /linear/routes    → what a computer takes: Linear teams and projects,
+//                           and the GitHub repositories (`owner/name`) of
+//                           its projects, offered when nothing takes an issue
 //   GET /linear/install   → a redirect to Linear's consent page
 //   GET /linear/callback  → where Linear sends the admin back to
 //   POST /linear/webhook  → Linear's events (linear_webhook.ts)
@@ -164,6 +166,10 @@ const MAX_TOKEN = 512;
 const MAX_ROUTES_BODY = 32 * 1024;
 const MAX_IDS = 200;
 const LABEL = /^[a-z2-7]{16}$/;
+/// The most repositories one computer offers in one workspace.
+export const MAX_REPOSITORIES = 50;
+/// A GitHub `owner/name`, as GitHub allows them.
+export const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.)[A-Za-z0-9._-]{1,100}$/;
 
 async function listLinks(env: Env, who: Session): Promise<Response> {
   const rows = await env.DB.prepare(
@@ -194,9 +200,13 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
   if (seen.app) return error(400, "linear refused that token");
   // Whoever proves the Linear user holds the link. The routes of the account
   // it leaves go too: they no longer have a link to stand on.
-  const [, , installed] = await env.DB.batch<{ n: number }>([
+  const [, , , installed] = await env.DB.batch<{ n: number }>([
     env.DB.prepare(
       `DELETE FROM linear_routes WHERE organization_id = ?1 AND account_id IN
+         (SELECT account_id FROM linear_links WHERE organization_id = ?1 AND linear_user_id = ?2 AND account_id != ?3)`,
+    ).bind(seen.organizationId, seen.userId, who.accountId),
+    env.DB.prepare(
+      `DELETE FROM linear_repositories WHERE organization_id = ?1 AND account_id IN
          (SELECT account_id FROM linear_links WHERE organization_id = ?1 AND linear_user_id = ?2 AND account_id != ?3)`,
     ).bind(seen.organizationId, seen.userId, who.accountId),
     env.DB.prepare(
@@ -215,6 +225,7 @@ async function addLink(request: Request, env: Env, who: Session): Promise<Respon
 async function removeLink(env: Env, who: Session, organizationId: string): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM linear_routes WHERE organization_id = ? AND account_id = ?").bind(organizationId, who.accountId),
+    env.DB.prepare("DELETE FROM linear_repositories WHERE organization_id = ? AND account_id = ?").bind(organizationId, who.accountId),
     env.DB.prepare("DELETE FROM linear_links WHERE organization_id = ? AND account_id = ?").bind(organizationId, who.accountId),
   ]);
   return new Response(null, { status: 204 });
@@ -227,6 +238,17 @@ function ids(v: unknown): string[] | null {
   return [...new Set(v as string[])];
 }
 
+/// A list of at most MAX_REPOSITORIES GitHub names, without repeats (in any
+/// case), or null. Absent is none: an older app sends no repositories.
+function repositories(v: unknown): string[] | null {
+  if (v === undefined) return [];
+  if (!Array.isArray(v) || v.length > MAX_REPOSITORIES) return null;
+  if (!v.every((x) => typeof x === "string" && REPOSITORY.test(x))) return null;
+  const seen = new Map<string, string>();
+  for (const r of v as string[]) if (!seen.has(r.toLowerCase())) seen.set(r.toLowerCase(), r);
+  return [...seen.values()];
+}
+
 async function putRoutes(request: Request, env: Env, who: Session): Promise<Response> {
   const body = await jsonBody(request, MAX_ROUTES_BODY);
   const bad = () => error(400, "bad routes");
@@ -234,7 +256,8 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
   const { label, organization_id: org } = body;
   const teams = ids(body["teams"]);
   const projects = ids(body["projects"]);
-  if (typeof label !== "string" || typeof org !== "string" || !UUID.test(org) || !teams || !projects) return bad();
+  const repos = repositories(body["repositories"]);
+  if (typeof label !== "string" || typeof org !== "string" || !UUID.test(org) || !teams || !projects || !repos) return bad();
   if (teams.length + projects.length > MAX_IDS) return bad();
   if (!LABEL.test(label)) return error(404, "no such computer");
   const [machine, link] = await env.DB.batch<{ n: number }>([
@@ -253,10 +276,20 @@ async function putRoutes(request: Request, env: Env, who: Session): Promise<Resp
        WHERE EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND account_id = ?2)
          AND EXISTS (SELECT 1 FROM linear_links WHERE organization_id = ?3 AND account_id = ?2)`,
     ).bind(label, who.accountId, org, kind, target, at);
+  // The repository names are kept here and nowhere else: never logged.
+  const offer = (repository: string) =>
+    env.DB.prepare(
+      `INSERT INTO linear_repositories (label, account_id, organization_id, repository, updated_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+       WHERE EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND account_id = ?2)
+         AND EXISTS (SELECT 1 FROM linear_links WHERE organization_id = ?3 AND account_id = ?2)`,
+    ).bind(label, who.accountId, org, repository, at);
   await env.DB.batch([
     env.DB.prepare("DELETE FROM linear_routes WHERE label = ? AND organization_id = ?").bind(label, org),
+    env.DB.prepare("DELETE FROM linear_repositories WHERE label = ? AND organization_id = ?").bind(label, org),
     ...teams.map((t) => insert("team", t)),
     ...projects.map((p) => insert("project", p)),
+    ...repos.map(offer),
   ]);
   return new Response(null, { status: 204 });
 }
@@ -280,6 +313,25 @@ export async function routeFor(
     .bind(accountId, organizationId, place.teamId, place.projectId)
     .first<{ label: string; machine: string }>();
   return row;
+}
+
+/// What the account's computers offer in a workspace when no route takes an
+/// issue: each repository on each computer it still owns, the computer seen
+/// last first.
+export async function offeredFor(
+  env: Env,
+  accountId: number,
+  organizationId: string,
+): Promise<{ label: string; machine: string; repository: string }[]> {
+  const rows = await env.DB.prepare(
+    `SELECT r.label AS label, m.name AS machine, r.repository AS repository FROM linear_repositories r
+     JOIN machines m ON m.label = r.label AND m.account_id = r.account_id
+     WHERE r.account_id = ?1 AND r.organization_id = ?2
+     ORDER BY m.last_seen_at DESC, r.label, r.repository`,
+  )
+    .bind(accountId, organizationId)
+    .all<{ label: string; machine: string; repository: string }>();
+  return rows.results;
 }
 
 /// The 429 or 503 to send when the account has asked Linear too often, or

@@ -722,6 +722,20 @@ again after a week) in its [data folder](storage-and-env.md).
   works even with the switch off, or when this computer is no longer signed in to
   that Linear workspace.
 
+  *When no computer takes the team.* With the switch on, each computer also tells
+  Arakun's server the GitHub repositories (`owner/name`) of its projects, and a
+  server those of its projects. When no mapping on any computer takes an issue's team
+  or project, the issue asks "Which project should Arakun work in?" with up to five
+  choices, such as `acme/web on laptop`. Linear ranks them from the issue and its
+  linked pull requests. Only the person who delegated can pick. The pick goes to that
+  computer, which checks for itself that the repository is one of its projects before
+  it starts there. Then it asks `Use {project} for every issue of {team} from now
+  on?` with the choices **This issue only** and **Always for {team}**. **Always** adds
+  the team's mapping on this computer, as if you had made it in the Linear tab; a
+  mapping made meanwhile stays. A server can't save mappings itself, so there the issue
+  says to map the team in the Linear tab. A mapping always wins over a pick. With no
+  repositories at all, the issue hears that no computer is set up, as before.
+
   *When nothing starts.* Each case gets a line in the issue that says why: the
   switch is off, the issue is not mapped, the mapped project is gone, this computer
   has no Linear sign-in for the workspace, the issue can't be read, an environment
@@ -737,7 +751,8 @@ again after a week) in its [data folder](storage-and-env.md).
   workspace has a mapping, and again only if the server loses the link. A server
   with a mapping to its project gets the key too, and keeps it. Otherwise
   only the relay label of this computer, the Linear organization id of the
-  workspace and the ids of its mapped teams and projects go for the setup. Once a
+  workspace, the ids of its mapped teams and projects, and the GitHub names
+  (`owner/name`, never a path) of the projects here go for the setup. Once a
   session runs, what the issue hears goes through Arakun's server to the issue:
   the session's last reply (up to 7,500 characters, code included, with secrets
   scrubbed), its questions and their choices, the kind of a permission it waits

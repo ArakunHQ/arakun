@@ -373,6 +373,57 @@ pub fn kept_message(text: Option<&str>) -> Option<&str> {
     (!text.is_empty()).then_some(text)
 }
 
+/// The choice that keeps a pick to this issue.
+pub const ONLY_THIS_ISSUE: &str = "This issue only";
+
+/// The choice that maps `team` to the picked project from now on.
+pub fn always_for(team: &str) -> String {
+    format!("Always for {}", team.trim())
+}
+
+/// The question a run started in a project picked in Linear asks, and its
+/// two choices.
+pub fn remember_question(project: &str, team: &str) -> (String, Vec<String>) {
+    let line = format!(
+        "Use {project} for every issue of {} from now on?",
+        team.trim()
+    );
+    (line, vec![ONLY_THIS_ISSUE.to_string(), always_for(team)])
+}
+
+/// What a reply answers to [`remember_question`]: Some(true) for always,
+/// Some(false) for this issue only, None when it is not one of the choices
+/// and goes to the session as any reply does.
+pub fn remember_answer(text: Option<&str>, team: &str) -> Option<bool> {
+    let text = text?.trim();
+    if text.eq_ignore_ascii_case(&always_for(team)) {
+        Some(true)
+    } else if text.eq_ignore_ascii_case(ONLY_THIS_ISSUE) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub fn remembered_line(team: &str, project: &str, computer: &str) -> String {
+    format!(
+        "Saved: issues of {} now go to {project} on {computer}. Change it in Arakun's Linear tab.",
+        team.trim()
+    )
+}
+
+/// The team was mapped meanwhile, to this project or another: that stays.
+pub fn already_mapped_line(team: &str, computer: &str) -> String {
+    format!(
+        "{} is already mapped on {computer}. Change it in Arakun's Linear tab.",
+        team.trim()
+    )
+}
+
+pub fn this_issue_only_line() -> &'static str {
+    "OK. Only this issue uses this project."
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -751,6 +802,7 @@ mod tests {
             activity: None,
             reason: None,
             comment: None,
+            repository: None,
             body: None,
             guidance: Vec::new(),
         }
@@ -803,6 +855,8 @@ mod tests {
             kept: Vec::new(),
             comment: None,
             guidance: Vec::new(),
+            picked: None,
+            remember: None,
         };
         assert_eq!(run_state(Some(&run), "w1"), Some(RunState::Running));
         assert_eq!(run_state(Some(&run), "w2"), None);
@@ -928,5 +982,29 @@ mod tests {
             "This has not started yet on rik-mac. Your message will not be passed on; send it \
              again once it has started."
         );
+    }
+
+    #[test]
+    fn the_remember_question_reads_its_own_choices() {
+        let (line, options) = remember_question("web", "Engineering ");
+        assert_eq!(line, "Use web for every issue of Engineering from now on?");
+        assert_eq!(options, ["This issue only", "Always for Engineering"]);
+        assert_eq!(
+            remember_answer(Some(" always for engineering "), "Engineering"),
+            Some(true)
+        );
+        assert_eq!(
+            remember_answer(Some("This issue only"), "Engineering"),
+            Some(false)
+        );
+        assert_eq!(
+            remember_answer(Some("Always for Design"), "Engineering"),
+            None
+        );
+        assert_eq!(
+            remember_answer(Some("fix the tests too"), "Engineering"),
+            None
+        );
+        assert_eq!(remember_answer(None, "Engineering"), None);
     }
 }

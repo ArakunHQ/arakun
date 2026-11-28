@@ -154,6 +154,16 @@ pub fn started_line(project: &str, computer: &str, branch: &str, pr: Option<&Ope
     }
 }
 
+/// A server started in a project picked in Linear: its mappings come from
+/// the app, so the pick is for this issue only.
+pub fn picked_here_line(team: &str) -> String {
+    format!(
+        "This project was picked for this issue only. To use it for every issue of {}, map \
+         the team in Arakun's Linear tab.",
+        team.trim()
+    )
+}
+
 /// `running` sessions take every slot, and `ahead` wait before this one.
 pub fn waiting_line(computer: &str, running: usize, ahead: usize) -> String {
     let running = match running {
@@ -390,6 +400,7 @@ mod tests {
             activity: None,
             reason: None,
             comment: None,
+            repository: None,
             body: None,
             guidance: Vec::new(),
         }

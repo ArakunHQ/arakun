@@ -17,7 +17,7 @@ use serde_json::json;
 use super::Daemon;
 use crate::cloud;
 use crate::linear::delegation::Routes;
-use crate::linear::remote::{ServerSettings, route_plan};
+use crate::linear::remote::{ServerSettings, route_plan, with_repositories};
 use crate::phone::ClientId;
 
 /// The file in the server's folder.
@@ -89,15 +89,8 @@ enum Sent {
 fn send(base: &str, session: &str, label: &str, plan: Vec<(String, Routes)>) -> Vec<Sent> {
     let mut out = Vec::new();
     for (workspace, routes) in plan {
-        let any = !routes.teams.is_empty() || !routes.projects.is_empty();
-        let sent = cloud::linear_put_routes(
-            base,
-            session,
-            label,
-            &workspace,
-            &routes.teams,
-            &routes.projects,
-        );
+        let any = !routes.is_empty();
+        let sent = cloud::linear_put_routes(base, session, label, &workspace, &routes);
         match sent {
             Ok(()) => out.push(Sent::Done { workspace, any }),
             // A workspace the account never linked (409) or a server the
@@ -206,10 +199,19 @@ impl Daemon {
         }
         self.linear.syncing = true;
         self.linear.owed = false;
+        let settings = self.linear.kept.settings.clone();
+        let places = self.linear_places();
         cx.spawn(async move |this, cx| {
             let sent = cx
                 .background_spawn(crate::guard::task_or(
-                    async move { send(&sign_in.base, sign_in.session.expose(), &label, plan) },
+                    async move {
+                        // Reading each place's origin runs git: off the UI thread.
+                        let projects = crate::linear::delegation::repositories_of(&places);
+                        let offered =
+                            crate::linear::delegation::offered(&settings.delegation(), &projects);
+                        let plan = with_repositories(plan, &settings, &offered);
+                        send(&sign_in.base, sign_in.session.expose(), &label, plan)
+                    },
                     |_| vec![Sent::Failed(cloud::Error::Unreachable("it broke".into()))],
                 ))
                 .await;

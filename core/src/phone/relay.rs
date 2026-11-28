@@ -2108,6 +2108,7 @@ mod tests {
                 activity: None,
                 reason: None,
                 comment: None,
+                repository: None,
                 body: None,
                 guidance: Vec::new(),
             }

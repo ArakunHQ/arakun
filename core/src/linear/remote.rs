@@ -117,6 +117,22 @@ pub fn route_plan(
         .collect()
 }
 
+/// `plan` with `repositories` (from [`super::delegation::offered`]) for each
+/// workspace mapped here: the server offers its places' repositories where
+/// it takes work. A workspace only being cleared gets none.
+pub fn with_repositories(
+    mut plan: Vec<(String, Routes)>,
+    s: &ServerSettings,
+    repositories: &[String],
+) -> Vec<(String, Routes)> {
+    for (workspace, routes) in &mut plan {
+        if s.enabled && s.mappings.iter().any(|m| m.workspace == *workspace) {
+            routes.repositories = repositories.to_vec();
+        }
+    }
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +251,7 @@ mod tests {
                     "w1".to_string(),
                     Routes {
                         teams: vec!["t1".into()],
-                        projects: Vec::new(),
+                        ..Default::default()
                     }
                 ),
             ]
@@ -278,5 +294,30 @@ mod tests {
         // An older app that sends nothing new still reads.
         let empty: ServerSettings = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(empty, ServerSettings::default());
+    }
+
+    #[test]
+    fn repositories_go_only_to_mapped_workspaces_and_only_when_on() {
+        let mut s = ServerSettings {
+            enabled: true,
+            mappings: vec![mapping("w1", Kind::Team, "t1", "/srv/a")],
+            ..Default::default()
+        };
+        let repos = ["acme/web".to_string()];
+        let plan = || {
+            vec![
+                ("w0".to_string(), Routes::default()),
+                ("w1".to_string(), Routes::default()),
+            ]
+        };
+        let out = with_repositories(plan(), &s, &repos);
+        assert!(out[0].1.repositories.is_empty());
+        assert_eq!(out[1].1.repositories, repos);
+        s.enabled = false;
+        assert!(
+            with_repositories(plan(), &s, &repos)
+                .iter()
+                .all(|(_, r)| r.is_empty())
+        );
     }
 }

@@ -44,6 +44,15 @@ drive any web page lets them click, type and run scripts in any browser tab too,
 accounts you are signed in to there. It is off by default and kept in
 [`settings.json`](storage-and-env.md#the-data-folder).
 
+## Linear
+
+With "Let Linear start sessions on this computer" on, Arakun's server keeps, for each
+of your computers, the Linear teams and projects it takes and the GitHub repositories
+of its projects (`owner/name` only, never a folder). It offers those names in Linear
+when no computer takes an issue, so you can pick where it runs. They are kept with
+the routes, never logged, and go when you turn the switch off or unlink the
+workspace. See the Linear section of [features](features.md) for all that is sent.
+
 ## Usage and crash reports
 
 Arakun sends nothing until you say so. On first launch it asks whether to send crash

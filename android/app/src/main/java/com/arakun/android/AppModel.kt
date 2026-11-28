@@ -27,6 +27,7 @@ import com.arakun.kit.Machine
 import com.arakun.kit.Me
 import com.arakun.kit.Notice
 import com.arakun.kit.PermissionAsk
+import com.arakun.kit.Photos
 import com.arakun.kit.Place
 import com.arakun.kit.Poll
 import com.arakun.kit.RelayLink
@@ -1003,15 +1004,25 @@ class AppModel(app: Application) : AndroidViewModel(app) {
      * Whether the prompt went out; the composer keeps it when it did not.
      * `now` stops the running turn and sends it as soon as it stopped.
      */
-    fun say(text: String, now: Boolean = false): Boolean {
+    fun say(text: String, now: Boolean = false, shots: List<Shot> = emptyList()): Boolean {
         val s = session ?: return false
-        if (!canSend) return false
-        if (now) {
-            send("type" to "send", "session" to s.id, "text" to text, "now" to true)
-        } else {
-            send("type" to "send", "session" to s.id, "text" to text)
-        }
+        if (!canSend || (text.isBlank() && shots.isEmpty())) return false
+        val fields = mutableListOf<Pair<String, Any?>>("type" to "send", "session" to s.id, "text" to Photos.textFor(text, shots.size))
+        if (shots.isNotEmpty()) fields += "uploads" to upload(s.id, shots)
+        if (now) fields += "now" to true
+        send(*fields.toTypedArray())
         return true
+    }
+
+    /**
+     * Sends `shots` in pieces, before the prompt that names them; their ids
+     * come back for its `uploads`. Before a session exists `session` is empty:
+     * the computer keeps an upload by its id alone.
+     */
+    private fun upload(session: String, shots: List<Shot>): List<String> = shots.mapIndexed { i, shot ->
+        Photos.newId(i).also { id ->
+            if (demo == null) Photos.pieces(session, id, shot.name, shot.jpeg).forEach { link?.send(it) }
+        }
     }
 
     /**
@@ -1093,7 +1104,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Whether the start went out; the form keeps its prompt when it did not. */
-    fun startSession(place: Place, text: String): Boolean {
+    fun startSession(place: Place, text: String, shots: List<Shot> = emptyList()): Boolean {
         // One start at a time: the sheet can close and open again while one waits.
         if (!canSend || starting) return false
         if (demo != null) {
@@ -1104,7 +1115,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         starting = true
         startUnsure = false
         startedFrom = session?.id
-        send("type" to "start", "env" to place.path, "agent" to place.agent, "text" to text)
+        val fields = mutableListOf<Pair<String, Any?>>("type" to "start", "env" to place.path, "agent" to place.agent)
+        fields += "text" to Photos.textFor(text, shots.size)
+        if (shots.isNotEmpty()) fields += "uploads" to upload("", shots)
+        send(*fields.toTypedArray())
         return true
     }
 

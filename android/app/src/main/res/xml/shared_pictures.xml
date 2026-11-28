@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The one folder a shared picture is copied to (ui/Pictures.kt). -->
+<!-- The folders FileProvider shares: a picture copied to share it
+     (ui/Pictures.kt), and a photo the camera app writes (ui/Shots.kt). -->
 <paths>
     <cache-path name="pictures" path="pictures/" />
+    <cache-path name="camera" path="camera/" />
 </paths>

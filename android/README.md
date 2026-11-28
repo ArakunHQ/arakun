@@ -184,7 +184,10 @@ says "Relay links are no longer used. Sign in to reach your computers."
   questions, give a secret the agent asks for (masked, and only over an encrypted
   connection; otherwise only Decline), load older entries.
 - Start a session in any place the computer offers.
+- Attach photos to a prompt or a new session, from the system photo picker (no storage
+  permission) or the camera. They are scaled down and sent as JPEG; a send that does
+  not go out keeps them in the composer.
 - Notifications when a turn finishes, the agent needs you, or something goes wrong.
 
-Not yet: photos, diffs, session settings, plan limits, and pairing on Same Wi-Fi or
+Not yet: diffs, session settings, plan limits, and pairing on Same Wi-Fi or
 Tailscale inside the app.

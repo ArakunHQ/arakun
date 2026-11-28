@@ -32,11 +32,12 @@ use crate::linear::follow::{
 };
 use crate::linear::issues::{self, Detail};
 use crate::linear::outbox::{Flushed, flush};
+use crate::linear::pr::{self, OpenPr};
 use crate::linear::runs::{Added, Held, PlanItem, Report, ReportKind, Run, RunState, Runs};
 use crate::linear::start::{
     HIT_AN_ERROR, busy_line, guard_again, keep, may_read, next_branch, no_env_line,
-    no_sign_in_line, own_branch, refusal_line, started_line, unreadable_line, waiting_line,
-    work_branch,
+    no_sign_in_line, own_branch, pr_branch, refusal_line, started_line, unreadable_line,
+    waiting_line, work_branch,
 };
 use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, env, prompt};
@@ -350,10 +351,15 @@ impl Daemon {
         let key = self.linear_key(&start.organization);
         let mut with_files = detail.clone();
         cx.spawn(async move |this, cx| {
-            let (made, detail, files) = cx
+            let (made, detail, files, open) = cx
                 .background_spawn(crate::guard::task_or(
                     async move {
-                        let made = make_worktree(&root, &wanted, &identifier);
+                        let open = pr::open_pr(&root, &with_files.links);
+                        let made = match &open {
+                            Ok(open) => make_worktree(&root, &wanted, &identifier, open.as_ref()),
+                            Err(e) => Err(e.clone()),
+                        };
+                        let open = open.ok().flatten();
                         let files = match (&made, key) {
                             (Ok((path, _, _)), Some(key)) => uploads::fetch(
                                 |link, limit| uploads::download(&key, link, limit),
@@ -363,19 +369,24 @@ impl Daemon {
                             (Ok(_), None) => uploads::unfetched(&with_files),
                             (Err(_), _) => Fetched::default(),
                         };
-                        (made, with_files, files)
+                        (made, with_files, files, open)
                     },
                     // The issue as read, with Linear's links.
-                    move |_| (Err(HIT_AN_ERROR.to_string()), detail, Fetched::default()),
+                    move |_| {
+                        let failed = Err(HIT_AN_ERROR.to_string());
+                        (failed, detail, Fetched::default(), None)
+                    },
                 ))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.linear_env_made(start, detail, files, project, made, cx)
+                this.linear_env_made(start, detail, files, project, made, open, cx)
             });
         })
         .detach();
     }
 
+    /// `open` is the issue's open pull request, whose branch `made` is on.
+    #[allow(clippy::too_many_arguments)]
     fn linear_env_made(
         &mut self,
         start: Start,
@@ -383,6 +394,7 @@ impl Daemon {
         files: Fetched,
         project: PathBuf,
         made: Made,
+        open: Option<OpenPr>,
         cx: &mut Context<Self>,
     ) {
         let (path, meta, branch) = match made {
@@ -425,8 +437,9 @@ impl Daemon {
         self.meta.insert(path.clone(), meta);
         let agent = self.store.place(&path).map_or(home.agent, |p| p.agent);
         let title = prompt::title(&detail);
-        let text = prompt::delegated(&detail, &start.guidance, &files);
+        let text = prompt::delegated(&detail, &start.guidance, &files, open.as_ref());
         let session = self.start_session(&path, agent, Some(title), text, cx);
+        let session_id = session.clone();
         if let Some(run) = self.linear_run.runs.by_agent_session(&start.agent_session) {
             run.session = Some(session);
             run.environment = Some(path);
@@ -439,8 +452,22 @@ impl Daemon {
         self.linear_watch(cx);
         let name = crate::server::store::repo_name(&project)
             .unwrap_or_else(|| project.display().to_string());
-        let line = started_line(&name, &computer(), &branch);
+        let line = started_line(&name, &computer(), &branch, open.as_ref());
         self.linear_report_started(&start.agent_session, line, cx);
+        // Linear shows the pull request from the start: no need to wait for
+        // the session to find it.
+        if let Some(p) = &open
+            && self.linear_run.runs.link(&session_id, &p.url).is_some()
+        {
+            let link = Some(p.url.clone());
+            self.linear_report(
+                &start.agent_session,
+                ReportKind::Link,
+                String::new(),
+                link,
+                cx,
+            );
+        }
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }
@@ -1258,14 +1285,19 @@ impl Daemon {
 /// makes it. Never the project's own folder or a base branch: the session
 /// commits there. A branch name git refuses falls back once to the issue's
 /// own (`linear/eng-412`).
-fn make_worktree(project: &Path, wanted: &str, identifier: &str) -> Made {
+/// With an open pull request, its branch is the only one tried: another
+/// would not reach it.
+fn make_worktree(project: &Path, wanted: &str, identifier: &str, open: Option<&OpenPr>) -> Made {
     let name = crate::server::store::repo(project)
         .and_then(|(root, _)| crate::server::store::repo_name(&root))
         .ok_or("that folder is not in a git repository")?;
-    let branch = work_branch(wanted, identifier, &bases(project));
+    let bases = bases(project);
+    let mut tries = match open {
+        Some(p) => vec![pr_branch(p, &bases)?],
+        None => vec![work_branch(wanted, identifier, &bases)],
+    };
     let own = own_branch(identifier);
-    let mut tries = vec![branch];
-    if tries[0] != own {
+    if open.is_none() && tries[0] != own {
         tries.push(own);
     }
     let mut last = String::new();

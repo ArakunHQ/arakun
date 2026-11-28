@@ -602,10 +602,17 @@ again after a week) in its [data folder](storage-and-env.md).
   Linear's suggested name, made safe for git, or `linear/<issue id>` (for example
   `linear/eng-412`) when that name can't be used or is a default branch such as
   `main`. A session never runs in the project's main checkout or on its base
-  branch. The session uses the project's usual agent, model and permission mode.
+  branch. When the issue already has an open pull request in the project's
+  repository (one of its links in Linear, from an earlier session or a teammate),
+  the environment is on that pull request's branch instead, and the session pushes
+  to it rather than opening another. Arakun asks `gh` whether the pull request is
+  still open: a merged or closed one does not count, and without `gh` signed in the
+  session starts as if there were none. A pull request from a fork stops the work
+  with an error for now, as the session could not push to it. The session uses the project's usual agent, model and permission mode.
   Its prompt is built from the issue: the title, description and comments, marked
   as data. It ends by asking the agent to commit, push and open a draft pull
-  request that names the issue. Anyone who can write in the issue or its
+  request that names the issue, or to push to the open pull request when there is
+  one. Anyone who can write in the issue or its
   comments, integrations included, can steer a session that commits and pushes
   under your permission mode; map only projects where you accept that. A
   session started from Linear shows its issue's identifier before its title in the
@@ -631,7 +638,9 @@ again after a week) in its [data folder](storage-and-env.md).
   Linear when the session starts.
 
   *What the issue hears.* Arakun writes to the issue as the work goes:
-  `Started in {project} on {computer}, on the branch {branch}.`; when it waits,
+  `Started in {project} on {computer}, on the branch {branch}.` (with `of the open
+  pull request #{number}` when it continues one, whose link the session in Linear
+  gets at once); when it waits,
   `Waiting on {computer}: {n} other sessions from Linear are running. This one
   starts when one finishes.`; a question from the session, with its choices to
   pick from when it is one question with one answer and two to ten short

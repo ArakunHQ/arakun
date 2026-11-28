@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use super::delegation::Refusal;
+use super::pr::OpenPr;
 use super::prompt;
 use crate::phone::linear::Delivery;
 
@@ -141,8 +142,16 @@ pub fn refusal_line(r: &Refusal, computer: &str) -> String {
     }
 }
 
-pub fn started_line(project: &str, computer: &str, branch: &str) -> String {
-    format!("Started in {project} on {computer}, on the branch {branch}.")
+/// `pr` is the open pull request the session continues on, when there is one.
+pub fn started_line(project: &str, computer: &str, branch: &str, pr: Option<&OpenPr>) -> String {
+    match pr {
+        Some(pr) => format!(
+            "Started in {project} on {computer}, on the branch {branch} of the open pull \
+             request #{}.",
+            pr.number
+        ),
+        None => format!("Started in {project} on {computer}, on the branch {branch}."),
+    }
 }
 
 /// `running` sessions take every slot, and `ahead` wait before this one.
@@ -243,6 +252,19 @@ pub fn work_branch(branch: &str, identifier: &str, bases: &[String]) -> String {
     }
 }
 
+/// The branch of the issue's open pull request, which the session must work
+/// on as it is: another name would not reach the pull request. A base branch
+/// is refused, as [`work_branch`] never gives one.
+pub fn pr_branch(pr: &OpenPr, bases: &[String]) -> Result<String, String> {
+    if bases.iter().any(|b| b.eq_ignore_ascii_case(&pr.branch)) {
+        return Err(format!(
+            "its open pull request #{} is on the branch {}, a base branch of the project",
+            pr.number, pr.branch
+        ));
+    }
+    Ok(pr.branch.clone())
+}
+
 /// The branch for an issue when Linear's own name for it cannot be used.
 pub fn own_branch(identifier: &str) -> String {
     prompt::own_branch(identifier)
@@ -275,8 +297,18 @@ mod tests {
     #[test]
     fn the_started_line_names_the_project_computer_and_branch() {
         assert_eq!(
-            started_line("arakun", "rik-mac", "rik/eng-412-fix"),
+            started_line("arakun", "rik-mac", "rik/eng-412-fix", None),
             "Started in arakun on rik-mac, on the branch rik/eng-412-fix."
+        );
+        let pr = OpenPr {
+            url: "https://github.com/a/b/pull/7".into(),
+            number: 7,
+            branch: "rik/eng-412-fix".into(),
+        };
+        assert_eq!(
+            started_line("arakun", "rik-mac", "rik/eng-412-fix", Some(&pr)),
+            "Started in arakun on rik-mac, on the branch rik/eng-412-fix of the open pull \
+             request #7."
         );
     }
 
@@ -518,5 +550,24 @@ mod tests {
         assert_eq!(work_branch("develop", "ENG-412", &bases), "linear/eng-412");
         assert_eq!(work_branch("Main", "ENG-412", &bases), "linear/eng-412");
         assert_eq!(work_branch("develop", "ENG-412", &[]), "develop");
+    }
+
+    #[test]
+    fn an_open_pull_request_keeps_its_branch_unless_it_is_a_base() {
+        let bases = ["main".to_string()];
+        let mut pr = OpenPr {
+            url: "https://github.com/a/b/pull/7".into(),
+            number: 7,
+            branch: "rik/eng-412-fix".into(),
+        };
+        assert_eq!(pr_branch(&pr, &bases).as_deref(), Ok("rik/eng-412-fix"));
+        pr.branch = "Main".into();
+        assert_eq!(
+            pr_branch(&pr, &bases),
+            Err(
+                "its open pull request #7 is on the branch Main, a base branch of the project"
+                    .into()
+            )
+        );
     }
 }

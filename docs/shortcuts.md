@@ -151,8 +151,10 @@ More about some of them:
 - `Ctrl+Shift+H` turns [redacted mode](privacy.md#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts (in a Team channel it edits your last message instead);
-  paste or drop images to attach them, or press **+** to pick files in the system's
-  file picker (images go along as images, other files as `@` mentions). While the agent works,
+  paste or drop files to attach them, or press **+** to pick files in the system's
+  file picker. They wait above the text, images as pictures and other files as chips:
+  a click opens one beside the chat, the cross takes it out. Images go along as images,
+  other files as `@` mentions. While the agent works,
   `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
   stops the turn. A queued message has a button to send it now too
 - In the composer's agent and model menu: the strip of agent icons at the bottom shows

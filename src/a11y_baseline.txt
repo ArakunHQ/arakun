@@ -45,7 +45,6 @@ src/runs_view/mod.rs 2
 src/shell.rs 2
 src/shell/active.rs 1
 src/shell/arrange.rs 2
-src/shell/composer/paste.rs 2
 src/shell/composer/view.rs 8
 src/shell/dock.rs 7
 src/shell/documents.rs 3

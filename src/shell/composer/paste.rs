@@ -1,22 +1,22 @@
 //! Clipboard for the session composer. Pasted text goes in at the caret, over
 //! the selection; copy and cut take the selection, or the whole draft when
 //! nothing is selected. Pasted images are saved under arakun's data dir and
-//! attached as `@` mentions, the same way the attach picker attaches files.
+//! attached, the same way the attach picker attaches files.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, ClipboardEntry, ClipboardItem, Context, InteractiveElement as _, IntoElement as _,
-    ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, div, img, px,
+    ObjectFit, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, div, img, px,
 };
 
 use super::{Composer, ComposerEvent};
 use crate::agent::attach;
 use crate::state;
 use crate::theme;
-use crate::ui::icon;
+use crate::ui::{self, icon};
 
 /// A large paste waiting in the composer. The counts are taken once when it
 /// lands, because a paste can be megabytes and the chip shows them every frame.
@@ -87,20 +87,21 @@ impl Composer {
         cx.notify();
     }
 
-    /// Puts files in the draft at the caret as `@` mentions, relative to the
-    /// environment when they are inside it. Images and PDFs wait above the
-    /// text instead, as pictures and chips, and go along with the prompt.
+    /// Attaches files to the draft. Files wait above the text, images as
+    /// pictures and the rest as chips, and go with the prompt as `@`
+    /// mentions. Folders, which have no chip, go in at the caret as mentions,
+    /// relative to the environment when they are inside it.
     pub(super) fn push_mentions(&mut self, paths: &[PathBuf]) {
         let root = self.frame.env.clone();
         let env = self.here_mut();
-        let (attached, files): (Vec<&PathBuf>, Vec<&PathBuf>) =
-            paths.iter().partition(|p| attach::is_attachable(p));
+        let (attached, folders): (Vec<&PathBuf>, Vec<&PathBuf>) =
+            paths.iter().partition(|p| p.is_file());
         for file in attached {
             if !env.files.contains(file) {
                 env.files.push(file.clone());
             }
         }
-        let mentions: Vec<String> = files
+        let mentions: Vec<String> = folders
             .iter()
             .map(|path| {
                 attach::mention(&path.strip_prefix(&root).unwrap_or(path).to_string_lossy())
@@ -113,94 +114,104 @@ impl Composer {
         self.reveal.set(true);
     }
 
-    /// The files waiting in the composer, images as thumbnails and PDFs as
-    /// chips: a click shows one beside the chat, the cross takes it out.
+    /// The files waiting in the composer, images as thumbnails and other
+    /// files as chips: a click shows one beside the chat, the cross takes it out.
     pub(super) fn render_file_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let files = &self.here().files;
         if files.is_empty() {
             return None;
         }
         Some(
-            div()
+            ui::labelled(div().id("composer-files"), Role::List, "Attached files")
                 .flex()
                 .flex_wrap()
                 .gap(crate::ui::sp(8.))
                 .px(crate::ui::sp(12.))
                 .pt(crate::ui::sp(10.))
                 .children(files.iter().enumerate().map(|(i, path)| {
-                    let pdf = attach::is_pdf(path);
+                    let image = attach::mime_type(path).is_some();
+                    let name = file_name(path);
                     let group: SharedString = format!("composer-image-{i}").into();
                     let open = path.clone();
-                    div()
-                        .id(("composer-image", i))
-                        .group(group.clone())
-                        .relative()
-                        .h(px(64.))
-                        .flex_none()
-                        .rounded(crate::ui::rad(12.))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(theme::border_strong())
-                        .bg(theme::fill_hover())
-                        .cursor_pointer()
-                        .map(|d| {
-                            if pdf {
-                                d.max_w(px(200.)).child(pdf_chip(path))
-                            } else {
-                                d.w(px(64.)).child(
-                                    img(path.clone())
-                                        .size_full()
-                                        .object_fit(ObjectFit::Cover)
-                                        .with_fallback(|| {
-                                            icon("image01", 16.)
-                                                .text_color(theme::text_subtle())
-                                                .into_any_element()
-                                        }),
-                                )
-                            }
-                        })
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            cx.emit(ComposerEvent::OpenAttachment(open.clone()))
-                        }))
-                        .child(
-                            div()
-                                .id(("composer-image-remove", i))
-                                .absolute()
-                                .top(px(3.))
-                                .right(px(3.))
-                                .size(px(18.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(crate::ui::rad(8.))
-                                .bg(gpui::black().opacity(0.65))
-                                .opacity(0.)
-                                .group_hover(group, |s| s.opacity(1.))
-                                .hover(|s| s.bg(gpui::black().opacity(0.85)))
-                                .child(icon("cancel01", 10.).text_color(gpui::white()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let files = &mut this.here_mut().files;
-                                    if i < files.len() {
-                                        files.remove(i);
-                                    }
-                                    this.changed(cx);
-                                    cx.notify();
-                                })),
+                    ui::labelled(
+                        div().id(("composer-image", i)),
+                        Role::Button,
+                        format!("Open {name}"),
+                    )
+                    .group(group.clone())
+                    .relative()
+                    .h(px(64.))
+                    .flex_none()
+                    .rounded(crate::ui::rad(12.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(theme::border_strong())
+                    .bg(theme::fill_hover())
+                    .cursor_pointer()
+                    .map(|d| {
+                        if !image {
+                            d.max_w(px(200.)).child(file_chip(path, name.clone()))
+                        } else {
+                            d.w(px(64.)).child(
+                                img(path.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                                    .with_fallback(|| {
+                                        icon("image01", 16.)
+                                            .text_color(theme::text_subtle())
+                                            .into_any_element()
+                                    }),
+                            )
+                        }
+                    })
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(ComposerEvent::OpenAttachment(open.clone()))
+                    }))
+                    .child(
+                        ui::labelled(
+                            div().id(("composer-image-remove", i)),
+                            Role::Button,
+                            format!("Remove {name}"),
                         )
+                        .absolute()
+                        .top(px(3.))
+                        .right(px(3.))
+                        .size(px(18.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(crate::ui::rad(8.))
+                        .bg(gpui::black().opacity(0.65))
+                        .opacity(0.)
+                        .group_hover(group, |s| s.opacity(1.))
+                        .hover(|s| s.bg(gpui::black().opacity(0.85)))
+                        .child(icon("cancel01", 10.).text_color(gpui::white()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            let files = &mut this.here_mut().files;
+                            if i < files.len() {
+                                files.remove(i);
+                            }
+                            this.changed(cx);
+                            cx.notify();
+                        })),
+                    )
                 }))
                 .into_any_element(),
         )
     }
 }
 
-/// A PDF waiting in the composer: its icon over its name.
-fn pdf_chip(path: &std::path::Path) -> gpui::Div {
-    let name = path
-        .file_name()
+fn file_name(path: &Path) -> String {
+    path.file_name()
         .unwrap_or_default()
         .to_string_lossy()
-        .into_owned();
+        .into_owned()
+}
+
+/// A file that is not an image, waiting in the composer: the icon for its
+/// kind over its name.
+fn file_chip(path: &Path, name: String) -> gpui::Div {
     div()
         .size_full()
         .flex()
@@ -208,7 +219,7 @@ fn pdf_chip(path: &std::path::Path) -> gpui::Div {
         .justify_center()
         .gap(crate::ui::sp(4.))
         .px(crate::ui::sp(10.))
-        .child(icon("pdf01", 16.).text_color(theme::text_subtle()))
+        .child(icon(file_icon(path), 16.).text_color(theme::text_subtle()))
         .child(
             div()
                 .truncate()
@@ -216,6 +227,28 @@ fn pdf_chip(path: &std::path::Path) -> gpui::Div {
                 .text_color(theme::text_muted())
                 .child(name),
         )
+}
+
+/// The icon for a kind of file, by its extension.
+fn file_icon(path: &Path) -> &'static str {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => "pdf01",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "tiff" | "heic" => {
+            "image01"
+        }
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" => "zip01",
+        "mp4" | "mov" | "mkv" | "webm" | "avi" => "video01",
+        "mp3" | "wav" | "flac" | "ogg" | "m4a" | "aac" => "music-note01",
+        "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "c" | "h" | "cpp" | "hpp" | "cs"
+        | "java" | "kt" | "swift" | "rb" | "php" | "sh" | "ps1" | "lua" | "zig" | "html"
+        | "css" | "json" | "toml" | "yaml" | "yml" | "xml" | "sql" | "rhai" => "file-code",
+        _ => "file01",
+    }
 }
 
 /// Text that is only a list of existing files (what file managers put on the
@@ -303,5 +336,14 @@ mod tests {
         assert_eq!(pasted_paths(&format!("{}\nnot a file", a.display())), None);
         assert_eq!(pasted_paths("/definitely/missing/file.png"), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn picks_an_icon_by_kind() {
+        assert_eq!(file_icon(Path::new("/a/Report.PDF")), "pdf01");
+        assert_eq!(file_icon(Path::new("src/main.rs")), "file-code");
+        assert_eq!(file_icon(Path::new("logs.tar.gz")), "zip01");
+        assert_eq!(file_icon(Path::new("notes.txt")), "file01");
+        assert_eq!(file_icon(Path::new("Makefile")), "file01");
     }
 }

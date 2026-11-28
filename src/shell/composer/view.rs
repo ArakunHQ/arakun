@@ -45,7 +45,7 @@ impl Render for Composer {
             .on_drop(cx.listener(|_, d: &drag::DraggedSession, _, cx| {
                 cx.emit(ComposerEvent::DropSession(d.clone()))
             }))
-            // Files dropped from a file manager: images and PDFs wait above the text, the rest are mentions.
+            // Files dropped from a file manager wait above the text; folders go in as mentions.
             .drag_over::<gpui::ExternalPaths>(|s, _, _, _| {
                 s.border_color(theme::active())
                     .bg(theme::active().opacity(0.06))

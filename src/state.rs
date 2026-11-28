@@ -825,6 +825,9 @@ fn seen_path() -> PathBuf {
 /// folder, and a file whose owner was never seen is never deleted. `listed`
 /// is what the state in memory holds now. Skipped when the state or the seen
 /// list can't be read, since every file would look unlisted.
+///
+/// Then deletes the pasted images older than a week that no transcript,
+/// linked note or saved draft mentions (see `remove_unused_pastes`).
 pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
     let seen_path = seen_path();
     let Some(seen) = readable_seen(&file(), &seen_path) else {
@@ -843,6 +846,103 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
     );
     if let Err(e) = crate::durable::save_json(&seen_path, &seen) {
         eprintln!("arakun: could not save the sessions seen listed: {e}");
+    }
+    let data = data_dir();
+    let mentioning = [
+        (data.clone(), false),
+        (dirs[0].0.clone(), true),
+        (dirs[1].0.clone(), true),
+        (crate::headless::root(), true),
+    ];
+    if let Some(mentioned) = mentioned_pastes(&mentioning) {
+        remove_unused_pastes(&pastes_dir(), &mentioned, std::time::SystemTime::now());
+    }
+}
+
+/// How long a pasted image nothing mentions is kept, from when it was saved:
+/// long enough for a draft that holds it to be saved with the state.
+const UNUSED_PASTE_AGE: std::time::Duration = std::time::Duration::from_secs(ORPHAN_AGE);
+
+/// The pasted images the files in `roots` mention, by file name; a root
+/// marked deep counts with all it holds. The top of the data folder holds
+/// the state files and so the saved drafts, of this state and of any other
+/// that shares the folder; all transcripts count, listed or not, since
+/// another state's sessions are in the same folders. None when a file or
+/// folder can't be read, since every image it mentions would look unused.
+fn mentioned_pastes(roots: &[(PathBuf, bool)]) -> Option<std::collections::HashSet<String>> {
+    fn scan(
+        path: &Path,
+        deep: bool,
+        top: bool,
+        found: &mut std::collections::HashSet<String>,
+    ) -> Option<()> {
+        let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
+        let meta = match std::fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            // Removed since it was listed, or a folder not made yet.
+            Err(e) if gone(&e) => return Some(()),
+            Err(_) => return None,
+        };
+        if meta.is_file() {
+            match std::fs::read(path) {
+                Ok(bytes) => found.extend(paste_names(&String::from_utf8_lossy(&bytes))),
+                Err(e) if gone(&e) => {}
+                Err(_) => return None,
+            }
+        } else if meta.is_dir() && (top || deep) {
+            let entries = match std::fs::read_dir(path) {
+                Ok(entries) => entries,
+                Err(e) if gone(&e) => return Some(()),
+                Err(_) => return None,
+            };
+            for entry in entries {
+                let path = entry.ok()?.path();
+                // A lock may be held where reading it fails, and holds no text.
+                if path.extension().is_some_and(|e| e == "lock") {
+                    continue;
+                }
+                let meta = std::fs::symlink_metadata(&path);
+                if !deep && meta.as_ref().is_ok_and(|m| !m.is_file()) {
+                    continue;
+                }
+                scan(&path, deep, false, found)?;
+            }
+        }
+        Some(())
+    }
+    let mut found = std::collections::HashSet::new();
+    for (root, deep) in roots {
+        scan(root, *deep, true, &mut found)?;
+    }
+    Some(found)
+}
+
+/// Deletes the pasted images in `dir` older than `UNUSED_PASTE_AGE` that are
+/// not in `mentioned`, such as one taken out of its draft or whose draft was
+/// thrown away. Only names `save_paste` gives count, so nothing else the
+/// folder holds is ever deleted.
+fn remove_unused_pastes(
+    dir: &Path,
+    mentioned: &std::collections::HashSet<String>,
+    now: std::time::SystemTime,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if paste_names(&format!("/{name}")) != [name.as_str()] || mentioned.contains(&name) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|at| now.duration_since(at).ok())
+            .is_some_and(|age| age > UNUSED_PASTE_AGE);
+        if old && entry.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -1806,6 +1906,103 @@ mod tests {
         // The removed session's image went with it; the listed one's stays.
         assert!(!pastes.join("paste-1.png").exists());
         assert!(pastes.join("paste-2.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pastes_nothing_mentions_go_after_a_week() {
+        let dir = std::env::temp_dir().join(format!("arakun-unused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (sessions, linked, pastes) =
+            (dir.join("sessions"), dir.join("linked"), dir.join("pastes"));
+        for d in [&sessions, &linked, &pastes] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let names = [
+            "paste-1.png",   // in a transcript
+            "paste-2.png",   // in a linked note
+            "paste-3-1.jpg", // in a saved draft
+            "paste-4.png",   // taken out of its draft
+            "notes.txt",     // not ours
+        ];
+        for name in names {
+            std::fs::write(pastes.join(name), "img").unwrap();
+        }
+        let at = |name: &str| pastes.join(name).display().to_string();
+        std::fs::write(
+            sessions.join("s.json"),
+            format!(r#"{{"text":"{}"}}"#, at("paste-1.png")),
+        )
+        .unwrap();
+        std::fs::write(linked.join("s.md"), format!("![]({})", at("paste-2.png"))).unwrap();
+        let draft = format!(r#"{{"draft":"hi","images":["{}"]}}"#, at("paste-3-1.jpg"));
+        std::fs::write(dir.join("state.json"), draft).unwrap();
+        let roots = [
+            (dir.clone(), false),
+            (sessions.clone(), true),
+            (linked.clone(), true),
+        ];
+        let mentioned = mentioned_pastes(&roots).unwrap();
+        let left = || {
+            let mut left: Vec<String> = std::fs::read_dir(&pastes)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            left.sort();
+            left
+        };
+
+        // A day old: the draft may not be saved yet, so all stay.
+        let now = std::time::SystemTime::now();
+        remove_unused_pastes(
+            &pastes,
+            &mentioned,
+            now + std::time::Duration::from_secs(86400),
+        );
+        let all = [
+            "notes.txt",
+            "paste-1.png",
+            "paste-2.png",
+            "paste-3-1.jpg",
+            "paste-4.png",
+        ];
+        assert_eq!(left(), all);
+
+        // Past a week only the one nothing mentions goes.
+        let later = now + UNUSED_PASTE_AGE + std::time::Duration::from_secs(60);
+        remove_unused_pastes(&pastes, &mentioned, later);
+        assert_eq!(
+            left(),
+            ["notes.txt", "paste-1.png", "paste-2.png", "paste-3-1.jpg"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_transcript_that_cant_be_read_keeps_every_paste() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("arakun-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sessions = dir.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let locked = sessions.join("s.json");
+        std::fs::write(&locked, "{}").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads it anyway; then there is nothing to test.
+        if std::fs::read(&locked).is_err() {
+            assert_eq!(mentioned_pastes(&[(sessions.clone(), true)]), None);
+            assert_eq!(
+                mentioned_pastes(&[(dir.clone(), false)]),
+                Some(Default::default())
+            );
+        }
+        // A folder not made yet mentions nothing, and blocks nothing.
+        assert_eq!(
+            mentioned_pastes(&[(dir.join("linked"), true)]),
+            Some(Default::default())
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

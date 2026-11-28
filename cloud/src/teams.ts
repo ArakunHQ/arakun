@@ -11,7 +11,7 @@
 
 import { githubAccount, session, type Session } from "./auth";
 import { TRUSTED, epochAllowed, epochRefused } from "./channel";
-import { ACCOUNT_OF_GITHUB, DAY, GITHUB_ID_OF, NUMERIC_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
+import { ACCOUNT_OF_GITHUB, DAY, bodyText, GITHUB_ID_OF, NUMERIC_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
 import {
   DEVICE_ID,
   deviceIdOf,
@@ -37,6 +37,8 @@ const MAX_TEAMS = 50;
 const MAX_USERS = MAX_TEAMS * MAX_MEMBERS;
 const MAX_NAME = 100;
 const INVITE_DAYS = 7;
+/// After a decline the team may not invite the same person again for this long.
+const DECLINE_COOLDOWN_DAYS = 7;
 /// A pending user may remind a team's admins once per this many seconds.
 const REMIND_EVERY = 60 * 60;
 /// Per request: a rotation of MAX_MEMBERS with 20 devices each, or one new
@@ -83,6 +85,8 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["GET", /^\/invites$/, listInvites],
   ["POST", /^\/invites\/([^/]+)\/accept$/, accept],
   ["POST", /^\/invites\/([^/]+)\/decline$/, decline],
+  ["GET", /^\/invites\/muted$/, listMuted],
+  ["DELETE", /^\/invites\/muted\/([^/]+)$/, unmute],
   ["GET", /^\/pending$/, myRequests],
   ["POST", /^\/teams\/([^/]+)\/remind$/, remind],
   ["GET", /^\/teams\/([^/]+)\/pending$/, listPending],
@@ -110,9 +114,22 @@ export async function teams(request: Request, env: Env, url: URL): Promise<Respo
     // Before the flag: a blocked account hears why, not that Teams is off.
     if (me.blocked) return error(403, "blocked");
     if (!me.flagged) return error(403, "teams is not enabled for this account");
+    if (await overLimit(env, me)) return error(429, "too many requests, slow down");
     return handler({ request, env, url, me }, ...match.slice(1));
   }
   return null;
+}
+
+/// Whether this session made too many Teams requests in the last minute. A
+/// limiter that fails lets the request through: it guards against a flood, and
+/// Teams should not stop when it is down.
+async function overLimit(env: Env, me: Session): Promise<boolean> {
+  try {
+    return !(await env.TEAMS_LIMIT.limit({ key: me.id })).success;
+  } catch (e) {
+    console.error("teams limit failed:", e);
+    return false;
+  }
 }
 
 const notFound = () => error(404, "not found");
@@ -386,6 +403,19 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   if (account === "unreachable") return error(502, "could not reach GitHub");
   const login = account.login.toLowerCase();
   const db = c.env.DB;
+  const refusal = await db
+    .prepare("SELECT declined_at, muted FROM invite_refusals WHERE team_id = ? AND github_id = ?")
+    .bind(teamId, account.id)
+    .first<{ declined_at: number; muted: number }>();
+  if (refusal?.muted) return error(409, `${account.login} does not take invites from this team`);
+  const retryAt = (refusal?.declined_at ?? 0) + DECLINE_COOLDOWN_DAYS * DAY;
+  if (retryAt > now()) {
+    const days = Math.max(1, Math.ceil((retryAt - now()) / DAY));
+    return Response.json(
+      { error: `${account.login} declined an invite to this team: try again in ${days} ${days === 1 ? "day" : "days"}`, retry_at: retryAt },
+      { status: 429, headers: { "Retry-After": String(retryAt - now()) } },
+    );
+  }
   const already = await db
     .prepare(
       `SELECT 1 WHERE EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND account_id = ${ACCOUNT_OF_GITHUB("?2")})
@@ -452,21 +482,71 @@ async function listInvites(c: Ctx): Promise<Response> {
     `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at,
        (SELECT COUNT(*) FROM members m WHERE m.team_id = i.team_id) AS member_count
      FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN accounts u ON u.id = i.invited_by
-     WHERE i.github_id = ${GITHUB_ID_OF("?1")} AND i.expires_at > ?2 ORDER BY i.created_at, i.invite_id`,
+     WHERE i.github_id = ${GITHUB_ID_OF("?1")} AND i.expires_at > ?2
+       AND NOT EXISTS (SELECT 1 FROM invite_refusals r WHERE r.team_id = i.team_id AND r.github_id = i.github_id AND r.muted = 1)
+     ORDER BY i.created_at, i.invite_id`,
   )
     .bind(c.me.accountId, now())
     .all();
   return Response.json(results);
 }
 
+/// Turns an invite down. The team may not invite this person again for a
+/// week, and never with `{"mute": true}` until they undo it.
 async function decline(c: Ctx, inviteId: string): Promise<Response> {
+  // An empty body, as older clients send, is a plain decline.
+  const text = await bodyText(c.request, 4096);
+  let body: unknown = null;
+  try {
+    body = text === null ? null : JSON.parse(text.trim() || "{}");
+  } catch {
+    // Not JSON: refused below.
+  }
+  const mute = isObject(body) ? (body["mute"] ?? false) : null;
+  if (typeof mute !== "boolean") return error(400, 'expected {"mute": true or false}');
   // Someone else's invite is answered like one that does not exist, as in accept.
-  const result = ULID.test(inviteId)
-    ? await c.env.DB.prepare(`DELETE FROM invites WHERE invite_id = ?1 AND github_id = ${GITHUB_ID_OF("?2")} AND expires_at > ?3`)
-        .bind(inviteId, c.me.accountId, now())
+  if (!ULID.test(inviteId)) return error(404, "no such invite");
+  const db = c.env.DB;
+  const t = now();
+  const valid = `FROM invites WHERE invite_id = ?1 AND github_id = ${GITHUB_ID_OF("?2")} AND expires_at > ?3`;
+  // The refusal is written from the invite before it goes, in one batch, so it
+  // names the invite's team and GitHub ID. A mute stays when a plain decline
+  // comes later.
+  const [, deleted] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO invite_refusals (team_id, github_id, declined_at, muted)
+         SELECT team_id, github_id, ?3, ?4 ${valid}
+         ON CONFLICT (team_id, github_id) DO UPDATE SET declined_at = excluded.declined_at, muted = MAX(muted, excluded.muted)`,
+      )
+      .bind(inviteId, c.me.accountId, t, mute ? 1 : 0),
+    db.prepare(`DELETE ${valid}`).bind(inviteId, c.me.accountId, t),
+  ]);
+  if (!deleted!.meta.changes) return error(404, "no such invite");
+  return new Response(null, { status: 204 });
+}
+
+/// The teams whose invites this user does not want to see, newest first.
+async function listMuted(c: Ctx): Promise<Response> {
+  const { results } = await c.env.DB.prepare(
+    `SELECT r.team_id, t.name AS team_name, r.declined_at AS muted_at
+     FROM invite_refusals r JOIN teams t ON t.team_id = r.team_id
+     WHERE r.github_id = ${GITHUB_ID_OF("?1")} AND r.muted = 1 ORDER BY r.declined_at DESC, r.team_id`,
+  )
+    .bind(c.me.accountId)
+    .all();
+  return Response.json(results);
+}
+
+/// Lets a team invite this user again, at once: the cooldown of the decline
+/// that muted it goes too.
+async function unmute(c: Ctx, teamId: string): Promise<Response> {
+  const result = ULID.test(teamId)
+    ? await c.env.DB.prepare(`DELETE FROM invite_refusals WHERE team_id = ?1 AND github_id = ${GITHUB_ID_OF("?2")} AND muted = 1`)
+        .bind(teamId, c.me.accountId)
         .run()
     : null;
-  if (!result?.meta.changes) return error(404, "no such invite");
+  if (!result?.meta.changes) return error(404, "no such team");
   return new Response(null, { status: 204 });
 }
 

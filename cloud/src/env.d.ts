@@ -31,6 +31,8 @@ declare namespace Cloudflare {
     SEND_LIMIT: RateLimit;
     /// Counts the invites each user makes, since each one asks GitHub.
     INVITE_LIMIT: RateLimit;
+    /// Counts every Teams request each session makes.
+    TEAMS_LIMIT: RateLimit;
     /// Counts the requests for cloud access each user makes, since each one
     /// asks GitHub and may post to the webhook.
     CLOUD_ACCESS_LIMIT: RateLimit;

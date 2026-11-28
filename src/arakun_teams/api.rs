@@ -273,6 +273,14 @@ pub struct InviteRow {
     pub member_count: Option<u64>,
 }
 
+/// A team whose invites this user asked not to see.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct MutedTeam {
+    pub team_id: String,
+    pub team_name: String,
+    pub muted_at: u64,
+}
+
 /// What `POST /teams/<id>/invites` answers. Each field may be missing on an
 /// older server.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -529,9 +537,24 @@ impl Call<'_> {
         self.get("/invites")
     }
 
-    pub fn decline(&self, invite_id: &str) -> Result<(), ApiError> {
+    /// With `mute`, the team's invites stop until [`Call::unmute`]. An older
+    /// server ignores it and only declines.
+    pub fn decline(&self, invite_id: &str, mute: bool) -> Result<(), ApiError> {
         let path = format!("/invites/{invite_id}/decline");
-        let (status, body) = self.send("POST", &path, Some(serde_json::json!({})), SMALL_LIMIT)?;
+        let body = serde_json::json!({ "mute": mute });
+        let (status, body) = self.send("POST", &path, Some(body), SMALL_LIMIT)?;
+        nothing(status, &body)
+    }
+
+    /// The teams whose invites this user does not see, newest first.
+    pub fn muted(&self) -> Result<Vec<MutedTeam>, ApiError> {
+        self.get("/invites/muted")
+    }
+
+    /// Lets the team invite this user again.
+    pub fn unmute(&self, team_id: &str) -> Result<(), ApiError> {
+        let path = format!("/invites/muted/{team_id}");
+        let (status, body) = self.send("DELETE", &path, None, SMALL_LIMIT)?;
         nothing(status, &body)
     }
 

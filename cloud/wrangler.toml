@@ -73,8 +73,8 @@ crons = ["17 4 * * *"]
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
 # so every id here is used once: this Worker has 1003, 1004, 1005, 1007,
-# 1011, 1013, 1015, 1017 and 1021, production 1001, 1002, 1006, 1008, 1012,
-# 1014, 1016, 1018 and 1022. cloud/admin has 1009, 1010, 1019 and 1020.
+# 1011, 1013, 1015, 1017, 1021 and 1023, production 1001, 1002, 1006, 1008,
+# 1012, 1014, 1016, 1018, 1022 and 1024. cloud/admin has 1009, 1010, 1019 and 1020.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -117,6 +117,18 @@ namespace_id = "1005"
 
   [ratelimits.simple]
   limit = 30
+  period = 60
+
+# Every Teams request one session makes (src/teams.ts), sockets opened
+# included. The app reads each team every 20 seconds and each channel's newest
+# message every minute, so 600 a minute leaves room for 50 teams and none for
+# a script.
+[[ratelimits]]
+name = "TEAMS_LIMIT"
+namespace_id = "1023"
+
+  [ratelimits.simple]
+  limit = 600
   period = 60
 
 # Each request for cloud access asks GitHub about the account: 5 a minute per
@@ -269,6 +281,14 @@ namespace_id = "1006"
 
   [env.production.ratelimits.simple]
   limit = 30
+  period = 60
+
+[[env.production.ratelimits]]
+name = "TEAMS_LIMIT"
+namespace_id = "1024"
+
+  [env.production.ratelimits.simple]
+  limit = 600
   period = 60
 
 [[env.production.ratelimits]]

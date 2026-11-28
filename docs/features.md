@@ -971,7 +971,9 @@ again after a week) in its [data folder](storage-and-env.md).
   **Hand over** makes them an owner and you an admin. A team always keeps an owner, so
   its only owner can't leave or step down until someone else is one.
   **Withdraw** takes back an invite nobody answered yet. An invite you got shows with
-  **Accept** and **Decline**; after you accept, the waiting page has **Remind**, which
+  **Accept** and **Decline**; after a decline the team can't invite you again for a
+  week. **Don't show invites from this team** declines and stops its invites until
+  you press **Show invites** next to it, at the bottom of the invites page. After you accept, the waiting page has **Remind**, which
   tells the team's admins once an hour at most. "N waiting" at the top opens the people
   who accepted an invite, each device with its code: approving hands the team key to all
   their devices, from yours, only if every device's endorsement chain checks out; one

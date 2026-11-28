@@ -15,7 +15,7 @@ use gpui::{AppContext as _, Context, Window};
 use super::Shell;
 use crate::arakun_teams::api::DEFAULT_URL;
 use crate::cloud;
-use crate::linear::delegation::{Delegation, Routes, routes};
+use crate::linear::delegation::{Delegation, Routes, offered, repositories_of, routes};
 use crate::linear::{self, Session};
 use crate::linear_view::{Host, Sync, Target};
 use crate::phone;
@@ -122,7 +122,9 @@ pub fn run(
     let linked: Vec<String> = links.iter().map(|l| l.organization_id.clone()).collect();
     // The clearing steps are told apart: for them a missing computer or link
     // means there is nothing to clear.
-    let steps = plan(d, &workspaces, local)
+    // Reading each project's origin runs git: this is off the UI thread.
+    let repositories = offered(d, &repositories_of(local));
+    let steps = plan(d, &workspaces, local, &repositories)
         .into_iter()
         .map(|s| (s, false))
         .chain(
@@ -136,7 +138,7 @@ pub fn run(
         }
         let sends = match &step {
             Step::Link { .. } => true,
-            Step::Routes { routes, .. } => !routes.teams.is_empty() || !routes.projects.is_empty(),
+            Step::Routes { routes, .. } => !routes.is_empty(),
         };
         if sends && !still_on() {
             ran.stopped = true;
@@ -164,14 +166,9 @@ pub fn run(
                     }
                 }
             }
-            Step::Routes { workspace, routes } => cloud::linear_put_routes(
-                base,
-                session,
-                label,
-                workspace,
-                &routes.teams,
-                &routes.projects,
-            ),
+            Step::Routes { workspace, routes } => {
+                cloud::linear_put_routes(base, session, label, workspace, routes)
+            }
         };
         match done {
             Ok(()) => {}
@@ -450,16 +447,27 @@ impl Step {
 /// send the key of, and only when there is something to send: off never
 /// links. A linked workspace always gets its routes, empty when off, so the
 /// server stops sending what this computer no longer takes; that sends no key.
-pub fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) -> Vec<Step> {
+/// `repositories` (from [`offered`], empty when off) go to every workspace:
+/// the server offers them in Linear when no route takes an issue, so they
+/// are worth a link on their own.
+pub fn plan(
+    d: &Delegation,
+    workspaces: &[(String, bool)],
+    local: &[PathBuf],
+    repositories: &[String],
+) -> Vec<Step> {
     let mut steps = Vec::new();
     for (workspace, linked) in workspaces {
-        let routes = routes(d, workspace, local);
+        let routes = Routes {
+            repositories: repositories.to_vec(),
+            ..routes(d, workspace, local)
+        };
         // A server sends its own routes, and they need the link too.
         let on_server = d.enabled
             && d.mappings
                 .iter()
                 .any(|m| m.workspace == *workspace && m.server.is_some());
-        let sendable = on_server || !routes.teams.is_empty() || !routes.projects.is_empty();
+        let sendable = on_server || !routes.is_empty();
         // Unlinked and not agreed to: its routes would only be refused. A
         // consented workspace whose link went (deleted or taken over on the
         // server) is linked again, since the person agreed for it.
@@ -582,8 +590,49 @@ pub(super) mod tests {
     fn teams(ids: &[&str]) -> Routes {
         Routes {
             teams: ids.iter().map(|s| s.to_string()).collect(),
-            projects: vec![],
+            ..Default::default()
         }
+    }
+    /// The plan with no repositories offered, as most tests need.
+    fn plan(d: &Delegation, workspaces: &[(String, bool)], local: &[PathBuf]) -> Vec<Step> {
+        super::plan(d, workspaces, local, &[])
+    }
+
+    #[test]
+    fn repositories_go_to_every_workspace_and_alone_are_worth_a_link() {
+        let mut d = on_for_only(vec![], &["w1"]);
+        let repos = ["acme/web".to_string()];
+        let ws = [("w1".to_string(), false), ("w2".to_string(), true)];
+        let with = |ids: &[&str]| Routes {
+            teams: ids.iter().map(|s| s.to_string()).collect(),
+            repositories: repos.to_vec(),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::plan(&d, &ws, &[], &repos),
+            [
+                Step::Link {
+                    workspace: "w1".into()
+                },
+                Step::Routes {
+                    workspace: "w1".into(),
+                    routes: with(&[])
+                },
+                Step::Routes {
+                    workspace: "w2".into(),
+                    routes: with(&[])
+                },
+            ]
+        );
+        // Off offers nothing: `offered` is empty then, and only clears go.
+        d.enabled = false;
+        assert_eq!(
+            super::plan(&d, &ws, &[], &[]),
+            [Step::Routes {
+                workspace: "w2".into(),
+                routes: Routes::default()
+            }]
+        );
     }
 
     #[test]
@@ -648,8 +697,8 @@ pub(super) mod tests {
                 Step::Routes {
                     workspace: "w2".into(),
                     routes: Routes {
-                        teams: vec![],
-                        projects: vec!["x2".into()]
+                        projects: vec!["x2".into()],
+                        ..Default::default()
                     }
                 }
             ]

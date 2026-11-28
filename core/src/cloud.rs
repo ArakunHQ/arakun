@@ -798,20 +798,21 @@ pub fn linear_link(base: &str, session: &str, linear_token: &str) -> Result<Line
     linear_json(status, &answer)
 }
 
-/// Sets which Linear teams and projects reach one computer of the account.
+/// Sets which Linear teams and projects reach one computer of the account,
+/// and the GitHub repositories it offers when none does.
 pub fn linear_put_routes(
     base: &str,
     session: &str,
     label: &str,
     organization_id: &str,
-    teams: &[String],
-    projects: &[String],
+    routes: &crate::linear::delegation::Routes,
 ) -> Result<(), Error> {
     let body = serde_json::json!({
         "label": label,
         "organization_id": organization_id,
-        "teams": teams,
-        "projects": projects,
+        "teams": routes.teams,
+        "projects": routes.projects,
+        "repositories": routes.repositories,
     });
     let (status, answer) = send(
         base,
@@ -2176,8 +2177,11 @@ mod tests {
             "s3ss10n",
             "k3x9",
             "o1",
-            &["t1".to_string()],
-            &["p1".to_string(), "p2".to_string()],
+            &crate::linear::delegation::Routes {
+                teams: vec!["t1".to_string()],
+                projects: vec!["p1".to_string(), "p2".to_string()],
+                repositories: vec!["acme/web".to_string()],
+            },
         )
         .unwrap();
         let req = rx.recv().unwrap();
@@ -2191,7 +2195,7 @@ mod tests {
             body_of(&req),
             serde_json::json!({
                 "label": "k3x9", "organization_id": "o1",
-                "teams": ["t1"], "projects": ["p1", "p2"]
+                "teams": ["t1"], "projects": ["p1", "p2"], "repositories": ["acme/web"]
             })
         );
     }
@@ -2202,7 +2206,7 @@ mod tests {
         assert_eq!(linear_links(&base, "old"), Err(Error::SignedOut));
         let (base, _rx) = serve(409, r#"{"error": "link linear first"}"#);
         assert_eq!(
-            linear_put_routes(&base, "s", "k", "o", &[], &[]),
+            linear_put_routes(&base, "s", "k", "o", &Default::default()),
             Err(Error::Status {
                 status: 409,
                 message: "link linear first".into()
@@ -2210,7 +2214,7 @@ mod tests {
         );
         let (base, _rx) = serve(404, r#"{"error": "no such computer"}"#);
         assert_eq!(
-            linear_put_routes(&base, "s", "k", "o", &[], &[]),
+            linear_put_routes(&base, "s", "k", "o", &Default::default()),
             Err(Error::Status {
                 status: 404,
                 message: "no such computer".into()
@@ -2240,7 +2244,7 @@ mod tests {
             Err(Error::Refused(_))
         ));
         assert!(matches!(
-            linear_put_routes(base, "s", "k", "o", &[], &[]),
+            linear_put_routes(base, "s", "k", "o", &Default::default()),
             Err(Error::Refused(_))
         ));
     }

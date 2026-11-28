@@ -3,7 +3,9 @@
 //!
 //! The relay's word starts nothing by itself: the issue is read with the
 //! person's own Linear key, and the guard (`target_for`) must say yes for it
-//! on this computer. Text from Linear goes only into the prompt, never a log.
+//! on this computer. When no mapping takes the issue and the person picked a
+//! repository in Linear, it starts only in a project here with that
+//! repository, and then asks whether to keep that choice for the team. Text from Linear goes only into the prompt, never a log.
 //!
 //! A delivery that comes before the Arakun account is loaded, or while
 //! [`MAX_READS`] issues are being read, is kept in memory and handled once
@@ -18,10 +20,12 @@ use super::linear_follow::needs_sign_in;
 use super::linear_sync::{Gate, may_sync};
 use super::sessions::queued_from;
 use crate::cloud;
-use crate::linear::delegation::{Delegation, Refusal, target_for};
+use crate::linear::delegation::{
+    Delegation, Refusal, project_for, project_of_repository, repositories_of, target_or_picked,
+};
 use crate::linear::issues::{self, Detail};
 use crate::linear::pr::{self, OpenPr};
-use crate::linear::runs::{Added, ReportKind, Run, RunState};
+use crate::linear::runs::{Added, Remember, ReportKind, Run, RunState};
 use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, Session, prompt};
 use crate::phone::linear::{Delivery, DeliveryKind, GuidanceRule};
@@ -52,6 +56,11 @@ struct Start {
     /// The issue's open pull request, once it is looked up: the session
     /// works on its branch and pushes to it.
     pr: Option<OpenPr>,
+    /// The GitHub repository the person picked in Linear, when no mapping
+    /// took the issue.
+    repository: Option<String>,
+    /// The project here with that repository, once the read found one.
+    picked: Option<PathBuf>,
 }
 
 impl Shell {
@@ -107,6 +116,8 @@ impl Shell {
                     comment: d.comment,
                     guidance: d.guidance,
                     pr: None,
+                    repository: d.repository,
+                    picked: None,
                 };
                 self.linear_read(start, sign_in, window, cx);
             }
@@ -181,6 +192,8 @@ impl Shell {
                 comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
                 pr: None,
+                repository: run.picked.clone(),
+                picked: None,
             };
             self.linear_save();
             let sessions = crate::linear::sessions();
@@ -197,21 +210,31 @@ impl Shell {
     /// Reads the issue with the person's own key, off the UI thread.
     fn linear_read(
         &mut self,
-        start: Start,
+        mut start: Start,
         sign_in: Session,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let issue = start.issue.clone();
         let mention = start.comment.clone();
+        let repository = start.repository.clone();
+        let local = self.linear_local();
         cx.spawn_in(window, async move |this, cx| {
-            let read = cx
+            let (read, picked) = cx
                 // A panic's text could hold anything; Linear gets a fixed reason.
                 .background_spawn(crate::guard::task_or(
-                    async move { issues::detail(&sign_in, &issue, mention.as_deref()) },
-                    |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
+                    async move {
+                        let read = issues::detail(&sign_in, &issue, mention.as_deref());
+                        // The relay's word is not enough: the repository
+                        // must be one of the projects here.
+                        let picked = repository
+                            .and_then(|r| project_of_repository(&r, &repositories_of(&local)));
+                        (read, picked)
+                    },
+                    |_| (Err(ApiError::Failed(HIT_AN_ERROR.into())), None),
                 ))
                 .await;
+            start.picked = picked;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.linear_issue_read(start, read, window, cx)
             });
@@ -262,6 +285,7 @@ impl Shell {
                     activity: None,
                     reason: None,
                     comment: start.comment,
+                    repository: start.repository,
                     body: None,
                     guidance: start.guidance,
                 };
@@ -275,7 +299,8 @@ impl Shell {
                 return self.linear_refuse(&start, line, window, cx);
             }
         };
-        let project = match self.linear_guard(&start.organization, &detail) {
+        let project = match self.linear_guard(&start.organization, &detail, start.picked.as_deref())
+        {
             Ok(project) => project,
             Err(r) => {
                 self.linear_refuse(&start, refusal_line(&r, &computer()), window, cx);
@@ -335,6 +360,8 @@ impl Shell {
                 kept: Vec::new(),
                 comment: start.comment.clone(),
                 guidance: start.guidance.clone(),
+                picked: start.repository.clone(),
+                remember: None,
             },
             slots,
         );
@@ -352,24 +379,73 @@ impl Shell {
 
     /// The guard, on what this window has now: the switch, the mappings and
     /// the projects open here.
-    fn linear_guard(&self, organization: &str, detail: &Detail) -> Result<PathBuf, Refusal> {
+    /// `picked` is the project the person picked in Linear, for an issue no
+    /// mapping takes.
+    fn linear_guard(
+        &self,
+        organization: &str,
+        detail: &Detail,
+        picked: Option<&Path>,
+    ) -> Result<PathBuf, Refusal> {
         // Only this computer's mappings: a server takes its own.
         let d = Delegation::load().on(None);
-        let local: Vec<PathBuf> = self
-            .projects
-            .iter()
-            .filter(|p| !p.is_remote())
-            .map(|p| p.path.clone())
-            .collect();
         let issue = &detail.issue;
-        target_for(
+        target_or_picked(
             &d,
             organization,
             &issue.team_id,
             issue.project_id.as_deref(),
-            &local,
+            &self.linear_local(),
+            picked,
         )
-        .map(|m| m.project.clone())
+    }
+
+    /// A run that started only because the person picked its project in
+    /// Linear asks whether to use that project for the team from now on.
+    /// The reply is answered in `linear_follow`.
+    fn linear_ask_remember(
+        &mut self,
+        start: &Start,
+        detail: &Detail,
+        project: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let issue = &detail.issue;
+        let d = Delegation::load().on(None);
+        let mapped = project_for(
+            &d,
+            &start.organization,
+            &issue.team_id,
+            issue.project_id.as_deref(),
+        );
+        if start.picked.is_none() || mapped.is_some() {
+            return;
+        }
+        let Some(run) = self.linear_runs.by_agent_session(&start.agent_session) else {
+            return;
+        };
+        run.remember = Some(Remember {
+            team: issue.team_id.clone(),
+            team_name: issue.team.clone(),
+        });
+        let (line, options) = crate::linear::follow::remember_question(project, &issue.team);
+        self.linear_report_with(
+            &start.agent_session,
+            ReportKind::Elicitation,
+            line,
+            None,
+            options,
+            cx,
+        );
+    }
+
+    /// The projects open on this computer, not on a server.
+    pub(super) fn linear_local(&self) -> Vec<PathBuf> {
+        self.projects
+            .iter()
+            .filter(|p| !p.is_remote())
+            .map(|p| p.path.clone())
+            .collect()
     }
 
     /// Looks for the issue's open pull request off the UI thread, then makes
@@ -565,7 +641,7 @@ impl Shell {
         }
         // Making the environment takes a while; the switch or the mapping
         // may have changed since the guard said yes.
-        let again = self.linear_guard(&start.organization, &detail);
+        let again = self.linear_guard(&start.organization, &detail, start.picked.as_deref());
         if let Err(r) = guard_again(again, &project) {
             self.linear_fail(&start, refusal_line(&r, &computer()), window, cx);
             self.sync_linear(window, cx);
@@ -624,6 +700,7 @@ impl Shell {
                 cx,
             );
         }
+        self.linear_ask_remember(&start, &detail, &name, cx);
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
         }

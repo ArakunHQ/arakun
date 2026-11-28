@@ -232,6 +232,30 @@ impl LinearView {
         cx.notify();
     }
 
+    /// Maps `team` to `project` on this computer: "Always" answered in
+    /// Linear for a project picked there. Ok(false) when the team is mapped
+    /// already, which stays. Through here so this page's copy stays the one
+    /// saved.
+    pub fn remember_team(
+        &mut self,
+        workspace: &str,
+        team: &str,
+        team_name: &str,
+        project: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let mut d = self.delegation.clone();
+        if !crate::linear::delegation::remember_team(&mut d, workspace, team, team_name, project) {
+            return Ok(false);
+        }
+        d.save()?;
+        self.delegation = d;
+        self.delegation_error = None;
+        cx.emit(LinearEvent::DelegationChanged);
+        cx.notify();
+        Ok(true)
+    }
+
     /// Turning it on is the person's consent for the workspace in view,
     /// whose name the help text gave. Turning it off keeps the consent.
     fn toggle_delegation(&mut self, cx: &mut Context<Self>) {

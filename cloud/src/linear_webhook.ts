@@ -10,8 +10,8 @@
 // texts go on to a connected computer in the live frame and nowhere else: a
 // follow-up's, and the guidance a workspace or team set for agents.
 
-import { routeFor, FLAG, UUID } from "./linear";
-import { issuePlace, issueStateType, LinearRefused, postActivity, TokenUnopened } from "./linear_api";
+import { offeredFor, routeFor, FLAG, UUID } from "./linear";
+import { issuePlace, issueStateType, LinearRefused, postActivity, rankRepositories, TokenUnopened } from "./linear_api";
 import { deliver, QueueFull, type Delivery, type GuidanceRule, type StopReason } from "./machines";
 import { bodyText, error, GITHUB_ID_OF, hex, isObject, now, sha256, type Env } from "./util";
 
@@ -30,6 +30,16 @@ const NO_GITHUB =
 const NO_ROUTE = "No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer.";
 const NO_SESSION = "Arakun has no session for this. Delegate the issue again.";
 const NOT_DELEGATOR = "Only the person who delegated this can steer it.";
+const ASK_PROJECT = "No computer is set up for this team yet. Which project should Arakun work in?";
+const PICK_AGAIN = "Pick one of the choices, or delegate the issue again.";
+const PICK_STOPPED = "Stopped. Nothing was started.";
+const PICK_GONE = "That choice is no longer offered: the computer stopped taking work from Linear. Delegate the issue again.";
+/// The most choices offered in one question.
+export const MAX_CHOICES = 5;
+/// The most characters of a computer's name in a choice: Linear shows 80.
+const MAX_CHOICE_MACHINE = 30;
+/// How long a question waits for its pick, as a delivery waits for its computer.
+const PICK_SECONDS = 7 * 24 * 60 * 60;
 /// A computer's name when its row is gone.
 const THIS_COMPUTER = "this computer";
 const queueFull = (machine: string) => `Too many requests are waiting for ${machine}. Try again when it has caught up.`;
@@ -209,15 +219,27 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   )
     .bind(hook.agentSessionId, hook.organizationId)
     .first<{ account_id: number; label: string; issue_id: string }>();
-  if (!session) return (await say("error", NO_SESSION), ok());
   // Anyone in the workspace can write in the session. Only the delegator's
   // words reach their computer.
-  const mine =
+  const isDelegator = async (accountId: number) =>
     author !== null &&
-    (await env.DB.prepare("SELECT 1 AS yes FROM linear_links WHERE organization_id = ? AND linear_user_id = ? AND account_id = ?")
-      .bind(hook.organizationId, author, session.account_id)
-      .first());
-  if (!mine) return (await say("thought", NOT_DELEGATOR), ok());
+    Boolean(
+      await env.DB.prepare("SELECT 1 AS yes FROM linear_links WHERE organization_id = ? AND linear_user_id = ? AND account_id = ?")
+        .bind(hook.organizationId, author, accountId)
+        .first(),
+    );
+  if (!session) {
+    const pick = await openPick(env, hook);
+    if (!pick) return (await say("error", NO_SESSION), ok());
+    if (!(await isDelegator(pick.account_id))) return (await say("thought", NOT_DELEGATOR), ok());
+    if (activity["signal"] === "stop") {
+      await env.DB.prepare("DELETE FROM linear_picks WHERE agent_session_id = ?").bind(hook.agentSessionId).run();
+      await postActivity(env, hook.organizationId, hook.agentSessionId, "response", PICK_STOPPED);
+      return ok();
+    }
+    return picked(env, hook, pick, promptText(activity));
+  }
+  if (!(await isDelegator(session.account_id))) return (await say("thought", NOT_DELEGATOR), ok());
 
   const id = hex(crypto.getRandomValues(new Uint8Array(16)));
   const kind = activity["signal"] === "stop" ? "stop" : "prompt";
@@ -243,6 +265,7 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
     organization: row.organization_id,
     activity: row.activity_id,
     comment: null,
+    repository: null,
     created: row.created_at,
   };
   let online: boolean;
@@ -270,7 +293,7 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
 /// The delivery an event made, with its computer's name now.
 function readBack(env: Env, eventKey: string): D1PreparedStatement {
   return env.DB.prepare(
-    `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.reason, d.label, d.created_at, d.announced_at,
+    `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.reason, d.label, d.repository, d.created_at, d.announced_at,
        d.accepted_at, d.expired_at, m.name AS machine
      FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.account_id = d.account_id
      WHERE d.event_key = ?`,
@@ -299,6 +322,7 @@ interface Row {
   activity_id: string | null;
   reason: StopReason | null;
   label: string;
+  repository: string | null;
   created_at: number;
   announced_at: number | null;
   accepted_at: number | null;
@@ -334,8 +358,24 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
     throw e;
   }
   const route = await routeFor(env, link.account_id, hook.organizationId, place);
-  if (!route) return (await say("error", NO_ROUTE), ok());
+  if (!route) return ask(env, hook, hook.issueId, link.account_id, place.teamId);
+  return send(env, hook, { issueId: hook.issueId, accountId: link.account_id, label: route.label, machine: route.machine, teamId: place.teamId, repository: null }, guidance);
+}
 
+/// Where a delegation goes: a computer, and the repository picked for it
+/// when no route took the issue.
+interface Target {
+  issueId: string;
+  accountId: number;
+  label: string;
+  machine: string;
+  teamId: string;
+  repository: string | null;
+}
+
+/// Hands a delegation to its computer and says so in the session.
+async function send(env: Env, hook: Hook, to: Target, guidance: GuidanceRule[] | null): Promise<Response> {
+  const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
   // The row first, keyed by the agent session: a retry finds it and finishes
   // the same delivery, under the same id, which the relay takes only once
   // while it still keeps it. A second `created` for the same session is the
@@ -344,9 +384,9 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   const key = `created:${hook.agentSessionId}`;
   const [, read] = await env.DB.batch<Row>([
     env.DB.prepare(
-      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, team_id, created_at)
-       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
-    ).bind(id, key, hook.agentSessionId, hook.organizationId, hook.issueId, link.account_id, route.label, place.teamId, now()),
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, activity_id, account_id, label, team_id, repository, created_at)
+       VALUES (?, ?, ?, ?, ?, 'created', NULL, ?, ?, ?, ?, ?) ON CONFLICT (event_key) DO NOTHING`,
+    ).bind(id, key, hook.agentSessionId, hook.organizationId, to.issueId, to.accountId, to.label, to.teamId, to.repository, now()),
     readBack(env, key),
   ]);
   const row = read!.results[0]!;
@@ -354,7 +394,7 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   if (row.announced_at !== null) return ok();
   // A retry may find its computer renamed or gone since; it still goes to
   // the label the row holds.
-  const machine = row.machine ?? route.machine;
+  const machine = row.machine ?? to.machine;
   const done = () => env.DB.prepare("UPDATE linear_deliveries SET announced_at = ? WHERE id = ?").bind(now(), row.id).run();
   // The relay forgets a delivery once the computer took it or the week ran
   // out, so sending it again would start a second session. For an expired
@@ -370,6 +410,7 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
     activity: null,
     // From the signed body, as a retry carries the same one.
     comment: hook.commentId,
+    repository: row.repository,
     created: row.created_at,
   };
   let online: boolean;
@@ -387,6 +428,130 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   await say("thought", online ? sent(machine) : offline(machine));
   await done();
   return ok();
+}
+
+// ---- Asking which project to use ---------------------------------------------
+//
+// No route takes the issue, but the delegator's computers offer the GitHub
+// repositories of their projects. Linear ranks them for the issue, and the
+// session asks the delegator to pick one. The pick goes to that computer,
+// which checks for itself that the repository is one of its projects.
+
+/// One choice of a question: a repository on a computer, and the text it
+/// was shown as, which is what a pick comes back as.
+interface Choice {
+  label: string;
+  repository: string;
+  text: string;
+}
+
+/// What a choice reads as in Linear.
+function choiceText(repository: string, machine: string): string {
+  const name = [...machine.trim()];
+  const short = name.length > MAX_CHOICE_MACHINE ? `${name.slice(0, MAX_CHOICE_MACHINE - 1).join("")}…` : name.join("");
+  return `${repository} on ${short || THIS_COMPUTER}`;
+}
+
+/// The best choices: Linear's ranking first, then the computer seen last.
+/// Two that would read the same keep the first.
+export function choose(offered: { label: string; machine: string; repository: string }[], ranked: string[]): Choice[] {
+  const rank = (r: string) => {
+    const i = ranked.findIndex((n) => n.toLowerCase() === r.toLowerCase());
+    return i < 0 ? ranked.length : i;
+  };
+  const sorted = offered.map((o, i) => ({ ...o, i })).sort((a, b) => rank(a.repository) - rank(b.repository) || a.i - b.i);
+  const out: Choice[] = [];
+  for (const o of sorted) {
+    const text = choiceText(o.repository, o.machine);
+    if (out.some((c) => c.text === text)) continue;
+    out.push({ label: o.label, repository: o.repository, text });
+    if (out.length === MAX_CHOICES) break;
+  }
+  return out;
+}
+
+/// Asks the delegator which project to use, or says no computer is set up
+/// when none offers a repository.
+async function ask(env: Env, hook: Hook, issueId: string, accountId: number, teamId: string): Promise<Response> {
+  const say = (type: "thought" | "error" | "elicitation", body: string, options: string[] = []) =>
+    postActivity(env, hook.organizationId, hook.agentSessionId, type, body, false, options);
+  const offered = await offeredFor(env, accountId, hook.organizationId);
+  if (offered.length === 0) return (await say("error", NO_ROUTE), ok());
+  const names = [...new Map(offered.map((o) => [o.repository.toLowerCase(), o.repository])).values()];
+  let ranked: string[];
+  try {
+    ranked = await rankRepositories(env, hook.organizationId, issueId, hook.agentSessionId, names);
+  } catch (e) {
+    // Without Linear's ranking the choices still stand, in the order the
+    // computers were seen. A refusal that lasts is the webhook's to handle.
+    if (!(e instanceof LinearRefused) || lasting(e)) throw e;
+    ranked = names;
+  }
+  const choices = choose(offered, ranked);
+  const at = now();
+  await env.DB.batch([
+    // Questions nobody answered in time go here, as there is no sweep for them.
+    env.DB.prepare("DELETE FROM linear_picks WHERE created_at < ?").bind(at - PICK_SECONDS),
+    env.DB.prepare(
+      `INSERT INTO linear_picks (agent_session_id, organization_id, issue_id, account_id, team_id, choices, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (agent_session_id) DO UPDATE SET choices = excluded.choices, created_at = excluded.created_at`,
+    ).bind(hook.agentSessionId, hook.organizationId, issueId, accountId, teamId, JSON.stringify(choices), at),
+  ]);
+  // Linear shows two choices or more to pick from. One is asked in words.
+  if (choices.length === 1) await say("elicitation", `${ASK_PROJECT} Reply "${choices[0]!.text}" to start there.`);
+  else await say("elicitation", ASK_PROJECT, choices.map((c) => c.text));
+  return ok();
+}
+
+interface Pick {
+  organization_id: string;
+  issue_id: string;
+  account_id: number;
+  team_id: string;
+  choices: string;
+}
+
+/// The question waiting in this session, while it may still be answered.
+async function openPick(env: Env, hook: Hook): Promise<Pick | null> {
+  return env.DB.prepare(
+    `SELECT organization_id, issue_id, account_id, team_id, choices FROM linear_picks
+     WHERE agent_session_id = ? AND organization_id = ? AND created_at >= ?`,
+  )
+    .bind(hook.agentSessionId, hook.organizationId, now() - PICK_SECONDS)
+    .first<Pick>();
+}
+
+/// The delegator answered the question: the choice it names goes to its
+/// computer, if that computer still offers it. Anything else asks again.
+async function picked(env: Env, hook: Hook, pick: Pick, text: string | null): Promise<Response> {
+  const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
+  let choices: Choice[];
+  try {
+    choices = JSON.parse(pick.choices) as Choice[];
+  } catch {
+    choices = [];
+  }
+  const answer = text?.trim();
+  const chosen = choices.find((c) => c.text === answer);
+  if (!chosen) return (await say("thought", PICK_AGAIN), ok());
+  const offered = await offeredFor(env, pick.account_id, hook.organizationId);
+  const still = offered.find((o) => o.label === chosen.label && o.repository === chosen.repository);
+  if (!still) return (await say("error", PICK_GONE), ok());
+  // Gone first, so a second reply cannot send it twice.
+  const taken = await env.DB.prepare("DELETE FROM linear_picks WHERE agent_session_id = ?").bind(hook.agentSessionId).run();
+  if (taken.meta.changes === 0) return ok();
+  const to: Target = {
+    issueId: pick.issue_id,
+    accountId: pick.account_id,
+    label: still.label,
+    machine: still.machine,
+    teamId: pick.team_id,
+    repository: still.repository,
+  };
+  // The guidance came with the delegation, which is long gone: the computer
+  // starts without it, as an offline one does.
+  return send(env, hook, to, null);
 }
 
 // ---- Stops Linear did not ask for --------------------------------------------

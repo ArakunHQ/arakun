@@ -1410,3 +1410,129 @@ describe("guidanceOf", () => {
     expect(guidanceOf({ guidance: [rule("x".repeat(MAX_GUIDANCE - 1)), rule("yy")] })).toBeNull();
   });
 });
+
+describe("asking which project to use", () => {
+  const ASK = "No computer is set up for this team yet. Which project should Arakun work in?";
+  const unmapped = created({ creatorId: LU, issueId: UNMAPPED, agentSessionId: SESSION });
+
+  /// The delegator's computer, which takes TEAM and offers `repositories`.
+  async function offering(repositories: string[]) {
+    const got = await linkedComputerWithRoute();
+    const routes = { label: got.me.label, organization_id: ORG, teams: [TEAM], projects: [], repositories };
+    expect((await call("PUT", "/linear/routes", as(got.owner.session), JSON.stringify(routes))).status).toBe(204);
+    return got;
+  }
+
+  it("keeps the repositories a computer offers, and refuses bad names", async () => {
+    const { me, owner } = await offering(["acme/web", "Acme/Web", "acme/api"]);
+    const rows = await env.DB.prepare("SELECT repository FROM linear_repositories ORDER BY repository").all<{ repository: string }>();
+    expect(rows.results.map((r) => r.repository)).toEqual(["acme/api", "acme/web"]);
+    for (const bad of [["acme"], ["acme/web/x"], ["-acme/web"], ["acme/.web"], "acme/web", Array(51).fill("a/b")]) {
+      const routes = { label: me.label, organization_id: ORG, teams: [], projects: [], repositories: bad };
+      expect((await call("PUT", "/linear/routes", as(owner.session), JSON.stringify(routes))).status).toBe(400);
+    }
+    // Routes from an app that sends none clear them.
+    const routes = { label: me.label, organization_id: ORG, teams: [TEAM], projects: [] };
+    expect((await call("PUT", "/linear/routes", as(owner.session), JSON.stringify(routes))).status).toBe(204);
+    expect(await count("linear_repositories")).toBe(0);
+  });
+
+  it("asks with Linear's ranking when nothing takes the team, and sends nothing yet", async () => {
+    const { pc } = await offering(["acme/web", "acme/api"]);
+    linearFake.suggestions = [
+      { repositoryFullName: "acme/web", hostname: "github.com", confidence: 0.2 },
+      { repositoryFullName: "ACME/API", hostname: "github.com", confidence: 0.9 },
+      { repositoryFullName: "other/secret", hostname: "github.com", confidence: 1 },
+    ];
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([
+      { agentSessionId: SESSION, type: "elicitation", body: ASK, signal: "select", options: ["acme/api on Desk", "acme/web on Desk"] },
+    ]);
+    const asked = linearFake.calls.find((c) => c.query.includes("issueRepositorySuggestions"))!;
+    expect(asked.variables).toMatchObject({
+      issueId: UNMAPPED,
+      agentSessionId: SESSION,
+      candidates: [
+        { hostname: "github.com", repositoryFullName: "acme/api" },
+        { hostname: "github.com", repositoryFullName: "acme/web" },
+      ],
+    });
+    expect(await count("linear_deliveries")).toBe(0);
+    expect(await count("linear_picks")).toBe(1);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("still asks when Linear will not rank, in the order offered", async () => {
+    await offering(["acme/web", "acme/api"]);
+    linearFake.refuse = 500;
+    linearFake.refuseOnly = "issueRepositorySuggestions";
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect(linearFake.activities()[0]).toMatchObject({ type: "elicitation", options: ["acme/api on Desk", "acme/web on Desk"] });
+  });
+
+  it("asks in words when there is one choice", async () => {
+    await offering(["acme/web"]);
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([{ agentSessionId: SESSION, type: "elicitation", body: `${ASK} Reply "acme/web on Desk" to start there.` }]);
+  });
+
+  it("keeps the old error when no computer offers a repository", async () => {
+    await offering([]);
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect(linearFake.activities()).toEqual([
+      { agentSessionId: SESSION, type: "error", body: "No computer is set up for this team. In Arakun's Linear tab, map the team or its project to a project on your computer." },
+    ]);
+    expect(await count("linear_picks")).toBe(0);
+  });
+
+  it("sends the delegator's pick to that computer with the repository, once", async () => {
+    const { pc, me } = await offering(["acme/web", "acme/api"]);
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "acme/web on Desk", activityId: ACT, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ type: "linear", kind: "created", agent_session: SESSION, issue: UNMAPPED, repository: "acme/web" });
+    expect(linearFake.activities().at(-1)).toEqual(SENT);
+    const [row] = await deliveries();
+    expect(row).toMatchObject({ kind: "created", label: me.label, repository: "acme/web", team_id: TEAM2 });
+    expect(await count("linear_picks")).toBe(0);
+    // The next reply is a follow-up in the session now.
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "acme/web on Desk", activityId: ACT2, agentSessionId: SESSION })))).status).toBe(200);
+    expect(await pc.inbox.control()).toMatchObject({ kind: "prompt", activity: ACT2 });
+  });
+
+  it("asks again for a reply that is not a choice, and refuses anyone but the delegator", async () => {
+    const { pc } = await offering(["acme/web", "acme/api"]);
+    await linkedComputerWithRoute({ linearUser: OTHER });
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: OTHER, body: "acme/web on Desk", agentSessionId: SESSION })))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "the web one", agentSessionId: SESSION })))).status).toBe(200);
+    expect(linearFake.activities().slice(1)).toEqual([SOMEONE_ELSE, { agentSessionId: SESSION, type: "thought", body: "Pick one of the choices, or delegate the issue again." }]);
+    expect(await count("linear_deliveries")).toBe(0);
+    expect(await count("linear_picks")).toBe(1);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("refuses a choice the computer no longer offers", async () => {
+    const { pc, me, owner } = await offering(["acme/web", "acme/api"]);
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    const routes = { label: me.label, organization_id: ORG, teams: [TEAM], projects: [], repositories: ["acme/api"] };
+    expect((await call("PUT", "/linear/routes", as(owner.session), JSON.stringify(routes))).status).toBe(204);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "acme/web on Desk", agentSessionId: SESSION })))).status).toBe(200);
+    expect(linearFake.activities().at(-1)).toMatchObject({ type: "error", body: expect.stringContaining("no longer offered") });
+    expect(await count("linear_deliveries")).toBe(0);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+  });
+
+  it("a stop drops the question", async () => {
+    await offering(["acme/web", "acme/api"]);
+    expect((await send(signedWebhook(unmapped))).status).toBe(200);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
+    expect(linearFake.activities().at(-1)).toEqual({ agentSessionId: SESSION, type: "response", body: "Stopped. Nothing was started." });
+    expect(await count("linear_picks")).toBe(0);
+  });
+
+  it("unlinking drops the repositories with the routes", async () => {
+    const { owner } = await offering(["acme/web"]);
+    expect((await call("DELETE", `/linear/link/${ORG}`, as(owner.session))).status).toBe(204);
+    expect(await count("linear_repositories")).toBe(0);
+  });
+});

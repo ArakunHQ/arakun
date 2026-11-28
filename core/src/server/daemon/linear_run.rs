@@ -20,7 +20,9 @@ use super::{Daemon, PlaceMeta};
 use crate::agent::{Thread, ThreadEvent, ThreadStatus};
 use crate::cloud;
 use crate::linear::attribution;
-use crate::linear::delegation::{Refusal, target_for};
+use crate::linear::delegation::{
+    Refusal, project_for, project_of_repository, repositories_of, target_or_picked,
+};
 use crate::linear::events::{
     Action, Event, Now, STILL_WORKING, Seen, Step, advance, ask_of, closed_line, options_of,
     plan_items, pr_link, progress_reports, removed_line, to_report, turn_reply,
@@ -37,8 +39,8 @@ use crate::linear::pr::{self, OpenPr};
 use crate::linear::runs::{Added, Held, PlanItem, Report, ReportKind, Run, RunState, Runs};
 use crate::linear::start::{
     HIT_AN_ERROR, busy_line, guard_again, keep, may_read, next_branch, no_env_line,
-    no_sign_in_line, own_branch, pr_branch, refusal_line, started_line, unreadable_line,
-    waiting_line, work_branch,
+    no_sign_in_line, own_branch, picked_here_line, pr_branch, refusal_line, started_line,
+    unreadable_line, waiting_line, work_branch,
 };
 use crate::linear::uploads::{self, Fetched};
 use crate::linear::{ApiError, env, prompt};
@@ -102,6 +104,11 @@ struct Start {
     /// The guidance Linear sent with the delegation: from the live frame,
     /// or kept in memory with the run while it waited.
     guidance: Vec<GuidanceRule>,
+    /// The GitHub repository the person picked in Linear, when no mapping
+    /// took the issue.
+    repository: Option<String>,
+    /// The place here with that repository, once the read found one.
+    picked: Option<PathBuf>,
 }
 
 /// The branches a delegated session must not commit on: the branch the
@@ -186,6 +193,8 @@ impl Daemon {
                     delivery: Some(d.id),
                     comment: d.comment,
                     guidance: d.guidance,
+                    repository: d.repository,
+                    picked: None,
                 };
                 self.linear_read(start, key, cx);
             }
@@ -193,20 +202,28 @@ impl Daemon {
     }
 
     /// Reads the issue with the workspace's key, off the UI thread.
-    fn linear_read(&mut self, start: Start, key: String, cx: &mut Context<Self>) {
+    fn linear_read(&mut self, mut start: Start, key: String, cx: &mut Context<Self>) {
         let issue = start.issue.clone();
         let mention = start.comment.clone();
+        let repository = start.repository.clone();
+        let places = self.linear_places();
         cx.spawn(async move |this, cx| {
-            let read = cx
+            let (read, picked) = cx
                 // A panic's text could hold anything; Linear gets a fixed reason.
                 .background_spawn(crate::guard::task_or(
                     async move {
                         let q = |q: &str, v| crate::linear::call(&key, q, v);
-                        issues::detail(q, &issue, mention.as_deref())
+                        let read = issues::detail(q, &issue, mention.as_deref());
+                        // The Worker's word is not enough: the repository
+                        // must be one of the places here.
+                        let picked = repository
+                            .and_then(|r| project_of_repository(&r, &repositories_of(&places)));
+                        (read, picked)
                     },
-                    |_| Err(ApiError::Failed(HIT_AN_ERROR.into())),
+                    |_| (Err(ApiError::Failed(HIT_AN_ERROR.into())), None),
                 ))
                 .await;
+            start.picked = picked;
             let _ = this.update(cx, |this, cx| this.linear_issue_read(start, read, cx));
         })
         .detach();
@@ -251,7 +268,8 @@ impl Daemon {
             Ok(detail) => detail,
             Err(e) => return self.linear_refuse(&start, unreadable_line(&e.message()), cx),
         };
-        let project = match self.linear_guard(&start.organization, &detail) {
+        let project = match self.linear_guard(&start.organization, &detail, start.picked.as_deref())
+        {
             Ok(project) => project,
             Err(r) => {
                 self.linear_refuse(&start, refusal_line(&r, &computer()), cx);
@@ -312,6 +330,8 @@ impl Daemon {
                 kept: Vec::new(),
                 comment: start.comment.clone(),
                 guidance: start.guidance.clone(),
+                picked: start.repository.clone(),
+                remember: None,
             },
             slots,
         );
@@ -329,17 +349,37 @@ impl Daemon {
 
     /// The guard, on what this server has now: the switch and mappings the
     /// app sent, and its places.
-    fn linear_guard(&self, organization: &str, detail: &Detail) -> Result<PathBuf, Refusal> {
+    /// `picked` is the place the person picked in Linear, for an issue no
+    /// mapping takes.
+    fn linear_guard(
+        &self,
+        organization: &str,
+        detail: &Detail,
+        picked: Option<&Path>,
+    ) -> Result<PathBuf, Refusal> {
         let d = self.linear.kept.settings.delegation();
         let issue = &detail.issue;
-        target_for(
+        target_or_picked(
             &d,
             organization,
             &issue.team_id,
             issue.project_id.as_deref(),
             &self.linear_places(),
+            picked,
         )
-        .map(|m| m.project.clone())
+    }
+
+    /// Whether `detail`'s issue runs here only because it was picked.
+    fn linear_only_picked(&self, organization: &str, detail: &Detail) -> bool {
+        let d = self.linear.kept.settings.delegation();
+        let issue = &detail.issue;
+        project_for(
+            &d,
+            organization,
+            &issue.team_id,
+            issue.project_id.as_deref(),
+        )
+        .is_none()
     }
 
     fn linear_make_env(
@@ -413,7 +453,7 @@ impl Daemon {
         }
         // Making the worktree takes a while; the switch or the mapping may
         // have changed since the guard said yes.
-        let again = self.linear_guard(&start.organization, &detail);
+        let again = self.linear_guard(&start.organization, &detail, start.picked.as_deref());
         if let Err(r) = guard_again(again, &project) {
             self.linear_fail(&start, refusal_line(&r, &computer()), cx);
             return self.linear_sync(cx);
@@ -471,6 +511,12 @@ impl Daemon {
                 link,
                 cx,
             );
+        }
+        // A server's mappings are the app's to make: it cannot remember a
+        // pick, so it says where to.
+        if start.picked.is_some() && self.linear_only_picked(&start.organization, &detail) {
+            let line = picked_here_line(&detail.issue.team);
+            self.linear_report(&start.agent_session, ReportKind::Thought, line, None, cx);
         }
         if let Some(id) = &start.delivery {
             self.linear_accept(id, cx);
@@ -576,6 +622,8 @@ impl Daemon {
                 delivery: None,
                 comment: run.comment.clone(),
                 guidance: run.guidance.clone(),
+                repository: run.picked.clone(),
+                picked: None,
             };
             self.linear_save_runs();
             match self.linear_key(&start.organization) {

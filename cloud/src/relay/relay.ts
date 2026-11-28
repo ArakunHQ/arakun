@@ -955,6 +955,8 @@ const DELIVERY_ID = /^[0-9a-f]{32}$/;
 /// The ids Linear uses are UUIDs. linear.ts has the same; importing it from
 /// here would make a cycle.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/// A GitHub `owner/name`, as linear.ts takes them, for the same reason.
+const REPOSITORY = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.)[A-Za-z0-9._-]{1,100}$/;
 
 const DELIVERY_KINDS: readonly string[] = ["created", "prompt", "stop"] satisfies Delivery["kind"][];
 const STOP_REASONS: readonly string[] = ["unassigned", "canceled", "completed", "team_access", "revoked"] satisfies StopReason[];
@@ -967,7 +969,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
 /// is stored with it; null when any field is off.
 function parseDelivery(v: unknown): Delivery | null {
   if (!isObj(v)) return null;
-  const { id, kind, agent_session, issue, organization, activity, comment, created, reason = null } = v;
+  const { id, kind, agent_session, issue, organization, activity, comment, created, reason = null, repository = null } = v;
   if (typeof id !== "string" || !DELIVERY_ID.test(id)) return null;
   if (typeof kind !== "string" || !DELIVERY_KINDS.includes(kind)) return null;
   for (const u of [agent_session, issue, organization]) if (typeof u !== "string" || !UUID.test(u)) return null;
@@ -975,6 +977,8 @@ function parseDelivery(v: unknown): Delivery | null {
   // Absent in a delivery from a Worker before the field.
   if (comment !== undefined && comment !== null && (typeof comment !== "string" || !UUID.test(comment))) return null;
   if (typeof created !== "number" || !Number.isSafeInteger(created) || created <= 0) return null;
+  // Only a delegation has a picked repository.
+  if (repository !== null && (kind !== "created" || typeof repository !== "string" || !REPOSITORY.test(repository))) return null;
   // Only a stop has a reason.
   if (reason !== null && (kind !== "stop" || typeof reason !== "string" || !STOP_REASONS.includes(reason))) return null;
   return {
@@ -986,6 +990,7 @@ function parseDelivery(v: unknown): Delivery | null {
     activity,
     reason: reason as StopReason | null,
     comment: comment ?? null,
+    repository: repository as string | null,
     created,
   };
 }
@@ -1023,6 +1028,7 @@ function linearMessage(d: Delivery, body: string | null, guidance: GuidanceRule[
     activity: d.activity,
     reason: d.reason ?? null,
     comment: d.comment ?? null,
+    repository: d.repository ?? null,
     body,
     guidance,
   };

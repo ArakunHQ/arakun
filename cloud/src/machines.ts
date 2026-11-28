@@ -189,6 +189,10 @@ export interface Delivery {
   /// For `created`: the comment that mentioned Arakun, when a mention
   /// started the session. A delivery kept from before has none.
   comment?: string | null;
+  /// For `created`: the GitHub repository (`owner/name`) the delegator
+  /// picked when no route took the issue. The computer starts in its
+  /// project, if it has one. A delivery kept from before has none.
+  repository?: string | null;
   /// Unix seconds.
   created: number;
 }

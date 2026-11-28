@@ -64,6 +64,13 @@ pub enum RunState {
     Interrupted,
 }
 
+/// The team a picked run may be remembered for, as Linear named it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Remember {
+    pub team: String,
+    pub team_name: String,
+}
+
 /// One Linear agent session and the Arakun session that works on it. Debug
 /// leaves out the branch: Linear builds it from the issue's title.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -132,6 +139,15 @@ pub struct Run {
     /// restart starts without it.
     #[serde(skip)]
     pub guidance: Vec<GuidanceRule>,
+    /// The GitHub repository the person picked in Linear when no mapping
+    /// took the issue, so a run that waits finds its project again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<String>,
+    /// The question a picked run asked once it started: whether to use its
+    /// project for the team from now on. Its reply is answered here and
+    /// never reaches the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remember: Option<Remember>,
 }
 
 /// The progress of a run that Linear last heard.
@@ -861,6 +877,8 @@ mod tests {
             kept: Vec::new(),
             comment: None,
             guidance: Vec::new(),
+            picked: None,
+            remember: None,
         }
     }
 

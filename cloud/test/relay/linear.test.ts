@@ -22,6 +22,7 @@ function delivery(kind: Delivery["kind"] = "created", ago = 0): Delivery {
     activity: kind === "created" ? null : crypto.randomUUID(),
     reason: null,
     comment: null,
+    repository: null,
     created: Math.floor(Date.now() / 1000) - ago,
   };
 }
@@ -38,6 +39,7 @@ function frame(d: Delivery): Record<string, unknown> {
     activity: d.activity,
     reason: d.reason ?? null,
     comment: d.comment ?? null,
+    repository: d.repository ?? null,
     guidance: null,
   };
 }
@@ -313,6 +315,14 @@ describe("Linear deliveries in the relay", () => {
     expect(await pc.inbox.control()).toMatchObject({ id: D2.id, comment: null });
   });
 
+  it("passes the repository picked for a delegation", async () => {
+    const { me, pc } = await connectedComputer();
+    const D = { ...delivery(), repository: "acme/web" };
+    expect(await deliver(env, me.label, D, null)).toEqual({ online: true });
+    expect(await pc.inbox.control()).toMatchObject({ id: D.id, repository: "acme/web" });
+    expect(await stored(me.label, `linear:${D.id}`)).toEqual(D);
+  });
+
   it("refuses a malformed delivery and stores nothing", async () => {
     const { me } = await awayComputer();
     const good = delivery();
@@ -322,6 +332,8 @@ describe("Linear deliveries in the relay", () => {
       { ...good, issue: 7 },
       { ...good, activity: undefined },
       { ...good, comment: "not-a-uuid" },
+      { ...good, repository: "not a repository" },
+      { ...delivery("prompt"), repository: "acme/web" },
       { ...good, created: "now" },
     ];
     const sent: object[] = [

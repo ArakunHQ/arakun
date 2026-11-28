@@ -249,6 +249,8 @@ export const linearFake = {
   /// Issue id → its team and project, and for `startIssue` its state type
   /// (`unstarted` when not given) and delegate.
   issues: new Map<string, { teamId: string; projectId: string | null; stateType?: string; delegateId?: string }>(),
+  /// What `issueRepositorySuggestions` answers, whatever it was asked.
+  suggestions: [] as { repositoryFullName: string; hostname: string; confidence: number }[],
   /// Team id → its `started` states, in any order.
   startedStates: new Map<string, { id: string; position: number }[]>(),
   /// Every GraphQL call: the query, its variables and the access token.
@@ -345,6 +347,7 @@ function resetLinear(): void {
   linearFake.grace = true;
   linearFake.issues.clear();
   linearFake.startedStates.clear();
+  linearFake.suggestions = [];
   linearFake.calls = [];
   linearFake.accepted = [];
   linearFake.auth = [];
@@ -415,6 +418,8 @@ async function linearReply(req: Request): Promise<Response> {
   if (query.includes("agentActivityCreate") || query.includes("agentSessionUpdate"))
     return Response.json({ data: { agentActivityCreate: { success: true }, agentSessionUpdate: { success: true } } });
   if (query.includes("issueUpdate")) return Response.json({ data: { issueUpdate: { success: true } } });
+  if (query.includes("issueRepositorySuggestions"))
+    return Response.json({ data: { issueRepositorySuggestions: { suggestions: linearFake.suggestions } } });
   if (query.includes("issue(")) {
     const issue = linearFake.issues.get((variables as { id: string }).id);
     if (!issue) return Response.json({ errors: [{ message: "Entity not found", extensions: { code: "INVALID_INPUT" } }] });

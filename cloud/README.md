@@ -1154,19 +1154,22 @@ issue's text, stay between Linear and the computer.
 
 ### What is stored
 
-Four D1 tables (`migrations/0013_linear.sql`):
+Six D1 tables (`migrations/0013_linear.sql`, `migrations/0022_linear_picks.sql`):
 
 | Table | Holds |
 | --- | --- |
 | `linear_workspaces` | One row per Linear workspace that installed the app: the workspace id and name, the app's user id, its access and refresh tokens, when the access token ends, who installed it. |
 | `linear_links` | Which GitHub account a Linear user is, per workspace. The row goes with its account. |
 | `linear_routes` | Which computer takes the issues of a Linear team or project. The row goes with the machine. |
-| `linear_deliveries` | One row per webhook event that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), a stop's reason, the issue's team for a delegation, the computer's label, and the times it was announced, accepted and expired. A unique event key makes Linear's retry a no-op (see "A retry" below). |
+| `linear_repositories` | The GitHub repositories (`owner/name`) of the projects on a computer that takes work from Linear, sent with its routes. Offered when no route takes an issue. The row goes with the machine. |
+| `linear_picks` | A question "which project?" asked in a session and not answered yet: the session, issue, team and account ids, and the choices offered (each a computer's label and a repository). The row goes when the delegator picks or stops, and after 7 days. |
+| `linear_deliveries` | One row per webhook event that became work for a computer: ids, its kind (`created`, `prompt` or `stop`), a stop's reason, the issue's team for a delegation, the repository picked for it, the computer's label, and the times it was announced, accepted and expired. A unique event key makes Linear's retry a no-op (see "A retry" below). |
 
 Both tokens of a workspace are sealed with AES-GCM under `LINEAR_TOKEN_KEY`, with the
 workspace id as additional data, so a token copied to another workspace's row does not
 open. The Worker stores and logs no issue text, prompt or progress text: only ids,
-times and labels. A follow-up's text is passed on only to a connected computer, in one
+times, labels and repository names. Repository names are kept with the routes and
+never logged. A follow-up's text is passed on only to a connected computer, in one
 frame, and is never stored (see "The relay side"). A user's own Linear token, sent to
 link, is used for one call and dropped.
 
@@ -1187,7 +1190,7 @@ JSON `{ "error": "..." }`.
 | `GET /linear/link` | the account | `200 { links: [{ organization_id, linear_user_id, installed }] }`, oldest first. `installed` says whether that workspace has installed Arakun. |
 | `POST /linear/link` with `{ "token": "<the user's Linear API key or OAuth token>" }` | the account | Asks Linear who the token is, and links that Linear user in that workspace to the account: `200 { organization_id, linear_user_id, installed }`. If another account held the link, it moves here, and that account's routes in the workspace go. `400 bad token` for a token that is missing, empty or over 512 bytes, `400 linear refused that token` when Linear refuses it, when it is an app's token rather than a person's, or when Linear names the user or the workspace with an id that is not a UUID, `429 too many requests` (see Limits), `503` when the limit could not be checked. |
 | `DELETE /linear/link/<organization_id>` | the account | `204`, also when there was no link. Removes the account's link and its routes in that workspace. `404` for an id that is not a UUID. |
-| `PUT /linear/routes` with `{ "label", "organization_id", "teams": [<uuid>], "projects": [<uuid>] }` | the account | Replaces what that computer takes in that workspace: `204`. At most 200 ids in all, up to 32 KiB. `400 bad routes` for a bad body, `404 no such computer` for a label that is not one of the account's machines, `409 link linear first` when the account has no link in that workspace. Of two computers that take the same issue, the one with the project route wins over the team route, and then the one seen last. |
+| `PUT /linear/routes` with `{ "label", "organization_id", "teams": [<uuid>], "projects": [<uuid>], "repositories": ["owner/name"] }` | the account | Replaces what that computer takes in that workspace, and the GitHub repositories it offers when no route takes an issue: `204`. At most 200 ids in all and 50 repositories (repeats in any case are dropped), up to 32 KiB. `repositories` may be left out, which is none. `400 bad routes` for a bad body, `404 no such computer` for a label that is not one of the account's machines, `409 link linear first` when the account has no link in that workspace. Of two computers that take the same issue, the one with the project route wins over the team route, and then the one seen last. |
 | `POST /linear/deliveries/<id>/accept` | the account | The computer took the delivery: `204`, also on a second call. The relay forgets it. `404 no such delivery` for an id that is unknown or another account's. |
 | `POST /linear/sessions/<agent_session>/activity` with `{ "type", "body", "links"?, "options"? }` | the account | Posts the computer's progress in the session as Arakun: `204`. `type` is `thought`, `elicitation`, `response` or `error`; `body` is 1 to 8000 characters; `options`, for an `elicitation` only, is 2 to 10 choices of 1 to 80 characters, which Linear shows to pick from (the `select` signal); `links` is at most 5 of `{ label, url }`, a label of 1 to 80 characters and an `https://` URL without spaces, at most 2048 characters, which become the session's external URLs. The body is at most 64 KiB. `400 bad activity`, `404 no such session` for a session that is not a `created` delivery of this account (the workspace comes from the delivery, not the caller), `429`, `503`, `502 linear refused` when Linear refuses or does not answer. |
 | `POST /linear/sessions/<agent_session>/links` with `{ "links" }` | the account | Adds external URLs to the session without a new activity, for a link that turns up at any time, such as the pull request: `204`. `links` is 1 to 5 of `{ label, url }`, checked as for an activity. `400 bad links`, `404 no such session`, `429`, `503`, `502 linear refused`, as for an activity. |
@@ -1226,6 +1229,24 @@ to (not blocked, with the `linear` flag), the issue's team and project (asked fr
 Linear), and the computer whose routes take it. It saves a `created` delivery, hands it
 to the computer's relay, and says in the session where it went. Every refusal below is
 an activity in the session and an empty `200` to Linear.
+
+When no route takes the issue but the account's computers offer repositories, the
+Worker asks instead. It calls Linear's `issueRepositorySuggestions` with the offered
+names (on `github.com`), which ranks them from the issue and its linked pull requests,
+and posts an `elicitation` with up to five choices, each `owner/name on <computer>`,
+best first. If Linear will not rank them, the choices keep the order of the computers
+seen last. One choice is asked in words, as Linear shows two or more to pick from. The
+question waits in `linear_picks`. Without any offered repository the old "No computer
+is set up" error stays.
+
+**A pick**: a `prompted` reply in a session that has a question and no delivery. Only
+the delegator's reply counts, as for any follow-up. A reply that is exactly one
+choice's text, from a computer that still offers that repository, becomes a `created`
+delivery to that computer with `repository` set; the question goes first, so a second
+reply cannot send it twice. Any other reply gets "Pick one of the choices", a stop drops
+the question, and a choice no longer offered says so. The computer starts only in a
+project of its own with that repository, and asks whether to keep the choice for the
+team.
 
 **`prompted`**: someone wrote in the session, or stopped it. The Worker finds the
 newest `created` delivery of the session that has not expired. The words of the person

@@ -212,6 +212,12 @@ impl Shell {
             FollowUp::Busy => Some((ReportKind::Thought, busy_line(&computer()))),
             FollowUp::Unreadable => Some((ReportKind::Thought, unread_line(&computer()))),
             FollowUp::NoDirections => Some((ReportKind::Thought, no_directions_line(&computer()))),
+            FollowUp::Send | FollowUp::Interrupt
+                if let Some(line) =
+                    self.linear_remember_reply(agent_session, text.as_deref(), cx) =>
+            {
+                Some((ReportKind::Thought, line))
+            }
             FollowUp::Send | FollowUp::Interrupt => {
                 let interrupt = decided == FollowUp::Interrupt;
                 let text = message(text.as_deref().unwrap_or_default()).to_string();
@@ -231,6 +237,39 @@ impl Shell {
             None => self.linear_save(),
         }
         self.linear_accept(id, cx);
+    }
+
+    /// The answer to the question a picked run asked: "Always" maps the team
+    /// to the run's project on this computer. Gives the line for Linear, or
+    /// None when the reply is not an answer and goes to the session. Any
+    /// reply ends the question: it is asked once.
+    fn linear_remember_reply(
+        &mut self,
+        agent_session: &str,
+        text: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let run = self.linear_runs.by_agent_session(agent_session)?;
+        let asked = run.remember.take()?;
+        let (organization, project) = (run.organization.clone(), run.project.clone());
+        let always = remember_answer(text, &asked.team_name)?;
+        if !always {
+            return Some(this_issue_only_line().to_string());
+        }
+        let name = self
+            .projects
+            .iter()
+            .find(|p| p.path == project)
+            .map_or_else(|| project.display().to_string(), |p| p.name.to_string());
+        // The Linear tab saves it and tells the shell, which sends the routes.
+        let saved = self.views.linear.update(cx, |v, cx| {
+            v.remember_team(&organization, &asked.team, &asked.team_name, &project, cx)
+        });
+        Some(match saved {
+            Ok(true) => remembered_line(&asked.team_name, &name, &computer()),
+            Ok(false) => already_mapped_line(&asked.team_name, &computer()),
+            Err(e) => e,
+        })
     }
 
     /// Sends `text` to the run's session as the composer would: one that is

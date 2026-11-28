@@ -247,7 +247,9 @@ arakun server service install   # keep it running; see Keep it running
   that folder, which only your user can open. It is also what keeps a second server
   off the same folder.
 - **Issues delegated in Linear.** A server takes the Linear teams and projects that
-  the app's Linear tab maps to its projects (see the Linear section). It runs them as
+  the app's Linear tab maps to its projects (see the Linear section). It also offers the
+  GitHub repositories of its projects for an issue nobody maps, and starts one picked
+  in Linear for that issue only. It runs them as
   the app does: it reads the issue with the workspace's Linear key the app gave it,
   checks the mapping, makes a worktree on the issue's branch under
   `~/arakun-workspaces/`, and starts a session there with the project's agent that

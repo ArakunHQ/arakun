@@ -1,9 +1,9 @@
 # Admin panel
 
-The operator panel for Arakun's cloud: a second Cloudflare Worker that signs operators
-in with GitHub and a code from an authenticator app they set up themselves, serves a
-React page (`src/`, built by Vite) and forwards `/api/*` to the cloud Worker's
-`/admin/*` routes over a service binding (`worker/`).
+The operator panel for Arakun's cloud: a second Cloudflare Worker behind Cloudflare
+Access. It checks the operator's Access token on every request, serves a React page
+(`src/`, built by Vite) and forwards `/api/*` to the cloud Worker's `/admin/*` routes
+over a service binding (`worker/`).
 
 ```sh
 npm ci
@@ -16,7 +16,6 @@ npm run dev      # vite dev; needs the cloud Worker running too
 A production build needs `CLOUDFLARE_ENV=production`, or it is the dev Worker's. `npm run
 deploy` sets it.
 
-Running both Workers locally, the production setup (the secrets for arakun.dev, an
-OAuth App for a copy of the repository), how sign-in works and how to add or remove an
-operator or their authenticator key are in "The admin panel" in
+Running both Workers locally, the production setup (the Access application and the
+secret) and how to add or remove an operator are in "The admin panel" in
 [../README.md](../README.md).

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
-# Arakun's operator panel, a second Worker: it signs operators in with GitHub,
-# forwards /api/* to the cloud Worker over the CLOUD service binding, and
-# serves the React page that vite builds into dist/client.
+# Arakun's operator panel, a second Worker behind Cloudflare Access: it checks
+# the operator's Access token, forwards /api/* to the cloud Worker over the
+# CLOUD service binding, and serves the React page that vite builds into
+# dist/client.
 # The top-level Worker is for tests; production is `--env production` below.
 name = "arakun-admin-dev"
 main = "worker/index.ts"
@@ -22,34 +23,11 @@ run_worker_first = true
 binding = "CLOUD"
 service = "arakun-cloud-dev"
 
-# The GitHub OAuth App for operator sign-in is not the desktop app's. Its
-# secret, ADMIN_SECRET, SESSION_SECRET and ADMIN_GITHUB_IDS are Worker secrets.
-# Operators' authenticator keys are in the cloud Worker's database, sealed
-# with a key derived from SESSION_SECRET (worker/seal.ts).
+# ADMIN_SECRET is a Worker secret. Access is not set up for the test Worker, so
+# its ACCESS_TEAM_DOMAIN and ACCESS_AUD stay unset: nobody gets in, except
+# DEV_OPERATOR_EMAIL from .dev.vars on localhost (worker/access.ts).
 [vars]
 CLOUD_ORIGIN = "http://localhost:8787"
-GITHUB_CLIENT_ID = "PLACEHOLDER"
-
-# Sign-in calls GitHub, so each client IP gets a few a minute. Rate limits with
-# the same namespace_id in one account share their counters, so every id is
-# used once: cloud/wrangler.toml has 1001 to 1008 and 1011 to 1018, this Worker
-# 1009 and 1019, production 1010 and 1020.
-[[ratelimits]]
-name = "SIGN_IN_LIMIT"
-namespace_id = "1009"
-
-  [ratelimits.simple]
-  limit = 10
-  period = 60
-
-# The authenticator code, per operator: five tries a minute.
-[[ratelimits]]
-name = "CODE_LIMIT"
-namespace_id = "1019"
-
-  [ratelimits.simple]
-  limit = 5
-  period = 60
 
 # The hosted Worker (`npm run deploy`). An environment inherits no bindings, so
 # they are all here again.
@@ -72,26 +50,13 @@ run_worker_first = true
 binding = "CLOUD"
 service = "arakun-cloud"
 
-# The GitHub OAuth App "Arakun Admin" (ArakunHQ), whose callback is
-# https://admin.arakun.dev/auth/github/callback. The ID is public; its secret
-# is the Worker secret GITHUB_CLIENT_SECRET. cloud-deploy.yml skips this Worker
-# while the value is PLACEHOLDER, which a copy without an app of its own keeps.
+# The Cloudflare Access application in front of admin.arakun.dev: the team
+# domain and the application's Audience (AUD) tag, from Zero Trust, Access,
+# Applications, the application's Overview. Neither is a secret. The Worker
+# checks every request's Access token against both. cloud-deploy.yml skips this
+# Worker while ACCESS_AUD is PLACEHOLDER, which a copy without Access of its own
+# keeps.
 [env.production.vars]
 CLOUD_ORIGIN = "https://app.arakun.dev"
-GITHUB_CLIENT_ID = "Ov23lipWB4v8e5aAC8j9"
-
-[[env.production.ratelimits]]
-name = "SIGN_IN_LIMIT"
-namespace_id = "1010"
-
-  [env.production.ratelimits.simple]
-  limit = 10
-  period = 60
-
-[[env.production.ratelimits]]
-name = "CODE_LIMIT"
-namespace_id = "1020"
-
-  [env.production.ratelimits.simple]
-  limit = 5
-  period = 60
+ACCESS_TEAM_DOMAIN = "PLACEHOLDER"
+ACCESS_AUD = "PLACEHOLDER"

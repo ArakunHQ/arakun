@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import type { QueryClient } from "@tanstack/react-query";
-import {
-  Link,
-  Outlet,
-  createRootRouteWithContext,
-  redirect,
-  useRouter,
-  useRouterState,
-  type ErrorComponentProps,
-  type LinkProps,
-} from "@tanstack/react-router";
-import { ApiError } from "../api";
-import { meQuery, useLogout } from "../queries";
+import { Link, Outlet, createRootRouteWithContext, useRouter, type ErrorComponentProps, type LinkProps } from "@tanstack/react-router";
+import { meQuery } from "../queries";
 import type { Me } from "../types";
-import { isOutcome } from "../signIn";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -28,37 +17,23 @@ export const NAV: { to: LinkProps["to"]; label: string }[] = [
   { to: "/machines", label: "Machines" },
   { to: "/notices", label: "Notices" },
   { to: "/activity", label: "Activity" },
-  { to: "/settings", label: "Settings" },
 ];
 
 export const Route = createRootRouteWithContext<RouterContext>()({
-  beforeLoad: async ({ context, location }) => {
-    if (location.pathname === "/sign-in") return { me: null };
-    // The Worker sends GitHub's sign-in back to / with the outcome: the
-    // sign-in screen says what went wrong.
-    const signIn = (location.search as { sign_in?: unknown }).sign_in;
-    if (isOutcome(signIn)) throw redirect({ to: "/sign-in", search: { sign_in: signIn } });
-    try {
-      const me: Me | null = await context.queryClient.ensureQueryData(meQuery);
-      return { me };
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) throw redirect({ to: "/sign-in" });
-      throw e;
-    }
+  // Cloudflare Access signs the operator in before the page loads. A 401 here
+  // means the Worker did not accept what Access sent, and the error screen
+  // says so.
+  beforeLoad: async ({ context }) => {
+    const me: Me = await context.queryClient.ensureQueryData(meQuery);
+    return { me };
   },
-  component: Root,
+  component: Shell,
   errorComponent: Failed,
   notFoundComponent: NotFound,
 });
 
-function Root() {
-  const signingIn = useRouterState({ select: (s) => s.location.pathname === "/sign-in" });
-  return signingIn ? <Outlet /> : <Shell />;
-}
-
 function Shell() {
   const me = Route.useRouteContext({ select: (c) => c.me });
-  const logout = useLogout();
   return (
     <div className="shell">
       <header className="bar">
@@ -72,20 +47,13 @@ function Shell() {
             </Link>
           ))}
         </nav>
-        {me && (
-          <div className="operator">
-            <img className="avatar" src={`https://avatars.githubusercontent.com/u/${me.github_id}?s=48`} alt="" />
-            <span className="operator-login">{me.login}</span>
-            <button type="button" className="button quiet" disabled={logout.isPending} onClick={() => logout.mutate()}>
-              Sign out
-            </button>
-          </div>
-        )}
-        {logout.error && (
-          <p className="message" data-tone="error" role="alert">
-            {logout.error.message}
-          </p>
-        )}
+        <div className="operator">
+          <span className="operator-login">{me.email}</span>
+          {/* Cloudflare Access answers this path itself and ends its session. */}
+          <a className="button quiet" href="/cdn-cgi/access/logout">
+            Sign out
+          </a>
+        </div>
       </header>
       <main className="main">
         <Outlet />

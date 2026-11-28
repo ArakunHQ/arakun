@@ -7,10 +7,9 @@
 
 /// GET /api/me
 export interface Me {
-  /// The operator's GitHub user ID: operators sign in to the panel with GitHub
-  /// and need no account.
-  github_id: number;
-  login: string;
+  /// The email Cloudflare Access signed the operator in with. Operators need
+  /// no account.
+  email: string;
 }
 
 /// A row of GET /admin/users. `login` is empty for an account the operator

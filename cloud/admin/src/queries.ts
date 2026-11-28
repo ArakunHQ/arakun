@@ -4,8 +4,7 @@
 // answer after the change is the truth.
 
 import { queryOptions, useMutation, useQueryClient, type QueryClient, type QueryKey } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { ApiError, api } from "./api";
+import { api } from "./api";
 import type {
   BetaPlatform,
   BetaSignup,
@@ -219,22 +218,5 @@ export function useDeleteNotice() {
     mutationFn: (id: string) => api<void>("DELETE", `notices/${encodeURIComponent(id)}`),
     // The ID does not say whose notice it was, so every account's screen.
     onSuccess: () => invalidate(client, [NOTICES, ANY_USER]),
-  });
-}
-
-/// Signs the operator out of the panel and forgets what it read.
-export function useLogout() {
-  const client = useQueryClient();
-  const navigate = useNavigate();
-  return useMutation({
-    mutationFn: async () => {
-      // Not under /api: the Worker itself clears the cookie.
-      const res = await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
-      if (!res.ok) throw new ApiError(res.status, `the server answered ${res.status}`);
-    },
-    onSuccess: async () => {
-      client.clear();
-      await navigate({ to: "/sign-in" });
-    },
   });
 }

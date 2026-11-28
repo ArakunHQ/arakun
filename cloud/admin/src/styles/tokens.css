@@ -106,11 +106,6 @@
   --content-width: 1120px;
   --reading-width: 60ch;
   --dialog-width: 420px;
-  --sign-in-width: 360px;
-  --qr-size: 200px;
-  /* A QR code stays dark on light in both color schemes. */
-  --qr-dark: #000000;
-  --qr-light: #ffffff;
 }
 
 @media (prefers-color-scheme: light) {

@@ -17,8 +17,8 @@ const NOT_SIGNED_IN = "not signed in";
 
 let onSignedOut: () => void = () => {};
 
-/// Called on the admin Worker's own 401: the session cookie expired or was
-/// signed out elsewhere. The panel uses it to leave for the sign-in screen.
+/// Called on the admin Worker's own 401: the Cloudflare Access session ended.
+/// The panel loads the page again, so Access signs the operator in.
 export function setOnSignedOut(handler: () => void): void {
   onSignedOut = handler;
 }
@@ -29,7 +29,7 @@ export async function api<T>(method: "GET" | "PUT" | "POST" | "DELETE", path: st
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const res = await fetch(`/api/${path}`, {
     method,
-    // The session is a same-origin cookie; nothing else carries it.
+    // Cloudflare Access's session is a same-origin cookie.
     credentials: "same-origin",
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),

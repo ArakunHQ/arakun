@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../worker/index";
-import { SESSION_COOKIE, signSession } from "../worker/session";
 import wranglerToml from "../wrangler.toml?raw";
-import { testEnv } from "./helpers";
+import { EMAIL, fakeAccess, testEnv, token } from "./helpers";
 
 const ORIGIN = "https://admin.test";
 
@@ -24,35 +23,21 @@ function fakeCloud(): Fetcher {
 const pageFetcher = { fetch: async () => new Response("<html></html>", { headers: { "Content-Type": "text/html" } }) } as unknown as Fetcher;
 const env: Env = { ...testEnv, CLOUD: fakeCloud(), ASSETS: pageFetcher, CLOUD_ORIGIN: "https://cloud.test" };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await fakeAccess();
   seen = [];
   answer = () => Response.json({ ok: true });
 });
 
-async function signedIn(): Promise<string> {
-  const value = await signSession({ githubId: 1001, login: "octocat" }, "test-session-secret", Math.floor(Date.now() / 1000));
-  return `${SESSION_COOKIE}=${value}`;
-}
-
-async function api(path: string, init: RequestInit = {}, e: Env = env, withSession = true): Promise<Response> {
+async function api(path: string, init: RequestInit = {}, e: Env = env, signedIn = true): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (withSession) headers.set("Cookie", [await signedIn(), headers.get("Cookie")].filter(Boolean).join("; "));
+  if (signedIn) headers.set("Cf-Access-Jwt-Assertion", await token());
   return worker.fetch(new Request(`${ORIGIN}${path}`, { ...init, headers }), e);
 }
 
 const change = { method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json" }, body: "{}" };
 
 describe("forwarding", () => {
-  it("never forwards the page to the operators' authenticator keys", async () => {
-    for (const path of ["/api/operators/1001/totp", "/api/operators/1002/totp/use", "/api/OPERATORS/1001/totp", "/api/operators"]) {
-      for (const method of ["GET", "PUT", "POST", "DELETE"]) {
-        const res = await api(path, method === "GET" ? {} : { ...change, method });
-        expect(res.status, `${method} ${path}`).toBe(404);
-      }
-    }
-    expect(seen).toEqual([]);
-  });
-
   it("forwards a signed-in operator's call with the secret and their name", async () => {
     const res = await api("/api/users?q=octo");
     expect(res.status).toBe(200);
@@ -60,16 +45,15 @@ describe("forwarding", () => {
     expect(seen[0]!.url).toBe("https://cloud.test/admin/users?q=octo");
     expect(seen[0]!.method).toBe("GET");
     expect(seen[0]!.headers.get("Authorization")).toBe("Bearer test-secret");
-    expect(seen[0]!.headers.get("X-Arakun-Operator-Id")).toBe("1001");
-    expect(seen[0]!.headers.get("X-Arakun-Operator-Login")).toBe("octocat");
+    expect(seen[0]!.headers.get("X-Arakun-Operator-Email")).toBe(EMAIL);
   });
 
   it("does not pass on the cookie or the client's headers", async () => {
     await api("/api/users", {
       headers: {
         Cookie: "other=1",
+        "X-Arakun-Operator-Email": "evil@example.com",
         "X-Arakun-Operator-Id": "9",
-        "X-Arakun-Operator-Login": "evil",
         Authorization: "Bearer x",
         "X-Custom": "y",
       },
@@ -78,17 +62,18 @@ describe("forwarding", () => {
     expect(h.get("Cookie")).toBeNull();
     expect(h.get("X-Custom")).toBeNull();
     expect(h.get("Authorization")).toBe("Bearer test-secret");
-    expect(h.get("X-Arakun-Operator-Id")).toBe("1001");
-    expect(h.get("X-Arakun-Operator-Login")).toBe("octocat");
+    expect(h.get("X-Arakun-Operator-Email")).toBe(EMAIL);
+    expect(h.get("X-Arakun-Operator-Id")).toBeNull();
+    expect(h.get("Cf-Access-Jwt-Assertion")).toBeNull();
   });
 
-  it("puts the operator's login in by, whatever the body said", async () => {
+  it("puts the operator's email in by, whatever the body said", async () => {
     for (const action of ["grant", "decline"]) {
       seen = [];
       const res = await api(`/api/cloud/requests/7/${action}`, { ...change, method: "PUT", body: JSON.stringify({ by: "someone" }) });
       expect(res.status).toBe(200);
       expect(seen[0]!.url).toBe(`https://cloud.test/admin/cloud/requests/7/${action}`);
-      expect(JSON.parse(seen[0]!.body)).toEqual({ by: "octocat" });
+      expect(JSON.parse(seen[0]!.body)).toEqual({ by: EMAIL });
     }
   });
 
@@ -98,7 +83,7 @@ describe("forwarding", () => {
     expect(seen[0]!.headers.get("Content-Type")).toBe("application/json");
   });
 
-  it("answers 401 without a session and asks the cloud nothing", async () => {
+  it("answers 401 without an Access token and asks the cloud nothing", async () => {
     const res = await api("/api/users", {}, env, false);
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "not signed in" });
@@ -198,7 +183,7 @@ describe("forwarding", () => {
 
   it("answers /api/me itself", async () => {
     const res = await api("/api/me");
-    expect(await res.json()).toEqual({ github_id: 1001, login: "octocat" });
+    expect(await res.json()).toEqual({ email: EMAIL });
     expect(seen).toEqual([]);
   });
 

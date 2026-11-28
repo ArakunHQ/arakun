@@ -40,9 +40,17 @@ export interface Operator {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
-/// From X-Arakun-Operator-Id and X-Arakun-Operator-Login. Both or neither: a
-/// name without its ID, or the reverse, could name the wrong person.
+/// An email address as Cloudflare Access names an operator, kept short for
+/// the log.
+const EMAIL = /^[^\s@"<>]{1,64}@[A-Za-z0-9.-]{1,190}$/;
+
+/// From X-Arakun-Operator-Email, which the admin panel sets from the operator's
+/// Cloudflare Access sign-in, or else X-Arakun-Operator-Id and
+/// X-Arakun-Operator-Login, for a call by hand. Both or neither: a name without
+/// its ID, or the reverse, could name the wrong person.
 export function operator(request: Request): Operator {
+  const email = request.headers.get("X-Arakun-Operator-Email") ?? "";
+  if (EMAIL.test(email)) return { id: null, login: email };
   const idText = request.headers.get("X-Arakun-Operator-Id") ?? "";
   const login = request.headers.get("X-Arakun-Operator-Login") ?? "";
   const id = NUMERIC_ID.test(idText) ? Number(idText) : NaN;

@@ -122,6 +122,15 @@ describe("the admin log", () => {
     for (const e of entries) expect([e.operator_id, e.operator_login]).toEqual([null, null]);
   });
 
+  it("names an operator by their Cloudflare Access email", async () => {
+    const id = await account();
+    await call("PUT", `/admin/users/${id}/flags/teams`, { ...ADMIN, "X-Arakun-Operator-Email": "ops@example.com" });
+    await call("PUT", `/admin/users/${id}/flags/beta`, { ...ADMIN, "X-Arakun-Operator-Email": "not an email" });
+    const { entries } = await log();
+    expect(entries[1]).toMatchObject({ operator_id: null, operator_login: "ops@example.com", action: "flag.grant" });
+    expect(entries[0]).toMatchObject({ operator_id: null, operator_login: null, action: "flag.grant" });
+  });
+
   it("records nothing for a refused change", async () => {
     await ask(2002, "granted");
     expect((await call("PUT", "/admin/cloud/requests/2002/decline", OP)).status).toBe(409);

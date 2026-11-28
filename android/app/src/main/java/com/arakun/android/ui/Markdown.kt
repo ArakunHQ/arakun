@@ -125,3 +125,86 @@ private fun closingParen(s: String, from: Int): Int {
 }
 
 private val WEB = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
+
+/** A piece of the agent's words: text to draw as [markdown], or a picture on a line of its own. */
+sealed interface Block {
+    data class Words(val text: String) : Block
+    data class Pic(val url: String, val alt: String) : Block
+}
+
+/**
+ * The agent's words with each `![alt](url)` taken out as a picture, as the
+ * phone page draws them. The computer rewrote the files its agent named to
+ * signed `/image?…` links; those and `https:` pictures show, anything else
+ * stays as written. Code spans and fenced blocks are left alone.
+ */
+fun blocks(s: String): List<Block> {
+    val out = mutableListOf<Block>()
+    val words = StringBuilder()
+    fun flush() {
+        val t = words.toString().trim('\n')
+        if (t.isNotBlank()) out += Block.Words(t)
+        words.clear()
+    }
+    var i = 0
+    while (i < s.length) {
+        val ch = s[i]
+        when {
+            ch == '\\' && i + 1 < s.length -> {
+                words.append(s, i, i + 2)
+                i += 2
+            }
+            ch == '`' -> {
+                // A run of backticks closes on a run as long: a fence, or a code span.
+                var n = 1
+                while (i + n < s.length && s[i + n] == '`') n++
+                val marker = "`".repeat(n)
+                val end = s.indexOf(marker, i + n)
+                val upTo = if (end < 0) i + n else end + n
+                words.append(s, i, upTo)
+                i = upTo
+            }
+            s.startsWith("![", i) -> {
+                val close = s.indexOf(']', i + 2)
+                val alt = if (close > 0) s.substring(i + 2, close) else ""
+                val end = if (close > 0 && !alt.contains('\n') && close + 1 < s.length && s[close + 1] == '(') {
+                    closingParen(s, close + 2)
+                } else {
+                    -1
+                }
+                val url = if (end > 0) s.substring(close + 2, end) else ""
+                if (end < 0 || !shown(url)) {
+                    words.append(ch)
+                    i++
+                } else {
+                    flush()
+                    out += Block.Pic(url, alt)
+                    i = end + 1
+                }
+            }
+            else -> {
+                words.append(ch)
+                i++
+            }
+        }
+    }
+    flush()
+    return out
+}
+
+/** Whether the app can show a picture from `url`: the computer's own links and the web's. */
+private fun shown(url: String): Boolean =
+    (url.startsWith("/") && !url.startsWith("//")) || url.startsWith("https://", ignoreCase = true)
+
+/**
+ * What a picture is called while it loads: its description, else the file
+ * name a signed link carries in `p`, else the last part of its address.
+ */
+fun pictureName(url: String, alt: String): String {
+    if (alt.isNotBlank()) return alt
+    val query = url.substringAfter('?', "")
+    val path = query.split('&').firstOrNull { it.startsWith("p=") }?.removePrefix("p=")
+        ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() }
+        ?: url.substringBefore('?').substringBefore('#')
+    return path.trimEnd('/').substringAfterLast('/').ifEmpty { "Picture" }
+}

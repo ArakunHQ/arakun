@@ -42,7 +42,7 @@ class ModelTest {
     @Test
     fun readsTheImagesAUserEntryNames() {
         val e = Entry.of(json("""{"type":"user","text":"look","at":0,"pastes":[],"images":[{"name":"shot.png","url":"/image?x"}]}"""))
-        assertEquals(listOf("shot.png"), (e as Entry.User).images)
+        assertEquals(listOf(Entry.Picture("shot.png", "/image?x")), (e as Entry.User).images)
     }
 
     @Test

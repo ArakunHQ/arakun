@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,9 +49,7 @@ fun EntryView(entry: Entry) {
     val c = Palette.current
     when (entry) {
         is Entry.User -> UserEntry(entry)
-        is Entry.Agent -> SelectionContainer {
-            Text(markdown(entry.text, c), style = Type.body.copy(lineHeight = Type.body.lineHeight * 1.08f), modifier = Modifier.fillMaxWidth())
-        }
+        is Entry.Agent -> AgentEntry(entry.text)
         is Entry.Thought -> Fold(R.drawable.ic_ai_idea, "Thinking") {
             SelectionContainer { Text(entry.text, style = Type.small, color = c.textMuted) }
         }
@@ -79,6 +78,23 @@ fun EntryView(entry: Entry) {
     }
 }
 
+/** The agent's words, with the pictures it shows between them. */
+@Composable
+private fun AgentEntry(text: String) {
+    val c = Palette.current
+    val parts = remember(text) { blocks(text) }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+        parts.forEach { part ->
+            when (part) {
+                is Block.Words -> SelectionContainer {
+                    Text(markdown(part.text, c), style = Type.body.copy(lineHeight = Type.body.lineHeight * 1.08f), modifier = Modifier.fillMaxWidth())
+                }
+                is Block.Pic -> AgentPicture(part.url, part.alt)
+            }
+        }
+    }
+}
+
 @Composable
 private fun UserEntry(e: Entry.User) {
     val c = Palette.current
@@ -90,15 +106,12 @@ private fun UserEntry(e: Entry.User) {
                 Text(e.text, style = Type.body, modifier = Modifier.card().padding(horizontal = 14.dp, vertical = 10.dp))
             }
             e.pastes.forEach { PasteView(it) }
-            // The pictures themselves come through the channel; the app names them for now.
-            e.images.forEach { name ->
-                Row(
-                    Modifier.background(c.deep, RoundedCornerShape(Radius.control)).padding(horizontal = 10.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            if (e.images.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    BrandIcon(R.drawable.ic_file01, 13.dp, c.textMuted)
-                    Text(name, style = mono(11.5f), color = c.textMuted, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                    e.images.forEach { PromptPicture(it.name, it.url) }
                 }
             }
             val time = DateFormat.getTimeFormat(context).format(Date(e.at))

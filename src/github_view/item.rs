@@ -857,13 +857,13 @@ impl GitHubView {
         if self.tab == Tab::Pilot
             && let Some(b) = &board
         {
-            return div()
+            let body = div()
                 .id("gh-body")
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(&self.body_scroll)
-                .child(self.render_pilot_steps(b))
-                .into_any_element();
+                .child(self.render_pilot_steps(b));
+            return page_in(body, Tab::Pilot);
         }
         let g = self.github.read(cx);
         let Some(details) = g.details(&item) else {
@@ -893,15 +893,26 @@ impl GitHubView {
             (tab, details),
             (Tab::Checks | Tab::Commits, Details::Pull(_))
         );
-        div()
+        let body = div()
             .id("gh-body")
             .size_full()
             .when(scrolls, |d| {
                 d.overflow_y_scroll().track_scroll(&self.body_scroll)
             })
-            .child(content)
-            .into_any_element()
+            .child(content);
+        page_in(body, tab)
     }
+}
+
+/// The body of `tab`, coming in from the side of its tab after a switch.
+fn page_in(body: impl IntoElement + gpui::Styled + 'static, tab: Tab) -> AnyElement {
+    crate::subnav::page(
+        body,
+        super::PAGES,
+        format!("{tab:?}"),
+        super::tab_place(tab),
+        crate::subnav::Run::Across,
+    )
 }
 
 fn reviewer_look(s: pr::ReviewerState) -> (&'static str, Hsla) {

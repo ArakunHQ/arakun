@@ -82,12 +82,24 @@ impl Shell {
         }
         let filters = self.subnav_filters(view, cx);
         let pick = self.subnav_pick(view);
+        // Only the pages move; a new filter narrows the page in place.
+        let page = div().flex_1().min_h_0().w_full().child(body);
+        let page = match subnav::on_page(&lines) {
+            Some((key, index)) => subnav::page(
+                page,
+                format!("pane-{view:?}"),
+                key,
+                index,
+                subnav::Run::Across,
+            ),
+            None => page.into_any_element(),
+        };
         div()
             .flex()
             .flex_col()
             .size_full()
             .child(subnav::bar("pane-subnav", lines, filters, pick))
-            .child(div().flex_1().min_h_0().w_full().child(body))
+            .child(page)
             .into_any_element()
     }
 }

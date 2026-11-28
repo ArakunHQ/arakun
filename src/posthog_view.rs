@@ -386,6 +386,27 @@ impl PostHogView {
         }
     }
 
+    /// `body` as the page of the tab on, coming in from the side of its tab
+    /// after a switch. Only the tabs' own pages move: a detail, the accounts
+    /// or the picker arrive as they did.
+    fn page_in(&self, body: gpui::Div) -> AnyElement {
+        let on_tabs = !self.sessions.is_empty()
+            && self.page == Page::Main
+            && self.current.is_some()
+            && self.detail.is_none();
+        if !on_tabs {
+            return body.into_any_element();
+        }
+        let index = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+        crate::subnav::page(
+            body,
+            "posthog",
+            format!("{:?}", self.tab),
+            index,
+            crate::subnav::Run::Across,
+        )
+    }
+
     pub(super) fn show_tab(&mut self, tab: Tab, _: &mut Window, cx: &mut Context<Self>) {
         self.close_detail();
         self.tab = tab;
@@ -1054,7 +1075,7 @@ impl Render for PostHogView {
             .text_color(theme::text())
             .child(header)
             .child(if own_scroll {
-                div().flex_1().min_h_0().child(body).into_any_element()
+                self.page_in(div().flex_1().min_h_0().child(body))
             } else {
                 div()
                     .id("ph-body")
@@ -1064,7 +1085,7 @@ impl Render for PostHogView {
                     .overflow_y_scroll()
                     .px(crate::ui::sp(ui::PAGE_PAD))
                     .pb(crate::ui::sp(32.))
-                    .child(div().w_full().max_w(px(1320.)).child(body))
+                    .child(self.page_in(div().w_full().max_w(px(1320.)).child(body)))
                     .into_any_element()
             })
             .when_some(menu, |d, at| {

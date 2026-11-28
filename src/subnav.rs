@@ -3,12 +3,16 @@
 //! the shell draws the row, so the sidebar keeps one row per view and never
 //! holds a view's whole menu.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Div, Hsla, SharedString, Window, div, px};
+use gpui::{AnyElement, App, Div, ElementId, Hsla, SharedString, Window, div, px};
 
 use crate::theme;
+use crate::ui::motion;
 use crate::ui::{RADIUS, TOOLBAR_H, Tone, Type, Typography, icon};
 
 /// What sits before a page's name.
@@ -271,9 +275,190 @@ fn tab(id: SharedString, e: Entry, small: bool) -> gpui::Stateful<Div> {
 /// The widest a tab's label gets before it is cut short.
 const LABEL_MAX_W: f32 = 180.;
 
+/// How a view lays out the items that pick its pages: a row of tabs, or a
+/// list down the side (Settings).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Run {
+    Across,
+    Down,
+}
+
+/// How far a new page travels as it comes in.
+const PAGE_SHIFT: f32 = 5.;
+/// How long a new page takes to come in.
+const PAGE_IN: Duration = motion::FAST;
+/// How long after a switch the page is still drawn as coming in. Longer
+/// than `PAGE_IN`, so a late first frame still plays the whole way; after
+/// it, a view shown again (another tab, then back) does not play it again.
+const PAGE_HOLD: Duration = Duration::from_millis(PAGE_IN.as_millis() as u64 * 2);
+
+/// The page a view showed last, and its last switch.
+struct Shown {
+    key: SharedString,
+    index: usize,
+    /// Counts switches, so each one starts its animation over.
+    turn: usize,
+    /// When the last switch was, and whether the page picked comes after the
+    /// one left.
+    switch: Option<(Instant, bool)>,
+}
+
+thread_local! {
+    static SHOWN: RefCell<HashMap<SharedString, Shown>> = RefCell::new(HashMap::new());
+}
+
+/// Notes that `view` shows page `key`, at `index` among its pages. Returns
+/// the switch to play when the page came in within `PAGE_HOLD`: its turn,
+/// and whether it comes after the page left. The first page a view shows
+/// does not play: the view arrives on its own.
+fn note(
+    shown: &mut HashMap<SharedString, Shown>,
+    view: &SharedString,
+    key: SharedString,
+    index: usize,
+    now: Instant,
+) -> Option<(usize, bool)> {
+    let Some(s) = shown.get_mut(view) else {
+        shown.insert(
+            view.clone(),
+            Shown {
+                key,
+                index,
+                turn: 0,
+                switch: None,
+            },
+        );
+        return None;
+    };
+    if s.key != key {
+        // A page at the same place (one renamed) comes in as the next one.
+        s.switch = Some((now, index >= s.index));
+        s.turn += 1;
+        s.key = key;
+    }
+    s.index = index;
+    let (at, after) = s.switch?;
+    (now.duration_since(at) < PAGE_HOLD).then_some((s.turn, after))
+}
+
+/// `el`, the page `view` shows, at `index` among its pages and named by
+/// `key`. Right after a switch it fades in over `motion::FAST` while it
+/// moves a few pixels in from the side of the item picked: from the right
+/// for a tab to the right of the last one, from below for an item lower in a
+/// list. The page left does not animate, and with Reduce motion on it cuts.
+pub fn page<E: IntoElement + Styled + 'static>(
+    el: E,
+    view: impl Into<SharedString>,
+    key: impl Into<SharedString>,
+    index: usize,
+    run: Run,
+) -> AnyElement {
+    let view = view.into();
+    let played = SHOWN.with(|s| {
+        note(
+            &mut s.borrow_mut(),
+            &view,
+            key.into(),
+            index,
+            Instant::now(),
+        )
+    });
+    let Some((turn, after)) = played else {
+        return el.into_any_element();
+    };
+    let id = ElementId::from((SharedString::from(format!("{view}-page-in")), turn));
+    match run {
+        Run::Across => {
+            let side = if after {
+                motion::Side::Right
+            } else {
+                motion::Side::Left
+            };
+            motion::enter_from_side(el, id, side, PAGE_SHIFT, PAGE_IN).into_any_element()
+        }
+        Run::Down => {
+            let from = if after {
+                motion::From::Below
+            } else {
+                motion::From::Above
+            };
+            motion::enter(el, id, from, PAGE_SHIFT, PAGE_IN).into_any_element()
+        }
+    }
+}
+
+/// Forgets the page `view` showed, so the next one it shows arrives with
+/// it, as the first does. For a view whose content changes under the same
+/// pages (another pull request in the same sheet).
+pub fn forget(view: &str) {
+    SHOWN.with(|s| s.borrow_mut().remove(view));
+}
+
+/// The page `lines` mark as on: its key, and where it is among the pages.
+/// The pages are the entries; headings and gaps are not.
+pub fn on_page(lines: &[Line]) -> Option<(SharedString, usize)> {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            Line::Entry(e) => Some(e),
+            _ => None,
+        })
+        .enumerate()
+        .find(|(_, e)| e.on)
+        .map(|(i, e)| (e.key.clone(), i))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_plays_once_per_switch_from_the_side_picked() {
+        let mut shown = HashMap::new();
+        let view = SharedString::from("v");
+        let t0 = Instant::now();
+        // The first page shown arrives with its view.
+        assert_eq!(note(&mut shown, &view, "a".into(), 0, t0), None);
+        assert_eq!(note(&mut shown, &view, "a".into(), 0, t0), None);
+        // A page to the right comes from the right, and keeps its turn while
+        // it plays.
+        assert_eq!(note(&mut shown, &view, "c".into(), 2, t0), Some((1, true)));
+        let soon = t0 + Duration::from_millis(50);
+        assert_eq!(
+            note(&mut shown, &view, "c".into(), 2, soon),
+            Some((1, true))
+        );
+        // After it, drawing the same page again plays nothing.
+        let later = t0 + PAGE_HOLD;
+        assert_eq!(note(&mut shown, &view, "c".into(), 2, later), None);
+        // A page to the left comes from the left, with a new turn.
+        assert_eq!(
+            note(&mut shown, &view, "b".into(), 1, later),
+            Some((2, false))
+        );
+    }
+
+    #[test]
+    fn views_keep_their_own_page() {
+        let mut shown = HashMap::new();
+        let t0 = Instant::now();
+        let (a, b) = (SharedString::from("a"), SharedString::from("b"));
+        note(&mut shown, &a, "x".into(), 0, t0);
+        assert_eq!(note(&mut shown, &b, "y".into(), 3, t0), None);
+        assert_eq!(note(&mut shown, &a, "x".into(), 0, t0), None);
+    }
+
+    #[test]
+    fn the_page_on_counts_only_entries() {
+        let lines = vec![
+            Line::Heading("Group".into()),
+            Line::Entry(Entry::new("one", Lead::Icon("cube"), "One")),
+            Line::Gap,
+            Line::Entry(Entry::new("two", Lead::Icon("cube"), "Two").on(true)),
+        ];
+        assert_eq!(on_page(&lines), Some(("two".into(), 1)));
+        assert_eq!(on_page(&lines[..2]), None);
+    }
 
     #[test]
     fn an_entry_keeps_what_it_is_given() {

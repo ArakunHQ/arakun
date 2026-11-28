@@ -115,6 +115,9 @@ pub fn gh_fix(id: impl Into<gpui::ElementId>, text: &str) -> Option<AnyElement> 
     Some(button.into_any_element())
 }
 
+/// The sheet's tabs, for `crate::subnav::page`.
+const PAGES: &str = "gh-sheet";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     /// "Pilot activity": the board's timeline.
@@ -767,6 +770,8 @@ impl GitHubView {
             } else {
                 Tab::Timeline
             };
+            // Another item is not another page: it arrives with the sheet.
+            crate::subnav::forget(PAGES);
             self.confirm = None;
             self.pilot_act = None;
             self.editing_draft = false;
@@ -2612,6 +2617,17 @@ fn opens_on_step(sheet_open: bool) -> bool {
 
 /// The tab to show: Pilot only while the board has the pull request, else
 /// the conversation, which every pull request lists.
+/// Where `tab` sits in the sheet's row of tabs.
+fn tab_place(tab: Tab) -> usize {
+    match tab {
+        Tab::Pilot => 0,
+        Tab::Timeline => 1,
+        Tab::Checks => 2,
+        Tab::Commits => 3,
+        Tab::Files => 4,
+    }
+}
+
 fn listed_tab(tab: Tab, on_board: bool) -> Tab {
     match tab {
         Tab::Pilot if !on_board => Tab::Timeline,

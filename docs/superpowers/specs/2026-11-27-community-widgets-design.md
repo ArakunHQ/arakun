@@ -5,8 +5,8 @@ widgets. Design: Marketplace v5 (ARAKUN-264), frame "5 · Community widget"
 (https://doop.arakun.dev/c/sEA9hKJMVj?frame=rZZmrDNC94) and the widgets note
 (https://doop.arakun.dev/c/sEA9hKJMVj?frame=Rip8BodRwI).
 
-Status: draft for review. The loader (ARAKUN-270) waits for this review and for
-answers to the open questions at the end.
+Status: the loader (ARAKUN-270) follows this spec. See "The loader" below for
+the choices it made where the spec left room.
 
 ## Why
 
@@ -278,6 +278,31 @@ fn view(state, size) {
     }))
 }
 ```
+
+## The loader (ARAKUN-270)
+
+The runtime is `core/src/widget/`. Where this spec left room, it decides:
+
+- **The file hash** is SHA-256 over the files sorted by name, each as its
+  name, a zero byte, its length (8 bytes, little endian) and its bytes, in
+  lowercase hex (`manifest::hash`). The index must compute the same. Arakun
+  hashes the files again each time it loads them, so a file changed on disk
+  doesn't run.
+- **"At most once per `every`"** for a host means one window per `every`, with
+  up to 5 requests in it, so a refresh can make a few calls to one API.
+- **A call outside the grant** stops the widget even when the script catches
+  the error. The row says what it asked for, such as "It asked to reach
+  evil.example.com, which you did not allow".
+- **A token not added yet** is the Waiting state ("Needs your Vercel token"),
+  not Broken. Tokens are kept in the keyring as `widget:<id>:<secret name>`.
+- **Requests** resolve the host and refuse it when any address is private,
+  loopback, link-local or reserved. The connection uses the addresses that
+  were checked. There is no proxy and no cookie jar, a new client is made for
+  each request, and the methods are GET, POST and HEAD.
+- **Hitting the limits** three refreshes in a row stops the widget (Broken).
+- **An update** that asks for more, or that no longer draws in its place,
+  waits as Update available. Its files are kept, and the old version keeps
+  running until the user allows it.
 
 ## Code this builds on
 

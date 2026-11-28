@@ -47,6 +47,7 @@ With `ARAKUN_STATE` set, these are in the folder of that file instead.
 | Saved prompts | `~/.local/share/arakun/prompts.json` |
 | Notice history | `~/.local/share/arakun/notices.json` |
 | Saved palettes | `~/.local/share/arakun/palettes.json` |
+| Community widgets: each version's files under `<author>/<name>/<version>`, and `widgets.toml` with where each shows and what you allowed it (its tokens are in the keyring) | `~/.local/share/arakun/widgets/` |
 | `Ctrl+K` rules | `~/.local/share/arakun/rules.json` |
 | What you pinned from the palette (`Alt+P`) | `~/.local/share/arakun/pins.json` |
 | Your to-dos, added from the palette | `~/.local/share/arakun/todos.json` |

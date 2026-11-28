@@ -55,6 +55,11 @@ tungstenite.workspace = true
 qrcode.workspace = true
 getrandom.workspace = true
 sha2.workspace = true
+# community widgets (src/widget): scripts in a sandbox, the same engine and float
+# width as the app's Isometric scenes, so Cargo builds one rhai for both
+rhai = { version = "1", features = ["f32_float"] }
+# a widget's manifest, widget.toml, and the install settings in widgets.toml
+toml = "0.8"
 # Web Push to the phones (src/phone/push.rs): VAPID signing, ECDH and
 # aes128gcm with the ring rustls already pulls in
 ring.workspace = true

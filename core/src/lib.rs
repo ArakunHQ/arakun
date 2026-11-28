@@ -51,4 +51,5 @@ pub mod terminal;
 pub mod theme;
 pub mod ui;
 pub mod when;
+pub mod widget;
 pub mod zoom;

@@ -28,7 +28,7 @@ struct ModelTests {
     @Test func readsTheImagesAUserEntryNames() {
         let e = Entry(json(#"{"type":"user","text":"look","at":0,"pastes":[],"images":[{"name":"shot.png","url":"/image?x"}]}"#))
         guard case .user(_, _, _, _, let images) = e else { Issue.record("not a user entry"); return }
-        #expect(images == ["shot.png"])
+        #expect(images == [Picture(name: "shot.png", url: "/image?x")])
     }
 
     @Test func aToolChangesWithItsExitCodeAndDiffs() {

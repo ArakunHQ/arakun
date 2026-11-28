@@ -205,8 +205,9 @@ sees the project's skills.
   sessions can be resumed, and per-turn diffs show what each turn changed, including
   changes made by shell commands (files over 1 MB are left out). Each transcript is kept
   in `sessions/` in Arakun's data folder until you delete the session or remove its
-  environment or project, which deletes it at once. At startup, Arakun also deletes the
-  files of a session its state has not listed for a week, such as one whose worktree was
+  environment or project, which deletes it at once. At startup and then once a day while
+  it is open, Arakun also deletes the files of a session its state has not listed for a
+  week, such as one whose worktree was
   removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
   the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
   whose session it hasn't seen listed. A headless session keeps its file while its folder

@@ -41,6 +41,7 @@ pub use github::open_terminal_link;
 mod doop;
 mod headless;
 mod home;
+mod housekeep;
 mod hover;
 mod inbox;
 mod island;
@@ -443,6 +444,8 @@ pub struct Shell {
     /// Merges seen and settled (`settle`).
     settle: settle::Watch,
     cleanup: cleanup::Watch,
+    /// When the daily cleanup of files on disk last ran (`housekeep`).
+    housekept_at: Option<Instant>,
     /// The divider between split panes being dragged: the one after the
     /// pane at that place on screen.
     split_drag: Option<usize>,
@@ -990,6 +993,7 @@ impl Shell {
             _scheduler: None,
             settle: settle::Watch::default(),
             cleanup: cleanup::Watch::default(),
+            housekept_at: None,
             split_drag: None,
             split_bounds: Rc::default(),
             browsers_dirty: false,
@@ -1142,22 +1146,11 @@ impl Shell {
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);
-        // Taken from the state as loaded: a refresh can save one without a
-        // worktree removed outside Arakun before the sweep reads it.
-        let listed = this
-            .projects
-            .iter()
-            .flat_map(|p| &p.environments)
-            .flat_map(|e| &e.sessions)
-            .flat_map(sessions::session_file_ids)
-            .collect();
-        let images = servers::images_dir();
-        cx.background_spawn(crate::guard::task(async move {
-            state::make_chat_files_private();
-            state::sweep_orphans(listed);
-            crate::cleanup::sweep_leftovers(&images);
+        cx.background_spawn(crate::guard::task(async {
+            state::make_chat_files_private()
         }))
         .detach();
+        this.housekeep(cx);
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
         // The system close (the title bar's X, Alt+F4, Super+W) goes through the

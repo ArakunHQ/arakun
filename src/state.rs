@@ -796,13 +796,13 @@ fn make_private(path: &Path, deep: bool) {
 fn make_private(_: &Path, _: bool) {}
 
 /// How long the files of a session its state stopped listing are kept,
-/// counted from the first startup that found it gone. Removing the session
+/// counted from the first cleanup that found it gone. Removing the session
 /// deletes them at once; the sweep is for the few that missed it, such as a
 /// worktree removed outside Arakun.
 const ORPHAN_AGE: u64 = 7 * 24 * 60 * 60;
 
 /// The sessions a state was seen listing, kept next to it: None while it
-/// still lists one, else when (Unix seconds) a startup first found it gone.
+/// still lists one, else when (Unix seconds) a cleanup first found it gone.
 type Seen = std::collections::BTreeMap<String, Option<u64>>;
 
 /// Where the sessions a state was seen listing are kept: next to it, named
@@ -820,23 +820,12 @@ fn seen_path() -> PathBuf {
 /// Only sessions this state was seen listing count. Another Arakun with its
 /// own state (`ARAKUN_STATE`), of any version, keeps its sessions in the same
 /// folder, and a file whose owner was never seen is never deleted. `listed`
-/// is what the state held when Arakun loaded it. Skipped when the state or
-/// the seen list can't be read, since every file would look unlisted.
+/// is what the state in memory holds now. Skipped when the state or the seen
+/// list can't be read, since every file would look unlisted.
 pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
-    let parses = std::fs::read(file())
-        .ok()
-        .is_some_and(|b| serde_json::from_slice::<State>(&b).is_ok());
-    if !parses {
-        return;
-    }
     let seen_path = seen_path();
-    let seen: Seen = match std::fs::read(&seen_path) {
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(seen) => seen,
-            Err(_) => return,
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Seen::new(),
-        Err(_) => return,
+    let Some(seen) = readable_seen(&file(), &seen_path) else {
+        return;
     };
     let dirs = [
         (crate::paths::store(crate::paths::SESSIONS), "json"),
@@ -854,11 +843,27 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
     }
 }
 
+/// The seen list at `seen`, or None when it or the state at `state` can't
+/// be read. A missing seen list is an empty one: nothing was seen yet.
+fn readable_seen(state: &Path, seen: &Path) -> Option<Seen> {
+    let parses = std::fs::read(state)
+        .ok()
+        .is_some_and(|b| serde_json::from_slice::<State>(&b).is_ok());
+    if !parses {
+        return None;
+    }
+    match std::fs::read(seen) {
+        Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Seen::new()),
+        Err(_) => None,
+    }
+}
+
 /// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions `seen` holds
 /// that `listed` has not held for `ORPHAN_AGE`, and the images in `pastes`
 /// they mention, and returns the seen list for next time. A session whose
 /// files can't be checked or deleted, or whose headless folder may still be
-/// there, stays for the next startup to retry.
+/// there, stays for the next cleanup to retry.
 fn sweep(
     dirs: &[(PathBuf, &str)],
     pastes: &Path,
@@ -1692,6 +1697,37 @@ mod tests {
     }
 
     #[test]
+    fn the_sweep_is_skipped_when_the_state_or_seen_list_cant_be_read() {
+        let dir = std::env::temp_dir().join(format!("arakun-seen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (state, seen) = (dir.join("state.json"), dir.join("state.json.seen"));
+        let good = serde_json::to_vec(&State::default()).unwrap();
+
+        // No state, or one that doesn't parse: every file would look unlisted.
+        assert_eq!(readable_seen(&state, &seen), None);
+        std::fs::write(&state, b"{ half a sta").unwrap();
+        assert_eq!(readable_seen(&state, &seen), None);
+
+        // A readable state with no seen list yet starts an empty one.
+        std::fs::write(&state, &good).unwrap();
+        assert_eq!(readable_seen(&state, &seen), Some(Seen::new()));
+
+        std::fs::write(&seen, b"not json").unwrap();
+        assert_eq!(readable_seen(&state, &seen), None);
+        // A folder in its place can't be read either.
+        std::fs::remove_file(&seen).unwrap();
+        std::fs::create_dir(&seen).unwrap();
+        assert_eq!(readable_seen(&state, &seen), None);
+        std::fs::remove_dir(&seen).unwrap();
+
+        let kept = Seen::from([("one".into(), None), ("two".into(), Some(5))]);
+        std::fs::write(&seen, serde_json::to_vec(&kept).unwrap()).unwrap();
+        assert_eq!(readable_seen(&state, &seen), Some(kept));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn only_sessions_unlisted_for_a_week_are_swept() {
         let dir = std::env::temp_dir().join(format!("arakun-sweep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1728,7 +1764,7 @@ mod tests {
             ("removed".into(), long_ago),
             ("recent".into(), Some(now - 60)),
             ("headless-run".into(), long_ago),
-            // Listed at the last startup: gone from now on, kept a week.
+            // Listed at the last cleanup: gone from now on, kept a week.
             ("dropped".into(), None),
         ]);
         let listed = ["listed", "new"].map(String::from).into();

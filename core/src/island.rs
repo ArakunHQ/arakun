@@ -1901,6 +1901,17 @@ impl Island {
         }
     }
 
+    /// How opaque a dot is at `t`: a waiting agent's dot blinks, deeper and
+    /// faster than the breathing, so the one that needs the user stands out
+    /// among the busy ones. Steady when motion is reduced.
+    fn dot_alpha(&self, status: Status, t: f32, phase: f32) -> f32 {
+        match status {
+            Status::Working => self.pulse(t, phase),
+            Status::Waiting if !self.still => 0.6 + 0.4 * (t * TAU / 0.9).sin(),
+            _ => 1.,
+        }
+    }
+
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
             Phase::Sleeping | Phase::Idle => div().into_any_element(),
@@ -1916,10 +1927,7 @@ impl Island {
                     .items_center()
                     .gap(px(DOT_GAP))
                     .children(dots.into_iter().enumerate().map(|(i, s)| {
-                        let pulse = match s {
-                            Status::Working => self.pulse(t, i as f32),
-                            _ => 1.,
-                        };
+                        let pulse = self.dot_alpha(s, t, i as f32);
                         div()
                             .size(px(DOT))
                             .rounded_full()
@@ -2224,10 +2232,7 @@ impl Island {
             .take(MAX_ROWS)
             .enumerate()
             .map(|(i, a)| {
-                let pulse = match a.status {
-                    Status::Working => self.pulse(t, 0.),
-                    _ => 1.,
-                };
+                let pulse = self.dot_alpha(a.status, t, 0.);
                 let key = a.key.clone();
                 div()
                     .id(i)
@@ -2986,7 +2991,12 @@ impl Render for Island {
             self.region = Some(region);
         }
         // Frames only while the shape moves or something pulses.
-        let pulsing = !self.still && self.feed.rows.iter().any(|r| r.status == Status::Working);
+        let pulsing = !self.still
+            && self
+                .feed
+                .rows
+                .iter()
+                .any(|r| matches!(r.status, Status::Working | Status::Waiting));
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
             View::Compact(_) | View::Recording if self.recording.is_some() => true,

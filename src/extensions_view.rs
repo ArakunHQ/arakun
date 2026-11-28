@@ -642,24 +642,6 @@ impl ExtensionsView {
         );
     }
 
-    fn add_from_catalog(
-        &mut self,
-        name: &'static str,
-        url: &'static str,
-        sign_in: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(cwd) = self.cwd.clone() else { return };
-        let then = sign_in.then(|| claude_ext::login_command(name));
-        self.run_op(
-            name.to_string(),
-            "was added for every project",
-            move || claude_ext::add_http(&cwd, name, url),
-            then,
-            cx,
-        );
-    }
-
     fn load_droid(&mut self, cx: &mut Context<Self>) {
         let Some(cwd) = self.cwd.clone() else { return };
         self.droid_absent = !extensions::installed();
@@ -959,10 +941,6 @@ impl ExtensionsView {
                     table(&SERVER_COLS, rows),
                 ));
             }
-        }
-
-        if wants(Kind::Servers) {
-            body = body.children(self.render_discover(x, filtering, &words, cx));
         }
 
         if wants(Kind::Plugins) {
@@ -1687,90 +1665,6 @@ impl ExtensionsView {
             "Servers Claude can't use right now, and how to fix them",
             None,
             cards,
-        ))
-    }
-
-    /// Popular servers you don't have yet, one click away.
-    fn render_discover(
-        &self,
-        x: &ClaudeExtensions,
-        filtering: bool,
-        words: &[String],
-        cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        let have: Vec<&str> = x
-            .servers
-            .iter()
-            .map(|s| claude_ext::host(&s.target))
-            .collect();
-        let picks: Vec<_> = claude_ext::CATALOG
-            .iter()
-            .filter(|(name, url, _, _)| {
-                !have.contains(&claude_ext::host(url)) && !x.servers.iter().any(|s| s.name == *name)
-            })
-            .filter(|(name, _, about, _)| {
-                !filtering
-                    || words.iter().all(|w| {
-                        format!("{name} {about}")
-                            .to_lowercase()
-                            .contains(w.as_str())
-                    })
-            })
-            .collect();
-        if picks.is_empty() {
-            return None;
-        }
-        let mut picks = picks;
-        picks.sort_by_key(|(name, ..)| *name);
-        let cards: Vec<AnyElement> = picks
-            .into_iter()
-            .map(|&(name, url, about, sign_in)| {
-                let busy = self.op.as_deref() == Some(name);
-                let action = if busy {
-                    ui::spinner(14., theme::text_faint()).into_any_element()
-                } else {
-                    ui::button_with(
-                        SharedString::from(format!("ext-add-{name}")),
-                        Some("add01"),
-                        "Add",
-                        ButtonKind::Outline,
-                        self.op.is_none(),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.add_from_catalog(name, url, sign_in, cx)
-                    }))
-                    .into_any_element()
-                };
-                let tags = div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .child(ui::tag("Remote", rgb(CAT_GREEN)))
-                    .child(if sign_in {
-                        ui::tag("Sign in", rgb(CAT_BLUE))
-                    } else {
-                        ui::tag("No account", rgb(CAT_BLUE))
-                    });
-                let host = claude_ext::host(url);
-                let by = crate::agent::publishers::by_domain(host).map(|c| (c.to_string(), true));
-                market::card(
-                    logos::mark(name, url),
-                    capitalize(name),
-                    by,
-                    host.to_string(),
-                    about.to_string(),
-                    tags,
-                    action,
-                )
-                .into_any_element()
-            })
-            .collect();
-        let grid = market::grid(cards, 3);
-        Some(section(
-            "Discover",
-            "Popular MCP servers, added for every project in one click",
-            None,
-            grid,
         ))
     }
 

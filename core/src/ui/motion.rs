@@ -139,6 +139,33 @@ pub fn enter_from_right<E: IntoElement + Styled + 'static>(
     })
 }
 
+/// Which side a surface slides in from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Left,
+    Right,
+}
+
+/// Fades `el` in while it slides `distance` px in from `side`. Shifts it
+/// with a relative inset, so the layout around it stays still; for elements
+/// in the flow, not absolutely placed ones.
+pub fn enter_from_side<E: IntoElement + Styled + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    side: Side,
+    distance: f32,
+    duration: Duration,
+) -> AnimationElement<E> {
+    el.with_animation(id, Animation::new(duration), move |el, t| {
+        let (opacity, offset) = enter_at(t, From::Below, distance);
+        let offset = match side {
+            Side::Left => -offset,
+            Side::Right => offset,
+        };
+        el.opacity(opacity).relative().left(px(offset))
+    })
+}
+
 /// Where a closing surface is `t` (0 to 1) into its way out: its opacity, and
 /// how far it has gone back toward where it came from, in pixels (negative
 /// is above). It fades fast and drifts, so the window is clear early.

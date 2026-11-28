@@ -1912,9 +1912,18 @@ impl SettingsDialog {
             .px(crate::ui::sp(24.))
             .pt(crate::ui::sp(16.))
             .pb(crate::ui::sp(24.))
-            .gap(crate::ui::sp(24.))
-            .child(head)
-            .child(body)
+            .child(crate::subnav::page(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(24.))
+                    .child(head)
+                    .child(body),
+                "settings",
+                format!("{s:?}"),
+                Section::ALL.iter().position(|x| *x == s).unwrap_or(0),
+                crate::subnav::Run::Down,
+            ))
             .into_any_element()
     }
 

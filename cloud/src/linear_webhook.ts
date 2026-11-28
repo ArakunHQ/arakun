@@ -10,6 +10,7 @@
 // texts go on to a connected computer in the live frame and nowhere else: a
 // follow-up's, and the guidance a workspace or team set for agents.
 
+import { wakeForWork } from "./cloud_machines";
 import { offeredFor, routeFor, FLAG, UUID } from "./linear";
 import { issuePlace, issueStateType, LinearRefused, postActivity, rankRepositories, TokenUnopened } from "./linear_api";
 import { deliver, QueueFull, type Delivery, type GuidanceRule, type StopReason } from "./machines";
@@ -45,6 +46,11 @@ const THIS_COMPUTER = "this computer";
 const queueFull = (machine: string) => `Too many requests are waiting for ${machine}. Try again when it has caught up.`;
 const sent = (machine: string) => `Sent to ${machine}. A session starts there now.`;
 const offline = (machine: string) => `${machine} is offline. The session starts when it is back, for up to 7 days.`;
+const waking = (machine: string) => `Waking ${machine}. A session starts there once it is up.`;
+const replyWaking = (machine: string) => `Waking ${machine}. Your message reaches the session once it is up.`;
+/// An operator's reason may end without a stop, so one is added.
+const wakeRefused = (why: string, machine: string) =>
+  `${/[.!?]$/.test(why) ? why : `${why}.`} The session starts on ${machine} when it runs again, for up to 7 days.`;
 const replyWaits = (machine: string) => `${machine} is offline. Your message reaches the session when it is back.`;
 const stopWaits = (machine: string) => `${machine} is offline. The session there is stopped as soon as it is back.`;
 
@@ -71,7 +77,7 @@ interface Hook {
 
 const ok = () => new Response(null, { status: 200 });
 
-export async function webhook(request: Request, env: Env): Promise<Response> {
+export async function webhook(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const text = await bodyText(request, MAX_BODY);
   if (text === null) return error(413, "too large");
   if (!(await verified(text, request.headers.get("Linear-Signature"), env.LINEAR_WEBHOOK_SECRET!))) return error(401, "bad signature");
@@ -86,7 +92,7 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
   const at = parsed["webhookTimestamp"];
   if (typeof at !== "number" || !(Math.abs(Date.now() - at) <= MAX_SKEW_MS)) return error(401, "bad signature");
   try {
-    return await handle(env, request.headers.get("Linear-Event"), parsed);
+    return await handle(env, ctx, request.headers.get("Linear-Event"), parsed);
   } catch (e) {
     // The status or the error's name only: a message could quote Linear.
     const why = e instanceof TokenUnopened ? e.name : e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown";
@@ -104,7 +110,7 @@ export async function webhook(request: Request, env: Env): Promise<Response> {
 /// The event, by the signed body's `type` for the events that stop a session:
 /// the header is not signed. The agent session events keep to the header,
 /// as before.
-async function handle(env: Env, event: string | null, parsed: Record<string, unknown>): Promise<Response> {
+async function handle(env: Env, ctx: ExecutionContext, event: string | null, parsed: Record<string, unknown>): Promise<Response> {
   const { type, action, organizationId } = parsed;
   if (type === "AppUserNotification" && (action === "issueUnassignedFromYou" || action === "issueStatusChanged")) {
     if (!isUuid(organizationId)) return error(400, "bad webhook");
@@ -131,7 +137,7 @@ async function handle(env: Env, event: string | null, parsed: Record<string, unk
     issueId: isUuid(session["issueId"]) ? session["issueId"] : null,
     commentId: commentOf(session),
   };
-  return action === "created" ? await delegated(env, hook, guidanceOf(parsed)) : await followUp(env, hook, parsed);
+  return action === "created" ? await delegated(env, ctx, hook, guidanceOf(parsed)) : await followUp(env, ctx, hook, parsed);
 }
 
 /// Whether a retry of the webhook would fail the same way.
@@ -204,7 +210,7 @@ function teamName(team: Record<string, unknown>): string | null {
 
 /// A follow-up in a session: a message or a stop. It goes to the computer
 /// that has the session, and only from the person who delegated it there.
-async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Promise<Response> {
+async function followUp(env: Env, ctx: ExecutionContext, hook: Hook, body: Record<string, unknown>): Promise<Response> {
   const activity = body["agentActivity"];
   if (!isObject(activity) || !isUuid(activity["id"])) return error(400, "bad webhook");
   const activityId = activity["id"];
@@ -237,7 +243,7 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
       await postActivity(env, hook.organizationId, hook.agentSessionId, "response", PICK_STOPPED);
       return ok();
     }
-    return picked(env, hook, pick, promptText(activity));
+    return picked(env, ctx, hook, pick, promptText(activity));
   }
   if (!(await isDelegator(session.account_id))) return (await say("thought", NOT_DELEGATOR), ok());
 
@@ -281,10 +287,15 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
   // A connected computer answers for itself. An offline one cannot, and
   // Linear would show Arakun as starting until it is back. A stop ends the
   // turn in Linear: nothing works on it meanwhile.
+  // A stop wakes nothing: a machine asleep runs no session, and the stop
+  // comes first when it next wakes.
   if (!online) {
     const machine = row.machine ?? THIS_COMPUTER;
     if (row.kind === "stop") await postActivity(env, hook.organizationId, hook.agentSessionId, "response", stopWaits(machine));
-    else await say("thought", replyWaits(machine));
+    else if (row.cloud === 1) {
+      await say("thought", replyWaking(machine));
+      wake(env, ctx, hook, row.label, machine);
+    } else await say("thought", replyWaits(machine));
   }
   await done();
   return ok();
@@ -294,8 +305,9 @@ async function followUp(env: Env, hook: Hook, body: Record<string, unknown>): Pr
 function readBack(env: Env, eventKey: string): D1PreparedStatement {
   return env.DB.prepare(
     `SELECT d.id, d.agent_session_id, d.organization_id, d.issue_id, d.kind, d.activity_id, d.reason, d.label, d.repository, d.created_at, d.announced_at,
-       d.accepted_at, d.expired_at, m.name AS machine
+       d.accepted_at, d.expired_at, m.name AS machine, c.label IS NOT NULL AS cloud
      FROM linear_deliveries d LEFT JOIN machines m ON m.label = d.label AND m.account_id = d.account_id
+       LEFT JOIN cloud_machines c ON c.label = d.label AND c.account_id = d.account_id
      WHERE d.event_key = ?`,
   ).bind(eventKey);
 }
@@ -328,11 +340,13 @@ interface Row {
   accepted_at: number | null;
   expired_at: number | null;
   machine: string | null;
+  /// 1 when the label is one of the account's cloud machines.
+  cloud: number;
 }
 
 /// An issue delegated to Arakun, or Arakun mentioned on one: find the
 /// delegator's computer, hand it the ids, and say so in the session.
-async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null): Promise<Response> {
+async function delegated(env: Env, ctx: ExecutionContext, hook: Hook, guidance: GuidanceRule[] | null): Promise<Response> {
   const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
   if (!hook.creatorId) return (await say("error", NO_CREATOR), ok());
   if (!hook.issueId) return (await say("error", NO_ISSUE), ok());
@@ -359,7 +373,7 @@ async function delegated(env: Env, hook: Hook, guidance: GuidanceRule[] | null):
   }
   const route = await routeFor(env, link.account_id, hook.organizationId, place);
   if (!route) return ask(env, hook, hook.issueId, link.account_id, place.teamId);
-  return send(env, hook, { issueId: hook.issueId, accountId: link.account_id, label: route.label, machine: route.machine, teamId: place.teamId, repository: null }, guidance);
+  return send(env, ctx, hook, { issueId: hook.issueId, accountId: link.account_id, label: route.label, machine: route.machine, teamId: place.teamId, repository: null }, guidance);
 }
 
 /// Where a delegation goes: a computer, and the repository picked for it
@@ -374,7 +388,7 @@ interface Target {
 }
 
 /// Hands a delegation to its computer and says so in the session.
-async function send(env: Env, hook: Hook, to: Target, guidance: GuidanceRule[] | null): Promise<Response> {
+async function send(env: Env, ctx: ExecutionContext, hook: Hook, to: Target, guidance: GuidanceRule[] | null): Promise<Response> {
   const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
   // The row first, keyed by the agent session: a retry finds it and finishes
   // the same delivery, under the same id, which the relay takes only once
@@ -425,9 +439,30 @@ async function send(env: Env, hook: Hook, to: Target, guidance: GuidanceRule[] |
     await say("error", queueFull(machine));
     return ok();
   }
-  await say("thought", online ? sent(machine) : offline(machine));
+  if (!online && row.cloud === 1) {
+    await say("thought", waking(machine));
+    wake(env, ctx, hook, row.label, machine);
+  } else {
+    await say("thought", online ? sent(machine) : offline(machine));
+  }
   await done();
   return ok();
+}
+
+/// Wakes the cloud machine a delivery waits for, after the answer to Linear,
+/// which a start would make late. The relay keeps the delivery and hands it
+/// over once the server dials in. When the machine will not start, the
+/// session says why; the delivery still waits for its week.
+function wake(env: Env, ctx: ExecutionContext, hook: Hook, label: string, machine: string): void {
+  ctx.waitUntil(
+    (async () => {
+      const why = await wakeForWork(env, label);
+      if (why) await postActivity(env, hook.organizationId, hook.agentSessionId, "thought", wakeRefused(why, machine));
+    })().catch((e) => {
+      // The error's name only: a message could quote Linear.
+      console.error(`linear wake: ${e instanceof LinearRefused ? e.status : e instanceof Error ? e.name : "unknown"}`);
+    }),
+  );
 }
 
 // ---- Asking which project to use ---------------------------------------------
@@ -524,7 +559,7 @@ async function openPick(env: Env, hook: Hook): Promise<Pick | null> {
 
 /// The delegator answered the question: the choice it names goes to its
 /// computer, if that computer still offers it. Anything else asks again.
-async function picked(env: Env, hook: Hook, pick: Pick, text: string | null): Promise<Response> {
+async function picked(env: Env, ctx: ExecutionContext, hook: Hook, pick: Pick, text: string | null): Promise<Response> {
   const say = (type: "thought" | "error", body: string) => postActivity(env, hook.organizationId, hook.agentSessionId, type, body);
   let choices: Choice[];
   try {
@@ -551,7 +586,7 @@ async function picked(env: Env, hook: Hook, pick: Pick, text: string | null): Pr
   };
   // The guidance came with the delegation, which is long gone: the computer
   // starts without it, as an offline one does.
-  return send(env, hook, to, null);
+  return send(env, ctx, hook, to, null);
 }
 
 // ---- Stops Linear did not ask for --------------------------------------------

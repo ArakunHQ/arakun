@@ -1184,6 +1184,13 @@ session of an account that is not blocked and has the `linear` flag: `401 { "err
 account" }` otherwise. An unknown path under `/linear` is a `404 not found`. Errors are
 JSON `{ "error": "..." }`.
 
+A cloud machine's own session (see "Cloud machines") may make the calls a computer
+makes for its work: `PUT /linear/routes`, the accept, and the session's activity, links
+and plan. It counts only for its own label: routes for another label are a `404 no such
+computer`, and a delivery or session sent to another machine of the account is a `404`
+as if unknown. Every other `/linear` route refuses it with `401`. So `arakun-server` in
+the container takes Linear's work as any server does.
+
 | Request | Who | Answer |
 | --- | --- | --- |
 | `GET /linear/install` | a signed-in account with the flag, in a browser | `302` to Linear's consent page (scopes `read,write,app:assignable,app:mentionable`, `actor=app`). Sets the cookie `__Host-arakun_linear_state` for ten minutes, holding a random state and the account's ID. |
@@ -1230,6 +1237,17 @@ to (not blocked, with the `linear` flag), the issue's team and project (asked fr
 Linear), and the computer whose routes take it. It saves a `created` delivery, hands it
 to the computer's relay, and says in the session where it went. Every refusal below is
 an activity in the session and an empty `200` to Linear.
+
+When the computer is a cloud machine that sleeps, the session hears "Waking <name>"
+instead of "offline", and the Worker wakes it after answering Linear, as a device at
+its door would. The relay keeps the delivery until the server dials in. A `prompt`
+wakes it the same way; a `stop` does not, as a sleeping machine runs no session. Linear
+does not tell a person's delegation from an automation that delegates for them, so
+either is spent on the delegator's hours. That is why the wake is a door's: it starts
+nothing past the stop for everyone, a hold or the month's allowance, and does not
+restart a machine stopped at the task cap, which only its owner's wake does. When it
+will not start, the session says why (the same sentence as a refused wake) and that the
+session starts when the machine runs again, for up to 7 days.
 
 When no route takes the issue but the account's computers offer repositories, the
 Worker asks instead. It calls Linear's `issueRepositorySuggestions` with the offered

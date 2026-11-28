@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
-import { env, SELF } from "cloudflare:test";
+import { createExecutionContext, env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { linear, routeFor } from "../src/linear";
 import { open, seal } from "../src/linear_seal";
@@ -35,7 +35,7 @@ describe("the /linear gate", () => {
     const u = await flagged(1, "ada");
     const bare = { ...env, LINEAR_TOKEN_KEY: undefined } as unknown as typeof env;
     const req = new Request("https://teams.test/linear/link", { headers: as(u.session) });
-    const res = await linear(req, bare, new URL(req.url));
+    const res = await linear(req, bare, new URL(req.url), createExecutionContext());
     expect(res?.status).toBe(404);
   });
   it.each([
@@ -47,12 +47,12 @@ describe("the /linear gate", () => {
     const bad = { ...env, LINEAR_TOKEN_KEY } as typeof env;
     for (const path of ["/linear/link", "/linear/install", "/linear/callback?code=abc&state=x"]) {
       const req = new Request(`https://teams.test${path}`, { headers: as(u.session) });
-      expect((await linear(req, bad, new URL(req.url)))?.status, path).toBe(404);
+      expect((await linear(req, bad, new URL(req.url), createExecutionContext()))?.status, path).toBe(404);
     }
   });
   it("leaves other paths alone", async () => {
     const req = new Request("https://teams.test/lineary");
-    expect(await linear(req, env, new URL(req.url))).toBeNull();
+    expect(await linear(req, env, new URL(req.url), createExecutionContext())).toBeNull();
   });
 });
 

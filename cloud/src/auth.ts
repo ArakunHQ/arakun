@@ -44,6 +44,9 @@ export interface Session {
   /// Whether the user has the flag `session()` was asked about; false when
   /// it was asked about none.
   flagged: boolean;
+  /// The label of the machine a cloud session belongs to; null for any
+  /// other session.
+  machine: string | null;
 }
 
 export interface GitHubUser {
@@ -498,6 +501,7 @@ export async function session(
     plan: row.plan,
     blocked: row.blocked === 1,
     flagged: row.flagged === 1,
+    machine: row.kind === CLOUD_KIND ? row.machine_label : null,
   };
 }
 

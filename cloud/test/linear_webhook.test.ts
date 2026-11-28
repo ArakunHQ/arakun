@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 (see cloud/LICENSE)
-import { env, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import { newCloudSession } from "../src/auth";
+import { newMachineKey } from "../src/cloud_machine";
 import { linear } from "../src/linear";
 import { saveWorkspace } from "../src/linear_api";
 import { expired } from "../src/linear_expire";
@@ -131,7 +133,7 @@ describe("Linear's webhook", () => {
     const hook = await signedWebhook(body);
     const req = new Request("https://teams.test/linear/webhook", { method: "POST", headers: hook.headers, body: hook.text });
     const bare = { ...env, LINEAR_CLIENT_ID: undefined } as unknown as typeof env;
-    expect((await linear(req, bare, new URL(req.url)))?.status).toBe(404);
+    expect((await linear(req, bare, new URL(req.url), createExecutionContext()))?.status).toBe(404);
   });
 
   it("sends a delegated issue to the delegator's computer and says so", async () => {
@@ -331,7 +333,7 @@ describe("Linear's webhook", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const broken = { ...env, DB: { prepare: () => { throw new TypeError("D1 is down"); }, batch: () => { throw new TypeError("D1 is down"); } } } as unknown as typeof env;
     const hook = await signedWebhook(body);
-    const res = await webhook(new Request("https://teams.test/linear/webhook", { method: "POST", headers: hook.headers, body: hook.text }), broken);
+    const res = await webhook(new Request("https://teams.test/linear/webhook", { method: "POST", headers: hook.headers, body: hook.text }), broken, createExecutionContext());
     expect(res.status).toBe(500);
     expect(log.mock.calls).toEqual([["POST /linear/webhook: TypeError"]]);
   });
@@ -1534,5 +1536,134 @@ describe("asking which project to use", () => {
     const { owner } = await offering(["acme/web"]);
     expect((await call("DELETE", `/linear/link/${ORG}`, as(owner.session))).status).toBe(204);
     expect(await count("linear_repositories")).toBe(0);
+  });
+});
+
+describe("a cloud machine that takes Linear's work", () => {
+  const NOT_STARTED = "The cloud environment could not start. The session starts on Cloud when it runs again, for up to 7 days.";
+
+  /// An account with the `linear` and `cloud` flags, linked from LU, and a
+  /// cloud machine named "Cloud" that sleeps. Its server set its routes with
+  /// its own session, as `arakun-server` does in the container.
+  async function cloudWithRoute() {
+    const owner = await account();
+    for (const flag of ["linear", "cloud"]) await call("PUT", `/admin/users/${owner.account_id}/flags/${flag}`, ADMIN);
+    if ((await count("linear_workspaces")) === 0) await workspace(owner.account_id);
+    await env.DB.prepare("INSERT INTO linear_links (organization_id, linear_user_id, account_id, linked_at) VALUES (?, ?, ?, ?)")
+      .bind(ORG, LU, owner.account_id, nowSeconds())
+      .run();
+    const key = await newMachineKey();
+    const label = key.label;
+    const t = nowSeconds();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO cloud_machines (label, account_id, name, created_at) VALUES (?, ?, 'Cloud', ?)").bind(label, owner.account_id, t),
+      env.DB.prepare("INSERT INTO machines (label, account_id, pub, name, kind, created_at, last_seen_at) VALUES (?, ?, 'p', 'Cloud', 'server', ?, ?)").bind(
+        label,
+        owner.account_id,
+        t,
+        t,
+      ),
+    ]);
+    await env.CLOUD_MACHINE!.getByName(label).create({ ...key, githubId: owner.account_id, name: "Cloud", base: "https://teams.test" });
+    const cloud = (await newCloudSession(env, owner.account_id, label, "Cloud"))!;
+    const routes = { label, organization_id: ORG, teams: [TEAM], projects: [] };
+    expect((await call("PUT", "/linear/routes", as(cloud.session), JSON.stringify(routes))).status).toBe(204);
+    linearFake.issues.set(ISSUE, { teamId: TEAM, projectId: PROJECT });
+    return { owner, label, session: cloud.session };
+  }
+
+  /// The activities once the wake after the answer has spoken.
+  async function afterWake(n: number) {
+    await vi.waitFor(() => expect(linearFake.activities()).toHaveLength(n), { timeout: 5000 });
+    return linearFake.activities();
+  }
+
+  it("may set the routes of its own label only, and nothing else of the account's", async () => {
+    const { owner, session } = await cloudWithRoute();
+    const desk = await connectedComputer(owner);
+    const routes = { label: desk.me.label, organization_id: ORG, teams: [TEAM2], projects: [] };
+    expect((await call("PUT", "/linear/routes", as(session), JSON.stringify(routes))).status).toBe(404);
+    expect((await call("GET", "/linear/link", as(session))).status).toBe(401);
+    expect((await call("GET", "/linear/install", as(session))).status).toBe(401);
+    // The owner's own session still sets the computer's.
+    expect((await call("PUT", "/linear/routes", as(owner.session), JSON.stringify(routes))).status).toBe(204);
+  });
+
+  it("is woken for a delegation, which waits on the relay until it is up", async () => {
+    const { label } = await cloudWithRoute();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    const rows = await deliveries();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ label, kind: "created", accepted_at: null });
+    expect(await stored(label, `linear:${rows[0]!["id"]}`)).toBeDefined();
+    // The tests have no container, so the start fails and the session says so.
+    expect(await afterWake(2)).toEqual([
+      { agentSessionId: SESSION, type: "thought", body: "Waking Cloud. A session starts there once it is up." },
+      { agentSessionId: SESSION, type: "thought", body: NOT_STARTED },
+    ]);
+  });
+
+  it("says which limit keeps it asleep, and the delivery still waits", async () => {
+    const { owner, label } = await cloudWithRoute();
+    await env.DB.prepare("INSERT INTO cloud_holds (account_id, reason, held_at) VALUES (?, 'abuse check', ?)").bind(owner.account_id, nowSeconds()).run();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    const said = await afterWake(2);
+    expect(said[1]).toEqual({
+      agentSessionId: SESSION,
+      type: "thought",
+      body: "The operator stopped this account's cloud environments: abuse check. The session starts on Cloud when it runs again, for up to 7 days.",
+    });
+    const [row] = await deliveries();
+    expect(await stored(label, `linear:${row!["id"]}`)).toBeDefined();
+  });
+
+  it("is not restarted past the task cap by Linear: only its owner does that", async () => {
+    const { label } = await cloudWithRoute();
+    await runInDurableObject(env.CLOUD_MACHINE!.getByName(label), (_o, state) => state.storage.put("task_capped", Date.now()));
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    const said = await afterWake(2);
+    expect(said[1]!.body).toMatch(/^The cloud environment stopped after .*, the most one task may run\. Wake it to go on\. The session starts on Cloud/);
+  });
+
+  it("is woken for a reply, but not for a stop", async () => {
+    await cloudWithRoute();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    await afterWake(2);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Also the footer", agentSessionId: SESSION })))).status).toBe(200);
+    const said = await afterWake(4);
+    expect(said.slice(2)).toEqual([
+      { agentSessionId: SESSION, type: "thought", body: "Waking Cloud. Your message reaches the session once it is up." },
+      { agentSessionId: SESSION, type: "thought", body: NOT_STARTED },
+    ]);
+    expect((await send(signedWebhook(prompted({ userId: LU, body: "Stop", signal: "stop", agentSessionId: SESSION })))).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(linearFake.activities().slice(4)).toEqual([
+      { agentSessionId: SESSION, type: "response", body: "Cloud is offline. The session there is stopped as soon as it is back." },
+    ]);
+  });
+
+  it("accepts and reports on what was sent to it, and nothing sent elsewhere", async () => {
+    const { owner, label, session } = await cloudWithRoute();
+    expect((await send(signedWebhook(created({ creatorId: LU, issueId: ISSUE, agentSessionId: SESSION })))).status).toBe(200);
+    await afterWake(2);
+    const [mine] = await deliveries();
+    const thought = JSON.stringify({ type: "thought", body: "Reading the issue" });
+    expect((await call("POST", `/linear/deliveries/${mine!["id"]}/accept`, as(session))).status).toBe(204);
+    expect(await stored(label, `linear:${mine!["id"]}`)).toBeUndefined();
+    expect((await call("POST", `/linear/sessions/${SESSION}/activity`, as(session), thought)).status).toBe(204);
+
+    // A delivery of the same account's computer is not the cloud machine's.
+    const desk = await connectedComputer(owner);
+    const other = "f".repeat(32);
+    await env.DB.prepare(
+      `INSERT INTO linear_deliveries (id, event_key, agent_session_id, organization_id, issue_id, kind, account_id, label, created_at)
+       VALUES (?, 'created:other', ?, ?, ?, 'created', ?, ?, ?)`,
+    )
+      .bind(other, SESSION2, ORG, ISSUE, owner.account_id, desk.me.label, nowSeconds())
+      .run();
+    expect((await call("POST", `/linear/deliveries/${other}/accept`, as(session))).status).toBe(404);
+    expect((await call("POST", `/linear/sessions/${SESSION2}/activity`, as(session), thought)).status).toBe(404);
+    expect((await call("PUT", `/linear/sessions/${SESSION2}/plan`, as(session), JSON.stringify({ plan: [] }))).status).toBe(404);
+    expect((await call("POST", `/linear/deliveries/${other}/accept`, as(owner.session))).status).toBe(204);
   });
 });

@@ -17,7 +17,12 @@ your computer off. Access is given by hand: ask for it there, with what you woul
 for. With access, **New cloud environment** makes one (the first start takes a few
 minutes), and the section shows whether it is awake, why it stopped, and the hours left
 this month, with **Wake**, **Stop** and **Remove**. The phone's Computers screen has the
-same.
+same. In the Linear tab you can map a team or project to a project in your cloud
+environment, as to any server. An issue delegated there wakes the environment, so it runs
+with your computer off. The hours come from your allowance, also when a Linear automation
+delegated the issue for you. Linear never wakes an environment past the month's hours or
+one that stopped at the cap for one task: wake that one yourself. The issue says why when
+it cannot start, and the work waits up to 7 days.
 
 The commands here are `arakun server …`. On a machine without a display, the same
 commands are `arakun-server …` (see [Install on a machine without a display](#install-on-a-machine-without-a-display)).

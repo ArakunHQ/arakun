@@ -235,6 +235,35 @@ export async function wakeIfCloud(env: Env, label: string): Promise<void> {
   }
 }
 
+/// Wakes the label's cloud machine for work Linear sent it, and says why when
+/// it will not start: the sentence to show, or null once it runs.
+///
+/// Linear says who delegated, never whether an automation did it for them,
+/// so the delegator's hours pay either way. The wake is a door's, not the
+/// owner's: it starts nothing past the month's allowance, a hold or the stop
+/// for everyone, and does not restart a machine stopped at the task cap. Only
+/// the owner's wake does that, so an automation cannot keep a long task going.
+export async function wakeForWork(env: Env, label: string): Promise<string | null> {
+  const ns = env.CLOUD_MACHINE;
+  if (!ns) return null;
+  let woke: "running" | Refused;
+  try {
+    woke = await ns.get(ns.idFromName(label)).wake("door");
+  } catch (e) {
+    console.error(`cloud machine ${label} did not wake:`, e);
+    return COULD_NOT_START;
+  }
+  if (woke === "running") return null;
+  console.error(`cloud machine ${label} did not wake: ${woke}`);
+  if (woke === "no_machine" || woke === "not_allowed" || woke === "no_github" || woke === "no_container") return COULD_NOT_START;
+  const accountId = await env.DB.prepare("SELECT account_id FROM cloud_machines WHERE label = ?").bind(label).first<number>("account_id");
+  if (accountId === null) return COULD_NOT_START;
+  const owner = await allowedOwner(env, accountId);
+  return limitText(woke, await budgetOf(env, accountId, owner?.plan ?? "free", Date.now()));
+}
+
+const COULD_NOT_START = "The cloud environment could not start.";
+
 /// GET /admin/cloud/machines: every cloud machine, with its owner, its
 /// state, why it is stopped and the owner's awake time this UTC month.
 export async function listAllMachines(env: Env): Promise<Response> {

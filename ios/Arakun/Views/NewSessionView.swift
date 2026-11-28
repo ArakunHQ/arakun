@@ -7,6 +7,8 @@ struct NewSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var placePath = ""
     @State private var text = ""
+    /// Photos for the first prompt; they stay until the session has started.
+    @State private var photos: [Photo] = []
     @FocusState private var writing: Bool
     let started: (String) -> Void
 
@@ -32,6 +34,10 @@ struct NewSessionView: View {
                             .focused($writing)
                             .padding(14)
                             .card(stroke: writing ? .lineStrong : .line)
+                        HStack(alignment: .center, spacing: 10) {
+                            PhotoButton(photos: $photos, labelled: true)
+                            PhotoChips(photos: $photos)
+                        }
                     }
                 }
                 .padding(16)
@@ -40,7 +46,7 @@ struct NewSessionView: View {
             .safeAreaInset(edge: .bottom) {
                 Button {
                     guard let p = model.places.first(where: { $0.path == placePath }) else { return }
-                    model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines), photos: photos)
                 } label: {
                     HStack(spacing: 10) {
                         if model.starting { ProgressView().tint(Color.onAmber) }
@@ -51,7 +57,7 @@ struct NewSessionView: View {
                 .buttonStyle(.primary)
                 // The model's flag, not the form's: a start sent before Cancel
                 // still blocks another until it is answered.
-                .disabled(model.starting || !model.places.contains(where: { $0.path == placePath }) || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.isLinked)
+                .disabled(model.starting || !model.places.contains(where: { $0.path == placePath }) || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty) || !model.isLinked)
                 .padding(16)
                 .background(Color.ground)
             }

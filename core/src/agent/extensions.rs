@@ -55,6 +55,12 @@ const LISTS: [&str; 3] = [
     "droid.list_mcp_servers",
 ];
 
+/// Whether Droid's CLI is there to ask. Without it there is nothing to list,
+/// and that is no error.
+pub fn installed() -> bool {
+    launch::droid_bin().is_ok()
+}
+
 pub fn load(cwd: &Path) -> Result<Extensions> {
     run(cwd, None)
 }

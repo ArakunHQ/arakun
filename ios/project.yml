@@ -53,7 +53,9 @@ targets:
         # lists all four (error 90474). The iPhone keeps no upside-down.
         UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIAppFonts: [fonts/Geist-Regular.ttf, fonts/Geist-Medium.ttf, fonts/Geist-SemiBold.ttf, fonts/GeistMono-Regular.ttf, fonts/GeistMono-Medium.ttf]
-        NSCameraUsageDescription: Arakun scans the pairing code your computer shows.
+        # Photos come through the system's photo picker, which runs outside the
+        # app, so there is no photo library string: only the camera asks.
+        NSCameraUsageDescription: Arakun scans the pairing code your computer shows, and takes the photos you send to an agent.
         CFBundleURLTypes:
           - CFBundleURLName: com.arakun.pair
             CFBundleURLSchemes: [arakun]

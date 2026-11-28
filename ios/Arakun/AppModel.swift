@@ -909,12 +909,25 @@ final class AppModel {
     /// Whether it went out; the composer keeps the text when it did not.
     /// `now` stops the running turn and sends it as soon as it stopped.
     @discardableResult
-    func say(_ text: String, now: Bool = false) -> Bool {
+    func say(_ text: String, photos: [Photo] = [], now: Bool = false) -> Bool {
         guard let s = session, canSend else { return false }
-        var msg: [String: Any] = ["type": "send", "session": s.id, "text": text]
+        var msg: [String: Any] = ["type": "send", "session": s.id, "text": PhotoUpload.text(text, photos: photos.count)]
         if now { msg["now"] = true }
+        if !photos.isEmpty { msg["uploads"] = upload(photos, session: s.id) }
         send(msg)
         return true
+    }
+
+    /// Sends `photos` in pieces ahead of the prompt that names them; their ids.
+    /// The link keeps the order, so the computer has them when the prompt lands.
+    private func upload(_ photos: [Photo], session: String) -> [String] {
+        photos.enumerated().map { i, photo in
+            let id = PhotoUpload.newID(i)
+            for piece in PhotoUpload.pieces(of: photo.jpeg, id: id, name: "photo.jpg", session: session) {
+                send(piece)
+            }
+            return id
+        }
     }
 
     /// Takes queued prompt `index` out of the queue; true when it went out, so
@@ -971,12 +984,16 @@ final class AppModel {
         return true
     }
 
-    /// Whether the start went out; the form keeps its prompt when it did not.
+    /// Whether the start went out; the form keeps its prompt and photos when it did not.
     @discardableResult
-    func startSession(in place: Place, text: String) -> Bool {
+    func startSession(in place: Place, text: String, photos: [Photo] = []) -> Bool {
         guard canSend else { return false }
         starting = true
-        send(["type": "start", "env": place.path, "agent": place.agent, "text": text])
+        var msg: [String: Any] = ["type": "start", "env": place.path, "agent": place.agent,
+                                  "text": PhotoUpload.text(text, photos: photos.count)]
+        // No session yet: the computer keeps the photos by their ids alone.
+        if !photos.isEmpty { msg["uploads"] = upload(photos, session: "") }
+        send(msg)
         return true
     }
 

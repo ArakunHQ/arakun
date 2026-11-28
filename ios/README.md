@@ -141,8 +141,10 @@ A pairing link opened from another app asks before it opens anything.
 - Send a prompt (queued while the agent works), Stop, allow or deny a permission,
   answer the agent's questions, load older entries.
 - Start a session in any place the computer offers.
+- Attach photos to a prompt or a new session, from the library or the camera.
+  Each is sent at 1568 pixels on its longest side, as JPEG; up to 10 a prompt.
 
-Not yet: sending photos, diffs, session settings and plan limits.
+Not yet: diffs, session settings and plan limits.
 
 ## Notifications
 

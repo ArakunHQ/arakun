@@ -6,6 +6,8 @@ struct SessionView: View {
     let id: String
     @Environment(AppModel.self) private var model
     @State private var draft = ""
+    /// Photos to go with the next prompt; they stay when it does not go out.
+    @State private var photos: [Photo] = []
     @FocusState private var typing: Bool
     /// Whether the end of the transcript is on screen; new entries follow only then.
     @State private var atEnd = true
@@ -91,7 +93,7 @@ struct SessionView: View {
                     QueueCard(queue: s.queue, paused: s.queuePaused, linked: model.isLinked,
                               takeBack: takeBack, resume: model.resumeQueue)
                 }
-                Composer(draft: $draft, typing: $typing, working: s?.status == .working, linked: model.isLinked,
+                Composer(draft: $draft, photos: $photos, typing: $typing, working: s?.status == .working, linked: model.isLinked,
                          send: { send() }, stopAndSend: { send(now: true) }, stop: model.stop)
             }
             .padding(.horizontal, 12)
@@ -159,9 +161,12 @@ struct SessionView: View {
 
     private func send(now: Bool = false) {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        // Not sent (the link is down): the text stays to send again.
-        if model.say(text, now: now) { draft = "" }
+        guard !text.isEmpty || !photos.isEmpty else { return }
+        // Not sent (the link is down): the text and photos stay to send again.
+        if model.say(text, photos: photos, now: now) {
+            draft = ""
+            photos = []
+        }
     }
 
     /// Out of the queue and into the box, after anything written there.
@@ -227,6 +232,7 @@ private struct WorkingLine: View {
 
 struct Composer: View {
     @Binding var draft: String
+    @Binding var photos: [Photo]
     var typing: FocusState<Bool>.Binding
     let working: Bool
     let linked: Bool
@@ -235,16 +241,31 @@ struct Composer: View {
     let stopAndSend: () -> Void
     let stop: () -> Void
 
-    private var empty: Bool { draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var empty: Bool { draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photos.isEmpty }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            PhotoChips(photos: $photos)
+                .padding(.horizontal, 10)
+                .padding(.top, photos.isEmpty ? 0 : 10)
+            row
+        }
+        .background(RoundedRectangle(cornerRadius: Radius.card).fill(Color.raised))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card).strokeBorder(typing.wrappedValue ? Color.lineStrong : Color.line))
+    }
+
+    private var row: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            PhotoButton(photos: $photos)
+                .padding(.leading, 6)
+                .padding(.vertical, 6)
             TextField("", text: $draft, prompt: Text(working ? "Queue a follow-up" : "Message the agent").foregroundStyle(Color.textFaint),
                       axis: .vertical)
                 .font(.body16)
                 .lineLimit(1...6)
                 .focused(typing)
-                .padding(.horizontal, 14)
+                // The photo button sits where the left margin was.
+                .padding(.trailing, 14)
                 .padding(.vertical, 11)
             if working && empty {
                 Button(action: stop) {
@@ -288,8 +309,6 @@ struct Composer: View {
                 .accessibilityLabel("Send")
             }
         }
-        .background(RoundedRectangle(cornerRadius: Radius.card).fill(Color.raised))
-        .overlay(RoundedRectangle(cornerRadius: Radius.card).strokeBorder(typing.wrappedValue ? Color.lineStrong : Color.line))
     }
 }
 
